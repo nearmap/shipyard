@@ -74,7 +74,8 @@ def scrub_text(text: str, secrets: dict[str, str]) -> tuple[str, dict[str, int]]
 def scrub_file(path: Path, secrets: dict[str, str], *, dry_run: bool = False) -> dict[str, int]:
     scrubbed, counts = scrub_text(path.read_text(encoding="utf-8"), secrets)
     if counts and not dry_run:
-        path.write_text(scrubbed, encoding="utf-8")  # scrubbed already has every secret value replaced
+        # scrubbed already has every secret value replaced
+        path.write_text(scrubbed, encoding="utf-8")
     return counts
 
 

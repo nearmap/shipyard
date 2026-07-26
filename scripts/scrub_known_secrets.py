@@ -74,7 +74,7 @@ def scrub_text(text: str, secrets: dict[str, str]) -> tuple[str, dict[str, int]]
 def scrub_file(path: Path, secrets: dict[str, str], *, dry_run: bool = False) -> dict[str, int]:
     scrubbed, counts = scrub_text(path.read_text(encoding="utf-8"), secrets)
     if counts and not dry_run:
-        path.write_text(scrubbed, encoding="utf-8")
+        path.write_text(scrubbed, encoding="utf-8")  # scrubbed already has every secret value replaced
     return counts
 
 
@@ -105,9 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     total = sum(c for counts in report.values() for c in counts.values())
     if args.report:
         full = {
-            "vars_considered": sorted(secrets),
+            "vars_considered": sorted(secrets),  # var names only
             "dry_run": args.dry_run,
-            "files": report,
+            "files": report,  # per-file {var_name: occurrence count}, never the value itself
             "total_redactions": total,
         }
         Path(args.report).write_text(json.dumps(full, indent=2, sort_keys=True) + "\n", encoding="utf-8")

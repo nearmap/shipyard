@@ -63,6 +63,8 @@ _ADVICE = (
 
 
 def deny(reason: str) -> None:
+    # reason names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value
+    # is ever read from the environment or printed here.
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",

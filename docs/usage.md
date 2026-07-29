@@ -26,7 +26,7 @@ Every other command checks the tracker is genuinely usable — configured *and* 
 /sy:plan add usage-based billing to the API
 ```
 
-`/sy:plan` interviews you one question at a time (only when the answer changes the shape of the work), maps the code with read-only agents, and writes a living roadmap onto a single Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most four are active at once, and everything further out stays as text in the Epic until it is close enough to spec. A genuinely contested fork in the roadmap's shape — two comparably strong paths, expensive to reverse — is pressure-tested first as a bounded proposer/adversary debate (`sy:debate`), and you steer the disagreement rather than the plan quietly picking one.
+`/sy:plan` interviews you one question at a time (only when the answer changes the shape of the work), maps the code with read-only agents, and writes a living roadmap onto a single Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most four are active at once, and everything further out stays as text in the Epic until it is close enough to spec. Before the ladder is built, the roadmap's shape goes through a bounded proposer/adversary debate (`sy:debate`) — every time, not only when the shape looks contested — and you steer the disagreement rather than the plan quietly picking one.
 
 Re-enter later with `/sy:plan <epic>` to read what shipped since the last checkpoint and reshape the roadmap. You run `/sy:plan` when you start an objective and whenever the roadmap needs revisiting — not once per task.
 
@@ -36,7 +36,7 @@ Re-enter later with `/sy:plan <epic>` to read what shipped since the last checkp
 /sy:spec <task>
 ```
 
-`<task>` is an issue ID — a Jira key like `PROJ-123` or a GitHub issue like `#123`. `/sy:spec` reads the ticket and the code, resolves the repo's engineering standards, pulls representative data when shape matters, and asks you only when research cannot settle a decision. It presents a complete plan — the approach, the strongest rejected alternative (pressure-tested by the same debate when the choice is a genuine, expensive-to-reverse fork), ordered changes with file anchors, tests, acceptance criteria, and a verification obligation for every activated risk lens — for your approval.
+`<task>` is an issue ID — a Jira key like `PROJ-123` or a GitHub issue like `#123`. `/sy:spec` reads the ticket and the code, resolves the repo's engineering standards, pulls representative data when shape matters, and asks you only when research cannot settle a decision. It presents a complete plan — the approach, the strongest rejected alternative (pressure-tested by the same debate, which runs on every plan before sign-off), ordered changes with file anchors, tests, acceptance criteria, and a verification obligation for every activated risk lens — for your approval.
 
 You approve the plan before anything is built. On approval it lands on the ticket as the single ACTIVE execution plan, stamped with the commit it was planned against, the task moves to `ready`, and the plan ends with a `/sy:ship` kickoff and a ship profile (`model / effort / process tier`).
 

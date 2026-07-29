@@ -52,9 +52,10 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 - Read durable cross-session memory early — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" list` (or `search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the plan as a known anchor.
 - Trace every load-bearing claim to code, current primary docs, or real data.
 - Use `sy:sweep` for breadth and `sy:trace` for one end-to-end path; verify decisive spans directly.
+- Verifying a decisive span means confirming one already-cited pointer with a read or a single targeted command; when that check — or a delegate's own findings — comes back inconclusive and continuing would move past what's already been pointed at (a live external system, a probe script under `.scratch/`, or a second follow-up command still chasing the same question), stop and dispatch a fresh, foreground `sy:trace` for it instead of continuing turn-by-turn; the dispatch draws on the same "at most 3 depth agents in flight" budget set above, not a separate one.
 - Pull representative data when shape/frequency matters.
 - Actively look for breaking cases and evidence against the preferred approach.
-- When that search leaves a genuine fork — two comparably strong approaches, expensive to reverse once the plan commits — pressure-test it with `sy:debate` rather than picking unilaterally: `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`.
+- Before the plan reaches sign-off (§7), pressure-test its core design decision with `sy:debate` — unconditionally, not only when this search happened to surface a two-sided fork: `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`. When research does surface a genuine fork, debate it here, as soon as the choice is stated in one sentence, rather than carrying it unresolved into the plan.
 
 Record standards compactly, for example:
 
@@ -104,19 +105,24 @@ Not every spec ends in a plan. When research shows the premise is already delive
 
 ## 7. Capture exactly one active versioned plan
 
-Present the full plan for sign-off:
+Present the full plan for sign-off — only after the mandatory `sy:debate` pass from §3 has run — structured in two clearly labeled parts, so a human reviewer and a fresh `/sy:ship` session each get only what they need without wading through the other's:
+
+**For your sign-off** (rationale and judgment calls):
 
 - approach and why;
-- strongest rejected alternative and why — when a debate ran (§3), this is the adversary's strongest objection plus the user's steer, not a restatement invented after the fact;
+- strongest rejected alternative and why — the adversary's strongest objection from the §3 debate plus the user's steer, not a restatement invented after the fact;
+- risks/edge cases;
+- unverified assumptions;
+- out of scope — what this plan deliberately excludes; note it is a default contract, not a wall: small, adjacent, low-risk issues surfaced during ship may be folded in as recorded scope extensions rather than always spawning siblings (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
+
+**For `/sy:ship`** (mechanical and self-contained):
+
 - ordered concrete changes with file anchors/key signatures;
 - existing primitives to reuse;
 - standards authority and task-specific constraints/risk lenses;
 - verification obligations (lens → claim → named evidence);
 - design invariants — the deliberately small load-bearing list `sy:gate` must protect;
 - tests and acceptance criteria;
-- risks/edge cases;
-- unverified assumptions;
-- out of scope — what this plan deliberately excludes; note it is a default contract, not a wall: small, adjacent, low-risk issues surfaced during ship may be folded in as recorded scope extensions rather than always spawning siblings (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`);
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 
 Present that content as a status update, then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED) and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.

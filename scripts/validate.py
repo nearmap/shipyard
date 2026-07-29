@@ -82,6 +82,7 @@ REQUIRED = {
     "skills/shared/references/write-integrity.md",
     "skills/shared/references/scope-discipline.md",
     "skills/shared/references/preflight.md",
+    "skills/shared/references/debate.md",
     "skills/plan/references/new-objective.md",
     "skills/plan/references/reentry.md",
     "skills/plan/references/roadmap-shaping.md",
@@ -232,6 +233,8 @@ def check_invariants(errors: list[str]) -> None:
     write_integrity = read("skills/shared/references/write-integrity.md")
     scope = read("skills/shared/references/scope-discipline.md")
     preflight_ref = read("skills/shared/references/preflight.md")
+    debate_ref = read("skills/shared/references/debate.md")
+    roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
     jira_adapter = read("skills/tracker/jira/ADAPTER.md")
     github_adapter = read("skills/tracker/github/ADAPTER.md")
@@ -322,6 +325,16 @@ def check_invariants(errors: list[str]) -> None:
         fail("BUILD must verify load-bearing plan facts before executing (needs-decision/bail-to-spec on mismatch)", errors)
     if "content-QA" not in impl:
         fail("build implementation must include the deterministic content-QA grep for leaked wrapper tokens", errors)
+    for name, text in (("ship", ship), ("implementation", impl), ("ship-build agent", build_agent)):
+        if "needs-trace" not in text:
+            fail(f"{name} must carry the needs-trace worker return (parent dispatches sy:trace, BUILD never does)", errors)
+    trigger = "a second follow-up command still chasing the same question"
+    for name, text in (("spec", spec), ("implementation", impl)):
+        if trigger not in text:
+            fail(f"{name} must state the spot-check bound with the shared trigger clause verbatim", errors)
+    for name, text in (("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spike", spike)):
+        if "unconditionally" not in text.lower():
+            fail(f"{name} must run the sy:debate pass unconditionally, not gated on a pre-identified fork", errors)
     if "undispositioned actionable finding" not in gate_ref:
         fail("immutable-gate fix cycle must state the stopping rule (no undispositioned actionable finding)", errors)
     if "drift re-check" not in gate_ref.lower():

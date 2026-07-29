@@ -28,9 +28,9 @@ START_MODEL=<the plan's stated START model, literally, or ${SY_FRONTIER_MODEL:-f
 START_MODEL_FALLBACK=${SY_FRONTIER_FALLBACK:-opus}
 ```
 
-Pass `START_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-start`'s own frontmatter model wins and START silently runs below the plan's tier — a failure only visible later through usage-transcript archaeology. Never resolve below `sonnet`, the `ship-start` floor; a lower stated model is clamped up to it. Record the resolved model as `start_model_requested`; the usage transcript later provides `start_model_observed`, so do not claim they match until observed.
+Pass `START_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-start`'s own frontmatter model wins and START silently runs below the plan's tier — a failure only visible later through usage-transcript archaeology. Never resolve below `sonnet`, the `ship-start` floor; a lower stated model is clamped up to it. The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `start_model_requested`; the usage transcript later provides `start_model_observed`, so do not claim they match until observed.
 
-If START cannot run at the requested model — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a return — re-dispatch once at `START_MODEL_FALLBACK` and set `start_model_observed` to the model that actually ran, per the same rule as gate. A plan written in the old single-word profile format, or one whose START tier is otherwise ambiguous, is never guessed upward: it resolves to the `sonnet` floor.
+If START cannot run at the requested model — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a return — re-dispatch once at `START_MODEL_FALLBACK` clamped up to the `sonnet` floor, and set `start_model_observed` to the model that actually ran, per the same rule as gate. A plan written in the old single-word profile format, or one whose START tier is otherwise ambiguous, is never guessed upward: it resolves to the `sonnet` floor.
 
 ## Fresh run
 

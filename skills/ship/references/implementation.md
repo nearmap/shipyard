@@ -15,9 +15,9 @@ BUILD_MODEL=<the plan's stated BUILD model, literally, or ${SY_FRONTIER_MODEL:-f
 BUILD_MODEL_FALLBACK=${SY_FRONTIER_FALLBACK:-opus}
 ```
 
-Pass `BUILD_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-build`'s own frontmatter model wins rather than the plan's stated tier. Never resolve below `opus`, the `ship-build` floor; a lower stated model is clamped up to it. Record the resolved model as `build_model_requested`; the usage transcript later provides `build_model_observed`, so do not claim they match until observed.
+Pass `BUILD_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-build`'s own frontmatter model wins rather than the plan's stated tier. Never resolve below `opus`, the `ship-build` floor; a lower stated model is clamped up to it. The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `build_model_requested`; the usage transcript later provides `build_model_observed`, so do not claim they match until observed.
 
-If BUILD cannot run at the requested model — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a return — re-dispatch once at `BUILD_MODEL_FALLBACK` and set `build_model_observed` to the model that actually ran, per the same rule as gate. A plan written in the old single-word profile format, or one whose BUILD tier is otherwise ambiguous, is never guessed upward: it resolves to the `opus` floor.
+If BUILD cannot run at the requested model — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a return — re-dispatch once at `BUILD_MODEL_FALLBACK` clamped up to the `opus` floor, and set `build_model_observed` to the model that actually ran, per the same rule as gate. A plan written in the old single-word profile format, or one whose BUILD tier is otherwise ambiguous, is never guessed upward: it resolves to the `opus` floor.
 
 ## Delegated slice protocol
 

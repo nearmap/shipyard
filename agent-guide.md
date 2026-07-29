@@ -37,7 +37,7 @@ claude plugin install sy@shipyard                     # global (default): every 
 cd /path/to/shipyard && ./install.sh
 ```
 
-Required tools: Claude Code ≥ 2.1.214 (see `docs/installation.md` for the floor's rationale), Python 3.10+ on PATH as `python`, `gh` ≥ 2.94.0 authenticated (every tracker uses it for PRs/CI), and `gitleaks` (scans transcripts before they're attached/gisted). Jira additionally needs `acli`.
+Required tools: Claude Code ≥ 2.1.218 (see `docs/installation.md` for the floor's rationale), Python 3.10+ on PATH as `python`, `gh` ≥ 2.94.0 authenticated (every tracker uses it for PRs/CI), and `gitleaks` (scans transcripts before they're attached/gisted). Jira additionally needs `acli`.
 
 ## Configuring a repo
 

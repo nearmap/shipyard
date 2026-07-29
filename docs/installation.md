@@ -87,7 +87,7 @@ The preflight warns (non-fatally, except where noted) when a tool the configured
 
 | Tool | Version | Used for | When you need it |
 |---|---|---|---|
-| Claude Code | ≥ 2.1.214 | Loading the plugin; must support plugins, `hooks`, and `effort`/`model` in agent frontmatter | Always (the 2.1.214 floor is the changelog entry where agent markdown files reject `:` in `name`, reserving it for plugin namespacing, so the `sy:` agents resolve) |
+| Claude Code | ≥ 2.1.218 | Loading the plugin; must support plugins, `hooks`, and `effort`/`model` in agent frontmatter | Always (2.1.218 is the changelog entry where agent markdown files reject `:` in `name`, reserving it for the plugin namespacing the `sy:` agents use) |
 | Python | 3.10+, on `PATH`, invoked as `python` | Validation, usage accounting, the review guard, and the tracker helper scripts | Always |
 | `gh` | ≥ 2.94.0, authenticated | The code host (PRs and CI, via `/sy:pr` and `/sy:ci`) for **every** tracker, and the transport for the GitHub tracker adapter | Always (the 2.94.0 floor is required by the GitHub tracker's sub-issue and dependency flags) |
 | `acli` | Atlassian CLI | The Jira tracker adapter's transport | Jira tracker only (`SY_TRACKER=jira`) |

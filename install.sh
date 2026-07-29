@@ -7,6 +7,16 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 command -v python >/dev/null 2>&1 || { echo "ERROR: python not found on PATH" >&2; exit 1; }
 
+MIN_CLAUDE_VERSION="2.1.218"
+version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
+
+if command -v claude >/dev/null 2>&1; then
+  CLAUDE_VERSION="$(claude --version 2>/dev/null | awk '{print $1}')" || CLAUDE_VERSION=""
+  if [[ ! "$CLAUDE_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || ! version_ge "$CLAUDE_VERSION" "$MIN_CLAUDE_VERSION"; then
+    echo "NOTE: Claude Code ${CLAUDE_VERSION:-(version unreadable)} does not meet the $MIN_CLAUDE_VERSION floor documented in docs/installation.md. Consider upgrading Claude Code." >&2
+  fi
+fi
+
 echo "Validating Shipyard plugin..."
 python "$PLUGIN_ROOT/scripts/validate.py"
 

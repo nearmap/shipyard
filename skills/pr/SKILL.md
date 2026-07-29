@@ -46,8 +46,9 @@ A draft PR gets **no** automated review — Copilot and similar reviewers do not
 
    ```bash
    gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){reviews(first:20){nodes{author{__typename login ... on Bot{id}}}}}}}'  # <n> is a PR the bot has previously reviewed, not necessarily this one
+   gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<this pr>){id}}}'  # this PR's own node id, separate from <n> above
    gh api graphql -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{pullRequestId:$pr,botIds:[$bot],union:true}){clientMutationId}}' \
-     -f pr=<PR node id> -f bot=<bot node id>
+     -f pr=<this PR's node id> -f bot=<bot node id>
    ```
 
    `union:true` adds the bot without clearing reviewers already requested.

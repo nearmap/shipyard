@@ -33,7 +33,7 @@ Merge atomically against the verified head:
 gh pr merge <pr> --match-head-commit "$VERIFIED_HEAD_SHA" <chosen strategy flags>
 ```
 
-Compose the squash subject and body from the PR's own description per `/sy:pr` §4 rather than letting GitHub concatenate every branch commit subject into the message.
+For a squash merge, compose the subject and body from the PR's own description per `/sy:pr` §4 rather than letting GitHub concatenate every branch commit subject into the message; a merge/rebase strategy has no subject/body to compose and this step does not apply to it.
 
 Then verify merged state, set the task `done` via the `tracker` skill, and remove only build/slice/review worktrees (under the worktree root `${SY_WORKTREE_ROOT:-<repo>-worktrees}`) and branches recorded by this run.
 

@@ -70,4 +70,4 @@ The parent classifies state, dispatches the matching phase to a worker, and acts
 
 ## Completion bar
 
-Normal completion is a reviewable PR with current acceptance evidence, green CI and independent review covering the same head, Task `in-review`, human retrospective, standalone JSON usage/metrics comments, and (full tier) scanned transcript attachment. Then stop at handoff.
+Normal completion is a reviewable PR with current acceptance evidence, green CI and independent review covering the same head, the automated reviewer confirmedly requested and every review thread — bot and human — reconciled and answered rather than left for you, a doc-accuracy self-check over the shipped documentation diff, Task `in-review`, human retrospective, standalone JSON usage/metrics comments, and (full tier) scanned transcript attachment. Then stop at handoff.

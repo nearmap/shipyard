@@ -1,7 +1,7 @@
 ---
 name: trace
 description: >-
-  Read-only depth trace of one load-bearing behaviour or data path for /sy:spec or /sy:spike.
+  Read-only depth trace of one load-bearing behaviour or data path for /sy:spec, /sy:spike, or a /sy:ship parent.
   Follow it end to end, expose breaking cases, and return decisive evidence pointers.
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
 model: opus

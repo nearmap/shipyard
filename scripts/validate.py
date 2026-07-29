@@ -332,7 +332,7 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (("spec", spec), ("implementation", impl)):
         if trigger not in text:
             fail(f"{name} must state the spot-check bound with the shared trigger clause verbatim", errors)
-    for name, text in (("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spike", spike)):
+    for name, text in (("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spec", spec), ("spike", spike)):
         if "unconditionally" not in text.lower():
             fail(f"{name} must run the sy:debate pass unconditionally, not gated on a pre-identified fork", errors)
     if "undispositioned actionable finding" not in gate_ref:

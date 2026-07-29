@@ -19,7 +19,7 @@ Delegate only bounded, low-design-ambiguity slices:
 7. run integration-relevant tests;
 8. remove only the exact recorded slice worktree/branch after successful integration.
 
-Track build progress as a slice manifest in `phase_checkpoint` (per slice: `pending|committed|integrated`, with SHAs), updated after each integration, so a `needs-decision` return resumes at the next pending slice and re-does no integrated work.
+Track build progress as a slice manifest in `phase_checkpoint` (per slice: `pending|committed|integrated`, with SHAs), updated after each integration, so a `needs-decision` or `needs-trace` return resumes at the next pending slice and re-does no integrated work.
 
 After integration, run acceptance tests and standards-required formatter/linter/type checks; route verbose runs (full suite, linters, type checks) through `.scratch/` logs and read back only failures and summary lines, keeping raw output out of the ship context. Discharge every verification obligation with its named evidence; an undischargeable obligation returns to `/sy:spec`. Where acceptance criteria describe observable behaviour, execute the behaviour (a `.scratch/` runner is fine) and capture the output as acceptance evidence — tests alone discharge only test-shaped criteria.
 

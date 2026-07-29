@@ -45,7 +45,7 @@ A draft PR gets **no** automated review — Copilot and similar reviewers do not
 2. **By node id over GraphQL** — a raw REST `POST .../requested_reviewers` naming the bot's login fails `422 Reviews may only be requested from collaborators`, because a review bot is not a repository collaborator; rung 1 fails the same way on a gh old enough to lack the special case. The bot is also absent from `suggestedActors`, so read its node id off any review it has already left in this repo, then request by id:
 
    ```bash
-   gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){reviews(first:20){nodes{author{__typename login ... on Bot{id}}}}}}}'
+   gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){reviews(first:20){nodes{author{__typename login ... on Bot{id}}}}}}}'  # <n> is a PR the bot has previously reviewed, not necessarily this one
    gh api graphql -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{pullRequestId:$pr,botIds:[$bot],union:true}){clientMutationId}}' \
      -f pr=<PR node id> -f bot=<bot node id>
    ```

@@ -48,7 +48,7 @@ The parent dispatches each of START, BUILD, and GATE (and any resumed segment) t
 
 - `done` — phase complete; updated state brief (SHAs, PR, `agents_used`, `accepted_deviations`) with checkable evidence backing every load-bearing claim.
 - `needs-decision` — an idempotent checkpoint plus a question brief: what was attempted, why blocked, the options, and the plan/standards spans bearing on it.
-- `needs-trace` — an idempotent checkpoint plus a bounded empirical question: what is still unresolved, its seed anchors, and why it crossed the spot-check bound (the same bound as `/sy:spec` §3) instead of staying a direct read. No candidate options — only a question a trace can resolve.
+- `needs-trace` (BUILD only) — an idempotent checkpoint plus a bounded empirical question: what is still unresolved, its seed anchors, and why it crossed the spot-check bound (the same bound as `/sy:spec` §3) instead of staying a direct read. No candidate options — only a question a trace can resolve.
 - `bail-to-spec` — the plan's contract or architecture is invalidated; reason and offending anchors. Also the escape hatch when a phase keeps returning `needs-trace` without converging.
 - `blocked` — external cause (merge authorization, infrastructure); what is required.
 

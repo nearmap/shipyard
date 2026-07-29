@@ -41,8 +41,8 @@ Title: `<TICKET> - <imperative summary>` when branch carries a ticket key.
 
 A draft PR gets **no** automated review — Copilot and similar reviewers do not comment until the PR is marked ready, so a draft that is never promoted shows a permanently empty thread list that reads as "nothing to reconcile". Marking it ready with `gh pr ready <pr>` is necessary but not sufficient: observed runs show the automated reviewer does not fire on readiness alone, so an explicit request is the normal path, not a rare fallback. Immediately after marking ready, walk this ladder and stop at the first rung that lands:
 
-1. **By login** — `gh pr edit <pr> --add-reviewer "@copilot"` (gh ≥2.87.0), or the repo's configured automated reviewer login.
-2. **By node id over GraphQL** — rung 1 returns `422 Reviews may only be requested from collaborators` whenever the bot is not a REST-addressable collaborator on this repo/org, which is common. The bot is not listed by `suggestedActors` either; read its node id off any review it has already left in this repo, then request by id:
+1. **By login** — `gh pr edit <pr> --add-reviewer "@copilot"` (gh ≥2.87.0), or the repo's configured automated reviewer login. gh special-cases `@copilot` onto GitHub's bot path, so this is *not* the same call as a raw REST review request and usually succeeds where one does not.
+2. **By node id over GraphQL** — a raw REST `POST .../requested_reviewers` naming the bot's login fails `422 Reviews may only be requested from collaborators`, because a review bot is not a repository collaborator; rung 1 fails the same way on a gh old enough to lack the special case. The bot is also absent from `suggestedActors`, so read its node id off any review it has already left in this repo, then request by id:
 
    ```bash
    gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){reviews(first:20){nodes{author{__typename login ... on Bot{id}}}}}}}'
@@ -53,7 +53,13 @@ A draft PR gets **no** automated review — Copilot and similar reviewers do not
    `union:true` adds the bot without clearing reviewers already requested.
 3. **Surface it loudly** — when no rung lands, including a repo with no prior bot review to read an id from, report the failure and hand off to the repo's manual "request review" control. Never skip it silently.
 
-Then confirm the request actually took — `gh pr view <pr> --json reviewRequests`, or the bot's review arriving — before reading any thread list. An empty thread list is never evidence of "reviewed, nothing to say": it is indistinguishable from a review nobody requested, and only a confirmed request reaching a terminal state tells the two apart.
+Then confirm the request actually landed, over GraphQL and not REST — `gh pr view <pr> --json reviewRequests` renders `[]` for a bot reviewer that *is* requested, so it is a false negative rather than a confirmation:
+
+```bash
+gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){reviewRequests(first:10){nodes{requestedReviewer{__typename ... on Bot{login}}}}}}}'
+```
+
+Only then read the thread list. An empty one is never evidence of "reviewed, nothing to say": it is indistinguishable from a review nobody requested, and only a confirmed request reaching a terminal state tells the two apart.
 
 Reconcile the reviewer's threads by **author bot-type, not a hardcoded login.** The same reviewer's bot login is not stable across the GitHub REST and GraphQL surfaces (e.g. a `-bot` suffix or `[bot]` bracket form differs between them), so a query filtered to one literal login silently returns zero threads on the other surface and reports a false "0 new comments". Enumerate all review comments/threads and select by author type being a bot — for example `gh api repos/<o>/<r>/pulls/<pr>/comments --jq '[.[] | select(.user.type=="Bot")]'` (or the GraphQL `reviewThreads` with `author { __typename }` matched against `Bot`) — so every bot thread is caught regardless of which login form that surface reports. Reconcile against comment/thread ids, not login strings.
 

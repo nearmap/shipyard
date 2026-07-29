@@ -6,7 +6,7 @@ A roadmap, plan, or spike verdict can look settled to the session that wrote it 
 
 Every `/sy:plan` roadmap, every `/sy:spec` plan, and every `/sy:spike` verdict runs at least one `sy:debate` pass over its core design decision before it reaches sign-off and becomes durable — unconditionally, not gated on whether the decision already presents as a genuine two-sided fork. The author's own judgment that the call is settled is exactly what this catches: under the old conditional bar, the pass ran only when a session already suspected it was wrong, which is when it was least needed. There is no size or reversibility floor below which the pass is skipped.
 
-Run it after the normal research pass (sweep/seam/trace as applicable), so the debate argues over gathered evidence rather than speculation. A fork that surfaced mid-research and was already debated needs no second pass at sign-off — one recorded pass over the core decision is the bar, not one per decision. A call that turns only on something the user can weigh still goes straight to a `Question`; the debate sharpens that question rather than replacing it.
+Run it after the normal research pass (sweep/seam/trace as applicable), so the debate argues over gathered evidence rather than speculation. A fork that surfaced mid-research and was already debated needs no second pass at sign-off — one recorded pass over the core decision is the bar, not one per decision. A call that turns only on something the user can weigh still ends in a `Question` — the pass still runs, and the debate sharpens that question rather than replacing it.
 
 ## Dispatch it
 

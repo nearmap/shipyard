@@ -9,8 +9,8 @@ This page is the complete reference for every knob. For the one-time GitHub Proj
 | Variable | Tracker | Required | Default | What it does |
 |---|---|---|---|---|
 | `SY_TRACKER` | both | no | `jira` | Selects the tracker adapter: `jira` or `github`. This is the single point where the tracker is chosen. |
-| `SY_FRONTIER_MODEL` | both | no | `fable` | The model `sy:gate` uses for the independent review. A quality floor, not a cost dial — set it to your strongest available model. |
-| `SY_FRONTIER_FALLBACK` | both | no | `opus` | The model the reviewer falls back to once if the frontier model cannot run (spend cap, rate limit, or a refusal). If the fallback also fails, ship returns `blocked` rather than promoting an unreviewed commit. |
+| `SY_FRONTIER_MODEL` | both | no | `fable` | The model `sy:gate` uses for the independent review, and what `frontier` resolves to for any ship-profile phase that states it. A quality floor, not a cost dial — set it to your strongest available model. |
+| `SY_FRONTIER_FALLBACK` | both | no | `opus` | The model a phase falls back to once if its requested frontier model cannot run (spend cap, rate limit, or a refusal). If the reviewer's fallback also fails, ship returns `blocked` rather than promoting an unreviewed commit. |
 | `SY_IMAGE_MODEL` | both | no | `sonnet` | The model `sy:img-inspector` uses to look at figures/screenshots/plots and return a text verdict, so image tokens stay out of the long-running context. A quality floor, not a cost dial. |
 | `SY_DEBATE_MODEL` | both | no | `opus` | The model `sy:debate` and its `sy:debater` dispatches use to pressure-test the core decision behind every `/sy:plan` roadmap, `/sy:spec` plan, and `/sy:spike` verdict. A quality floor, not a cost dial — raise it (e.g. to your `SY_FRONTIER_MODEL`) for a fork whose blast radius justifies the extra cost. |
 | `SY_WORKTREE_ROOT` | both | no | `<repo>-worktrees` beside the repo | The directory `/sy:ship` creates its isolated build/slice/review worktrees in (`$SY_WORKTREE_ROOT/<branch>`). Default is the sibling directory beside the repo (`/path/to/myrepo` → `/path/to/myrepo-worktrees/`); it is never inside the working tree. |

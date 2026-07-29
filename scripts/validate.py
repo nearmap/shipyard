@@ -365,6 +365,18 @@ def check_invariants(errors: list[str]) -> None:
         fail("gate must not preload standards; conformance review is invoked lazily", errors)
     if "SY_FRONTIER_MODEL" not in gate_ref:
         fail("immutable-gate must resolve the reviewer via SY_FRONTIER_MODEL", errors)
+    if "START <model> / BUILD <model> / GATE <model>" not in spec:
+        fail("spec ship profile must name START, BUILD, and GATE models individually (no single-word tier)", errors)
+    if "Resolve START's and BUILD's models explicitly" not in ship:
+        fail("ship invariants must resolve START and BUILD models explicitly as Agent model overrides", errors)
+    for name, text, phase in (("start-resume", start, "start"), ("implementation", impl, "build")):
+        tokens = (
+            f"{phase.upper()}_MODEL", f"{phase}_model_requested", f"{phase}_model_observed",
+            "Agent invocation", "model override",
+        )
+        missing = [t for t in tokens if t not in text]
+        if missing:
+            fail(f"{name} must resolve the {phase} model and pass it as the Agent invocation's model override (missing: {', '.join(missing)})", errors)
 
 
 def run_self_test(rel: str, errors: list[str]) -> None:

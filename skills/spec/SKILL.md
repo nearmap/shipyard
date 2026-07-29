@@ -148,9 +148,11 @@ Supersedes: v<N-1>   # omit for v1
 3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
 4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
-End the plan with `/sy:ship <task>` and a one-line ship profile: `<model tier> / <effort> / <process: full|light>`, such as `frontier / high / full`. Model tier is a quality floor, not a cost lever: workers run their declared tiers (BUILD at least opus, `sy:gate` frontier) and the profile may raise but never lower them. Tune cost through **effort**: request lower effort only with evidence the work is mechanical end to end, and never lower review effort. Process tier `light` (no transcript attachment at handoff) is allowed only when no risk lenses are activated and the change is small; default `full`.
+End the plan with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
 
-The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus, and immutable CI/review coverage is identical in both process tiers.
+Model tier is a quality floor, not a cost lever. Each phase's floor is its worker's own declared tier — `ship-start` sonnet, `ship-build` opus, `sy:gate` frontier (frontier is absolute and cost-scaling-exempt, and the `GATE` model names the reviewer's tier rather than the lightweight GATE controller's) — and a plan may state a higher model for a phase when its own judgment calls for it. A stated model below a phase's floor is clamped up to the floor, never honored downward. Tune cost through **effort**: request lower effort only with evidence the work is mechanical end to end, and never lower review effort. Process tier `light` (no transcript attachment at handoff) is allowed only when no risk lenses are activated and the change is small; default `full`.
+
+The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus (the profile may raise it, never lower it), and immutable CI/review coverage is identical in both process tiers.
 
 The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.
 

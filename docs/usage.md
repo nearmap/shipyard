@@ -58,7 +58,7 @@ Merging needs your explicit word. When you authorize it, ship re-verifies that t
 
 ## Supporting commands
 
-- `/sy:spike <problem>` — before committing to a project, run a reproducible throwaway experiment that measures the gain and the regression in both directions and ends with a verdict plus, if it clears the bar, a ready-made `/sy:plan` brief.
+- `/sy:spike <problem>` — before committing to a project, run a reproducible throwaway experiment that measures the gain and the regression in both directions and ends with a verdict — pressure-tested by a `sy:debate` pass every time, not only when the result looks contested — plus, if it clears the bar, a ready-made `/sy:plan` brief.
 - `/sy:pr [draft]` — create, promote, or tidy the current branch's PR, keeping the description short and preserving acceptance evidence in comments. `/sy:ship` drives this for you; run it directly for one-off PR work.
 - `/sy:ci [fix]` — triage the current branch's CI: find the run covering the current head, diagnose failures, and (with `fix`) push and re-watch until green. Never merges.
 - `/sy:explain <topic>` — understand a gnarly decision, bug, or system before acting on it. An isolated agent investigates, verifies every mechanism claim, and authors a layered explainer doc to `.scratch/`; you then walk it one layer at a time, with checkpoints and live repros on challenge, ending at a decision rather than a lecture. Useful mid-session — e.g. right before authorizing a merge — or as its own named session for a clean slate (`/sy:explain <doc path>` re-runs a doc someone already authored). Never touches the tracker.

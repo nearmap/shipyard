@@ -1,6 +1,6 @@
 # Implement and integrate
 
-Follow ordered plan decisions. Resolve small details consistent with plan intent yourself and record them in `accepted_deviations`. A decision you cannot ground in plan/standards/code but that does not invalidate the plan returns `needs-decision` with an updated checkpoint; a new load-bearing fork or an invalidated contract returns `bail-to-spec`. Never prompt the user. Use `sy:sweep` for broad reconnaissance.
+Follow ordered plan decisions. Resolve small details consistent with plan intent yourself and record them in `accepted_deviations`. A decision you cannot ground in plan/standards/code but that does not invalidate the plan returns `needs-decision` with an updated checkpoint; a new load-bearing fork or an invalidated contract returns `bail-to-spec`. An open empirical question is different from both: when a spot-check — or a delegate's own findings — comes back inconclusive and continuing would move past what's already been pointed at (a live external system, a probe script under `.scratch/`, or a second follow-up command still chasing the same question), return `needs-trace` naming the open question and its seed anchors; the parent, never this worker, dispatches `sy:trace` and resumes you from the checkpoint with the findings. Never prompt the user. Use `sy:sweep` for broad reconnaissance.
 
 Before executing any plan step, verify its load-bearing plan facts against the current base: re-locate every cited file anchor by content (grep the surrounding phrase; never trust the plan's line numbers) and confirm each named convention still holds. A fact found false is never followed: a mismatch that leaves the plan's intent intact returns `needs-decision` with the mismatch and its bearing spans; one that invalidates the plan's contract returns `bail-to-spec`.
 
@@ -19,7 +19,7 @@ Delegate only bounded, low-design-ambiguity slices:
 7. run integration-relevant tests;
 8. remove only the exact recorded slice worktree/branch after successful integration.
 
-Track build progress as a slice manifest in `phase_checkpoint` (per slice: `pending|committed|integrated`, with SHAs), updated after each integration, so a `needs-decision` return resumes at the next pending slice and re-does no integrated work.
+Track build progress as a slice manifest in `phase_checkpoint` (per slice: `pending|committed|integrated`, with SHAs), updated after each integration, so a `needs-decision` or `needs-trace` return resumes at the next pending slice and re-does no integrated work.
 
 After integration, run acceptance tests and standards-required formatter/linter/type checks; route verbose runs (full suite, linters, type checks) through `.scratch/` logs and read back only failures and summary lines, keeping raw output out of the ship context. Discharge every verification obligation with its named evidence; an undischargeable obligation returns to `/sy:spec`. Where acceptance criteria describe observable behaviour, execute the behaviour (a `.scratch/` runner is fine) and capture the output as acceptance evidence — tests alone discharge only test-shaped criteria.
 

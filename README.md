@@ -48,13 +48,13 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 ### Plan
 
-`/sy:plan` interviews you one question at a time, maps the code with read-only agents, and writes a living roadmap onto one Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most four are active at once, and everything further out stays as text until it is close enough to spec. A genuinely contested fork in the roadmap's shape — two comparably strong paths, expensive to reverse — is pressure-tested first as a bounded proposer/adversary debate, and you steer the disagreement rather than the plan quietly picking one. Re-enter with `/sy:plan <epic>` to read what shipped and reshape the roadmap.
+`/sy:plan` interviews you one question at a time, maps the code with read-only agents, and writes a living roadmap onto one Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most four are active at once, and everything further out stays as text until it is close enough to spec. Before the ladder is built, the roadmap's shape goes through a bounded proposer/adversary debate — every time, not only when the shape looks contested — and you steer the disagreement rather than the plan quietly picking one. Re-enter with `/sy:plan <epic>` to read what shipped and reshape the roadmap.
 
 ![The roadmap model](docs/img/jira-roadmap.png)
 
 ### Spec
 
-`/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and presents a complete plan for your approval: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate when the choice is a genuine, expensive-to-reverse fork), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. You approve before anything is built; the plan lands on the ticket as the single ACTIVE plan, stamped with the commit it was planned against. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
+`/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and presents a complete plan for your approval: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate, which runs on every plan before sign-off), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. You approve before anything is built; the plan lands on the ticket as the single ACTIVE plan, stamped with the commit it was planned against. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
 
 ![Verification obligations](docs/img/verification-obligations.png)
 

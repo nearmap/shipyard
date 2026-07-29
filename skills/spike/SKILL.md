@@ -84,6 +84,8 @@ Repository-specific plotting/style defaults belong to repository standards, not 
 
 ## 7. Record the verdict
 
+Before posting it, pressure-test the directional conclusion with `sy:debate` — unconditionally, not only when the result looks contested: even a clear-looking gain/regression measurement can hide a confound, a sampling bias, or a stronger alternative explanation that only an adversary surfaces. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`.
+
 Post a tracker verdict comment containing:
 
 - TL;DR verdict;

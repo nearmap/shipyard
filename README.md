@@ -7,7 +7,7 @@ Shipyard is a Claude Code plugin that takes an objective from "we should build t
 **Already running Claude Code?** Paste this and let it drive the setup:
 
 ```text
-Help me install and configure Shipyard in this repo. Read https://raw.githubusercontent.com/bretttully/shipyard/main/agent-guide.md first, then walk me through it step by step.
+Help me install and configure Shipyard in this repo. Read https://raw.githubusercontent.com/nearmap/shipyard/main/agent-guide.md first, then walk me through it step by step.
 ```
 
 ## What you get
@@ -82,7 +82,7 @@ Shipyard is a plugin, so it is loaded, not symlinked:
 claude --plugin-dir /path/to/shipyard               # this session only
 
 # persistent: this repo ships a marketplace manifest, so add it, then install the plugin
-claude plugin marketplace add bretttully/shipyard   # a GitHub owner/repo (cloned for you) or a local path
+claude plugin marketplace add nearmap/shipyard   # a GitHub owner/repo (cloned for you) or a local path
 claude plugin install sy@shipyard --scope project   # shared with this repo via .claude/settings.json (recommended)
 ```
 

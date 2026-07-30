@@ -23,7 +23,7 @@ Persistent installs come from a **marketplace**: a directory or repo that contai
 **From GitHub (no clone).** `claude plugin marketplace add` accepts a GitHub `owner/repo` shorthand (or a full `https://`/`git@` URL); Claude Code clones it for you. Append `@<ref>` to pin a branch or tag, and private repos authenticate with your existing git credentials (`gh auth login`, SSH agent, or a credential helper). `marketplace add` itself always registers globally (`~/.claude/plugins/known_marketplaces.json`) — it just makes the catalog visible; scope is chosen at `install`, below.
 
 ```bash
-claude plugin marketplace add bretttully/shipyard   # registers the marketplace, named "shipyard"
+claude plugin marketplace add nearmap/shipyard   # registers the marketplace, named "shipyard"
 claude plugin install sy@shipyard --scope project   # install the plugin, scoped to this repo
 ```
 
@@ -64,7 +64,7 @@ Only `--plugin-dir` (the one-session dev mode above) needs a local checkout. Eit
 ```json
 {
   "extraKnownMarketplaces": {
-    "shipyard": { "source": { "source": "github", "repo": "bretttully/shipyard" } }
+    "shipyard": { "source": { "source": "github", "repo": "nearmap/shipyard" } }
   },
   "enabledPlugins": { "sy@shipyard": true }
 }

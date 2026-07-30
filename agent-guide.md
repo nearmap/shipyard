@@ -23,7 +23,7 @@ Two ways to load the plugin — pick based on whether this is a one-off trial or
 claude --plugin-dir /path/to/shipyard
 
 # persistent, straight from GitHub (no clone needed)
-claude plugin marketplace add bretttully/shipyard    # always registers globally; install scope is chosen below
+claude plugin marketplace add nearmap/shipyard    # always registers globally; install scope is chosen below
 claude plugin install sy@shipyard --scope project     # shared with collaborators via .claude/settings.json
 claude plugin install sy@shipyard --scope local       # just this checkout, gitignored (.claude/settings.local.json)
 claude plugin install sy@shipyard                     # global (default): every project on this machine
@@ -58,7 +58,7 @@ If the user chose `project` scope above and wants every collaborator to get Ship
 ```json
 {
   "extraKnownMarketplaces": {
-    "shipyard": { "source": { "source": "github", "repo": "bretttully/shipyard" } }
+    "shipyard": { "source": { "source": "github", "repo": "nearmap/shipyard" } }
   },
   "enabledPlugins": { "sy@shipyard": true },
   "env": { "SY_TRACKER": "...", "...": "..." }

@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         print("scrub_known_secrets self-test passed")
         return 0
 
-    extra_words = frozenset(w.upper() for w in json.loads(args.extra_words))
+    extra_words = _parse_extra_words(args.extra_words)
     secrets = _resolve_secrets(args.vars, args.min_length, extra_words)
     missing = _check_required(secrets, args.require)
     if missing:
@@ -119,6 +119,25 @@ def main(argv: list[str] | None = None) -> int:
 
 def _check_required(secrets: dict[str, str], required: list[str]) -> list[str]:
     return sorted(name for name in required if name not in secrets)
+
+
+def _parse_extra_words(raw: str) -> frozenset[str]:
+    """`--extra-words` as a JSON array of strings. Empty/missing means none.
+
+    A failed command substitution (e.g. `--extra-words "$(cmd_that_produced_nothing)"`) yields an
+    empty string, which `json.loads` would otherwise raise `JSONDecodeError` on — and a non-string
+    element would raise `AttributeError` from `.upper()` deep in a comprehension. Both fail loudly
+    here with a clear message instead of a bare traceback from an unrelated line.
+    """
+    if not raw:
+        return frozenset()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"scrub_known_secrets: --extra-words is not valid JSON: {exc}") from None
+    if not isinstance(parsed, list) or not all(isinstance(w, str) for w in parsed):
+        raise SystemExit("scrub_known_secrets: --extra-words must be a JSON array of strings")
+    return frozenset(w.upper() for w in parsed)
 
 
 def _resolve_secrets(
@@ -182,6 +201,21 @@ def _self_test() -> None:
 
         widened = discover_secret_vars(min_length=6, extra_words=frozenset({"BEARER"}))
         assert "SY_TEST_BEARER" in widened, "extra_words must widen auto-discovery"
+
+        assert _parse_extra_words("") == frozenset(), "empty --extra-words (a failed substitution) must mean none"
+        assert _parse_extra_words('["bearer", "Passkey"]') == frozenset({"BEARER", "PASSKEY"})
+        try:
+            _parse_extra_words("not json")
+        except SystemExit as exc:
+            assert "not valid JSON" in str(exc)
+        else:
+            raise AssertionError("malformed --extra-words JSON must fail loudly, not crash on a later line")
+        try:
+            _parse_extra_words("[1, 2]")
+        except SystemExit as exc:
+            assert "must be a JSON array of strings" in str(exc)
+        else:
+            raise AssertionError("a non-string element must fail loudly, not crash inside .upper()")
 
         explicit = _resolve_secrets("SY_TEST_TOKEN,SY_TEST_SHORT_KEY,SY_TEST_NOT_SET", min_length=6)
         assert explicit == {"SY_TEST_TOKEN": "abcdef0123456789secretvalue"}, "explicit --vars still filters by length"

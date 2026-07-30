@@ -439,7 +439,19 @@ def _schema_violations(node: dict, value: object, path: str) -> list[tuple[str, 
                     )))
             elif isinstance(additional, dict):
                 violations.extend(_schema_violations(additional, sub_value, sub_path))
-            # additional is True: adapter-owned (e.g. tracker_config.*) — anything goes, no recursion.
+            else:
+                # additional is True: adapter-owned (e.g. tracker_config.*), open to any key name
+                # structurally — but a secret must never live here either, so the name is still
+                # checked directly. Recurse with an open schema ({}, whose own default
+                # additionalProperties is True) if the value nests further, so a secret hidden a
+                # level deeper (tracker_config.nested.api_token) is caught the same way.
+                if _looks_like_secret(sub_path.replace(".", "_")):
+                    violations.append(("credential", (
+                        f"{sub_path!r} is credential-shaped. Secrets are never read from a config file: "
+                        "keep them in the environment, where scripts/secret_guard.py can cover them."
+                    )))
+                elif isinstance(sub_value, dict):
+                    violations.extend(_schema_violations({}, sub_value, sub_path))
     return violations
 
 
@@ -822,6 +834,23 @@ def _self_test() -> None:
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"ci": {"poll_timeout": "big"}})
             assert any("ci.poll_timeout" in e and "must be one of type ['integer']" in e for e in validate()), (
                 "a wrong-typed value must be refused by name, not left to crash whatever reads it later"
+            )
+
+            # tracker_config.* has additionalProperties: true (adapter-owned, open to any key) --
+            # that openness must never extend to admitting a secret. A non-secret adapter key must
+            # still pass through untouched.
+            write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,
+                        {"tracker_config": {"workspace": "fine", "api_token": "sk-should-be-refused"}})
+            errors = validate()
+            assert not any("workspace" in e for e in errors), "an ordinary open-section key must pass through"
+            assert any("tracker_config.api_token" in e and "credential-shaped" in e for e in errors), (
+                "additionalProperties: true must not be a blind spot for a secret hidden inside it"
+            )
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = _show(as_json=False)
+            assert code == 1 and "sk-should-be-refused" not in out.getvalue(), (
+                "show must refuse rather than print a secret hidden inside an open (additionalProperties: true) section"
             )
 
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"ship": {"merge_strategy": "sqash"}})

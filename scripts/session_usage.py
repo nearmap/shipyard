@@ -375,7 +375,8 @@ def render_limits() -> dict[str, int]:
     Resolved once per process and cached. `sy_config._flatten()` only ever stores leaf keys, so
     `transcript.truncation_limits` as a whole path is never resolvable — each of its three fields
     must be fetched individually. A repo whose config can't be resolved at all (run outside a
-    checkout, a corrupted layer) falls back to the shipped defaults rather than crashing a render
+    checkout, a corrupted layer), or whose resolved value isn't actually numeric (a hand-edited
+    layer bypassing `validate`), falls back to the shipped defaults rather than crashing a render
     that's usually happening late in a session.
     """
     global _RENDER_LIMITS
@@ -386,7 +387,7 @@ def render_limits() -> dict[str, int]:
                 key: int(config_get(f"transcript.truncation_limits.{key}"))
                 for key in _DEFAULT_RENDER_LIMITS
             }
-        except SystemExit:
+        except (SystemExit, ValueError, TypeError):
             _RENDER_LIMITS = dict(_DEFAULT_RENDER_LIMITS)
     return _RENDER_LIMITS
 
@@ -716,6 +717,18 @@ def _test_render_limits_override() -> None:
             overridden = render_limits()
             assert overridden["tool_result"] == 99, "a config override must actually change render_limits()"
             assert overridden["tool_input"] == _DEFAULT_RENDER_LIMITS["tool_input"], "an unset sibling keeps its default"
+
+            # get() doesn't itself enforce the schema (only `validate` does) -- a hand-edited layer
+            # bypassing validate can still reach here with a non-numeric value; int(...) must not
+            # crash the render, same as an unresolvable config.
+            (repo / ".shipyard" / "config.json").write_text(
+                json.dumps({"transcript": {"truncation_limits": {"tool_result": "not-a-number"}}}), encoding="utf-8",
+            )
+            sy_config.reset_cache()
+            _RENDER_LIMITS = None
+            assert render_limits() == _DEFAULT_RENDER_LIMITS, (
+                "a non-numeric resolved value must fall back to shipped defaults, not crash the render"
+            )
         finally:
             Path.home = original_home  # type: ignore[method-assign]
             sy_config.repo_root = original_repo_root

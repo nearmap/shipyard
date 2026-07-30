@@ -7,6 +7,11 @@ process that still has other calls to serve. Everything here returns a dict or r
 `TrackerError`, and nothing in this module writes to stdout. The shipped script stays untouched
 so the CLI deployment keeps working unchanged.
 
+The transport is async httpx2, and the canonical verbs are `async` because the server serves calls
+concurrently: an upload waiting on Jira must not block an unrelated tool call. Only the transport
+awaits — the multipart body is assembled synchronously, byte-for-byte, because Jira validates the
+hand-built boundary.
+
 Account identifiers come from resolved config; the credential is read from the environment only,
 is put into the `Authorization` header and nowhere else, and never appears in a URL, in a
 returned dict, or in an exception message.
@@ -19,8 +24,8 @@ import mimetypes
 import os
 from pathlib import Path
 import secrets
-import urllib.error
-import urllib.request
+
+import httpx2
 
 from ... import config
 from .. import TIMEOUT_SECONDS, TrackerError
@@ -34,7 +39,7 @@ class JiraAdapter:
 
     name = "jira"
 
-    def attach_artifact(self, issue: str, path: Path) -> dict:
+    async def attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload `path` to `issue` and return the response evidence confirming the write."""
         if not path.is_file():
             raise TrackerError(f"attachment not found: {path}")
@@ -49,7 +54,7 @@ class JiraAdapter:
             b"\r\n",
             f"--{boundary}--\r\n".encode(),
         ])
-        _, result = request(
+        _, result = await request(
             "POST",
             f"{base}{API}/issue/{issue}/attachments",
             auth,
@@ -72,14 +77,14 @@ class JiraAdapter:
             "created": confirmed.get("created"),
         }
 
-    def preflight(self) -> dict:
+    async def preflight(self) -> dict:
         """Prove the configured account and its credential authenticate, reporting no secret value.
 
         A credential can be present and still be dead, so this is a real authenticated read
         rather than a presence check. `myself` is the cheapest one Jira offers.
         """
         base, auth = _credentials()
-        _, item = request("GET", f"{base}{API}/myself", auth)
+        _, item = await request("GET", f"{base}{API}/myself", auth)
         account_id = item.get("accountId") if isinstance(item, dict) else None
         if not account_id:
             raise TrackerError(
@@ -89,34 +94,42 @@ class JiraAdapter:
         return {"ok": True, "site": base, "account_id": str(account_id)}
 
 
-def request(
+async def request(
     method: str,
     url: str,
     auth: str,
     data: bytes | None = None,
     headers: dict[str, str] | None = None,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
 ) -> tuple[int, object]:
     """One authenticated REST call, returning `(status, parsed body or None)`.
 
-    The timeout is not optional: without it a stalled socket blocks this server forever. It is
-    also not enough to catch `URLError`. `urlopen` wraps a connect-phase timeout in `URLError`,
-    but a stall while reading the response headers or body escapes as a bare `TimeoutError`
-    (`AbstractHTTPHandler.do_open` wraps only the request write), so both are caught here.
+    The timeout is not optional. Being async no longer wedges the whole server, but an unbounded
+    call still leaves its own caller awaiting forever while holding a connection, and the tool that
+    was asked to attach a transcript never answers. Handing it to the client bounds every phase —
+    connect, write, read and pool — not just the request write.
+
+    The two `except` clauses are ordered, not interchangeable: `TimeoutException` is a subclass of
+    `RequestError`, so catching the family first would rename every stall an unreachable host and
+    lose the one distinction that decides whether retrying is worth anything.
+
+    `data` is sent as a raw body (`content=`), never form-encoded: the multipart payload carries a
+    hand-built boundary that must reach Jira byte-for-byte. `transport` is the seam a test uses to
+    drive this mapping without a network; production callers leave it None.
     """
     sent = {"Authorization": auth, "Accept": "application/json"}
     sent.update(headers or {})
-    req = urllib.request.Request(url, data=data, headers=sent, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-            body = resp.read()
-            return resp.status, json.loads(body) if body else None
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise TrackerError(f"HTTP {exc.code} from {method} {url}: {detail[:2000]}") from exc
-    except TimeoutError as exc:
+        async with httpx2.AsyncClient(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+            resp = await client.request(method, url, content=data, headers=sent)
+            if not resp.is_success:
+                raise TrackerError(f"HTTP {resp.status_code} from {method} {url}: {resp.text[:2000]}")
+            return resp.status_code, json.loads(resp.content) if resp.content else None
+    except httpx2.TimeoutException as exc:
         raise TrackerError(f"{method} {url} timed out after {TIMEOUT_SECONDS}s") from exc
-    except urllib.error.URLError as exc:
-        raise TrackerError(f"could not reach {url}: {exc.reason}") from exc
+    except httpx2.RequestError as exc:
+        raise TrackerError(f"could not reach {url}: {exc}") from exc
 
 
 def _credentials() -> tuple[str, str]:

@@ -88,6 +88,45 @@ def test_ship_caller_needs_the_full_process_tier(monkeypatch):
     assert "full process tier" in result["reason"]
 
 
+def test_sanitize_runs_strictly_before_upload(monkeypatch, tmp_path):
+    """The security contract: the artifact never leaves the machine before the scrub returns.
+
+    Ordering alone is not observable from `sanitize`'s own tests, so record both calls against one
+    list: a swap of the two lines in `tool_attach_artifact` reverses it, and a scrub that raises
+    must leave the upload unreached entirely rather than merely unreported.
+    """
+    path = tmp_path / "artifact.txt"
+    path.write_text("nothing secret here\n", encoding="utf-8")
+    calls: list[str] = []
+
+    class _Backend:
+        def attach_artifact(self, issue: str, artifact) -> dict:
+            calls.append("upload")
+            return {"id": f"{issue}-1", "name": artifact.name}
+
+    def _sanitize(*_args, **_kwargs) -> dict:
+        calls.append("sanitize")
+        return {"redactions": 0}
+
+    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
+    monkeypatch.setattr(server.tracker, "adapter", lambda *_a, **_k: _Backend())
+    monkeypatch.setattr(server.secrets, "sanitize", _sanitize)
+
+    result = server.tool_attach_artifact({"issue": "PROJ-1", "path": str(path)})
+    assert result["attached"] is True
+    assert calls == ["sanitize", "upload"], "the artifact must not be uploaded before it is scrubbed"
+
+    def _refuse(*_args, **_kwargs) -> dict:
+        calls.append("sanitize")
+        raise server.secrets.SanitizeError("refusing to upload")
+
+    calls.clear()
+    monkeypatch.setattr(server.secrets, "sanitize", _refuse)
+    with pytest.raises(server.secrets.SanitizeError, match="refusing to upload"):
+        server.tool_attach_artifact({"issue": "PROJ-1", "path": str(path)})
+    assert calls == ["sanitize"], "a failed scrub must not be followed by an upload"
+
+
 @pytest.mark.parametrize(
     ("kind", "caller", "tier", "expected_skip"),
     [

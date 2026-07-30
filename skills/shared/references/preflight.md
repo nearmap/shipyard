@@ -10,10 +10,10 @@ Delegate the mechanics to the tracker skill (`${CLAUDE_PLUGIN_ROOT}/skills/track
 
 1. `tracker` resolves to a known adapter.
 2. The five required column names are set — free, no network.
-3. The selected adapter's own required configuration is present — each adapter declares and self-checks its list.
+3. The selected adapter's own required configuration is present — each adapter declares and self-checks its list, in its `config-map.json`'s `required` (non-secret config keys) and `secret_env` (environment-only credential names) — both checked, the config keys against resolved config and the secrets against `os.environ` directly.
 4. A **liveness** check — presence is not enough. A credential can be set and still be dead: revoked, expired, or never actually logged in to begin with. The adapter performs a real, minimal read against the tracker to tell the two apart, exactly the "validate with a real work-item read" guidance each `ADAPTER.md` already gives for its own operations, just run once up front instead of discovered mid-write.
 
-Steps 1–3 are one command — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate` — which names every offending key and the layer it resolved from, so a misconfiguration is one read rather than three separate discoveries.
+Steps 1–3 are one command — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate` — which names every offending key or missing secret and the layer (or "the environment") it should have come from, so a misconfiguration is one read rather than three separate discoveries.
 
 ## The liveness check is cached, not repeated
 

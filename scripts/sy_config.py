@@ -126,7 +126,7 @@ def get(path: str, *, default: str | None = None) -> object:
     has no entry to resolve, and a caller that knows it is optional says so explicitly rather than
     every unknown key silently becoming empty.
     """
-    if looks_like_secret_name(path.replace(".", "_"), extra=_extra_secret_words()):
+    if _looks_like_secret(path.replace(".", "_")):
         raise SystemExit(
             f"sy_config: refusing to read {path!r}: it is credential-shaped, and secrets are never "
             "read from a config file. Keep them in the environment."
@@ -206,6 +206,12 @@ def validate() -> list[str]:
         if flat.get(path) in (None, ""):
             errors.append(
                 f"{path} is required and unset. Set it in {repo_root() / CONFIG_DIRNAME / CONFIG_FILENAME}."
+            )
+    for name in _adapter_map().get("secret_env", []):
+        if not os.environ.get(name):
+            errors.append(
+                f"{name} is required by the {tracker!r} tracker and not set in the environment. "
+                f"Export it — never put it in a config file. See docs/configuration.md."
             )
     errors.extend(_validate_models(values, provenance))
     return errors
@@ -377,7 +383,7 @@ def _matches_type(value: object, expected: str) -> bool:
     return isinstance(value, _JSON_TYPES[expected])
 
 
-def _schema_violations(node: dict, value: object, path: str, extra: frozenset[str]) -> list[tuple[str, str]]:
+def _schema_violations(node: dict, value: object, path: str) -> list[tuple[str, str]]:
     """Every way `value` disagrees with schema `node`, as `(kind, message)` pairs.
 
     `kind` is `"credential"` for an undeclared key that also looks secret-shaped — the specific,
@@ -411,16 +417,16 @@ def _schema_violations(node: dict, value: object, path: str, extra: frozenset[st
         violations.append(("schema", f"{path!r} must be >= {node['minimum']}, got {value}"))
     if isinstance(value, list) and "items" in node:
         for i, item in enumerate(value):
-            violations.extend(_schema_violations(node["items"], item, f"{path}[{i}]", extra))
+            violations.extend(_schema_violations(node["items"], item, f"{path}[{i}]"))
     if isinstance(value, dict):
         properties = node.get("properties", {})
         additional = node.get("additionalProperties", True)
         for key, sub_value in value.items():
             sub_path = f"{path}.{key}" if path else key
             if key in properties:
-                violations.extend(_schema_violations(properties[key], sub_value, sub_path, extra))
+                violations.extend(_schema_violations(properties[key], sub_value, sub_path))
             elif additional is False:
-                if looks_like_secret_name(sub_path.replace(".", "_"), extra=extra):
+                if _looks_like_secret(sub_path.replace(".", "_")):
                     violations.append(("credential", (
                         f"{sub_path!r} is credential-shaped. Secrets are never read from a config file: "
                         "keep them in the environment, where scripts/secret_guard.py can cover them."
@@ -430,7 +436,7 @@ def _schema_violations(node: dict, value: object, path: str, extra: frozenset[st
                         f"{sub_path!r} is not a key config/schema.json declares — a typo, or a stale/unused setting."
                     )))
             elif isinstance(additional, dict):
-                violations.extend(_schema_violations(additional, sub_value, sub_path, extra))
+                violations.extend(_schema_violations(additional, sub_value, sub_path))
             # additional is True: adapter-owned (e.g. tracker_config.*) — anything goes, no recursion.
     return violations
 
@@ -441,7 +447,7 @@ def _layer_violations(path: Path, label: str, *, kinds: frozenset[str] | None = 
     `kinds`, when given, keeps only the requested violation kinds — `show` passes
     `{"credential"}` since a type mismatch risks nothing being printed that shouldn't be.
     """
-    violations = _schema_violations(_load_schema(), _load_json(path), "", _extra_secret_words())
+    violations = _schema_violations(_load_schema(), _load_json(path), "")
     if kinds is not None:
         violations = [(kind, message) for kind, message in violations if kind in kinds]
     return [f"{label} layer {path}: {message}" for _, message in violations]
@@ -461,6 +467,42 @@ def _extra_secret_words() -> frozenset[str]:
         return frozenset()
     words = _flatten(values).get("redaction.extra_words", [])
     return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
+
+
+_KNOWN_SECRET_ENV: frozenset[str] | None = None
+
+
+def _known_secret_env_names() -> frozenset[str]:
+    """Every secret env var name any tracker adapter declares, unioned across every adapter.
+
+    Adapter-explicit, not a guess: each adapter's `config-map.json` names its own secret(s) under
+    `secret_env` (jira: `ACLI_TOKEN`). Checked across every adapter rather than only the selected
+    one, so a name left over from switching trackers is still caught. Memoized: this depends only
+    on `plugin_root()`, which never changes mid-process.
+    """
+    global _KNOWN_SECRET_ENV
+    if _KNOWN_SECRET_ENV is None:
+        names: set[str] = set()
+        tracker_dir = plugin_root() / "skills" / "tracker"
+        if tracker_dir.is_dir():
+            for config_map_path in sorted(tracker_dir.glob("*/config-map.json")):
+                names.update(_load_json(config_map_path).get("secret_env", []))
+        _KNOWN_SECRET_ENV = frozenset(name.upper() for name in names)
+    return _KNOWN_SECRET_ENV
+
+
+def _looks_like_secret(name: str) -> bool:
+    """Word-heuristic OR exact match against any tracker adapter's declared `secret_env` name.
+
+    The word heuristic (`scripts/secret_words.py`) catches a secret Shipyard never named, by
+    naming convention; the exact match catches one it explicitly did name even if that name
+    happens not to contain a generic trigger word — `secret_env` entries are UPPER_SNAKE_CASE and
+    may contain underscores the word-splitter would otherwise break apart (the same reason
+    `redaction.extra_words` entries must be single words: see `_schema_violations`'s pattern check).
+    """
+    if name.upper() in _known_secret_env_names():
+        return True
+    return looks_like_secret_name(name, extra=_extra_secret_words())
 
 
 def _resolve_tier(value: object, tiers: dict) -> object:
@@ -583,9 +625,8 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
     mapping = _legacy_env_map()
     config: dict = {"$schema": SCHEMA_URL}
     skipped: list[str] = []
-    extra = _extra_secret_words()
     for name, value in sorted(env.items()):
-        if looks_like_secret_name(name, extra=extra):
+        if _looks_like_secret(name):
             skipped.append(name)
             continue
         path = mapping.get(name)
@@ -644,7 +685,9 @@ def _self_test() -> None:
     """Offline round-trip against temporary layers, with the real shipped defaults and floors."""
     import tempfile
 
-    saved_env = {k: os.environ.get(k) for k in ("SY_TRACKER", "SY_TEST_VAR_A", "CLAUDE_CODE_SUBAGENT_MODEL")}
+    saved_env = {
+        k: os.environ.get(k) for k in ("SY_TRACKER", "SY_TEST_VAR_A", "CLAUDE_CODE_SUBAGENT_MODEL", "ACLI_TOKEN")
+    }
     original_home = Path.home
     original_repo_root = globals()["repo_root"]
     with tempfile.TemporaryDirectory() as tmp:
@@ -783,12 +826,30 @@ def _self_test() -> None:
                 "a value outside the declared enum must be refused by name"
             )
 
-            assert _schema_violations(_load_schema(), _load_json(plugin_root() / "config" / "defaults.json"), "", frozenset()) == [], (
+            assert _schema_violations(_load_schema(), _load_json(plugin_root() / "config" / "defaults.json"), "") == [], (
                 "the shipped defaults.json must itself be clean against the schema it ships alongside"
             )
 
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,
                         {"columns": {"ready": "Ready"}, "ci": {"poll_timeout": 90}})
+            reset_cache()  # tracker resolves to the shipped default ("jira") for the checks below
+
+            assert "ACLI_TOKEN" in _known_secret_env_names(), "jira's declared secret_env must be discovered"
+            assert _looks_like_secret("ACLI_TOKEN"), "an adapter-declared secret_env name is credential-shaped by exact match"
+            assert not _known_secret_env_names().isdisjoint({"ACLI_TOKEN"})
+
+            os.environ.pop("ACLI_TOKEN", None)
+            reset_cache()
+            assert any("ACLI_TOKEN" in e and "required by the 'jira' tracker" in e for e in validate()), (
+                "a tracker's declared secret_env must be required present in the environment, not just in config"
+            )
+            os.environ["ACLI_TOKEN"] = "placeholder-value-for-self-test"
+            reset_cache()
+            assert not any("ACLI_TOKEN" in e and "required by" in e for e in validate()), (
+                "a present secret_env value must satisfy the requirement"
+            )
+            os.environ.pop("ACLI_TOKEN", None)
+            reset_cache()
             reset_cache()
 
             assert get("no.such.setting", default="") == "", "an explicit default must cover an optional key"

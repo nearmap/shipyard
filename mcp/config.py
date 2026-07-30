@@ -16,6 +16,7 @@ key. `migrate` is the other — it is a one-time CLI affordance with no meaning 
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -36,7 +37,16 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 REQUIRED_PATHS = (*(f"columns.{name}" for name in CANONICAL_COLUMNS), "tracker")
 
-_STATE: dict[str, object] | None = None
+@dataclasses.dataclass(frozen=True)
+class _Resolved:
+    """One complete resolution: the merged values, each key's layer, and the repo it resolved for."""
+
+    values: dict
+    provenance: dict[str, str]
+    root: Path
+
+
+_STATE: _Resolved | None = None
 
 
 class ConfigError(RuntimeError):
@@ -73,7 +83,7 @@ def resolve() -> tuple[dict, dict[str, str]]:
     global _STATE
     if _STATE is None:
         _STATE = _resolve_uncached()
-    return _STATE["values"], _STATE["provenance"]  # type: ignore[return-value,index]
+    return _STATE.values, _STATE.provenance
 
 
 def reload() -> dict:
@@ -201,10 +211,10 @@ def _state_root() -> Path:
     """The repo root the hot state resolved against, so `validate` reports the same layer paths."""
     resolve()
     assert _STATE is not None
-    return Path(str(_STATE["root"]))
+    return _STATE.root
 
 
-def _resolve_uncached() -> dict[str, object]:
+def _resolve_uncached() -> _Resolved:
     root = repo_root()
     values = _load_json(plugin_root() / "config" / "defaults.json")
     provenance = {key: "shipped-default" for key in _flatten(values)}
@@ -217,7 +227,7 @@ def _resolve_uncached() -> dict[str, object]:
         values = _deep_merge(values, layer)
     values.pop("$schema", None)
     _apply_derived_defaults(values, provenance, root)
-    return {"values": values, "provenance": provenance, "root": root}
+    return _Resolved(values=values, provenance=provenance, root=root)
 
 
 def _apply_derived_defaults(values: dict, provenance: dict[str, str], root: Path) -> None:
@@ -310,7 +320,7 @@ def _schema_violations(node: dict, value: object, path: str) -> list[str]:
         properties = node.get("properties", {})
         additional = node.get("additionalProperties", True)
         for key, sub_value in value.items():
-            sub_path = f"{path}.{key}" if path else key
+            sub_path = f"{path}.{key}" if path else str(key)
             if key in properties:
                 violations.extend(_schema_violations(properties[key], sub_value, sub_path))
             elif _looks_like_secret(sub_path.replace(".", "_")):

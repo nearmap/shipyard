@@ -18,12 +18,13 @@ from mcp import config
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
+FIXTURE_COLUMNS = {
+    "backlog": "Fixture Backlog", "ready": "Fixture Ready", "in_progress": "Fixture In Progress",
+    "in_review": "Fixture In Review", "done": "Fixture Done",
+}
 FIXTURE_LAYER = {
     "$schema": "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json",
-    "columns": {
-        "backlog": "Fixture Backlog", "ready": "Fixture Ready", "in_progress": "Fixture In Progress",
-        "in_review": "Fixture In Review", "done": "Fixture Done",
-    },
+    "columns": FIXTURE_COLUMNS,
     "models": {"agents": {"sweep": {"model": "opus"}}},
     "transcript": {"attach": True},
     "redaction": {"extra_words": ["bearer"]},
@@ -98,7 +99,7 @@ def test_credential_shaped_keys_are_refused(fixture_repo):
 
 
 def test_validate_reports_a_missing_required_key(fixture_repo, monkeypatch):
-    broken = {**FIXTURE_LAYER, "columns": {**FIXTURE_LAYER["columns"], "ready": ""}}
+    broken = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": ""}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(broken), encoding="utf-8")
     config.reload()
     assert any("columns.ready is required" in e for e in config.validate())
@@ -106,7 +107,7 @@ def test_validate_reports_a_missing_required_key(fixture_repo, monkeypatch):
 
 def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):
     before = config.fingerprint()
-    changed = {**FIXTURE_LAYER, "columns": {**FIXTURE_LAYER["columns"], "done": "Shipped"}}
+    changed = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "done": "Shipped"}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(changed), encoding="utf-8")
     summary = config.reload()
     assert summary["changed"] is True

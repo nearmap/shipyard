@@ -9,7 +9,16 @@ one JSON object per line — no `Content-Length` header framing.
 the stream and desynchronises the client, which is why the ported adapter code raises instead of
 printing and why every diagnostic here goes to stderr.
 
-Run it with `python -m mcp.server` from the plugin root.
+Run it with `python -m mcp.server` from the plugin root; `.mcp.json` registers exactly that.
+
+The manifest carries no `env` block, which is deliberate and was settled empirically rather than
+from documentation: a stdio server inherits the launching process's environment, so the one real
+secret (the tracker credential) arrives without ever being named in a committed file. Verified
+with a discriminating control — the same `validate_config` call reports the credential present
+when it is exported and missing when it is not. `${CLAUDE_PROJECT_DIR}` is *not* interpolated in
+this manifest (checked on Claude Code 2.1.220, in both `args` and `env`: it arrives as the
+literal string), so the module is resolved from the server's working directory rather than a
+path substitution that would silently be junk.
 """
 from __future__ import annotations
 

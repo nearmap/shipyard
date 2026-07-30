@@ -126,7 +126,7 @@ def get(path: str, *, default: str | None = None) -> object:
     has no entry to resolve, and a caller that knows it is optional says so explicitly rather than
     every unknown key silently becoming empty.
     """
-    if looks_like_secret_name(path.replace(".", "_")):
+    if looks_like_secret_name(path.replace(".", "_"), extra=_extra_secret_words()):
         raise SystemExit(
             f"sy_config: refusing to read {path!r}: it is credential-shaped, and secrets are never "
             "read from a config file. Keep them in the environment."
@@ -358,12 +358,29 @@ def _adapter_map() -> dict:
 
 
 def _secret_keys_in(path: Path, label: str) -> list[str]:
+    extra = _extra_secret_words()
     return [
         f"{label} layer {path} declares {key!r}, which is credential-shaped. Secrets are never read from a "
         f"config file: keep them in the environment, where scripts/secret_guard.py can cover them."
         for key in _flatten(_load_json(path))
-        if looks_like_secret_name(key.replace(".", "_"))
+        if looks_like_secret_name(key.replace(".", "_"), extra=extra)
     ]
+
+
+def _extra_secret_words() -> frozenset[str]:
+    """`redaction.extra_words` read directly off resolved layers, bypassing `get()`'s own gate.
+
+    `get()` checks `looks_like_secret_name` before it has resolved anything, so computing the
+    extra-word list through `get()` would recurse into the very gate it extends. `resolve()` +
+    `_flatten()` is the raw merged config with no gate — exactly what's needed here, and safe
+    because `redaction.extra_words` is not itself credential-shaped.
+    """
+    try:
+        values, _ = resolve()
+    except SystemExit:
+        return frozenset()
+    words = _flatten(values).get("redaction.extra_words", [])
+    return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
 
 
 def _resolve_tier(value: object, tiers: dict) -> object:
@@ -466,8 +483,9 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
     mapping = _legacy_env_map()
     config: dict = {"$schema": SCHEMA_URL}
     skipped: list[str] = []
+    extra = _extra_secret_words()
     for name, value in sorted(env.items()):
-        if looks_like_secret_name(name):
+        if looks_like_secret_name(name, extra=extra):
             skipped.append(name)
             continue
         path = mapping.get(name)
@@ -619,6 +637,17 @@ def _self_test() -> None:
             write_layer(repo / CONFIG_DIRNAME / LOCAL_FILENAME, {"api_token": "should-never-be-here"})
             assert any("credential-shaped" in e for e in validate()), "a secret in a config layer must be refused"
             (repo / CONFIG_DIRNAME / LOCAL_FILENAME).unlink()
+            reset_cache()
+
+            write_layer(repo / CONFIG_DIRNAME / LOCAL_FILENAME, {"nm_bearer": "not-flagged-yet"})
+            assert not any("nm_bearer" in e for e in validate()), "a name outside the built-in word list is not flagged"
+            write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"redaction": {"extra_words": ["BEARER"]}})
+            assert any("nm_bearer" in e and "credential-shaped" in e for e in validate()), (
+                "redaction.extra_words must widen the config-file secret gate"
+            )
+            (repo / CONFIG_DIRNAME / LOCAL_FILENAME).unlink()
+            write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,
+                        {"columns": {"ready": "Ready"}, "ci": {"poll_timeout": 90}})
             reset_cache()
 
             assert get("no.such.setting", default="") == "", "an explicit default must cover an optional key"

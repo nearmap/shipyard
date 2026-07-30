@@ -19,7 +19,7 @@ First verify worktree HEAD equals `REVIEWED_SHA`; otherwise return `BLOCKED: rev
 ## Review
 
 - Small cohesive scope: read diff/module/context directly.
-- Large/verbose scope: `sy:sweep` to map, then `sy:hunt` by coherent area; at most 3 depth agents in flight. Seed their prompts with known anchors and already-covered ground.
+- Large/verbose scope: `sy:sweep` to map, then `sy:hunt` by coherent area; at most the resolved `limits.max_depth_agents` cap in flight — resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`. Seed their prompts with known anchors and already-covered ground.
 - Agent findings are candidates. Read decisive spans before promotion.
 - Invoke `/sy:standards review <scope>` as a separate conformance pass; do not preload the full standards body.
 - Prioritize goal delivery, correctness/state/races/leaks, silent failure, test integrity, activated risk lenses, quantified performance/resource truth, then meaningful reuse/simplification.

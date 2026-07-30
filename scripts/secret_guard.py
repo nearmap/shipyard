@@ -37,10 +37,8 @@ import re
 import shlex
 import sys
 
-_SECRET_WORDS = {
-    "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
-    "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",
-}
+from secret_words import looks_like_secret_name as _base_looks_like_secret_name
+
 WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "timeout", "stdbuf", "command"}
 PRINTING_COMMANDS = {"echo", "printf", "print"}
 _ENV_ARG_FLAGS = {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
@@ -200,9 +198,30 @@ def _interpreter_reason(command: str) -> str | None:
     return None
 
 
+_EXTRA_WORDS: frozenset[str] | None = None
+
+
+def _extra_words() -> frozenset[str]:
+    """`redaction.extra_words` from resolved config, cached for this process.
+
+    Resolved in-process (not via subprocess — this hook already pays full interpreter startup on
+    every `Bash` call, so importing `sy_config` costs nothing beyond that). A misconfigured repo
+    must not turn every command into a hard failure: fall back to the built-in word list alone,
+    exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
+    """
+    global _EXTRA_WORDS
+    if _EXTRA_WORDS is None:
+        try:
+            from sy_config import get as _config_get
+            words = _config_get("redaction.extra_words", default=[])
+        except SystemExit:
+            words = []
+        _EXTRA_WORDS = frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
+    return _EXTRA_WORDS
+
+
 def _looks_like_secret_name(name: str) -> bool:
-    words = re.split(r"[^A-Za-z0-9]+", name.upper())
-    return any(word in _SECRET_WORDS for word in words if word)
+    return _base_looks_like_secret_name(name, extra=_extra_words())
 
 
 def _self_test() -> None:

@@ -365,7 +365,26 @@ def summarize(
 
 # ---- readable transcript rendering (replaces the manual /export step) ----
 
-RENDER_LIMITS = {"tool_input": 1500, "tool_result": 4000, "thinking": 1200}
+_DEFAULT_RENDER_LIMITS = {"tool_input": 1500, "tool_result": 4000, "thinking": 1200}
+_RENDER_LIMITS: dict[str, int] | None = None
+
+
+def render_limits() -> dict[str, int]:
+    """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
+
+    Resolved once per process and cached. A repo whose config can't be resolved at all (run
+    outside a checkout, a corrupted layer) falls back to the shipped defaults rather than crashing
+    a render that's usually happening late in a session.
+    """
+    global _RENDER_LIMITS
+    if _RENDER_LIMITS is None:
+        try:
+            from sy_config import get as config_get
+            resolved = config_get("transcript.truncation_limits")
+        except SystemExit:
+            resolved = {}
+        _RENDER_LIMITS = {**_DEFAULT_RENDER_LIMITS, **(resolved if isinstance(resolved, dict) else {})}
+    return _RENDER_LIMITS
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -431,11 +450,11 @@ def _render_row(
                 lines.append(str(block["text"]).rstrip())
             elif kind == "thinking" and str(block.get("thinking", "")).strip():
                 lines.append(f"[{ts}] (thinking)")
-                lines.append(_indent(_truncate(str(block["thinking"]), RENDER_LIMITS["thinking"])))
+                lines.append(_indent(_truncate(str(block["thinking"]), render_limits()["thinking"])))
             elif kind == "tool_use":
                 name = str(block.get("name", "?"))
                 tool_names[str(block.get("id"))] = name
-                args = _truncate(json.dumps(block.get("input", {}), indent=2), RENDER_LIMITS["tool_input"])
+                args = _truncate(json.dumps(block.get("input", {}), indent=2), render_limits()["tool_input"])
                 lines.append(f"[{ts}] TOOL CALL {name}")
                 lines.append(_indent(args))
     elif record.get("type") == "user":
@@ -443,7 +462,7 @@ def _render_row(
             kind = block.get("type")
             if kind == "tool_result":
                 name = tool_names.get(str(block.get("tool_use_id")), "?")
-                body = _truncate(_tool_result_text(block.get("content")), RENDER_LIMITS["tool_result"])
+                body = _truncate(_tool_result_text(block.get("content")), render_limits()["tool_result"])
                 lines.append(f"[{ts}] RESULT ({name})")
                 lines.append(_indent(body))
             elif kind == "text" and str(block.get("text", "")).strip():

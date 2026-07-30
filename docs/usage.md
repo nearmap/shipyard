@@ -38,7 +38,7 @@ Re-enter later with `/sy:plan <epic>` to read what shipped since the last checkp
 
 `<task>` is an issue ID — a Jira key like `PROJ-123` or a GitHub issue like `#123`. `/sy:spec` reads the ticket and the code, resolves the repo's engineering standards, pulls representative data when shape matters, and asks you only when research cannot settle a decision. It presents a complete plan — the approach, the strongest rejected alternative (pressure-tested by the same debate, which runs on every plan before sign-off), ordered changes with file anchors, tests, acceptance criteria, and a verification obligation for every activated risk lens — for your approval.
 
-You approve the plan before anything is built. On approval it lands on the ticket as the single ACTIVE execution plan, stamped with the commit it was planned against, the task moves to `ready`, and the plan ends with a `/sy:ship` kickoff and a ship profile (`model / effort / process tier`).
+You approve the plan before anything is built. On approval it lands on the ticket as the single ACTIVE execution plan, stamped with the commit it was planned against, the task moves to `ready`, and the plan ends with a `/sy:ship` kickoff and a ship profile that names each phase's model explicitly (`START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`), so `/sy:ship` passes each phase's model through as an actual override instead of inferring one.
 
 Not every spec ends in a plan. When research shows the premise is already delivered, invalidated, or superseded, spec shelves the task instead: it posts the decisive evidence as a comment and closes the task rather than producing a plan for work that should not ship.
 

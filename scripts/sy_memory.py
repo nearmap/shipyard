@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Durable cross-session memory: tool/skill-level lessons that outlive one repo and one session.
 
-Stores one Markdown file per lesson (kebab-slug name, short frontmatter, body) under a
-user-global root — `SY_MEMORY_DIR` or `~/.claude/shipyard/memory` — plus a greppable
+Stores one Markdown file per lesson (kebab-slug name, short frontmatter, body) under the
+user-global root the resolver reports for `memory.dir`, plus a greppable
 `index.md` regenerated on every write and rebuilt on read when missing or stale. Writes are
 idempotent: re-adding a lesson with the same title replaces it, never duplicates it.
 
@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from sy_config import get as config_get
 
 INDEX_NAME = "index.md"
 
@@ -50,9 +51,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def root() -> Path:
-    """Resolve the storage root: `SY_MEMORY_DIR` when set, else the user-global default."""
-    override = os.environ.get("SY_MEMORY_DIR")
-    return Path(override) if override else Path.home() / ".claude" / "shipyard" / "memory"
+    """Resolve the storage root from `memory.dir`, which the resolver defaults per user."""
+    return Path(str(config_get("memory.dir")))
 
 
 def add(title: str, scope: str, tags: str, body: str) -> Path:
@@ -172,9 +172,10 @@ def _atomic_write(path: Path, text: str) -> None:
 def _self_test() -> None:
     import tempfile
 
-    old = os.environ.get("SY_MEMORY_DIR")
+    # The root now comes from the resolver, so the test overrides the resolver rather than an env var.
+    original = globals()["config_get"]
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["SY_MEMORY_DIR"] = tmp
+        globals()["config_get"] = lambda key: tmp if key == "memory.dir" else original(key)
         try:
             first = add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it explicitly.")
             again = add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it explicitly.")
@@ -194,10 +195,7 @@ def _self_test() -> None:
             assert "(no entries)" in index_text(), "stale index must not serve ghost entries after hand-deletion"
             assert search("model override") == []
         finally:
-            if old is None:
-                os.environ.pop("SY_MEMORY_DIR", None)
-            else:
-                os.environ["SY_MEMORY_DIR"] = old
+            globals()["config_get"] = original
 
 
 if __name__ == "__main__":

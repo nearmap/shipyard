@@ -1,6 +1,6 @@
 # Using Shipyard
 
-Once the plugin is [loaded](installation.md) and the repo is [configured](settings.md) — or run `/sy:init-repo` below to do that interactively — day-to-day work is a short loop: plan a roadmap once (and revisit it when reality shifts), then per task, spec it, ship it, and merge it. Each command runs a long, mostly autonomous session, so the two habits that pay off most are **naming your sessions** and **letting each phase own its own session**.
+Once the plugin is [loaded](installation.md) and the repo is [configured](configuration.md) — or run `/sy:init-repo` below to do that interactively — day-to-day work is a short loop: plan a roadmap once (and revisit it when reality shifts), then per task, spec it, ship it, and merge it. Each command runs a long, mostly autonomous session, so the two habits that pay off most are **naming your sessions** and **letting each phase own its own session**.
 
 ## Name your sessions
 
@@ -18,7 +18,7 @@ The trailing argument is the first prompt, so the session opens straight into th
 /sy:init-repo
 ```
 
-Every other command checks the tracker is genuinely usable — configured *and* live, not just present — as its first step, and stops with a named `## Action needed` block if it is not. `/sy:init-repo` is the fast path to fixing that: it reads whatever's already in `.claude/settings.json`, asks only for what is actually missing, and writes shared config and personal secrets to the right file. On a repo someone already configured, joining it is usually just supplying your own credential; on a brand-new repo, it is the full interview. See [`settings.md`](settings.md) for what every value means and where it's allowed to live.
+Every other command checks the tracker is genuinely usable — configured *and* live, not just present — as its first step, and stops with a named `## Action needed` block if it is not. `/sy:init-repo` is the fast path to fixing that: it reads whatever config already resolves, migrates any legacy `env` block, asks only for what is actually missing, and writes each value to the right layer. On a repo someone already configured, joining it is usually just exporting your own credential; on a brand-new repo, it is the full interview. See [`configuration.md`](configuration.md) for what every value means and where it's allowed to live.
 
 ## 1. Plan
 
@@ -48,7 +48,7 @@ Not every spec ends in a plan. When research shows the premise is already delive
 /sy:ship <task>
 ```
 
-`/sy:ship` builds the approved plan and takes it to a reviewable PR. It branches from fresh `origin/main` into its own worktree, created under the sibling `<repo>-worktrees/` directory by default or under `SY_WORKTREE_ROOT` when set (first checking that `main` has not drifted from the commit the plan assumed), implements the plan in order, gets CI green, and has the independent `sy:gate` agent review the exact pushed commits in an isolated, read-only checkout. Fixes go back into the build worktree, and every new commit starts a new review scope. When the PR head, the CI-green commit, and the reviewed commit are the same commit, ship posts the evidence to the ticket, moves it to `in-review`, and stops.
+`/sy:ship` builds the approved plan and takes it to a reviewable PR. It branches from fresh `origin/main` into its own worktree, created under the sibling `<repo>-worktrees/` directory by default or under `worktree.root` when set (first checking that `main` has not drifted from the commit the plan assumed), implements the plan in order, gets CI green, and has the independent `sy:gate` agent review the exact pushed commits in an isolated, read-only checkout. Fixes go back into the build worktree, and every new commit starts a new review scope. When the PR head, the CI-green commit, and the reviewed commit are the same commit, ship posts the evidence to the ticket, moves it to `in-review`, and stops.
 
 `/sy:ship` never merges on its own.
 
@@ -62,7 +62,8 @@ Merging needs your explicit word. When you authorize it, ship re-verifies that t
 - `/sy:pr [draft]` — create, promote, or tidy the current branch's PR, keeping the description short and preserving acceptance evidence in comments. `/sy:ship` drives this for you; run it directly for one-off PR work.
 - `/sy:ci [fix]` — triage the current branch's CI: find the run covering the current head, diagnose failures, and (with `fix`) push and re-watch until green. Never merges.
 - `/sy:explain <topic>` — understand a gnarly decision, bug, or system before acting on it. An isolated agent investigates, verifies every mechanism claim, and authors a layered explainer doc to `.scratch/`; you then walk it one layer at a time, with checkpoints and live repros on challenge, ending at a decision rather than a lecture. Useful mid-session — e.g. right before authorizing a merge — or as its own named session for a clean slate (`/sy:explain <doc path>` re-runs a doc someone already authored). Never touches the tracker.
-- `/sy:help <question>` — ask about Shipyard itself: which env var configures a knob, which model an agent uses, what a command does. Reads only the plugin's own docs (`settings.md`, `agent-guide.md`, the skill/agent files) and cites the source; never touches the tracker or your code.
+- `/sy:help <question>` — ask about Shipyard itself: which setting controls what, which model an agent uses, what a command does. Reads only the plugin's own docs (`configuration.md`, `agent-guide.md`, the skill/agent files) and cites the source; never touches the tracker or your code.
+- `/sy:config` — inspect, validate, change, and reload this repo's configuration; shows every resolved value with the layer it came from.
 
 ## Naming every phase
 
@@ -80,4 +81,4 @@ Every shipped task leaves a paper trail on its ticket, each record its own comme
 
 ## Cross-session memory
 
-Separately from any ticket, Shipyard keeps a small, user-global memory store — one Markdown file per durable lesson (a CLI flag with inverted semantics, a silent model fallback, and the like) plus a greppable index. `/sy:plan` and `/sy:spec` read it during early research, and `/sy:ship` reads it at start; new lessons get written, at most a few per run, during ship's retrospective. It lives at `SY_MEMORY_DIR` (default `~/.claude/shipyard/memory`, see [`settings.md`](settings.md)) and is cross-repo by design, so a trap learned once does not have to be relearned in the next repo next month.
+Separately from any ticket, Shipyard keeps a small, user-global memory store — one Markdown file per durable lesson (a CLI flag with inverted semantics, a silent model fallback, and the like) plus a greppable index. `/sy:plan` and `/sy:spec` read it during early research, and `/sy:ship` reads it at start; new lessons get written, at most a few per run, during ship's retrospective. It lives at `memory.dir` (default `~/.claude/shipyard/memory`, see [`configuration.md`](configuration.md)) and is cross-repo by design, so a trap learned once does not have to be relearned in the next repo next month.

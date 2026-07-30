@@ -51,7 +51,7 @@ def discover_secret_vars(min_length: int) -> dict[str, str]:
     """
     found = {}
     for name, value in os.environ.items():
-        if value and len(value) >= min_length and _looks_like_secret_name(name):
+        if value and len(value) >= min_length and looks_like_secret_name(name):
             found[name] = value
     return found
 
@@ -133,7 +133,12 @@ def _resolve_secrets(vars_arg: str | None, min_length: int) -> dict[str, str]:
     }
 
 
-def _looks_like_secret_name(name: str) -> bool:
+def looks_like_secret_name(name: str) -> bool:
+    """True when a variable or config key name is credential-shaped, by word rather than substring.
+
+    Word-split so `ACLI_TOKEN` matches while `TOKENIZER_PATH` does not. Shared with
+    `sy_config.py`, which uses it to refuse reading or storing a secret in a config file.
+    """
     words = re.split(r"[^A-Za-z0-9]+", name.upper())
     return any(word in _SECRET_WORDS for word in words if word)
 
@@ -170,12 +175,12 @@ def _self_test() -> None:
     os.environ["SY_TEST_NOTASECRET"] = "this-name-does-not-look-like-a-secret-but-is-long-enough"
     os.environ.pop("SY_TEST_LONG_SECRET", None)
     try:
-        assert _looks_like_secret_name("ACLI_TOKEN")
-        assert _looks_like_secret_name("GITHUB_TOKEN")
-        assert _looks_like_secret_name("AWS_SECRET_ACCESS_KEY")
-        assert not _looks_like_secret_name("ACLI_SITE")
-        assert not _looks_like_secret_name("PATH")
-        assert not _looks_like_secret_name("SY_WORKTREE_ROOT")
+        assert looks_like_secret_name("ACLI_TOKEN")
+        assert looks_like_secret_name("GITHUB_TOKEN")
+        assert looks_like_secret_name("AWS_SECRET_ACCESS_KEY")
+        assert not looks_like_secret_name("ACLI_SITE")
+        assert not looks_like_secret_name("PATH")
+        assert not looks_like_secret_name("SY_SOME_DIRECTORY")
 
         secrets = discover_secret_vars(min_length=6)
         assert secrets.get("SY_TEST_TOKEN") == "abcdef0123456789secretvalue"

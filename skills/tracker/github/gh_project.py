@@ -10,13 +10,13 @@ discovers the project/field/option node IDs once, caches them per project under
 lookup miss.
 
 Column names are NOT hard-coded. Shipyard is opinionated only about the five lifecycle columns; each
-column's actual name on the board is a REQUIRED per-repo env var (set in the repo's
-`.claude/settings.json` `env`, so different repos can differ), shared by every tracker adapter:
+column's actual name on the board is a REQUIRED per-repo config key (set in the repo's
+`.shipyard/config.json`, so different repos can differ), shared by every tracker adapter:
 
-    SY_BACKLOG_COLNAME      SY_READY_COLNAME      SY_IN_PROGRESS_COLNAME
-    SY_IN_REVIEW_COLNAME    SY_DONE_COLNAME
+    columns.backlog      columns.ready      columns.in_progress
+    columns.in_review    columns.done
 
-canonical status -> that env var -> the board's "Status" single-select option (matched
+canonical status -> that config key -> the board's "Status" single-select option (matched
 case-insensitively). Type uses a "Type" single-select with options Epic/Task/Bug (case-insensitive).
 
 Commands:
@@ -41,14 +41,19 @@ import subprocess
 import sys
 from typing import Any
 
+# The resolver lives in the plugin's scripts/ directory, which is not importable from an adapter
+# helper's own location, so the path is bootstrapped before importing it.
+sys.path.insert(0, str(Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parents[3]) / "scripts"))
+from sy_config import get as config_get  # noqa: E402
+
 STATUS_FIELD = "Status"
 TYPE_FIELD = "Type"
-STATUS_ENV = {
-    "backlog": "SY_BACKLOG_COLNAME",
-    "ready": "SY_READY_COLNAME",
-    "in-progress": "SY_IN_PROGRESS_COLNAME",
-    "in-review": "SY_IN_REVIEW_COLNAME",
-    "done": "SY_DONE_COLNAME",
+STATUS_KEYS = {
+    "backlog": "columns.backlog",
+    "ready": "columns.ready",
+    "in-progress": "columns.in_progress",
+    "in-review": "columns.in_review",
+    "done": "columns.done",
 }
 TYPE_TO_OPTION = {"epic": "Epic", "task": "Task", "bug": "Bug"}
 CACHE_PATH = Path(".scratch/sy/github-project-cache.json")
@@ -74,8 +79,8 @@ def set_field(project_ref: str, issue_url: str, field_name: str, option_name: st
         available = sorted((resolved["fields"].get(field_name) or {}).get("options", {}))
         raise SystemExit(
             f"project {project_ref} field {field_name!r} has no option matching {option_name!r} "
-            f"(case-insensitive); available: {available}. Fix the board option or the column-name env "
-            f"var. See docs/github-setup.md."
+            f"(case-insensitive); available: {available}. Fix the board option or the columns.* config "
+            f"key. See docs/github-setup.md."
         )
     field_id, option_id = ids
     item_id = _find_or_add_item(owner, number, resolved["project_id"], issue_url)
@@ -129,21 +134,22 @@ def check(project_ref: str) -> dict[str, Any]:
     return report
 
 
-# ---- mapping (column names from required per-repo env vars; case-insensitive) ----
+# ---- mapping (column names from required per-repo config; case-insensitive) ----
 
 def status_map() -> dict[str, str]:
+    """The board's column name for each canonical status, from resolved config. Fails fast."""
     out: dict[str, str] = {}
     missing: list[str] = []
-    for canon, var in STATUS_ENV.items():
-        value = (os.environ.get(var) or "").strip()
+    for canon, key in STATUS_KEYS.items():
+        value = str(config_get(key) or "").strip()
         if value:
             out[canon] = value
         else:
-            missing.append(var)
+            missing.append(key)
     if missing:
         raise SystemExit(
-            "missing required column-name env var(s): " + ", ".join(missing) +
-            ". Set them in the repo's .claude/settings.json `env`; see docs/github-setup.md."
+            "missing required column name(s): " + ", ".join(missing) +
+            ". Set them in the repo's .shipyard/config.json; see docs/configuration.md."
         )
     return out
 
@@ -258,27 +264,26 @@ def _save_cache(cache: dict[str, Any]) -> None:
 def _self_test() -> None:
     import tempfile
 
-    assert set(STATUS_ENV) == {"backlog", "ready", "in-progress", "in-review", "done"}
+    assert set(STATUS_KEYS) == {"backlog", "ready", "in-progress", "in-review", "done"}
     assert set(TYPE_TO_OPTION) == {"epic", "task", "bug"}
 
-    saved = {v: os.environ.get(v) for v in STATUS_ENV.values()}
+    # Column names come from the resolver now, so the test overrides the resolver, not the environment.
+    columns = {"columns.backlog": "Backlog", "columns.ready": "Ready", "columns.in_progress": "In progress",
+               "columns.in_review": "In review", "columns.done": "Done"}
+    original = globals()["config_get"]
+    globals()["config_get"] = lambda key: columns[key] if key in columns else original(key)
     try:
-        os.environ.update({
-            "SY_BACKLOG_COLNAME": "Backlog", "SY_READY_COLNAME": "Ready",
-            "SY_IN_PROGRESS_COLNAME": "In progress", "SY_IN_REVIEW_COLNAME": "In review",
-            "SY_DONE_COLNAME": "Done",
-        })
         sm = status_map()
         assert sm == {"backlog": "Backlog", "ready": "Ready", "in-progress": "In progress",
                       "in-review": "In review", "done": "Done"}, sm
-        del os.environ["SY_READY_COLNAME"]
+        columns["columns.ready"] = ""
         try:
             status_map()
         except SystemExit:
             pass
         else:  # pragma: no cover
-            raise AssertionError("expected SystemExit on missing SY_READY_COLNAME")
-        os.environ["SY_READY_COLNAME"] = "Ready"
+            raise AssertionError("expected SystemExit on an unset column name")
+        columns["columns.ready"] = "Ready"
 
         # case-insensitive option resolution against a board that uses "In progress"
         resolved = {"project_id": "P", "fields": {
@@ -294,11 +299,7 @@ def _self_test() -> None:
                                 "content": {"number": 3, "title": "t", "url": "u"}}) == {
             "number": 3, "title": "t", "url": "u", "type": "epic", "status": "in-review"}
     finally:
-        for var, val in saved.items():
-            if val is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = val
+        globals()["config_get"] = original
 
     assert _parse_project_ref("@me/7") == ("@me", "7")
     for bad in ("me", "me/", "me/x", "7"):

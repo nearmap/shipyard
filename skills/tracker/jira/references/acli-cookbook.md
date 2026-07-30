@@ -3,12 +3,13 @@
 Load only for Jira mechanics not covered by the core skill.
 
 ```bash
+PROJECT=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker_config.project)
 # Epic  (staging files are namespaced by target key, or a slug before a key exists)
-acli jira workitem create --project "${ACLI_PROJECT:?}" --type Epic \
+acli jira workitem create --project "${PROJECT:?}" --type Epic \
   --summary "<title>" --description-file .scratch/<slug>-epic.adf.json
 
 # Task under Epic
-acli jira workitem create --project "${ACLI_PROJECT:?}" --type Task \
+acli jira workitem create --project "${PROJECT:?}" --type Task \
   --parent PROJ-100 --summary "<title>" --description-file .scratch/PROJ-100-task.adf.json
 
 # Comments — see "ADF comments: create has no --body-adf" below before using --body-file here

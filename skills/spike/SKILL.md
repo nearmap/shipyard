@@ -98,3 +98,5 @@ Post a tracker verdict comment containing:
 If the idea clears the bar, write a `/sy:plan` brief that states the opportunity, evidence, success bar, constraints, failure modes, and the next unanswered project-level questions. Link it from the verdict.
 
 Set the spike Task's status to `done` via the `tracker` skill only after the verdict is durable. End with the Task key/link, artifact path, verdict, and `/sy:plan <brief>` kickoff when applicable.
+
+Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

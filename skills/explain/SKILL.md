@@ -25,3 +25,5 @@ Present that brief as a **Status** update, then close with one **optional sugges
 `references/running.md` owns the walk: one layer per turn, an `AskUserQuestion` checkpoint after each, live repros the moment something is challenged, a decision (not a fact) at the end.
 
 No tracker read or write, at any point — this is about your understanding, not the project record.
+
+Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

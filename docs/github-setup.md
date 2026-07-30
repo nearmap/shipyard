@@ -1,6 +1,6 @@
 # GitHub tracker setup
 
-One-time setup for the GitHub tracker adapter (`SY_TRACKER=github`). After it, `/sy:plan`, `/sy:spec`, and `/sy:ship` drive the board through the adapter and the `gh_project.py` helper — you never touch GraphQL or node IDs by hand.
+One-time setup for the GitHub tracker adapter (`"tracker": "github"`). After it, `/sy:plan`, `/sy:spec`, and `/sy:ship` drive the board through the adapter and the `gh_project.py` helper — you never touch GraphQL or node IDs by hand.
 
 **No organization is required.** Shipyard drives issue **Type** and **Status** as Projects v2 single-select fields, which work identically on a personal (user-owned) project and an org project. It does not use GitHub's native `issue_type` (org-only) or labels. Sub-issues, dependencies, comments, and the board all work on GitHub Free for a personal private repo. This is the same setup whether the board is owned by `@me` (a user) or an org — only the `--owner` value differs.
 
@@ -14,7 +14,7 @@ Below, `OWNER` is `@me` (or your login) for a user board, or the org login for a
 gh project create --owner OWNER --title "Shipyard" --format json --jq '{number, url}'
 ```
 
-Note the `number` — it is the `<number>` in `SY_GH_PROJECT` below.
+Note the `number` — it is the `<number>` in `tracker_config.project` below.
 
 ## 2. Status field: one option per lifecycle column
 
@@ -46,37 +46,43 @@ Docs: [Using the built-in automations](https://docs.github.com/en/issues/plannin
 
 Put this in the repo's `.claude/settings.json` `env` block — it is per-repo, so different repos on the same machine can use different boards and column names:
 
+`.shipyard/config.json`:
+
 ```json
 {
-  "env": {
-    "SY_TRACKER": "github",
-    "SY_GH_PROJECT": "@me/<number>",
-    "SY_GH_REPO": "<owner>/<repo>",
-    "SY_BACKLOG_COLNAME": "Backlog",
-    "SY_READY_COLNAME": "Ready",
-    "SY_IN_PROGRESS_COLNAME": "In progress",
-    "SY_IN_REVIEW_COLNAME": "In review",
-    "SY_DONE_COLNAME": "Done"
+  "$schema": "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json",
+  "tracker": "github",
+  "tracker_config": {
+    "project": "@me/<number>",
+    "repo": "<owner>/<repo>"
+  },
+  "columns": {
+    "backlog": "Backlog",
+    "ready": "Ready",
+    "in_progress": "In progress",
+    "in_review": "In review",
+    "done": "Done"
   }
 }
 ```
 
-- `SY_GH_PROJECT` is `<owner>/<number>` — `@me/<number>` (or `<username>/<number>`) for a user board, `<org>/<number>` for an org board.
-- `SY_GH_REPO` is optional; it defaults to the current repo.
-- The five `SY_*_COLNAME` vars are **required** and name your `Status` options for each lifecycle role. They are the tracker-neutral column config — the Jira adapter reads the same vars. Set them to whatever your board calls those columns.
+- `tracker_config.project` is `<owner>/<number>` — `@me/<number>` (or `<username>/<number>`) for a user board, `<org>/<number>` for an org board.
+- `tracker_config.repo` is optional; it defaults to the current repo.
+- The five `columns.*` keys are **required** and name your `Status` options for each lifecycle role. They are the tracker-neutral column config — the Jira adapter reads the same keys. Set them to whatever your board calls those columns.
 
 ## 6. Verify, then smoke-test
 
 Confirm every canonical value resolves to a real option (read-only):
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT:-.}/skills/tracker/github/gh_project.py" check --project "$SY_GH_PROJECT"
+python "${CLAUDE_PLUGIN_ROOT:-.}/skills/tracker/github/gh_project.py" check \
+  --project "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker_config.project)"
 ```
 
-`ok: true` means you are ready. Then `docs/smoke_github.sh` exercises every verb end to end (it creates real issues; set `SY_SMOKE_CLEANUP=1` to self-clean). See the script header.
+`ok: true` means you are ready. Then `docs/smoke_github.sh` exercises every verb end to end (it creates real issues; set `SMOKE_CLEANUP=1` to self-clean). See the script header.
 
 ---
 
 ## Note on organizations and native issue types
 
-You do **not** need an org. If you already have one, an org-owned board works the same way — just set `SY_GH_PROJECT=<org>/<number>`. GitHub's native `issue_type` field (Epic/Task/Bug shown on the issue itself) is org-only, but Shipyard deliberately does not use it: the project `Type` field is the single mechanism across personal and org projects, so behaviour is identical either way and a personal private project (which cannot be moved into a Free org) is fully supported.
+You do **not** need an org. If you already have one, an org-owned board works the same way — just set `tracker_config.project=<org>/<number>`. GitHub's native `issue_type` field (Epic/Task/Bug shown on the issue itself) is org-only, but Shipyard deliberately does not use it: the project `Type` field is the single mechanism across personal and org projects, so behaviour is identical either way and a personal private project (which cannot be moved into a Free org) is fully supported.

@@ -10,7 +10,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" search "<term>"
 python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" list
 ```
 
-Storage root: `SY_MEMORY_DIR` when set, else the helper's user-global default (see `docs/settings.md`). It is cross-repo by design; never write repo paths or secrets into a lesson. Writes are idempotent — re-adding the same title replaces the entry — so a retry never duplicates.
+Storage root: whatever the resolver reports for `memory.dir` (see `docs/configuration.md`). It is cross-repo by design; never write repo paths or secrets into a lesson. Writes are idempotent — re-adding the same title replaces the entry — so a retry never duplicates.
 
 ## When to write
 

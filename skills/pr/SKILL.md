@@ -94,3 +94,5 @@ gh pr merge <pr> --squash \
 - add `--admin` only to clear a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give), and only with the owner's explicit go-ahead — it bypasses the ruleset, not CI/review freshness.
 
 This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates, and session transcripts belong on the task via `/sy:ship`. End by printing the PR URL and what state change/comment action occurred.
+
+Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

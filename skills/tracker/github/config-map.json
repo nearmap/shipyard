@@ -1,0 +1,10 @@
+{
+  "legacy_env": {
+    "SY_GH_PROJECT": "tracker_config.project",
+    "SY_GH_REPO": "tracker_config.repo"
+  },
+  "required": [
+    "tracker_config.project"
+  ],
+  "secret_env": []
+}

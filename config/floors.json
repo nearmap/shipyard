@@ -1,0 +1,67 @@
+{
+  "gate": {
+    "min_model": "frontier",
+    "min_effort": "max",
+    "why": "the independent reviewer is the one thing cost-scaling may never touch; a weaker reviewer silently weakens every verdict"
+  },
+  "ship-build": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "BUILD writes the diff the reviewer then trusts; below standard tier it produces work the gate must reject"
+  },
+  "slice": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "slice implements against a spec with no reviewer between it and the branch"
+  },
+  "debate": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "debate is a judgment task, not a lookup; a weaker model produces agreeable noise instead of an adversary"
+  },
+  "debater": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "debate is a judgment task, not a lookup; a weaker model produces agreeable noise instead of an adversary"
+  },
+  "explain-author": {
+    "min_model": "cheap",
+    "min_effort": "medium",
+    "why": "explainers verify every mechanism claim against source, which needs enough capability to read code accurately"
+  },
+  "hunt": {
+    "min_model": "cheap",
+    "min_effort": "medium",
+    "why": "correctness hunting degrades into plausible-sounding false positives below this floor"
+  },
+  "seam": {
+    "min_model": "cheap",
+    "min_effort": "medium",
+    "why": "boundary analysis needs enough capability to hold two subsystems in view at once"
+  },
+  "trace": {
+    "min_model": "cheap",
+    "min_effort": "medium",
+    "why": "tracing a data path end to end needs enough capability to keep the whole path in view"
+  },
+  "img-inspector": {
+    "min_model": "cheap",
+    "min_effort": "medium",
+    "why": "visual inspection is the only path by which figure defects reach a verdict at all"
+  },
+  "ship-gate": {
+    "min_model": "cheap",
+    "min_effort": "low",
+    "why": "a controller that delegates the actual verdict; its own floor only has to keep the loop coherent"
+  },
+  "ship-start": {
+    "min_model": "cheap",
+    "min_effort": "low",
+    "why": "state selection and branch setup are mechanical once the plan is chosen"
+  },
+  "sweep": {
+    "min_model": "cheap",
+    "min_effort": "low",
+    "why": "breadth reconnaissance returns pointers for caller verification, not verdicts"
+  }
+}

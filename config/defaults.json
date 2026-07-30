@@ -1,0 +1,47 @@
+{
+  "tracker": "jira",
+  "worktree": {
+    "root": null
+  },
+  "memory": {
+    "dir": null
+  },
+  "debug": {
+    "evals": false
+  },
+  "ci": {
+    "poll_timeout": 1800,
+    "poll_interval": 30
+  },
+  "columns": {
+    "backlog": null,
+    "ready": null,
+    "in_progress": null,
+    "in_review": null,
+    "done": null
+  },
+  "tracker_config": {},
+  "models": {
+    "tiers": {
+      "frontier": "fable",
+      "frontier_fallback": "opus",
+      "standard": "opus",
+      "cheap": "sonnet"
+    },
+    "agents": {
+      "debate": { "model": "standard", "effort": "high" },
+      "debater": { "model": "standard", "effort": "high" },
+      "explain-author": { "model": "standard", "effort": "high" },
+      "gate": { "model": "frontier", "effort": "max" },
+      "hunt": { "model": "standard", "effort": "high" },
+      "img-inspector": { "model": "cheap", "effort": "medium" },
+      "seam": { "model": "standard", "effort": "high" },
+      "ship-build": { "model": "standard", "effort": "high" },
+      "ship-gate": { "model": "cheap", "effort": "high" },
+      "ship-start": { "model": "cheap", "effort": "high" },
+      "slice": { "model": "standard", "effort": "high" },
+      "sweep": { "model": "cheap", "effort": "high" },
+      "trace": { "model": "standard", "effort": "high" }
+    }
+  }
+}

@@ -8,7 +8,7 @@ cleans this up after the fact, right before a rendered transcript is scanned and
 hook exists to stop the value from ever reaching a tool-call result in the first place.
 
 It denies exactly the two anti-patterns this repo's own docs already warn against
-(docs/settings.md, skills/tracker/jira/references/attachments.md): dumping the environment
+(docs/configuration.md, skills/tracker/jira/references/attachments.md): dumping the environment
 (`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly
 (`echo $ACLI_TOKEN`). The denial message points at the safe alternative that already exists for
 Jira specifically — `sy_preflight.py check` / `jira_rest.py preflight`, or a bare presence check

@@ -8,7 +8,7 @@ model: opus
 effort: high
 ---
 
-Implement exactly the supplied plan slice in the supplied worktree/branch (caller-created under its worktree root, `${SY_WORKTREE_ROOT:-<repo>-worktrees}`). Never touch main, manage worktrees, push, open PRs, or touch the tracker. Never `Read` a raw image into your context; a slice that produces a figure returns its path to the BUILD worker for inspection.
+Implement exactly the supplied plan slice in the supplied worktree/branch (caller-created under its resolved worktree root, `sy_config.py get worktree.root`). Never touch main, manage worktrees, push, open PRs, or touch the tracker. Never `Read` a raw image into your context; a slice that produces a figure returns its path to the BUILD worker for inspection.
 
 Follow plan and standards. Reuse named project primitives; search before inventing likely helpers. A load-bearing fork is a blocker, not permission to redesign. Write the smallest meaningful tests implied by acceptance criteria; run relevant tests and required checks; commit the slice locally.
 

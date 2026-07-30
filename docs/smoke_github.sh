@@ -3,21 +3,22 @@
 # smoke_github.sh — end-to-end exercise of the GitHub tracker adapter's contract verbs.
 #
 # WARNING: THIS CREATES REAL ISSUES (an Epic + 3 Tasks), a real private gist, and real comments in
-#          the repo named by SY_GH_REPO, and adds/moves cards on the SY_GH_PROJECT board.
+#          the repo named by tracker_config.repo, and adds/moves cards on the tracker_config.project board.
 #          Point it at a SCRATCH repo/board, never a production one.
 #
 # Type and Status are Projects v2 single-select fields (works on a personal user-owned project — no
 # org). The board must have a "Type" field (Epic/Task/Bug) and a "Status" field with one option per
-# lifecycle column (backlog/ready/in-progress/in-review/done), named via the SY_*_COLNAME env vars
-# (defaulted below for a standalone run); see docs/github-setup.md.
+# lifecycle column (backlog/ready/in-progress/in-review/done), named via the `columns.*` config keys;
+# see docs/github-setup.md.
 #
 # Verbs exercised: create-issue, create-child, update-issue, find-issues, link-parent,
 #   add-dependency, add-label, assign, set-type, set-status, attach-artifact, post-comment,
 #   post-log, link-pr, get-issue.
 #
-# Cleanup: created issues/gist are left in place by default. Set SY_SMOKE_CLEANUP=1 to delete them.
+# Cleanup: created issues/gist are left in place by default. Set SMOKE_CLEANUP=1 to delete them.
 #
-# Requires: gh >= 2.94.0 (auth: project + read:project), SY_GH_PROJECT and SY_GH_REPO set.
+# Requires: gh >= 2.94.0 (auth: project + read:project), a resolvable .shipyard/config.json whose
+#           tracker_config.project and tracker_config.repo are set.
 #           gitleaks optional (scans the transcript before the gist upload, as the real adapter does).
 #
 set -euo pipefail
@@ -26,13 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH_PROJECT_HELPER="${CLAUDE_PLUGIN_ROOT:-}/skills/tracker/github/gh_project.py"
 [[ -f "$GH_PROJECT_HELPER" ]] || GH_PROJECT_HELPER="$SCRIPT_DIR/../skills/tracker/github/gh_project.py"
 
-# Column names default to GitHub's standard board template for a standalone run; override via env.
-: "${SY_BACKLOG_COLNAME:=Backlog}"
-: "${SY_READY_COLNAME:=Ready}"
-: "${SY_IN_PROGRESS_COLNAME:=In progress}"
-: "${SY_IN_REVIEW_COLNAME:=In review}"
-: "${SY_DONE_COLNAME:=Done}"
-export SY_BACKLOG_COLNAME SY_READY_COLNAME SY_IN_PROGRESS_COLNAME SY_IN_REVIEW_COLNAME SY_DONE_COLNAME
+SY_CONFIG="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR/..}/scripts/sy_config.py"
+# Single reader for every setting; this script re-derives no defaults of its own.
+config() { python "$SY_CONFIG" get "$1"; }
+GH_PROJECT=""
+GH_REPO=""
 
 RUN_TAG="sy-smoke-$(date +%s)-$$"
 REPO_ARGS=()
@@ -155,17 +154,19 @@ preflight() {
   have="$(gh --version | head -n1 | awk '{print $3}')"
   version_ge "$have" "$min" || die "gh $have is too old; need >= $min"
   gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
-  [[ -n "${SY_GH_PROJECT:-}" ]] || die "SY_GH_PROJECT is not set (<owner>/<number>, e.g. @me/3)"
-  [[ -n "${SY_GH_REPO:-}" ]] || die "SY_GH_REPO is not set (<owner>/<repo>)"
+  python "$SY_CONFIG" validate >/dev/null || die "Shipyard configuration is invalid (run: python $SY_CONFIG validate)"
+  GH_PROJECT="$(config tracker_config.project)"
+  GH_REPO="$(python "$SY_CONFIG" get tracker_config.repo --default "")"
+  [[ -n "$GH_PROJECT" ]] || die "tracker_config.project is not set (<owner>/<number>, e.g. @me/3)"
   [[ -f "$GH_PROJECT_HELPER" ]] || die "gh_project.py helper not found at $GH_PROJECT_HELPER"
-  REPO_ARGS=(-R "$SY_GH_REPO")
+  REPO_ARGS=(); [[ -n "$GH_REPO" ]] && REPO_ARGS=(-R "$GH_REPO")
   TMP="$(mktemp -d)"
   trap cleanup EXIT
-  echo "==> preflight ok: gh $have, repo $SY_GH_REPO, board $SY_GH_PROJECT"
+  echo "==> preflight ok: gh $have, repo ${GH_REPO:-<current>}, board $GH_PROJECT"
 }
 
 ghissue() { gh issue "$1" "${REPO_ARGS[@]}" "${@:2}"; }
-ghp() { python "$GH_PROJECT_HELPER" "$1" --project "$SY_GH_PROJECT" "${@:2}"; }
+ghp() { python "$GH_PROJECT_HELPER" "$1" --project "$GH_PROJECT" "${@:2}"; }
 
 item_field() { # <issue-url> <type|status>  -> the board field value, or empty
   ghp get --issue "$1" | python -c "import sys,json;d=json.load(sys.stdin) or {};print(d.get('$2') or '')"
@@ -186,7 +187,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 summary() {
   local epic="$1" t1="$2" t2="$3" t3="$4" gist="$5" owner num board_url
-  owner="${SY_GH_PROJECT%/*}"; num="${SY_GH_PROJECT##*/}"
+  owner="${GH_PROJECT%/*}"; num="${GH_PROJECT##*/}"
   board_url="$(gh project view "$num" --owner "$owner" --format json --jq '.url' 2>/dev/null || true)"
   echo
   echo "==> SUMMARY"
@@ -194,14 +195,14 @@ summary() {
   echo "  tasks: #$t1 (assigned, labeled), #$t2 (blocked-by #$t1), #$t3"
   echo "  gist:  $gist"
   echo "  board: ${board_url:-https://github.com/$owner (project $num)}"
-  [[ "${SY_SMOKE_CLEANUP:-0}" == "1" ]] || echo "  NOTE: issues/gist left in place. Re-run with SY_SMOKE_CLEANUP=1 to delete them."
+  [[ "${SMOKE_CLEANUP:-0}" == "1" ]] || echo "  NOTE: issues/gist left in place. Re-run with SMOKE_CLEANUP=1 to delete them."
   echo
   echo "All verbs exercised."
 }
 
 cleanup() {
   [[ -n "$TMP" && -d "$TMP" ]] && rm -rf "$TMP"
-  [[ "${SY_SMOKE_CLEANUP:-0}" == "1" ]] || return 0
+  [[ "${SMOKE_CLEANUP:-0}" == "1" ]] || return 0
   echo "==> cleanup: deleting created issues and gist"
   local n
   for n in "${CREATED_ISSUES[@]:-}"; do

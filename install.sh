@@ -20,37 +20,37 @@ fi
 echo "Validating Shipyard plugin..."
 python "$PLUGIN_ROOT/scripts/validate.py"
 
-TRACKER="${SY_TRACKER:-jira}"
+# Every setting resolves through one reader; nothing here re-derives a default.
+if ! python "$PLUGIN_ROOT/scripts/sy_config.py" validate; then
+  echo "ERROR: Shipyard configuration is invalid; fix the errors above before loading the plugin." >&2
+  exit 1
+fi
+TRACKER="$(python "$PLUGIN_ROOT/scripts/sy_config.py" get tracker)"
 case "$TRACKER" in
   jira)
-    command -v acli >/dev/null 2>&1 || echo "NOTE: SY_TRACKER=jira but 'acli' (Atlassian CLI) is not on PATH." >&2
+    command -v acli >/dev/null 2>&1 || echo "NOTE: tracker is 'jira' but 'acli' (Atlassian CLI) is not on PATH." >&2
     ;;
   github)
-    command -v gh >/dev/null 2>&1 || { echo "ERROR: SY_TRACKER=github requires 'gh' >= 2.94.0 on PATH" >&2; exit 1; }
+    command -v gh >/dev/null 2>&1 || { echo "ERROR: tracker 'github' requires 'gh' >= 2.94.0 on PATH" >&2; exit 1; }
     ;;
   *)
-    echo "ERROR: SY_TRACKER must be 'jira' or 'github' (got '$TRACKER')" >&2; exit 1
+    echo "ERROR: tracker must name an adapter under skills/tracker/ (got '$TRACKER')" >&2; exit 1
     ;;
 esac
 
 command -v gitleaks >/dev/null 2>&1 || \
   echo "NOTE: gitleaks not installed; transcript attachment stops before publish until a deterministic scanner is available." >&2
 
+# CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes
+# every agent off whatever the resolver decided. `sy_config.py validate` already fails on it; this
+# is only a clearer message at install time.
 if [[ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]]; then
-  echo "WARNING: CLAUDE_CODE_SUBAGENT_MODEL is set; it overrides model routing and would reroute the reviewer, the image inspector, and the debate. Unset it." >&2
+  echo "ERROR: CLAUDE_CODE_SUBAGENT_MODEL is set; it outranks resolved per-agent models and would reroute the reviewer, the image inspector, and the debate. Unset it." >&2
+  exit 1
 fi
-if [[ -z "${SY_FRONTIER_MODEL:-}" ]]; then
-  echo "NOTE: set SY_FRONTIER_MODEL in settings.json env; gate defaults to fable when unset." >&2
-fi
-if [[ -z "${SY_IMAGE_MODEL:-}" ]]; then
-  echo "NOTE: set SY_IMAGE_MODEL in settings.json env; sy:img-inspector defaults to sonnet when unset." >&2
-fi
-if [[ -z "${SY_DEBATE_MODEL:-}" ]]; then
-  echo "NOTE: set SY_DEBATE_MODEL in settings.json env; sy:debate defaults to opus when unset." >&2
-fi
-if [[ -z "${SY_WORKTREE_ROOT:-}" ]]; then
-  echo "NOTE: SY_WORKTREE_ROOT unset; ship worktrees default to the sibling <repo>-worktrees/ directory." >&2
-fi
+
+echo "Resolved configuration:"
+python "$PLUGIN_ROOT/scripts/sy_config.py" show
 
 cat <<EOF
 
@@ -64,4 +64,5 @@ Shipyard validated (tracker: $TRACKER). To load it:
     claude plugin install sy@shipyard      # or run /plugin and enable "sy"
 
 Commands are namespaced:  /sy:plan  /sy:spec  /sy:ship  /sy:spike  /sy:pr  /sy:ci  /sy:explain
+                          /sy:help  /sy:init-repo  /sy:config
 EOF

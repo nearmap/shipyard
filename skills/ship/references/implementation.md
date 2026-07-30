@@ -11,11 +11,11 @@ An adjacent issue you surface mid-build that sits outside the plan's declared fi
 Parent-owned, resolved once before BUILD is dispatched (this worker never picks its own model), from the plan's ship profile and the actual process environment:
 
 ```text
-BUILD_MODEL=<the plan's stated BUILD model, literally, or ${SY_FRONTIER_MODEL:-fable} when it states "frontier">
-BUILD_MODEL_FALLBACK=${SY_FRONTIER_FALLBACK:-opus}
+BUILD_MODEL=<the plan's stated BUILD model, literally, or `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier` when it states "frontier">
+BUILD_MODEL_FALLBACK=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier_fallback)
 ```
 
-Pass `BUILD_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-build`'s own frontmatter model wins rather than the plan's stated tier. Never resolve below `opus`, the `ship-build` floor; a lower stated model is clamped up to it. The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `build_model_requested`; the usage transcript later provides `build_model_observed`, so do not claim they match until observed.
+Pass `BUILD_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-build`'s own frontmatter model wins rather than the plan's stated tier. Never resolve below `ship-build`'s floor in `config/floors.json`; a lower stated model is clamped up to it by the resolver (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`). The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `build_model_requested`; the usage transcript later provides `build_model_observed`, so do not claim they match until observed.
 
 If BUILD cannot run at the requested model — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a return — re-dispatch once at `BUILD_MODEL_FALLBACK` clamped up to the `opus` floor, and set `build_model_observed` to the model that actually ran, per the same rule as gate. A plan written in the old single-word profile format, or one whose BUILD tier is otherwise ambiguous, is never guessed upward: it resolves to the `opus` floor.
 
@@ -23,7 +23,7 @@ If BUILD cannot run at the requested model — a spend cap, a rate limit, or a `
 
 Delegate only bounded, low-design-ambiguity slices:
 
-1. create and record the dedicated slice branch/worktree from the integration base, under the worktree root `${SY_WORKTREE_ROOT:-<repo>-worktrees}` (default: the sibling directory beside the repo; never inside it);
+1. create and record the dedicated slice branch/worktree from the integration base, under the resolved worktree root (`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get worktree.root`; defaults to the sibling directory beside the repo, never inside it);
 2. prompt `sy:slice` with plan step, anchors, acceptance criteria, sibling interfaces, and relevant standards contract;
 3. add `sy:slice` to local `agents_used` accounting state;
 4. receive committed SHA and compact evidence brief;
@@ -36,7 +36,7 @@ Track build progress as a slice manifest in `phase_checkpoint` (per slice: `pend
 
 After integration, run acceptance tests and standards-required formatter/linter/type checks; route verbose runs (full suite, linters, type checks) through `.scratch/` logs and read back only failures and summary lines, keeping raw output out of the ship context. Discharge every verification obligation with its named evidence; an undischargeable obligation returns to `/sy:spec`. Where acceptance criteria describe observable behaviour, execute the behaviour (a `.scratch/` runner is fine) and capture the output as acceptance evidence — tests alone discharge only test-shaped criteria.
 
-When a plan step produces, regenerates, or selects among images (figures, screenshots, plots, marketing visuals), inspect them by fanning out to `sy:img-inspector` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`: resolve `IMAGE_MODEL=${SY_IMAGE_MODEL:-sonnet}`, dispatch the inspector with the path(s) and the inspection task, add it to `agents_used`, and record the returned text verdicts as the figure's acceptance evidence. Never `Read` a raw image into the build context; the text verdicts drive accept / regenerate / reselect.
+When a plan step produces, regenerates, or selects among images (figures, screenshots, plots, marketing visuals), inspect them by fanning out to `sy:img-inspector` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`: resolve `IMAGE_MODEL=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent img-inspector)`, dispatch the inspector with the path(s) and the inspection task, add it to `agents_used`, and record the returned text verdicts as the figure's acceptance evidence. Never `Read` a raw image into the build context; the text verdicts drive accept / regenerate / reselect.
 
 Doc, marketing, and other prose deliverables get a deterministic content-QA pass before the draft PR: grep every shipped prose artifact for leaked LLM wrapper tokens — the literal strings `</content>` and `</invoke>`, and internal tool/agent identifiers — and treat any hit as a build failure to fix, never a nit. When the plan declares a content deliverable this is a standing verification obligation: record the clean grep (command plus `.scratch/` output path) as its named evidence.
 

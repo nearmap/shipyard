@@ -10,9 +10,9 @@ model: opus
 effort: high
 ---
 
-Inputs: the decision under debate as one neutral sentence; the seed evidence the caller already gathered (paths, findings, anchors — do not make `sy:debater` rediscover it); `DEBATE_MODEL`, the exact model-override string to use for every `sy:debater` dispatch.
+Inputs: the decision under debate as one neutral sentence; the seed evidence the caller already gathered (paths, findings, anchors — do not make `sy:debater` rediscover it); `DEBATER_MODEL`, the exact model-override string to use for every `sy:debater` dispatch. Resolve every subagent's model from config and pass it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — including on nested dispatches, which inherit nothing.
 
-Run exactly one exchange. Each dispatch is self-contained and pastes in whatever the debater must respond to — `sy:debater` calls remember no earlier round, and nested `Agent` calls do not inherit a model override, so pass `DEBATE_MODEL` explicitly on every one of the three dispatches below:
+Run exactly one exchange. Each dispatch is self-contained and pastes in whatever the debater must respond to — `sy:debater` calls remember no earlier round, and nested `Agent` calls do not inherit a model override, so pass `DEBATER_MODEL` explicitly on every one of the three dispatches below:
 
 1. `sy:debater`, proposer-opening mode: premise + seed evidence → opening argument.
 2. `sy:debater`, adversary mode: premise + seed evidence + opening argument → attack.

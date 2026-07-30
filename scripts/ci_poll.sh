@@ -5,15 +5,21 @@
 # hand-writing its own poller.
 #
 # Usage:
-#   ci_poll.sh poll <pr-number-or-branch> [interval_s=30] [timeout_s=$SY_CI_POLL_TIMEOUT or 1800]
+#   ci_poll.sh poll <pr-number-or-branch> [interval_s] [timeout_s]
 #   ci_poll.sh self-test
 #
-# SY_CI_POLL_TIMEOUT overrides the default timeout_s when the arg is omitted — set it for
-# repos/matrices whose CI routinely outlasts 30 minutes so a single poll call spans the wait.
+# Omitted interval_s/timeout_s come from resolved config (ci.poll_interval, ci.poll_timeout) —
+# raise ci.poll_timeout for repos/matrices whose CI routinely outlasts 30 minutes so a single
+# poll call spans the wait.
 #
 # Exit codes for poll: 0 = checks green or none reported (nothing pending);
 # 1 = checks terminal with failures; 2 = timed out while still pending.
 set -euo pipefail
+
+# Single reader for every setting; never re-derive a default here.
+_config() {
+    python "${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/sy_config.py" get "$1"
+}
 
 main() {
     local cmd="${1:-}"
@@ -26,7 +32,8 @@ main() {
 
 poll() {
     local pr="${1:?usage: ci_poll.sh poll <pr-number-or-branch> [interval_s] [timeout_s]}"
-    local interval="${2:-30}" timeout="${3:-${SY_CI_POLL_TIMEOUT:-1800}}" start="$SECONDS" failed_once=0
+    local interval="${2:-$(_config ci.poll_interval)}" timeout="${3:-$(_config ci.poll_timeout)}"
+    local start="$SECONDS" failed_once=0
     while true; do
         local rc=0 out
         out="$(gh pr checks "$pr" 2>&1)" || rc=$?
@@ -97,8 +104,12 @@ FAKE
 #!/usr/bin/env bash
 echo "some checks are still pending"; exit 8
 FAKE
+    # an omitted timeout must come from resolved config, not a re-derived local default
     rc=0
-    CI_POLL_FAKE_STATE="$tmp/state" SY_CI_POLL_TIMEOUT=0 PATH="$tmp:$PATH" poll 99 0 > /dev/null 2>&1 || rc=$?
+    local original_config; original_config="$(declare -f _config)"
+    _config() { echo 0; }
+    CI_POLL_FAKE_STATE="$tmp/state" PATH="$tmp:$PATH" poll 99 0 > /dev/null 2>&1 || rc=$?
+    eval "$original_config"
     [[ "$rc" == 2 ]]
 
     rm -rf "$tmp"

@@ -8,7 +8,7 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 1. Edit the skills, agents, docs, or adapter files.
 2. Validate: `python scripts/validate.py` — checks frontmatter, the agent return contracts, the promises skills make to each other, and the script self-tests. It must pass.
 3. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
-4. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`.
+4. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 
 Keep prose (READMEs, roadmaps, docs) clear and unwrapped; keep machine-facing text (agent briefs, contracts, JSON logs) terse and structured.
 
@@ -28,7 +28,7 @@ The validator enforces this seam — a stray tracker-native name in a core file 
 2. Implement **every** contract verb from `CONTRACT.md`, mapping each to the native system. Document any deliberate asymmetry (e.g. GitHub's transcript attachment is a private gist, not a native file; its `done` transition is native project automation).
 3. Include a **status mapping table** (canonical → native) and a **type mapping table** (`epic`/`task`/`bug` → native), matching the existing adapters' layout (`jira/ADAPTER.md`, `github/ADAPTER.md`).
 4. Keep all tracker-native names, helper scripts, and node-id juggling inside `skills/tracker/<name>/` — never in core.
-5. Declare the adapter's required config and fail fast when it is missing. Select it at runtime with `SY_TRACKER=<name>`.
+5. Declare the adapter's required config in `skills/tracker/<name>/config-map.json` (`legacy_env`, `required`, `secret_env`) so `sy_config.py validate` enforces it, and fail fast when it is missing. Select it at runtime with `"tracker": "<name>"` in `.shipyard/config.json`.
 6. Verify every write by reading it back; treat empty results or errors as failure.
 
 ## Before every PR

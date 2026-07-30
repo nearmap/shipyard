@@ -33,6 +33,7 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 | What you have | What you type |
 |---|---|
 | a repo that hasn't been configured for Shipyard yet, or a teammate joining one that has | `/sy:init-repo` |
+| checking, changing, or reloading what Shipyard is configured to do here | `/sy:config` |
 | a large objective or an existing roadmap | `/sy:plan` |
 | one PR-sized task that needs an executable plan | `/sy:spec <task>` |
 | an approved plan ready to build | `/sy:ship <task>` |
@@ -70,7 +71,7 @@ The workflow skills stay small and delegate expensive reads and builds to a flee
 
 ![The agent fleet](docs/img/agent-fleet.png)
 
-The issue tracker is the one pluggable part. Core skills and agents speak a single [tracker contract](skills/tracker/CONTRACT.md) — canonical verbs, five lifecycle statuses (named per repo), and canonical types — and a thin adapter maps that to Jira or to GitHub Projects. `SY_TRACKER` selects one, and a validator keeps tracker-specific vocabulary out of every core file. The GitHub tracker needs **no organization**: it drives issue Type and Status as Projects v2 fields, which work the same on a personal board.
+The issue tracker is the one pluggable part. Core skills and agents speak a single [tracker contract](skills/tracker/CONTRACT.md) — canonical verbs, five lifecycle statuses (named per repo), and canonical types — and a thin adapter maps that to Jira or to GitHub Projects. The `tracker` config key selects one, and a validator keeps tracker-specific vocabulary out of every core file. The GitHub tracker needs **no organization**: it drives issue Type and Status as Projects v2 fields, which work the same on a personal board.
 
 Some lessons outlive a single ticket — a CLI flag with inverted semantics, a model that silently falls back to a default. Those go into a small, user-global memory store (`scripts/sy_memory.py`, one file per lesson plus a greppable index) rather than a ticket comment or a repo's `CLAUDE.md`. `/sy:plan` and `/sy:spec` read it during early research and `/sy:ship` at start; new lessons get written, at most a few at a time, during ship's retrospective. It is cross-repo by design, so a trap learned once does not have to be relearned in the next repo next month.
 
@@ -86,12 +87,12 @@ claude plugin marketplace add bretttully/shipyard   # a GitHub owner/repo (clone
 claude plugin install sy@shipyard --scope project   # shared with this repo via .claude/settings.json (recommended)
 ```
 
-`--scope project` writes that choice into this repo's own `.claude/settings.json` — the same file the `SY_*` config below lives in — instead of only your personal, global config. That's the right default for a team repo, but it declares intent, not the marketplace itself: a fresh clone still needs `shipyard` registered as a known marketplace and a one-time install confirmation from each collaborator; see [`docs/installation.md`](docs/installation.md#choose-an-install-scope) for the full team-rollout story. Drop the flag and Claude Code installs to **user** scope instead: every project on your machine, not just this one. `--scope local` is the middle ground: just you, this repo only, gitignored.
+`--scope project` writes that choice into this repo's own `.claude/settings.json` instead of only your personal, global config. That's the right default for a team repo, but it declares intent, not the marketplace itself: a fresh clone still needs `shipyard` registered as a known marketplace and a one-time install confirmation from each collaborator; see [`docs/installation.md`](docs/installation.md#choose-an-install-scope) for the full team-rollout story. Drop the flag and Claude Code installs to **user** scope instead: every project on your machine, not just this one. `--scope local` is the middle ground: just you, this repo only, gitignored.
 
 `./install.sh` validates the plugin and prints these instructions with a tracker-aware preflight. The details live in the docs:
 
 - [`docs/installation.md`](docs/installation.md) — loading the plugin and the CLI tools it needs.
-- [`docs/settings.md`](docs/settings.md) — every configuration knob, with copy-paste `settings.json` for Jira and GitHub.
+- [`docs/configuration.md`](docs/configuration.md) — every setting, the three-layer merge chain, per-agent model floors, and the migration off the old `env` block.
 - [`docs/github-setup.md`](docs/github-setup.md) — one-time GitHub Projects board setup.
 - [`docs/usage.md`](docs/usage.md) — the day-to-day loop and the session-naming pattern.
 
@@ -99,7 +100,7 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 
 - exactly one execution plan is ACTIVE per task; a newer plan supersedes the old one explicitly;
 - plans record the commit they were written against; building on a materially drifted base is refused;
-- every agent that writes code gets its own isolated worktree, kept beside the repo (or wherever `SY_WORKTREE_ROOT` points) so parallel work never collides;
+- every agent that writes code gets its own isolated worktree, kept beside the repo (or wherever `worktree.root` points) so parallel work never collides;
 - `sy:gate` reviews pinned base/head commits in an isolated, read-only checkout, and every bug candidate must survive an adversarial refutation before it is reported;
 - the PR head, the CI-green commit, and the reviewed commit must be identical before handoff or merge;
 - nothing merges without direct user authorization.
@@ -119,7 +120,7 @@ shipyard/
       jira/    ADAPTER.md + md_to_adf.py jira_rest.py references/
       github/  ADAPTER.md + gh_project.py
   docs/
-    installation.md settings.md usage.md github-setup.md smoke_github.sh img/
+    installation.md configuration.md usage.md github-setup.md smoke_github.sh img/
 ```
 
 ## Contributing

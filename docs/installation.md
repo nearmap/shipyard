@@ -2,7 +2,7 @@
 
 Shipyard is a Claude Code plugin. You **load** it, you do not symlink or copy it into `~/.claude`. Nothing about your global config changes; the plugin's skills, agents, and hooks become available under the `/sy:` namespace for as long as it is loaded.
 
-Once loaded, configure the repo you want to use it in — see [`settings.md`](settings.md) (and [`github-setup.md`](github-setup.md) if you use the GitHub tracker). Then drive the loop as in [`usage.md`](usage.md).
+Once loaded, configure the repo you want to use it in — see [`configuration.md`](configuration.md) (and [`github-setup.md`](github-setup.md) if you use the GitHub tracker). Then drive the loop as in [`usage.md`](usage.md).
 
 ## Load the plugin
 
@@ -53,11 +53,11 @@ Only `--plugin-dir` (the one-session dev mode above) needs a local checkout. Eit
 
 | Scope | Flag | Settings file | Who it declares intent for |
 |---|---|---|---|
-| `project` (recommended here) | `--scope project` | this repo's `.claude/settings.json` | every collaborator who clones the repo — checked into version control, alongside the `SY_*` config in [`settings.md`](settings.md) |
+| `project` (recommended here) | `--scope project` | this repo's `.claude/settings.json` | every collaborator who clones the repo — checked into version control, alongside the committed `.shipyard/config.json` described in [`configuration.md`](configuration.md) |
 | `local` | `--scope local` | this repo's `.claude/settings.local.json` | just you, in this repo only — gitignored |
 | `user` | *(none — the default)* | `~/.claude/settings.json` | you, in **every** project on this machine, not just this one |
 
-`project` is the natural fit for Shipyard: it is already configured per repository (see [`settings.md`](settings.md)), so putting the plugin declaration and the `SY_*` env block in the same tracked `.claude/settings.json` keeps one file as the source of truth for "this repo runs Shipyard, configured like this."
+`project` is the natural fit for Shipyard: it is already configured per repository (see [`configuration.md`](configuration.md)), so committing the plugin declaration alongside `.shipyard/config.json` makes the repo itself the source of truth for "this repo runs Shipyard, configured like this."
 
 **`--scope project` alone does not make a fresh clone work.** It writes `enabledPlugins: { "sy@shipyard": true }` — an intent — but a collaborator whose machine has never run `marketplace add` has no `shipyard` marketplace to resolve that name against. Close that gap by also adding `extraKnownMarketplaces` to the same `.claude/settings.json`, pointing at this repo, so the marketplace itself travels with the clone:
 
@@ -81,7 +81,7 @@ cd /path/to/shipyard
 ./install.sh
 ```
 
-The preflight warns (non-fatally, except where noted) when a tool the configured tracker needs is missing, when `CLAUDE_CODE_SUBAGENT_MODEL` is set (it overrides model routing and would reroute the reviewer — unset it), and when `SY_FRONTIER_MODEL` is unset (the reviewer falls back to `fable`). With `SY_TRACKER=github` it treats a missing `gh` as a hard error.
+The preflight runs `sy_config.py validate` and stops on any configuration error, then prints the resolved configuration so you can see each value and the layer it came from. It fails hard when `CLAUDE_CODE_SUBAGENT_MODEL` is set — it outranks resolved per-agent models and would reroute the reviewer — and warns non-fatally when a tool the configured tracker needs is missing, except with `"tracker": "github"`, where a missing `gh` is a hard error.
 
 ## Required tools
 
@@ -90,7 +90,7 @@ The preflight warns (non-fatally, except where noted) when a tool the configured
 | Claude Code | ≥ 2.1.218 | Loading the plugin; must support plugins, `hooks`, and `effort`/`model` in agent frontmatter | Always (2.1.218 is the changelog entry where agent markdown files reject `:` in `name`, reserving it for the plugin namespacing the `sy:` agents use) |
 | Python | 3.10+, on `PATH`, invoked as `python` | Validation, usage accounting, the review guard, and the tracker helper scripts | Always |
 | `gh` | ≥ 2.94.0, authenticated | The code host (PRs and CI, via `/sy:pr` and `/sy:ci`) for **every** tracker, and the transport for the GitHub tracker adapter | Always (the 2.94.0 floor is required by the GitHub tracker's sub-issue and dependency flags) |
-| `acli` | Atlassian CLI | The Jira tracker adapter's transport | Jira tracker only (`SY_TRACKER=jira`) |
+| `acli` | Atlassian CLI | The Jira tracker adapter's transport | Jira tracker only (`"tracker": "jira"`) |
 | `gitleaks` | any recent | Secret-scanning a rendered session transcript before it is attached (Jira) or gisted (GitHub) | Whenever ship attaches transcripts; without it, ship stops before publishing an unscanned transcript |
 
 For the GitHub tracker, `gh` also needs `project` + `read:project` scopes (`gh auth refresh -s project,read:project`). See [`github-setup.md`](github-setup.md) for the one-time board setup.
@@ -98,6 +98,6 @@ For the GitHub tracker, `gh` also needs `project` + `read:project` scopes (`gh a
 ## Next steps
 
 - Run `/sy:init-repo` for an interactive walkthrough of the configuration below — it asks only for what your `.claude/settings.json` doesn't already have, so a teammate joining an already-configured repo answers a short exchange, not a full interview.
-- [`settings.md`](settings.md) — configure a repo by hand (tracker choice, column names, model, tracker credentials) — what `/sy:init-repo` writes for you.
+- [`configuration.md`](configuration.md) — configure a repo by hand (tracker choice, column names, per-agent models) — what `/sy:init-repo` writes for you.
 - [`github-setup.md`](github-setup.md) — one-time GitHub Projects board and field setup (GitHub tracker only).
 - [`usage.md`](usage.md) — the day-to-day `plan → spec → ship` loop.

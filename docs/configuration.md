@@ -162,7 +162,7 @@ Secrets live in the environment and never in a config file. This is not a stylis
 - a config file is greppable and committed-adjacent, and any skill that `cat`s one burns the value into permanent transcript history, where every future transcript render reproduces it;
 - `scripts/secret_guard.py` covers environment-variable dumps as a `PreToolUse` hook; it does not cover file reads.
 
-The resolver enforces the boundary both ways: it refuses to *read* a credential-shaped key, and `validate` refuses any config layer that *declares* one. Detection is by word, so `ACLI_TOKEN` is a secret and `TOKENIZER_PATH` is not.
+The resolver enforces the boundary three ways: `get` refuses to *read* a credential-shaped key, `validate` refuses any config layer that *declares* one, and `show` refuses to print anything at all rather than risk echoing one — printing a secret even once makes it a permanent part of whatever transcript ran the command. Detection is by word, so `ACLI_TOKEN` is a secret and `TOKENIZER_PATH` is not.
 
 Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env`, and its `ADAPTER.md` explains the one-time login it needs beyond that.
 

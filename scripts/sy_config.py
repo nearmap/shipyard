@@ -474,6 +474,26 @@ def _render(value: object) -> str:
 
 
 def _show(*, as_json: bool) -> int:
+    """Print every resolved value, refusing outright rather than printing anything if a layer
+    declares a credential-shaped key.
+
+    `show` is the command this repo's own docs point people to first, and `/sy:config` wraps it —
+    printing a secret here, even once, makes it a permanent part of whatever transcript ran the
+    command. Users should never put a secret in a config layer at all; `validate()` already refuses
+    to *resolve* one, and `show` must refuse to *print* the raw layer just as hard, before it has
+    read a single other value.
+    """
+    secret_errors: list[str] = []
+    for label, path in layers():
+        if path.is_file():
+            secret_errors.extend(_secret_keys_in(path, label))
+    if secret_errors:
+        print("sy_config: refusing to show any value — a config layer declares a credential-shaped key:",
+              file=sys.stderr)
+        for error in secret_errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 1
+
     values, provenance = resolve()
     flat = _flatten(values)
     if as_json:
@@ -656,6 +676,20 @@ def _self_test() -> None:
 
             write_layer(repo / CONFIG_DIRNAME / LOCAL_FILENAME, {"api_token": "should-never-be-here"})
             assert any("credential-shaped" in e for e in validate()), "a secret in a config layer must be refused"
+
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = _show(as_json=False)
+            assert code == 1, "show must refuse outright, not print anything, when a layer declares a secret"
+            assert "should-never-be-here" not in out.getvalue(), "show must never print the secret value itself"
+            assert out.getvalue() == "", "show must print nothing at all on stdout when refusing"
+            assert "credential-shaped" in err.getvalue()
+
+            out_json = io.StringIO()
+            with contextlib.redirect_stdout(out_json), contextlib.redirect_stderr(io.StringIO()):
+                code = _show(as_json=True)
+            assert code == 1 and out_json.getvalue() == "", "--json mode must refuse the same way, not just text mode"
+
             (repo / CONFIG_DIRNAME / LOCAL_FILENAME).unlink()
             reset_cache()
 

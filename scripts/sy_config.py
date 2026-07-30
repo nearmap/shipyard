@@ -207,6 +207,8 @@ def validate() -> list[str]:
             errors.append(
                 f"{path} is required and unset. Set it in {repo_root() / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
+    # A presence check only: the env var's name is reported, its value never read into a variable
+    # or a message. `os.environ.get(name)` here is used solely for its truthiness.
     for name in _adapter_map().get("secret_env", []):
         if not os.environ.get(name):
             errors.append(
@@ -585,15 +587,16 @@ def _show(*, as_json: bool) -> int:
     to *resolve* one, and `show` must refuse to *print* the raw layer just as hard, before it has
     read a single other value.
     """
-    secret_errors: list[str] = []
+    # Names and a fixed advisory sentence only (see _schema_violations) — never a secret value.
+    credential_violations: list[str] = []
     for label, path in layers():
         if path.is_file():
-            secret_errors.extend(_layer_violations(path, label, kinds=frozenset({"credential"})))
-    if secret_errors:
+            credential_violations.extend(_layer_violations(path, label, kinds=frozenset({"credential"})))
+    if credential_violations:
         print("sy_config: refusing to show any value — a config layer declares a credential-shaped key:",
               file=sys.stderr)
-        for error in secret_errors:
-            print(f"  - {error}", file=sys.stderr)
+        for violation in credential_violations:
+            print(f"  - {violation}", file=sys.stderr)
         return 1
 
     values, provenance = resolve()

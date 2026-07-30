@@ -81,7 +81,7 @@ cd /path/to/shipyard
 ./install.sh
 ```
 
-The preflight runs `sy_config.py validate` and stops on any configuration error, then prints the resolved configuration so you can see each value and the layer it came from. It fails hard when `CLAUDE_CODE_SUBAGENT_MODEL` is set — it outranks resolved per-agent models and would reroute the reviewer — and warns non-fatally when a tool the configured tracker needs is missing, except with `"tracker": "github"`, where a missing `gh` is a hard error.
+The preflight fails hard when `pixi` is missing — for every tracker, since the MCP server launches as `pixi run sy-server` — and then pre-warms that environment with `pixi install --locked`, which fails rather than re-resolving if this checkout's `pixi.lock` and `pyproject.toml` have drifted apart. It runs `sy_config.py validate` and stops on any configuration error, then prints the resolved configuration so you can see each value and the layer it came from. It fails hard when `CLAUDE_CODE_SUBAGENT_MODEL` is set — it outranks resolved per-agent models and would reroute the reviewer — and warns non-fatally when a tool the configured tracker needs is missing, except with `"tracker": "github"`, where a missing `gh` is a hard error.
 
 ## Required tools
 
@@ -89,9 +89,10 @@ The preflight runs `sy_config.py validate` and stops on any configuration error,
 |---|---|---|---|
 | Claude Code | ≥ 2.1.218 | Loading the plugin; must support plugins, `hooks`, and `effort`/`model` in agent frontmatter | Always (2.1.218 is the changelog entry where agent markdown files reject `:` in `name`, reserving it for the plugin namespacing the `sy:` agents use) |
 | Python | 3.10+, on `PATH`, invoked as `python` | Validation, usage accounting, the review guard, and the tracker helper scripts | Always |
+| `pixi` | any recent | The `sy` MCP server's environment — it provides the interpreter, the SDK, and the dev/CI tooling from the committed `pixi.lock` | Always (the server is launched as `pixi run sy-server` and will not start without it) |
 | `gh` | ≥ 2.94.0, authenticated | The code host (PRs and CI, via `/sy:pr` and `/sy:ci`) for **every** tracker, and the transport for the GitHub tracker adapter | Always (the 2.94.0 floor is required by the GitHub tracker's sub-issue and dependency flags) |
 | `acli` | Atlassian CLI | The Jira tracker adapter's transport | Jira tracker only (`"tracker": "jira"`) |
-| `gitleaks` | any recent | Secret-scanning a rendered session transcript before it is attached (Jira) or gisted (GitHub) | Whenever ship attaches transcripts; without it, ship stops before publishing an unscanned transcript |
+| `gitleaks` | any recent | Secret-scanning a rendered session transcript before it is attached (Jira) or gisted (GitHub) | Only off the MCP server's path — the server, which normally runs the scan, gets its own from `pixi.lock`; running the two passes by hand without it stops before publishing an unscanned transcript |
 
 For the GitHub tracker, `gh` also needs `project` + `read:project` scopes (`gh auth refresh -s project,read:project`). See [`github-setup.md`](github-setup.md) for the one-time board setup.
 

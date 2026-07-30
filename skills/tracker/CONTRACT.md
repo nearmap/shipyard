@@ -54,7 +54,7 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `add-label` | Add a label, preserving existing labels. |
 | `post-comment` | Post a Markdown comment. The TL;DR-first convention applies here, in core. |
 | `post-log` | Post a **standalone** machine log comment (fenced JSON). Never combined with prose — see below. |
-| `attach-artifact` | Attach a durable file (the session transcript) to the issue. |
+| `attach-artifact` | Attach a durable file (the session transcript) to the issue. Performed by the `sy` MCP server's tool of the same name, not by hand — see below. |
 | `link-pr` | Associate a PR with an issue. |
 
 ### Machine logs are standalone (`post-log`)
@@ -69,6 +69,8 @@ Generate usage from the on-disk transcript tree with `${CLAUDE_PLUGIN_ROOT}/scri
 ### Attachments may degrade to a link
 
 `attach-artifact` uploads a file where the tracker supports it (Jira work-item attachments). Where it does not (GitHub issues have no CLI-scriptable attachment), the adapter substitutes an equivalent durable artifact (a private gist) and links it from a comment. Either way the artifact is secret-scanned before it leaves the machine, and the log comment references it by name/URL. This asymmetry is documented per adapter and in the deliberate-asymmetries section of the README.
+
+This is the one verb core does not drive command by command. The `sy` MCP server's `attach-artifact` tool (`mcp__sy__attach-artifact`) performs the whole path in one call: it checks the gate, runs both sanitisation passes in order, and dispatches to the configured tracker's adapter — so the caller still never names a tracker, no pass can be skipped, and no credential reaches argv or stdout. Attaching a transcript is gated on `transcript.attach`, and a `ship` caller additionally needs the `full` process tier; when the gate is off the call is a no-op skip and nothing is read, scrubbed, scanned, or uploaded. Each adapter's upload helper still ships and still works for recovery, but it uploads exactly what it is given: off this path both passes are the caller's problem.
 
 ## Exactly one ACTIVE plan
 

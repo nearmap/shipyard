@@ -88,7 +88,7 @@ Use `null` for unknown values. Never infer metrics.
 
 ## 4. Transcript attachment (full tier only, and only when enabled)
 
-This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach` (off by default: a debug/observability tool, not something most users need; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). When `transcript.attach` is false, skip this record on `full` tier exactly as `light` tier already does — same `transcript_attachment: null` in the metrics JSON.
+This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). When `transcript.attach` is false, skip this record on `full` tier exactly as `light` tier already does — same `transcript_attachment: null` in the metrics JSON.
 
 When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders and uploads the transcript straight from the on-disk session tree, so nothing session-bound and no by-hand `/export` is involved. It renders the whole tree — main plus every nested subagent — into one readable file:
 

@@ -24,3 +24,16 @@ Resolve once per phase/run and use the resolved value for every decision that bu
 that pass; re-resolve on a fresh dispatch the same way a model override is re-resolved per
 `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — nothing here is cached across
 invocations.
+
+The same discipline applies to a key's **rationale**, not only its default: state *why* a default
+is what it is once, in `docs/configuration.md`, and cite it — do not re-paste the same explanatory
+sentence at every call site. Re-pasted prose drifts in wording the same way a re-pasted number
+drifts in value, and it was found duplicated word-for-word across four files during this reference's
+own introduction.
+
+**Out of scope:** human-facing overview prose that a person reads, not a session executes —
+`README.md`, `docs/usage.md`, `agent-guide.md`, and a skill's YAML frontmatter `description:`
+(parsed at plugin load, same as `effort:`, and never re-read live mid-run). These may restate a
+default the same way `docs/configuration.md`'s own settings table does for every key — that table
+*is* the one place defaults live for a human to look up, and a short human-readable echo of it in
+overview copy is not the drift this reference guards against.

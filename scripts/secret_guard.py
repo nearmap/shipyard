@@ -225,6 +225,13 @@ def _looks_like_secret_name(name: str) -> bool:
 
 
 def _self_test() -> None:
+    # Pinned rather than live: a consuming repo's real redaction.extra_words could overlap one of
+    # the allow-cases below (e.g. a repo adding "SITE" or "HOME"), turning this self-test flaky
+    # depending on wherever it happens to run. The built-in word set is what this pass/fail list
+    # covers; _extra_words()'s own resolution is exercised separately, below.
+    global _EXTRA_WORDS
+    saved_extra_words = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
     allow = [
         "git status", "ls -la", "pytest -q",
         "set -euo pipefail", "set -x", "set -- a b c",
@@ -268,6 +275,45 @@ def _self_test() -> None:
     assert _looks_like_secret_name("GITHUB_TOKEN")
     assert not _looks_like_secret_name("ACLI_SITE")
     assert not _looks_like_secret_name("PATH")
+    _EXTRA_WORDS = saved_extra_words
+
+    _test_extra_words_from_config()
+
+
+def _test_extra_words_from_config() -> None:
+    """`redaction.extra_words` from a real (faked) config layer must actually widen the gate."""
+    from pathlib import Path
+    import tempfile
+
+    import sy_config
+
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    original_home, original_repo_root = Path.home, sy_config.repo_root
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        repo = Path(tmp) / "repo"
+        (home / ".shipyard").mkdir(parents=True)
+        (repo / ".shipyard").mkdir(parents=True)
+        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
+        sy_config.repo_root = lambda: repo
+        sy_config.reset_cache()
+        _EXTRA_WORDS = None
+        try:
+            assert not _looks_like_secret_name("NM_BEARER"), "no override must not widen the gate"
+
+            (repo / ".shipyard" / "config.json").write_text(
+                json.dumps({"redaction": {"extra_words": ["BEARER"]}}), encoding="utf-8",
+            )
+            sy_config.reset_cache()
+            _EXTRA_WORDS = None
+            assert _looks_like_secret_name("NM_BEARER"), "redaction.extra_words must widen the gate"
+            assert decision("Bash", {"command": "echo $NM_BEARER"}) is not None
+        finally:
+            Path.home = original_home  # type: ignore[method-assign]
+            sy_config.repo_root = original_repo_root
+            sy_config.reset_cache()
+            _EXTRA_WORDS = saved
 
 
 if __name__ == "__main__":

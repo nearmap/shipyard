@@ -43,7 +43,7 @@ import json
 import os
 from pathlib import Path
 import re
-from scrub_known_secrets import looks_like_secret_name
+from secret_words import looks_like_secret_name
 import subprocess
 import sys
 from sy_preflight import plugin_build
@@ -208,7 +208,27 @@ def validate() -> list[str]:
                 f"{path} is required and unset. Set it in {repo_root() / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
     errors.extend(_validate_models(values, provenance))
+    errors.extend(_validate_redaction_words(flat))
     return errors
+
+
+def _validate_redaction_words(flat: dict) -> list[str]:
+    """Each `redaction.extra_words` entry must be a single alphanumeric word.
+
+    `secret_words.looks_like_secret_name` matches whole split words, never substrings — a
+    multi-word entry like `"ID_RSA"` would silently never match anything, which is a worse failure
+    mode than refusing it loudly here.
+    """
+    words = flat.get("redaction.extra_words", [])
+    if not isinstance(words, list):
+        return []
+    return [
+        f"redaction.extra_words contains {word!r}, which is not a single alphanumeric word: "
+        "the matcher compares whole split words, never substrings, so a multi-word entry would "
+        "silently never match anything."
+        for word in words
+        if not (isinstance(word, str) and re.fullmatch(r"[A-Za-z0-9]+", word))
+    ]
 
 
 def env_conflicts() -> list[str]:
@@ -646,6 +666,12 @@ def _self_test() -> None:
                 "redaction.extra_words must widen the config-file secret gate"
             )
             (repo / CONFIG_DIRNAME / LOCAL_FILENAME).unlink()
+
+            write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"redaction": {"extra_words": ["ID_RSA"]}})
+            assert any("ID_RSA" in e and "not a single alphanumeric word" in e for e in validate()), (
+                "a multi-word redaction.extra_words entry must be refused, not silently inert"
+            )
+
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,
                         {"columns": {"ready": "Ready"}, "ci": {"poll_timeout": 90}})
             reset_cache()

@@ -372,18 +372,22 @@ _RENDER_LIMITS: dict[str, int] | None = None
 def render_limits() -> dict[str, int]:
     """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
 
-    Resolved once per process and cached. A repo whose config can't be resolved at all (run
-    outside a checkout, a corrupted layer) falls back to the shipped defaults rather than crashing
-    a render that's usually happening late in a session.
+    Resolved once per process and cached. `sy_config._flatten()` only ever stores leaf keys, so
+    `transcript.truncation_limits` as a whole path is never resolvable — each of its three fields
+    must be fetched individually. A repo whose config can't be resolved at all (run outside a
+    checkout, a corrupted layer) falls back to the shipped defaults rather than crashing a render
+    that's usually happening late in a session.
     """
     global _RENDER_LIMITS
     if _RENDER_LIMITS is None:
         try:
             from sy_config import get as config_get
-            resolved = config_get("transcript.truncation_limits")
+            _RENDER_LIMITS = {
+                key: int(config_get(f"transcript.truncation_limits.{key}"))
+                for key in _DEFAULT_RENDER_LIMITS
+            }
         except SystemExit:
-            resolved = {}
-        _RENDER_LIMITS = {**_DEFAULT_RENDER_LIMITS, **(resolved if isinstance(resolved, dict) else {})}
+            _RENDER_LIMITS = dict(_DEFAULT_RENDER_LIMITS)
     return _RENDER_LIMITS
 
 
@@ -673,6 +677,50 @@ def _self_test() -> None:
             assert "[2026-07-09 10:00:06] USER" in rendered, "genuine user turn after enqueue+remove must render"
         finally:
             LEDGER_ROOT = old_ledger_root
+
+    _test_render_limits_override()
+
+
+def _test_render_limits_override() -> None:
+    """A `transcript.truncation_limits` config override must actually reach `render_limits()`.
+
+    `sy_config._flatten()` only stores leaf keys, so a naive whole-object `get()` on
+    `transcript.truncation_limits` silently raises and gets swallowed — this exercises the real
+    per-leaf resolution path against a live (faked) config layer, not just "it doesn't crash".
+    """
+    import json
+    import tempfile
+
+    import sy_config
+
+    global _RENDER_LIMITS
+    saved_limits = _RENDER_LIMITS
+    original_home, original_repo_root = Path.home, sy_config.repo_root
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        repo = Path(tmp) / "repo"
+        (home / ".shipyard").mkdir(parents=True)
+        (repo / ".shipyard").mkdir(parents=True)
+        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
+        sy_config.repo_root = lambda: repo
+        sy_config.reset_cache()
+        _RENDER_LIMITS = None
+        try:
+            assert render_limits() == _DEFAULT_RENDER_LIMITS, "no override must fall back to shipped defaults"
+
+            (repo / ".shipyard" / "config.json").write_text(
+                json.dumps({"transcript": {"truncation_limits": {"tool_result": 99}}}), encoding="utf-8",
+            )
+            sy_config.reset_cache()
+            _RENDER_LIMITS = None
+            overridden = render_limits()
+            assert overridden["tool_result"] == 99, "a config override must actually change render_limits()"
+            assert overridden["tool_input"] == _DEFAULT_RENDER_LIMITS["tool_input"], "an unset sibling keeps its default"
+        finally:
+            Path.home = original_home  # type: ignore[method-assign]
+            sy_config.repo_root = original_repo_root
+            sy_config.reset_cache()
+            _RENDER_LIMITS = saved_limits
 
 
 def main(argv: list[str] | None = None) -> int:

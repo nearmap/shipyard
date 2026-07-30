@@ -191,8 +191,8 @@
       "properties": {
         "extra_words": {
           "type": "array",
-          "description": "Org-specific credential-name fragments merged into the built-in secret-word list (scripts/secret_words.py) used by scripts/secret_guard.py and scripts/scrub_known_secrets.py.",
-          "items": { "type": "string", "minLength": 1 }
+          "description": "Org-specific credential-name fragments merged into the built-in secret-word list (scripts/secret_words.py) used by scripts/secret_guard.py and scripts/scrub_known_secrets.py. Each entry must be a single alphanumeric word (the matcher is word-based, not substring-based, so a multi-word entry like 'ID_RSA' would silently never match anything).",
+          "items": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9]+$" }
         }
       }
     }

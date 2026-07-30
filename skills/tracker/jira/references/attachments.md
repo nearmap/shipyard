@@ -13,7 +13,7 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py export \
   --output .scratch/$KEY-$KIND-transcript-$(date -u +%Y%m%d%H%M).txt
 ```
 
-`$SESSION_ID` is the current session id; `$KIND` is `ship`, `spec`, or `plan`. The renderer truncates bulky tool output and strips raw-JSONL noise, so the file stays audit-readable. Prefer running the render, scan, and upload from a delegate so the rendered text never enters the caller's context; when that delegation is denied under auto-mode, running them inline via direct Bash is a permitted fallback, provided the rendered transcript is still never read back into the caller's context. Run it as late as the session allows so the captured tail is maximal. Whether this runs at all is gated by `transcript.attach` (off by default — a debug/observability tool, not something most users need; resolve via `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach`, see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`), checked by each calling skill: `/ship` additionally requires the `full` process tier on top of `transcript.attach`; `/spec` and `/plan` gate on `transcript.attach` alone, attaching to the Task and the Epic respectively.
+`$SESSION_ID` is the current session id; `$KIND` is `ship`, `spec`, or `plan`. The renderer truncates bulky tool output and strips raw-JSONL noise, so the file stays audit-readable. Prefer running the render, scan, and upload from a delegate so the rendered text never enters the caller's context; when that delegation is denied under auto-mode, running them inline via direct Bash is a permitted fallback, provided the rendered transcript is still never read back into the caller's context. Run it as late as the session allows so the captured tail is maximal. Whether this runs at all is gated by `transcript.attach` (resolve via `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`), checked by each calling skill: `/ship` additionally requires the `full` process tier on top of `transcript.attach`; `/spec` and `/plan` gate on `transcript.attach` alone, attaching to the Task and the Epic respectively.
 
 ## Secret scan before upload
 
@@ -23,10 +23,11 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py export \
 
       ```bash
       python ${CLAUDE_PLUGIN_ROOT}/scripts/scrub_known_secrets.py scrub \
-        .scratch/PROJ-123-ship-session.txt --require ACLI_TOKEN --report .scratch/scrub-report.json
+        .scratch/PROJ-123-ship-session.txt --require ACLI_TOKEN --report .scratch/scrub-report.json \
+        --extra-words "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get redaction.extra_words)"
       ```
 
-      This rewrites the file in place, replacing every literal occurrence of a credential-shaped env var's current value with `<REDACTED:VAR_NAME>`. It never prints or reports a value, only variable names and counts. `--require ACLI_TOKEN` turns "this process's environment doesn't actually have the token" into a loud failure instead of a silent zero-redaction success — auto-discovery alone only scrubs what's present, so a missing/rotated/unpropagated token would otherwise pass with nothing to show for it.
+      This rewrites the file in place, replacing every literal occurrence of a credential-shaped env var's current value with `<REDACTED:VAR_NAME>`. It never prints or reports a value, only variable names and counts. `--require ACLI_TOKEN` turns "this process's environment doesn't actually have the token" into a loud failure instead of a silent zero-redaction success — auto-discovery alone only scrubs what's present, so a missing/rotated/unpropagated token would otherwise pass with nothing to show for it. `--extra-words` widens auto-discovery to org-specific credential-name fragments (`redaction.extra_words`, empty by default) — always pass it, even empty, so a repo that configures one is covered without a second call site to remember.
 
    b. gitleaks, on the now-prescrubbed file:
 

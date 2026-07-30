@@ -1,8 +1,8 @@
 """Shipyard's `sy` MCP server.
 
-One server, not one per tracker. Everything tracker-specific lives under `mcp/tracker/<name>/`
-and is reached only through `mcp.tracker.adapter()`, mirroring the seam rule CONTRIBUTING.md
-states for `skills/tracker/`. `mcp/tests/test_seam.py` enforces it mechanically.
+One server, not one per tracker. Everything tracker-specific lives under `sy_tools/tracker/<name>/`
+and is reached only through `sy_tools.tracker.adapter()`, mirroring the seam rule CONTRIBUTING.md
+states for `skills/tracker/`. `sy_tools/tests/test_seam.py` enforces it mechanically.
 
 This package deliberately duplicates rather than imports the equivalent `scripts/` and
 `skills/tracker/**` helpers: those stay shipped and unmodified so the CLI deployment keeps

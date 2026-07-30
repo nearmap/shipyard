@@ -1,4 +1,4 @@
-"""GitHub tracker adapter, spoken to only through `mcp.tracker.adapter()`.
+"""GitHub tracker adapter, spoken to only through `sy_tools.tracker.adapter()`.
 
 Ports `skills/tracker/github/gh_project.py`'s `gh` transport rather than importing it: the CLI
 deployment stays byte-identical, and this copy differs in two ways the server requires. It never

@@ -6,7 +6,7 @@ serves every tool call from memory; `reload()` (the `reload_config` tool) is the
 re-read, so a config edit is picked up deliberately rather than racing mid-call.
 
 Values resolve identically to `sy_config.py` — same layer chain, same deep merge, same derived
-defaults, same floor clamping — and `mcp/tests/test_config.py` asserts that parity against
+defaults, same floor clamping — and `sy_tools/tests/test_config.py` asserts that parity against
 `sy_config.py show --json` rather than trusting the reimplementation.
 
 Two pieces of `sy_config.py` are deliberately absent. The retired-environment-variable conflict

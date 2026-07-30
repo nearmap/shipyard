@@ -2,7 +2,7 @@
 
 CONTRIBUTING.md's rule is that exactly one place knows how to talk to a specific tracker.
 `scripts/validate.py`'s `check_seam` enforces that for `skills/tracker/`; this enforces the same
-rule for `mcp/`, where the legal zone is `mcp/tracker/`. It is a pytest check rather than a new
+rule for `sy_tools/`, where the legal zone is `sy_tools/tracker/`. It is a pytest check rather than a new
 entry in `check_seam`'s scan list so `scripts/validate.py` stays untouched by this change.
 
 This file is the one exemption, for the same reason `check_seam` exempts `validate.py`
@@ -48,10 +48,10 @@ def test_only_the_tracker_package_names_a_concrete_tracker():
                 line = text[: match.start()].count("\n") + 1
                 violations.append(f"{path.relative_to(MCP_ROOT.parent)}:{line}: {match.group(0)!r}")
                 break
-    assert not violations, "tracker-native vocabulary outside mcp/tracker/: " + "; ".join(violations)
+    assert not violations, "tracker-native vocabulary outside sy_tools/tracker/: " + "; ".join(violations)
 
 
 def test_the_legal_zone_exists_and_is_where_the_adapters_live():
     adapters = sorted(p.parent.name for p in LEGAL_ZONE.rglob("adapter.py"))
-    assert adapters, "mcp/tracker/ must hold the adapter implementations"
+    assert adapters, "sy_tools/tracker/ must hold the adapter implementations"
     assert (LEGAL_ZONE / "__init__.py").is_file(), "tracker selection must have exactly one home"

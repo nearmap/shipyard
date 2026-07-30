@@ -24,7 +24,7 @@ DEFAULT_MIN_LENGTH = 6
 SCANNER = "gitleaks"
 
 # Kept in step with `scripts/secret_words.py`; duplicated rather than imported so this package
-# stands alone (see the module docstring in `mcp/__init__.py`).
+# stands alone (see the module docstring in `sy_tools/__init__.py`).
 SECRET_WORDS = frozenset({
     "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
     "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",

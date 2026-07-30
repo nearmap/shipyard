@@ -1,6 +1,31 @@
-# Tool configuration only. There is deliberately no `[project]` table and no dependency list:
-# Shipyard ships zero third-party runtime dependencies, and `mcp/` is run in place with
-# `python -m mcp.server`, not installed. `ruff`, `ty`, and `pytest` are CI/dev tools.
+# Tool configuration and the pixi workspace that runs `sy_tools/`. There is deliberately no
+# `[project]` table: `sy_tools/` is run in place with `python -m sy_tools.server` (via the
+# `sy-server` pixi task), not installed as a distribution.
+#
+# Dependencies are floating/lower-bound only. Reproducibility comes from the committed
+# `pixi.lock`, not from manifest pins, so the manifest states real API floors and nothing else.
+
+[tool.pixi.workspace]
+channels = ["https://prefix.dev/github-releases", "conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64", "win-64"]
+
+[tool.pixi.dependencies]
+python = "*"
+gitleaks = "*"
+ruff = "*"
+ty = "*"
+pytest = "*"
+
+# `mcp` pulls both of these in already, but this package imports them directly — the Jira adapter
+# speaks httpx2 and the GitHub adapter offloads its blocking `gh` calls with anyio — so they are
+# declared rather than inherited from a transitive edge that is free to move.
+[tool.pixi.pypi-dependencies]
+mcp = ">=2.0.0"
+httpx2 = "*"
+anyio = "*"
+
+[tool.pixi.tasks]
+sy-server = "python -m sy_tools.server"
 
 [tool.ruff]
 line-length = 120
@@ -17,6 +42,6 @@ force-sort-within-sections = true
 root = ["."]
 
 [tool.pytest.ini_options]
-testpaths = ["mcp"]
+testpaths = ["sy_tools"]
 python_files = ["test_*.py"]
 addopts = "-q"

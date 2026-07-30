@@ -7,8 +7,8 @@ import subprocess
 
 import pytest
 
-from mcp.tracker import TIMEOUT_SECONDS, TrackerError
-from mcp.tracker.github import adapter
+from sy_tools.tracker import TIMEOUT_SECONDS, TrackerError
+from sy_tools.tracker.github import adapter
 
 GIST_URL = "https://gist.github.com/octocat/abc123"
 COMMENT_URL = "https://github.com/octocat/repo/issues/7#issuecomment-1"

@@ -1,9 +1,9 @@
 """The one place that knows which concrete tracker is selected.
 
 `skills/tracker/CONTRACT.md` states that tracker selection happens in exactly one place. This is
-that place for the MCP deployment: every tool in `mcp/server.py` asks `adapter()` for a
+that place for the MCP deployment: every tool in `sy_tools/server.py` asks `adapter()` for a
 `TrackerAdapter` and speaks only canonical verbs to it. Nothing above this module names a
-tracker, and `mcp/tests/test_seam.py` fails the build if anything does.
+tracker, and `sy_tools/tests/test_seam.py` fails the build if anything does.
 """
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from .. import config
 TIMEOUT_SECONDS = 30
 """How long any single tracker transport call may take before it is a failure.
 
-This process is long-lived and serves calls one at a time, so an unbounded network read or a
-`gh` invocation waiting on a credential prompt does not stall one tool — it wedges every tool
-that follows. Every adapter transport passes this to its own timeout and turns the expiry into
-a `TrackerError`.
+The transports are async, so a stalled call no longer wedges the calls queued behind it — but it
+still holds a connection open and leaves its own caller waiting forever, and a `gh` blocked on a
+credential prompt never returns at all. Every adapter transport passes this to its own timeout
+and turns the expiry into a `TrackerError`.
 """
 
 
@@ -28,15 +28,21 @@ class TrackerError(RuntimeError):
 
 @runtime_checkable
 class TrackerAdapter(Protocol):
-    """The canonical-verb surface every adapter implements. Phase 1 covers `attach-artifact`."""
+    """The canonical-verb surface every adapter implements. Phase 1 covers `attach-artifact`.
+
+    The verbs are `async` because both transports are I/O-bound and the server serves calls
+    concurrently: a slow upload must not be able to block an unrelated tool call. An adapter whose
+    transport is only available synchronously (`gh`) still presents an `async` verb and offloads
+    the blocking work to a worker thread, so the seam stays uniform above this module.
+    """
 
     name: str
 
-    def attach_artifact(self, issue: str, path: Path) -> dict:
+    async def attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload an already-sanitised artifact to `issue` and return verified response evidence."""
         ...
 
-    def preflight(self) -> dict:
+    async def preflight(self) -> dict:
         """Confirm credentials and account identifiers are usable, naming nothing secret."""
         ...
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp import secrets
+from sy_tools import secrets
 
 FAKE_TOKEN = "ATATT3xFfGF0-fake-shipyard-fixture-4c8a91e2b7d05f6a1e"
 FAKE_VAR = "SY_TEST_FIXTURE_TOKEN"

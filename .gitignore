@@ -1,6 +1,8 @@
 .scratch/
 __pycache__/
 *.pyc
+# pixi's materialised environment: reproduced from the committed pixi.lock, never committed itself.
+.pixi/
 dev-notes/
 .claude/settings.local.json
 # Shipyard's own settings stay entirely in the gitignored local layer: this repo is public, and a

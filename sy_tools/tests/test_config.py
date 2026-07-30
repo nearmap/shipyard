@@ -1,4 +1,4 @@
-"""`mcp.config` must resolve byte-identically to the shipped CLI resolver.
+"""`sy_tools.config` must resolve byte-identically to the shipped CLI resolver.
 
 The MCP deployment reimplements resolution rather than importing it, so parity is a claim that
 has to be tested, not asserted. Both resolvers run over the same fixture layer chain and their
@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from mcp import config
+from sy_tools import config
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 

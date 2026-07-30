@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from mcp import SERVER_NAME, server
+from sy_tools import SERVER_NAME, server
 
 
 def _roundtrip(*requests: dict) -> list[dict]:

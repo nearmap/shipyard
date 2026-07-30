@@ -13,6 +13,12 @@ assumed from the flags passed: a public gist would publish a transcript irrevoca
 
 Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token, and every
 message built from command output is scrubbed of any credential this process holds.
+
+The canonical verbs are `async` because the seam above this module is uniformly async: the server
+serves calls concurrently, and a slow attachment must not block an unrelated tool call. `gh`
+offers no async transport, so the synchronous transport below is kept verbatim — `_sync_*` bodies
+calling `subprocess.run` — and each verb offloads it to a worker thread. The `subprocess` timeout
+still bounds that thread: a thread blocked forever is a leaked thread, not a served call.
 """
 from __future__ import annotations
 
@@ -21,6 +27,8 @@ from pathlib import Path
 import re
 import subprocess
 from typing import Any
+
+from anyio import to_thread
 
 from ... import config
 from ...secrets import discover_secret_vars, scrub_text
@@ -34,7 +42,15 @@ class GithubAdapter:
 
     name = "github"
 
-    def attach_artifact(self, issue: str, path: Path) -> dict:
+    async def attach_artifact(self, issue: str, path: Path) -> dict:
+        """Upload `path` as a secret gist and link it from a comment on `issue`, off the event loop."""
+        return await to_thread.run_sync(self._sync_attach_artifact, issue, path)
+
+    async def preflight(self) -> dict:
+        """Confirm `gh` is installed and authenticated, off the event loop."""
+        return await to_thread.run_sync(self._sync_preflight)
+
+    def _sync_attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload `path` as a secret gist and link it from a comment on `issue`.
 
         Returns the transport's own evidence: the gist URL it printed, the re-read confirmation
@@ -70,7 +86,7 @@ class GithubAdapter:
             "comment_url": comment_url,
         }
 
-    def preflight(self) -> dict:
+    def _sync_preflight(self) -> dict:
         """Confirm `gh` is installed and authenticated, reporting only non-secret facts."""
         version = _gh(["--version"]).splitlines()
         try:

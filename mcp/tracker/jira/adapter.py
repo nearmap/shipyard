@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 
 from ... import config
-from .. import TrackerError
+from .. import TIMEOUT_SECONDS, TrackerError
 
 TOKEN_ENV = "ACLI_TOKEN"
 API = "/rest/api/3"
@@ -96,17 +96,25 @@ def request(
     data: bytes | None = None,
     headers: dict[str, str] | None = None,
 ) -> tuple[int, object]:
-    """One authenticated REST call, returning `(status, parsed body or None)`."""
+    """One authenticated REST call, returning `(status, parsed body or None)`.
+
+    The timeout is not optional: without it a stalled socket blocks this server forever. It is
+    also not enough to catch `URLError`. `urlopen` wraps a connect-phase timeout in `URLError`,
+    but a stall while reading the response headers or body escapes as a bare `TimeoutError`
+    (`AbstractHTTPHandler.do_open` wraps only the request write), so both are caught here.
+    """
     sent = {"Authorization": auth, "Accept": "application/json"}
     sent.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=sent, method=method)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
             body = resp.read()
             return resp.status, json.loads(body) if body else None
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise TrackerError(f"HTTP {exc.code} from {method} {url}: {detail[:2000]}") from exc
+    except TimeoutError as exc:
+        raise TrackerError(f"{method} {url} timed out after {TIMEOUT_SECONDS}s") from exc
     except urllib.error.URLError as exc:
         raise TrackerError(f"could not reach {url}: {exc.reason}") from exc
 

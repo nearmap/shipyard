@@ -91,7 +91,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Report every reason the resolved configuration would be rejected: schema violations, "
             "missing required keys, an unknown tracker, a required credential absent from the "
-            "environment, and model-floor breaches. Side-effect-free, and never prints a value."
+            "environment, and model-floor breaches. Side-effect-free, and never prints a secret value."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },

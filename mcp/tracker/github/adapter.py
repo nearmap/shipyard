@@ -24,7 +24,7 @@ from typing import Any
 
 from ... import config
 from ...secrets import discover_secret_vars, scrub_text
-from .. import TrackerError
+from .. import TIMEOUT_SECONDS, TrackerError
 
 STDERR_LIMIT = 500
 
@@ -95,11 +95,23 @@ def _repo_args() -> list[str]:
 
 
 def _gh(args: list[str]) -> str:
-    """Run `gh` and return its trimmed stdout. Writes nothing to this process's stdout."""
+    """Run `gh` and return its trimmed stdout. Writes nothing to this process's stdout.
+
+    The timeout bounds a `gh` that never returns — a network stall, or a credential helper
+    prompting on a stdin no one is answering — because this process has other calls to serve.
+    """
     try:
-        proc = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS
+        )
     except FileNotFoundError:
         raise TrackerError("gh is not installed or not on PATH; install the GitHub CLI.") from None
+    except subprocess.TimeoutExpired:
+        raise TrackerError(
+            f"gh {' '.join(args)} did not finish within {TIMEOUT_SECONDS}s and was killed; it may be "
+            "waiting on a credential prompt or a stalled network. Run the same command in a terminal "
+            "to see what it wants."
+        ) from None
     if proc.returncode != 0:
         raise TrackerError(f"gh {' '.join(args)} failed: {_safe(proc.stderr)}")
     return proc.stdout.strip()

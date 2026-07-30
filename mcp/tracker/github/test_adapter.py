@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from mcp.tracker import TrackerError
+from mcp.tracker import TIMEOUT_SECONDS, TrackerError
 from mcp.tracker.github import adapter
 
 GIST_URL = "https://gist.github.com/octocat/abc123"
@@ -20,10 +20,13 @@ class _FakeSubprocess:
     def __init__(self, *results: tuple[int, str, str]) -> None:
         self.results = list(results)
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict[str, object]] = []
         self.PIPE = subprocess.PIPE
+        self.TimeoutExpired = subprocess.TimeoutExpired
 
-    def run(self, argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
+        self.kwargs.append(dict(kwargs))
         assert self.results, f"unexpected extra gh call: {argv}"
         code, out, err = self.results.pop(0)
         return subprocess.CompletedProcess(argv, code, out, err)
@@ -119,6 +122,24 @@ def test_preflight_reports_facts_without_the_token(monkeypatch):
 
     assert facts["account"] == "octocat" and facts["scopes"] == ["gist", "project", "repo"], facts
     assert "gho_exampletokenvalue" not in json.dumps(facts), "preflight must never return a token"
+
+
+def test_a_hung_gh_is_bounded_and_becomes_an_actionable_failure(tmp_path, monkeypatch):
+    """A `gh` that never returns must not wedge a server that has other calls to serve."""
+    fake = _install(monkeypatch, *_happy_path())
+
+    adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+
+    assert all(call["timeout"] == TIMEOUT_SECONDS for call in fake.kwargs), fake.kwargs
+
+    class _Hangs(_FakeSubprocess):
+        def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(argv, TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(adapter, "subprocess", _Hangs())
+    with pytest.raises(TrackerError) as raised:
+        adapter.GithubAdapter().preflight()
+    assert str(TIMEOUT_SECONDS) in str(raised.value), "the failure must name the bound it hit"
 
 
 def test_missing_gh_is_an_actionable_preflight_failure(monkeypatch):

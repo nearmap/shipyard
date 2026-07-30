@@ -10,10 +10,11 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import urllib.error
 
 import pytest
 
-from .. import TrackerError
+from .. import TIMEOUT_SECONDS, TrackerError
 from . import adapter
 
 FAKE_TOKEN = "ATATT3xFfGF0-fake-adapter-fixture-6b21d0e9a7c4"
@@ -99,6 +100,35 @@ def test_the_credential_appears_only_in_the_authorization_header(credentials, ar
     with pytest.raises(TrackerError) as failure:
         adapter.JiraAdapter().attach_artifact("PROJ-1", artifact)
     assert FAKE_TOKEN not in str(failure.value), "a failure message must not leak the credential either"
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        TimeoutError("timed out"),
+        urllib.error.URLError(TimeoutError("timed out")),
+    ],
+    ids=["read-stall", "connect-stall"],
+)
+def test_a_stalled_call_is_bounded_and_becomes_a_tracker_error(monkeypatch, raised):
+    """No REST call may hang this server, and neither shape a timeout takes may escape raw.
+
+    `urlopen` wraps a connect-phase timeout in `URLError`, but a stall reading the response
+    escapes as a bare `TimeoutError`, so the adapter has to catch both.
+    """
+    seen: list[object] = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(timeout)
+        raise raised
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(TrackerError) as failure:
+        adapter.request("GET", "https://example.atlassian.net/rest/api/3/myself", "Basic x")
+
+    assert seen == [TIMEOUT_SECONDS], f"the call must be bounded, got timeout={seen}"
+    assert "example.atlassian.net" in str(failure.value), "the failure must name the call that stalled"
 
 
 def test_missing_inputs_name_what_is_missing(credentials, artifact, monkeypatch):

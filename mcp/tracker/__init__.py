@@ -12,6 +12,15 @@ from typing import Protocol, runtime_checkable
 
 from .. import config
 
+TIMEOUT_SECONDS = 30
+"""How long any single tracker transport call may take before it is a failure.
+
+This process is long-lived and serves calls one at a time, so an unbounded network read or a
+`gh` invocation waiting on a credential prompt does not stall one tool — it wedges every tool
+that follows. Every adapter transport passes this to its own timeout and turns the expiry into
+a `TrackerError`.
+"""
+
 
 class TrackerError(RuntimeError):
     """A tracker operation failed. Raised instead of exiting: the process serves other calls."""
@@ -46,4 +55,4 @@ def adapter() -> TrackerAdapter:
     raise TrackerError(f"no MCP adapter for tracker {name!r}; known adapters: github, jira")
 
 
-__all__ = ["TrackerAdapter", "TrackerError", "adapter"]
+__all__ = ["TIMEOUT_SECONDS", "TrackerAdapter", "TrackerError", "adapter"]

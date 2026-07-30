@@ -162,9 +162,11 @@ Secrets live in the environment and never in a config file. This is not a stylis
 - a config file is greppable and committed-adjacent, and any skill that `cat`s one burns the value into permanent transcript history, where every future transcript render reproduces it;
 - `scripts/secret_guard.py` covers environment-variable dumps as a `PreToolUse` hook; it does not cover file reads.
 
-The resolver enforces the boundary three ways: `get` refuses to *read* a credential-shaped key, `validate` refuses any config layer that *declares* one, and `show` refuses to print anything at all rather than risk echoing one — printing a secret even once makes it a permanent part of whatever transcript ran the command. Detection is by word, so `ACLI_TOKEN` is a secret and `TOKENIZER_PATH` is not.
+The resolver enforces the boundary three ways: `get` refuses to *read* a credential-shaped key, `validate` refuses any config layer that *declares* one, and `show` refuses to print anything at all rather than risk echoing one — printing a secret even once makes it a permanent part of whatever transcript ran the command.
 
-Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env`, and its `ADAPTER.md` explains the one-time login it needs beyond that.
+`validate` doesn't stop at secrets, either: every key in every layer is checked against `config/schema.json`, which declares every legitimate setting — an undeclared key is refused by name whether or not it looks like a secret (a typo like `columns.raedy` is caught the same way `api_token` is), and a declared key with the wrong type, an out-of-enum value, or a value outside its `minimum`/`pattern` is refused too. An undeclared key that *also* looks credential-shaped gets the sharper, specific reason ("keep it in the environment") rather than the generic "not a key config/schema.json declares." Detection of "looks credential-shaped" is by word — `scripts/secret_words.py`, shared with `secret_guard.py` and `scrub_known_secrets.py` — so `ACLI_TOKEN` is a secret and `TOKENIZER_PATH` is not; it exists specifically because those two also have to guard values Shipyard never declared (an unrelated tool's token sitting in the same environment), where a schema-based allowlist wouldn't help.
+
+Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env` (e.g. jira's is `ACLI_TOKEN`), and its `ADAPTER.md` explains the one-time login it needs beyond that.
 
 ## Migrating from the `env` block
 

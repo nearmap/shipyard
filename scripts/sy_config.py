@@ -191,7 +191,7 @@ def validate() -> list[str]:
     errors.extend(env_conflicts())
     for label, path in layers():
         if path.is_file():
-            errors.extend(_secret_keys_in(path, label))
+            errors.extend(_layer_violations(path, label))
     try:
         values, provenance = resolve()
     except SystemExit as exc:
@@ -208,27 +208,7 @@ def validate() -> list[str]:
                 f"{path} is required and unset. Set it in {repo_root() / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
     errors.extend(_validate_models(values, provenance))
-    errors.extend(_validate_redaction_words(flat))
     return errors
-
-
-def _validate_redaction_words(flat: dict) -> list[str]:
-    """Each `redaction.extra_words` entry must be a single alphanumeric word.
-
-    `secret_words.looks_like_secret_name` matches whole split words, never substrings — a
-    multi-word entry like `"ID_RSA"` would silently never match anything, which is a worse failure
-    mode than refusing it loudly here.
-    """
-    words = flat.get("redaction.extra_words", [])
-    if not isinstance(words, list):
-        return []
-    return [
-        f"redaction.extra_words contains {word!r}, which is not a single alphanumeric word: "
-        "the matcher compares whole split words, never substrings, so a multi-word entry would "
-        "silently never match anything."
-        for word in words
-        if not (isinstance(word, str) and re.fullmatch(r"[A-Za-z0-9]+", word))
-    ]
 
 
 def env_conflicts() -> list[str]:
@@ -377,14 +357,94 @@ def _adapter_map() -> dict:
     return _load_json(path) if path.is_file() else {}
 
 
-def _secret_keys_in(path: Path, label: str) -> list[str]:
-    extra = _extra_secret_words()
-    return [
-        f"{label} layer {path} declares {key!r}, which is credential-shaped. Secrets are never read from a "
-        f"config file: keep them in the environment, where scripts/secret_guard.py can cover them."
-        for key in _flatten(_load_json(path))
-        if looks_like_secret_name(key.replace(".", "_"), extra=extra)
-    ]
+_SCHEMA: dict | None = None
+_JSON_TYPES = {"string": str, "boolean": bool, "object": dict, "array": list, "null": type(None)}
+
+
+def _load_schema() -> dict:
+    """`config/schema.json`, memoized. The one place every legitimate config key is declared."""
+    global _SCHEMA
+    if _SCHEMA is None:
+        _SCHEMA = _load_json(plugin_root() / "config" / "schema.json")
+    return _SCHEMA
+
+
+def _matches_type(value: object, expected: str) -> bool:
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected not in _JSON_TYPES:
+        return True  # an unrecognized type name is a schema-authoring bug, not a data bug
+    return isinstance(value, _JSON_TYPES[expected])
+
+
+def _schema_violations(node: dict, value: object, path: str, extra: frozenset[str]) -> list[tuple[str, str]]:
+    """Every way `value` disagrees with schema `node`, as `(kind, message)` pairs.
+
+    `kind` is `"credential"` for an undeclared key that also looks secret-shaped — the specific,
+    actionable case `secret_guard.py` already covers by name — or `"schema"` for everything else:
+    undeclared-and-not-secret-shaped (a typo or stale setting), wrong type, bad enum, pattern
+    mismatch, below minimum. A caller that only cares about the secret-leak case (`show`, which
+    must never print a value) filters on `kind`; `validate` reports every kind.
+
+    Recurses through nested objects/arrays exactly as `config/schema.json` declares them: a
+    `properties` key is a fixed name, `additionalProperties: false` makes every other name a
+    violation, `additionalProperties: <schema>` (e.g. `models.tiers.*`, `models.agents.<name>`)
+    validates an open set of names against one sub-schema, and `additionalProperties: true` (e.g.
+    `tracker_config.*`, adapter-owned) admits anything with no further check.
+    """
+    violations: list[tuple[str, str]] = []
+    types = node.get("type")
+    if types is not None:
+        allowed = [types] if isinstance(types, str) else types
+        if not any(_matches_type(value, t) for t in allowed):
+            violations.append(("schema", f"{path!r} must be one of type {allowed}, got {type(value).__name__}"))
+            return violations  # further checks assume the value is already the right shape
+
+    if "enum" in node and value not in node["enum"]:
+        violations.append(("schema", f"{path!r} must be one of {node['enum']}, got {value!r}"))
+    if isinstance(value, str):
+        if "pattern" in node and not re.fullmatch(node["pattern"], value):
+            violations.append(("schema", f"{path!r} value {value!r} does not match the required pattern {node['pattern']!r}"))
+        if "minLength" in node and len(value) < node["minLength"]:
+            violations.append(("schema", f"{path!r} must be at least {node['minLength']} characters"))
+    if isinstance(value, int) and not isinstance(value, bool) and "minimum" in node and value < node["minimum"]:
+        violations.append(("schema", f"{path!r} must be >= {node['minimum']}, got {value}"))
+    if isinstance(value, list) and "items" in node:
+        for i, item in enumerate(value):
+            violations.extend(_schema_violations(node["items"], item, f"{path}[{i}]", extra))
+    if isinstance(value, dict):
+        properties = node.get("properties", {})
+        additional = node.get("additionalProperties", True)
+        for key, sub_value in value.items():
+            sub_path = f"{path}.{key}" if path else key
+            if key in properties:
+                violations.extend(_schema_violations(properties[key], sub_value, sub_path, extra))
+            elif additional is False:
+                if looks_like_secret_name(sub_path.replace(".", "_"), extra=extra):
+                    violations.append(("credential", (
+                        f"{sub_path!r} is credential-shaped. Secrets are never read from a config file: "
+                        "keep them in the environment, where scripts/secret_guard.py can cover them."
+                    )))
+                else:
+                    violations.append(("schema", (
+                        f"{sub_path!r} is not a key config/schema.json declares — a typo, or a stale/unused setting."
+                    )))
+            elif isinstance(additional, dict):
+                violations.extend(_schema_violations(additional, sub_value, sub_path, extra))
+            # additional is True: adapter-owned (e.g. tracker_config.*) — anything goes, no recursion.
+    return violations
+
+
+def _layer_violations(path: Path, label: str, *, kinds: frozenset[str] | None = None) -> list[str]:
+    """Every schema/credential violation in one layer file, formatted with the layer for attribution.
+
+    `kinds`, when given, keeps only the requested violation kinds — `show` passes
+    `{"credential"}` since a type mismatch risks nothing being printed that shouldn't be.
+    """
+    violations = _schema_violations(_load_schema(), _load_json(path), "", _extra_secret_words())
+    if kinds is not None:
+        violations = [(kind, message) for kind, message in violations if kind in kinds]
+    return [f"{label} layer {path}: {message}" for _, message in violations]
 
 
 def _extra_secret_words() -> frozenset[str]:
@@ -486,7 +546,7 @@ def _show(*, as_json: bool) -> int:
     secret_errors: list[str] = []
     for label, path in layers():
         if path.is_file():
-            secret_errors.extend(_secret_keys_in(path, label))
+            secret_errors.extend(_layer_violations(path, label, kinds=frozenset({"credential"})))
     if secret_errors:
         print("sy_config: refusing to show any value — a config layer declares a credential-shaped key:",
               file=sys.stderr)
@@ -693,17 +753,38 @@ def _self_test() -> None:
             (repo / CONFIG_DIRNAME / LOCAL_FILENAME).unlink()
             reset_cache()
 
-            write_layer(repo / CONFIG_DIRNAME / LOCAL_FILENAME, {"nm_bearer": "not-flagged-yet"})
-            assert not any("nm_bearer" in e for e in validate()), "a name outside the built-in word list is not flagged"
+            # An undeclared key is refused either way, but the *reason* sharpens once it also
+            # looks secret-shaped: generic "not a key schema.json declares" beforehand,
+            # "credential-shaped" once redaction.extra_words widens the match.
+            write_layer(repo / CONFIG_DIRNAME / LOCAL_FILENAME, {"nm_bearer": "not-flagged-as-a-secret-yet"})
+            errors = validate()
+            assert any("nm_bearer" in e and "not a key config/schema.json declares" in e for e in errors), (
+                "an undeclared key must be refused generically when it doesn't look like a secret"
+            )
+            assert not any("nm_bearer" in e and "credential-shaped" in e for e in errors)
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"redaction": {"extra_words": ["BEARER"]}})
             assert any("nm_bearer" in e and "credential-shaped" in e for e in validate()), (
-                "redaction.extra_words must widen the config-file secret gate"
+                "redaction.extra_words must widen the config-file secret gate to the sharper reason"
             )
             (repo / CONFIG_DIRNAME / LOCAL_FILENAME).unlink()
 
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"redaction": {"extra_words": ["ID_RSA"]}})
-            assert any("ID_RSA" in e and "not a single alphanumeric word" in e for e in validate()), (
-                "a multi-word redaction.extra_words entry must be refused, not silently inert"
+            assert any("extra_words[0]" in e and "does not match the required pattern" in e for e in validate()), (
+                "a multi-word redaction.extra_words entry must be refused by the schema's pattern check, not silently inert"
+            )
+
+            write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"ci": {"poll_timeout": "big"}})
+            assert any("ci.poll_timeout" in e and "must be one of type ['integer']" in e for e in validate()), (
+                "a wrong-typed value must be refused by name, not left to crash whatever reads it later"
+            )
+
+            write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"ship": {"merge_strategy": "sqash"}})
+            assert any("ship.merge_strategy" in e and "must be one of ['squash', 'merge', 'rebase']" in e for e in validate()), (
+                "a value outside the declared enum must be refused by name"
+            )
+
+            assert _schema_violations(_load_schema(), _load_json(plugin_root() / "config" / "defaults.json"), "", frozenset()) == [], (
+                "the shipped defaults.json must itself be clean against the schema it ships alongside"
             )
 
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,

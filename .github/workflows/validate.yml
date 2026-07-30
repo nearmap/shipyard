@@ -17,3 +17,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: python scripts/validate.py
+
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Dev/CI tooling only: none of this becomes a runtime dependency of the shipped package,
+      # which stays stdlib-only. Pinned because ty is pre-1.0 and its CLI is still moving.
+      - run: pip install ruff==0.14.5 ty==0.0.65 pytest==8.4.2
+      - run: ruff check mcp/
+      - run: ty check mcp/
+      # The whole package, not just mcp/tests/: the adapter tests live beside their adapters,
+      # inside the mcp/tracker/ seam zone, because their names are tracker-native.
+      - run: pytest mcp/

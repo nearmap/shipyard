@@ -1,0 +1,22 @@
+# Tool configuration only. There is deliberately no `[project]` table and no dependency list:
+# Shipyard ships zero third-party runtime dependencies, and `mcp/` is run in place with
+# `python -m mcp.server`, not installed. `ruff`, `ty`, and `pytest` are CI/dev tools.
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+
+[tool.ty.environment]
+root = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["mcp"]
+python_files = ["test_*.py"]
+addopts = "-q"

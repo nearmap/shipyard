@@ -31,9 +31,11 @@ sentence at every call site. Re-pasted prose drifts in wording the same way a re
 drifts in value, and it was found duplicated word-for-word across four files during this reference's
 own introduction.
 
-**Out of scope:** human-facing overview prose that a person reads, not a session executes —
-`README.md`, `docs/usage.md`, `agent-guide.md`, and a skill's YAML frontmatter `description:`
-(parsed at plugin load, same as `effort:`, and never re-read live mid-run). These may restate a
-default the same way `docs/configuration.md`'s own settings table does for every key — that table
-*is* the one place defaults live for a human to look up, and a short human-readable echo of it in
-overview copy is not the drift this reference guards against.
+**Narrower obligation for human-facing overview prose.** `README.md`, `docs/usage.md`,
+`agent-guide.md`, and a skill's YAML frontmatter `description:` (parsed at plugin load, same as
+`effort:`, and never re-read live mid-run) are read by a person, not executed by a session, so
+"resolve it for real" above doesn't apply to them — there is no run to resolve it in. The
+"never restate a default" rule still does, though: name the config key so a reader knows the
+behavior is configurable, without asserting a specific number. `docs/configuration.md`'s settings
+table is the one place a human looks up an actual default value; every other mention just points
+there.

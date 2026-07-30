@@ -2,7 +2,7 @@
 name: plan
 description: >-
   Turn a large objective or existing Epic into a living roadmap with a configured cap
-  (default four) of active /sy:spec-ready Tasks, real seams, dependency order, and flat
+  (plan.max_active_tasks) of active /sy:spec-ready Tasks, real seams, dependency order, and flat
   tracker execution.
 argument-hint: "[large objective or existing epic key (<epic>)]"
 disable-model-invocation: true

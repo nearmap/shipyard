@@ -8,10 +8,14 @@ setup it verifies changes rarely. This script owns only the fingerprint, cache, 
 mechanics so every adapter shares one cheap short-circuit; what "a real read" means for a
 given tracker stays adapter-side, declared in that adapter's own configuration doc.
 
+The fingerprint folds in the resolved Shipyard config, so a changed setting invalidates the cache
+without the caller listing anything. `--vars` therefore carries only secret env var names, and is
+optional for an adapter that holds no credential in the environment.
+
 Commands:
-  check --tracker <name> --vars A,B,C [--ttl-hours 24]   # exit 0: cached, skip the live check
+  check --tracker <name> [--vars A,B] [--ttl-hours 24]   # exit 0: cached, skip the live check
                                                           # exit 2: no fresh cache, run it
-  record --tracker <name> --vars A,B,C                    # call after the live check just passed
+  record --tracker <name> [--vars A,B]                    # call after the live check just passed
   self-test
 """
 from __future__ import annotations
@@ -64,17 +68,23 @@ def record(tracker: str, var_names: list[str]) -> None:
 
 
 def fingerprint(tracker: str, var_names: list[str]) -> str:
-    """Hash the plugin build, the tracker, and the resolved values of `var_names` (sorted).
+    """Hash the plugin build, the tracker, the resolved config, and the values of `var_names`.
 
-    A changed var value (a rotated token, a switched project) or a new plugin build
-    invalidates the cache automatically; the raw values never leave this process.
+    A changed var value (a rotated token), a changed setting (a switched project, a renamed
+    column), or a new plugin build invalidates the cache automatically; the raw values never
+    leave this process. `var_names` now carries only secrets, since everything else moved into
+    the config file the config fingerprint covers.
     """
+    # Imported here, not at module scope: sy_config imports plugin_build from this module, so a
+    # top-level import either way is circular.
+    from sy_config import fingerprint as config_fingerprint
+
     values = "|".join(f"{name}={os.environ.get(name, '')}" for name in sorted(var_names))
-    digest = hashlib.sha256(f"{_plugin_build()}|{tracker}|{values}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{plugin_build()}|{tracker}|{config_fingerprint()}|{values}".encode()).hexdigest()
     return digest[:16]
 
 
-def _plugin_build() -> str:
+def plugin_build() -> str:
     """The plugin's identity: its git HEAD when `CLAUDE_PLUGIN_ROOT` is a checkout, else its version."""
     root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if not root:
@@ -95,10 +105,9 @@ def _plugin_build() -> str:
 
 
 def _split_vars(raw: str) -> list[str]:
-    names = [v.strip() for v in raw.split(",") if v.strip()]
-    if not names:
-        raise SystemExit("sy_preflight: --vars must list at least one env var name")
-    return names
+    """Secret env var names the liveness check depends on. Empty is legitimate: an adapter may hold
+    no credential in the environment at all, and the config fingerprint still covers its settings."""
+    return [v.strip() for v in raw.split(",") if v.strip()]
 
 
 def _load_cache() -> dict:
@@ -120,11 +129,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     c = sub.add_parser("check", help="exit 0 if a fresh cached liveness check covers this config, else exit 2")
     c.add_argument("--tracker", required=True)
-    c.add_argument("--vars", required=True, help="comma-separated env var names the liveness check depends on")
+    c.add_argument("--vars", default="", help="comma-separated secret env var names the liveness check depends on")
     c.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
     r = sub.add_parser("record", help="record that a live check for this tracker+config just succeeded")
     r.add_argument("--tracker", required=True)
-    r.add_argument("--vars", required=True)
+    r.add_argument("--vars", default="")
     sub.add_parser("self-test", help="offline round-trip against a temporary cache path; no network")
     return parser
 
@@ -141,7 +150,7 @@ def _self_test() -> None:
         CACHE_PATH = Path(tmp) / "sy" / "preflight-cache.json"
         os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
         try:
-            assert _plugin_build() == "unknown", "no CLAUDE_PLUGIN_ROOT must resolve to a stable placeholder"
+            assert plugin_build() == "unknown", "no CLAUDE_PLUGIN_ROOT must resolve to a stable placeholder"
             os.environ["SY_TEST_VAR_A"] = "a@b.c"
             os.environ["SY_TEST_VAR_B"] = "tok-1"
             v = ["SY_TEST_VAR_A", "SY_TEST_VAR_B"]

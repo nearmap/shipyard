@@ -1,0 +1,15 @@
+{
+  "legacy_env": {
+    "ACLI_EMAIL": "tracker_config.email",
+    "ACLI_SITE": "tracker_config.site",
+    "ACLI_PROJECT": "tracker_config.project"
+  },
+  "required": [
+    "tracker_config.email",
+    "tracker_config.site",
+    "tracker_config.project"
+  ],
+  "secret_env": [
+    "ACLI_TOKEN"
+  ]
+}

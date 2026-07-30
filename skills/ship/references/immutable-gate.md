@@ -7,11 +7,13 @@ This phase is a convergence loop owned by a lightweight controller: the frontier
 Resolve once from the actual process environment:
 
 ```text
-REVIEW_MODEL=${SY_FRONTIER_MODEL:-fable}
-REVIEW_MODEL_FALLBACK=${SY_FRONTIER_FALLBACK:-opus}
+REVIEW_MODEL=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent gate)
+REVIEW_MODEL_FALLBACK=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier_fallback)
 ```
 
-Pass `REVIEW_MODEL` as the Agent invocation's **model override**, not merely as prompt text. Record it as `review_model_requested`. The usage transcript later provides `review_model_observed`; do not claim they match until observed.
+Before resolving, compare `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" fingerprint` against the `config_fingerprint` recorded at START. A mismatch means configuration changed mid-run: **stop and report** rather than reviewing at quietly different settings, because a reviewer whose model changed between fix rounds invalidates the comparison this gate exists to make. Re-running `/sy:ship` after an intentional change is the supported path.
+
+Pass `REVIEW_MODEL` as the Agent invocation's **model override**, not merely as prompt text, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Record it as `review_model_requested`. The usage transcript later provides `review_model_observed`; do not claim they match until observed. The resolver has already clamped the value up to `gate`'s floor, so a config attempting a weaker reviewer never reaches here.
 
 If a `sy:gate` invocation returns no verdict because the requested model is unavailable — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a review — do not retry the same model and do not read the empty return as a pass. Re-dispatch once at `REVIEW_MODEL_FALLBACK`, set `review_model_observed` to the model that actually ran, and note the substitution in the coverage comment. If the fallback also cannot run, return `blocked` (review model unavailable) with the pinned SHAs. A model-unavailability failure must never silently promote or bounce the verdict up to the dispatcher.
 
@@ -25,9 +27,9 @@ REVIEWED_SHA=<current PR head SHA>
 TARGET_SHA=<origin/<target branch> SHA at pin time>
 ```
 
-Create a detached review worktree, under the worktree root `${SY_WORKTREE_ROOT:-<repo>-worktrees}` (default: the sibling directory beside the repo), pinned to `REVIEWED_SHA`. Invoke `sy:gate` there with purpose, acceptance criteria, exact SHAs, standards authority, risk lenses, verification obligations, and the compact design contract (plan invariants plus `accepted_deviations` from state). Add `sy:gate` to `agents_used`. Gate verifies HEAD before reviewing.
+Create a detached review worktree, under the resolved worktree root (`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get worktree.root`; defaults to the sibling directory beside the repo), pinned to `REVIEWED_SHA`. Invoke `sy:gate` there with purpose, acceptance criteria, exact SHAs, standards authority, risk lenses, verification obligations, and the compact design contract (plan invariants plus `accepted_deviations` from state). Add `sy:gate` to `agents_used`. Gate verifies HEAD before reviewing.
 
-CI may run concurrently. Separate waiting from triage. Never poll `gh pr checks` or `gh run watch` once per reasoning turn, and never let a monitor self-resume at a turn-budget boundary — on a large matrix that bleeds tokens and the phase never returns. Wait with the single shared token-free background poller — launch `${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr>` with `run_in_background`; it sleeps between checks and exits when nothing is pending, spending no reasoning turns while it waits, and no phase hand-writes its own poller; only once CI is terminal, delegate the diagnosis to a `/sy:ci` subagent (added to `agents_used`) that returns a compact result rather than tailing raw logs. If CI cannot reach a terminal state within a sane bound (`SY_CI_POLL_TIMEOUT`, default 1800s — raise it for repos/matrices known to run long so one poll call spans the wait), return `blocked` (CI pending) with an idempotent checkpoint and the pending run id rather than looping. Never apply fixes to the review checkout. If code changes, finish/cancel stale review, fix in build worktree, push, and create a new immutable review scope.
+CI may run concurrently. Separate waiting from triage. Never poll `gh pr checks` or `gh run watch` once per reasoning turn, and never let a monitor self-resume at a turn-budget boundary — on a large matrix that bleeds tokens and the phase never returns. Wait with the single shared token-free background poller — launch `${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr>` with `run_in_background`; it sleeps between checks and exits when nothing is pending, spending no reasoning turns while it waits, and no phase hand-writes its own poller; only once CI is terminal, delegate the diagnosis to a `/sy:ci` subagent (added to `agents_used`) that returns a compact result rather than tailing raw logs. If CI cannot reach a terminal state within a sane bound (`ci.poll_timeout`, default 1800s — raise it for repos/matrices known to run long so one poll call spans the wait), return `blocked` (CI pending) with an idempotent checkpoint and the pending run id rather than looping. Never apply fixes to the review checkout. If code changes, finish/cancel stale review, fix in build worktree, push, and create a new immutable review scope.
 
 Persist:
 

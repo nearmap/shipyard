@@ -6,13 +6,13 @@ Shipyard is a Claude Code plugin that runs a `plan → spec → ship` delivery l
 
 ## Concept model
 
-- **Tracker**: the pluggable backend — Jira or GitHub Projects — selected by `SY_TRACKER`. Core skills never speak tracker-native vocabulary; only `skills/tracker/<name>/` does.
-- **Five lifecycle columns**: `backlog → ready → in-progress → in-review → done`, mapped to whatever the user's board actually calls them via `SY_*_COLNAME` variables. `blocked` is not a column — it's a tracker-native dependency relationship.
+- **Tracker**: the pluggable backend — Jira or GitHub Projects — selected by the `tracker` config key. Core skills never speak tracker-native vocabulary; only `skills/tracker/<name>/` does.
+- **Five lifecycle columns**: `backlog → ready → in-progress → in-review → done`, mapped to whatever the user's board actually calls them via the `columns.*` config keys. `blocked` is not a column — it's a tracker-native dependency relationship.
 - **Plan**: a living roadmap on one Epic, produced by `/sy:plan`. At most four child tasks are active at once.
 - **Spec**: a single ACTIVE execution plan per task, produced by `/sy:spec <task>` and approved by the user before anything is built. It's stamped with the commit it was planned against. Not every spec ends in a plan — when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead.
 - **Ship**: `/sy:ship <task>` builds the plan in its own worktree, gets CI green, and runs `sy:gate` — an independent reviewer on a frontier model, in an isolated read-only checkout, that must refute-test every bug candidate before reporting it. Head, CI-green, and reviewed commits must converge before it stops.
 - **Merge**: never automatic. The user's explicit word is required every time.
-- **Cross-session memory**: a small, user-global store (`scripts/sy_memory.py`, `SY_MEMORY_DIR`) of durable lessons — a CLI flag with inverted semantics, a silent model fallback — that outlive any one ticket or repo. `/sy:plan` and `/sy:spec` read it early; `/sy:ship` writes to it at the retrospective.
+- **Cross-session memory**: a small, user-global store (`scripts/sy_memory.py`, `memory.dir`) of durable lessons — a CLI flag with inverted semantics, a silent model fallback — that outlive any one ticket or repo. `/sy:plan` and `/sy:spec` read it early; `/sy:ship` writes to it at the retrospective.
 
 ## Installing
 
@@ -41,17 +41,23 @@ Required tools: Claude Code ≥ 2.1.218 (see `docs/installation.md` for the floo
 
 ## Configuring a repo
 
-Configuration is per-repo, in `.claude/settings.json`'s `env` block. Required for every repo:
+Configuration is per-repo, in `.shipyard/config.json`. Environment variables are reserved for secrets — a setting left in the environment is a hard error, not an override. `docs/configuration.md` is the complete reference; never invent a key name, read it from there.
 
-- `SY_BACKLOG_COLNAME`, `SY_READY_COLNAME`, `SY_IN_PROGRESS_COLNAME`, `SY_IN_REVIEW_COLNAME`, `SY_DONE_COLNAME` — the five lifecycle columns, matched case-insensitively to the user's actual board.
-- `SY_TRACKER` — `jira` (default) or `github`.
+Required for every repo:
 
-Then, tracker-specific:
+- `columns.backlog`, `columns.ready`, `columns.in_progress`, `columns.in_review`, `columns.done` — the five lifecycle columns, matched case-insensitively to the user's actual board.
+- `tracker` — `jira` (default) or `github`.
 
-- **Jira**: `ACLI_EMAIL`, `ACLI_SITE`, `ACLI_PROJECT` required; `ACLI_TOKEN` is a secret — put it in `.claude/settings.local.json`, never the shared file.
-- **GitHub**: `SY_GH_PROJECT` (`<owner>/<number>`, e.g. `@me/3`) required; `SY_GH_REPO` only if issues live in a different repo than the one Claude runs in. The board needs a `Status` single-select (one option per column) and a `Type` single-select (`Epic`/`Task`/`Bug`) — see the repo's `docs/github-setup.md` to create them.
+Then, tracker-specific, under `tracker_config`:
 
-Optional knobs worth knowing: `SY_FRONTIER_MODEL` (default `fable`) is the `sy:gate` reviewer's model, and what a ship profile's `frontier` resolves to for any phase that states it — a quality floor, set it to the strongest available model, not a cost dial. `SY_DEBATE_MODEL` (default `opus`) is the model `sy:debate` uses to pressure-test the core decision behind every `/sy:plan` roadmap, `/sy:spec` plan, and `/sy:spike` verdict — same quality-floor rule. `SY_WORKTREE_ROOT` defaults to a sibling `<repo>-worktrees/` directory beside the repo. `SY_MEMORY_DIR` (default `~/.claude/shipyard/memory`) relocates the cross-session memory store — it's user-global and cross-repo, so most setups never need to touch it.
+- **Jira**: `tracker_config.site` and `tracker_config.project` in the committed layer; `tracker_config.email` in the gitignored `.shipyard/config.local.json` (it is per-person but not a secret). `ACLI_TOKEN` **is** a secret: it stays in the environment and never enters a config file.
+- **GitHub**: `tracker_config.project` (`<owner>/<number>`, e.g. `@me/3`) required; `tracker_config.repo` only if issues live in a different repo than the one Claude runs in. The board needs a `Status` single-select (one option per column) and a `Type` single-select (`Epic`/`Task`/`Bug`) — see the repo's `docs/github-setup.md` to create them.
+
+Migrating an existing repo off the old `env` block is one command — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" migrate --settings .claude/settings.json --out .shipyard/config.json` — then delete the migrated keys from the `env` block, since leaving both is a deliberate failure. `/sy:init-repo` does this interactively.
+
+Optional settings worth knowing: `models.tiers.frontier` (default `fable`) is what the `sy:gate` reviewer runs at, and what a ship profile's `frontier` resolves to for any phase that states it — a quality floor, set it to the strongest available model, not a cost dial. Per-agent bindings live under `models.agents.<name>.model` and take effect on the next dispatch; `config/floors.json` pins a floor per agent that no config can lower, so economising `sy:hunt` is fine and weakening `sy:gate` is refused by name. `worktree.root` defaults to a sibling `<repo>-worktrees/` directory beside the repo. `memory.dir` (default `~/.claude/shipyard/memory`) relocates the cross-session memory store — it's user-global and cross-repo, so most setups never need to touch it. Per-agent **effort** is not settable at runtime; say so plainly if asked, rather than implying a config edit changes it.
+
+Verify any setup with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show` (every value plus the layer it came from) and `validate` (every problem, each naming its key and layer).
 
 If the user chose `project` scope above and wants every collaborator to get Shipyard on clone without each person running `marketplace add` themselves, add `extraKnownMarketplaces` alongside `enabledPlugins` in the same `.claude/settings.json`:
 
@@ -61,7 +67,7 @@ If the user chose `project` scope above and wants every collaborator to get Ship
     "shipyard": { "source": { "source": "github", "repo": "nearmap/shipyard" } }
   },
   "enabledPlugins": { "sy@shipyard": true },
-  "env": { "SY_TRACKER": "...", "...": "..." }
+  "enabledPlugins": { "sy@shipyard": true }
 }
 ```
 
@@ -88,18 +94,18 @@ Ask the tracker and its identifiers up front (see step 2 below) — they're thin
 
 ## Diagnosis recipes
 
-Once the plugin is loaded, a question about Shipyard itself — not the recipes below, but anything else, like "what env var sets the gate model" — is `/sy:help <question>`, not a guess from memory: it reads `docs/settings.md`, this guide, and the relevant skill/agent files, and cites its source.
+Once the plugin is loaded, a question about Shipyard itself — not the recipes below, but anything else, like "what setting controls the gate model" — is `/sy:help <question>`, not a guess from memory: it reads `docs/configuration.md`, this guide, and the relevant skill/agent files, and cites its source.
 
-- Any command stops immediately with a named `## Action needed` block, before doing any real work: that's the tracker preflight — config is missing or present-but-dead (revoked token, login never done, wrong project key). The message names the exact gap; the fix is usually re-running `/sy:init-repo`, or (for a teammate joining an already-configured repo) just supplying their own personal credential in `.claude/settings.local.json`.
+- Any command stops immediately with a named `## Action needed` block, before doing any real work: that's the tracker preflight — config is missing or present-but-dead (revoked token, login never done, wrong project key). The message names the exact gap; the fix is usually re-running `/sy:init-repo`, or (for a teammate joining an already-configured repo) just exporting their own personal credential in the environment.
 - `/sy:ship` refuses to build: the plan's base commit has drifted from `origin/main` — re-run `/sy:spec` to refresh it.
-- The reviewer seems to be running the wrong model: check `CLAUDE_CODE_SUBAGENT_MODEL` isn't set — it silently overrides `SY_FRONTIER_MODEL`/`SY_IMAGE_MODEL`/`SY_DEBATE_MODEL`. `./install.sh` warns about this.
+- The reviewer seems to be running the wrong model: check `CLAUDE_CODE_SUBAGENT_MODEL` isn't set — it outranks the per-invocation model parameter and silently reroutes every agent off whatever the resolver decided. `sy_config.py validate` and `./install.sh` both fail on it. Otherwise run `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent gate --json`, which reports the resolved model, what config asked for, and whether a floor clamped it.
 - A tracker verb is missing or behaves oddly: it belongs in `skills/tracker/<name>/ADAPTER.md` — never in a core skill or agent.
 - Ship stops before attaching a transcript: `gitleaks` isn't installed — it's a hard gate, not a warning.
-- The GitHub tracker preflight fails on a missing `gh`: hard error for `SY_TRACKER=github` (soft warning for `jira`).
+- The GitHub tracker preflight fails on a missing `gh`: hard error for `"tracker": "github"` (soft warning for `jira`).
 
 ## Key rules for guidance
 
-- Don't invent `SY_*` variable names, column values, or tracker fields — the authoritative list is `docs/settings.md`; read it rather than guessing.
+- Don't invent config key names, column values, or tracker fields — the authoritative list is `docs/configuration.md`; read it rather than guessing, or run `sy_config.py show` to see what this repo actually resolves.
 - Never suggest merging on the user's behalf or imply a merge happened automatically — nothing merges without their explicit word, by design.
 - Keep tracker vocabulary (`jira`, `acli`, `gh issue`, ADF, …) out of anything described as core when discussing the codebase — that seam is enforced by `scripts/validate.py`.
 - Task/issue IDs (`PROJ-123`, `#123`) pass straight through to the tracker — don't reformat or reinterpret them.

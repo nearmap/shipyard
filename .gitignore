@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 dev-notes/
+.claude/settings.local.json
+# Shipyard's own settings stay entirely in the gitignored local layer: this repo is public, and a
+# committed layer here would publish internal board vocabulary and the tracker host. Consuming
+# repos are expected to commit .shipyard/config.json — see docs/configuration.md.
+.shipyard/

@@ -11,16 +11,16 @@ Run it after the normal research pass (sweep/seam/trace as applicable), so the d
 ## Dispatch it
 
 ```text
-DEBATE_MODEL=${SY_DEBATE_MODEL:-opus}
+DEBATE_MODEL=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent debate)
 ```
 
-Dispatch `sy:debate` once, foreground, with the explicit `model` override `DEBATE_MODEL` (an `Agent` call does not inherit the parent's model) plus, in the prompt itself:
+Dispatch `sy:debate` once, foreground, with the explicit `model` override `DEBATE_MODEL` (an `Agent` call does not inherit the parent's model — see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`) plus, in the prompt itself:
 
 - the decision under debate — the core premise or approach — as a single neutral sentence, not pre-weighted toward either side;
 - the seed evidence already gathered — paths, findings, anchors — so it isn't rediscovered;
-- the literal `DEBATE_MODEL` string, for `sy:debate` to forward to its own nested dispatches.
+- the literal `DEBATER_MODEL` string — `$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent debater)` — for `sy:debate` to forward to each of its own nested dispatches, which inherit nothing.
 
-Raise `DEBATE_MODEL` (e.g. to the frontier tier, `${SY_FRONTIER_MODEL:-fable}`) for a fork whose blast radius justifies the extra cost; the default floor is opus because this is a judgment task, not a lookup.
+Raise `DEBATE_MODEL` (e.g. to the frontier tier, `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier`) for a fork whose blast radius justifies the extra cost; the default floor is opus because this is a judgment task, not a lookup.
 
 ## Hand it back
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Trigger/trace event log for building Shipyard eval harnesses against real runs.
 
-Disabled by default — zero cost unless SY_DEBUG_EVALS is truthy. When enabled, appends one
+Disabled by default — zero cost unless `debug.evals` is true. When enabled, appends one
 compact JSON line per hook firing to ~/.claude/shipyard/eval-events/<session_id>.jsonl: which
 skill or subagent triggered (Trigger), and the tool-call sequence around it (Trace). Keyed by
 session_id under the home directory, like session_usage.py's usage-agent-map ledger, rather
 than a repo-local .scratch/ — a ship build/gate subagent's cwd is a worktree under
-SY_WORKTREE_ROOT, which is deleted after use, so a cwd-relative path would fragment one
+the resolved worktree root, which is deleted after use, so a cwd-relative path would fragment one
 session's trace across directories and lose the worktree-side events entirely. Wired into
 every PreToolUse call, not just the mutating ones review_guard.py cares about, because
 Trigger/Trace evals need to see Skill and Agent invocations too.
@@ -22,6 +22,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from sy_config import get as config_get
 
 SCHEMA = "shipyard.eval_events.v1"
 AGENT_TOOL_NAMES = {"Agent", "Task"}
@@ -29,7 +30,15 @@ EVENTS_ROOT = Path.home() / ".claude" / "shipyard" / "eval-events"
 
 
 def enabled() -> bool:
-    return os.environ.get("SY_DEBUG_EVALS", "").strip().lower() in {"1", "true", "yes"}
+    """Whether the event log is on, per `debug.evals`.
+
+    This runs on every hook firing, so a misconfigured repo must not turn every tool call into a
+    hard failure: an unresolvable config leaves the log off, exactly as an unset var used to.
+    """
+    try:
+        return bool(config_get("debug.evals"))
+    except SystemExit:
+        return False
 
 
 def normalize_agent_type(agent_type: str | None) -> str:

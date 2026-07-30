@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json",
+  "title": "Shipyard configuration",
+  "description": "Non-secret Shipyard configuration. Resolved by scripts/sy_config.py across three layers, lowest precedence first: ~/.shipyard/config.json, <repo>/.shipyard/config.json (committed), <repo>/.shipyard/config.local.json (gitignored). Secrets never belong here — the resolver refuses any credential-shaped key.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "tracker": {
+      "type": "string",
+      "description": "Which tracker adapter to use. Must name a directory under skills/tracker/.",
+      "minLength": 1
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root": {
+          "type": ["string", "null"],
+          "description": "Directory holding /sy:ship worktrees. Null means a sibling <repo>-worktrees/ beside the repo."
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": ["string", "null"],
+          "description": "Memory store root. Null means ~/.claude/shipyard/memory."
+        }
+      }
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "evals": {
+          "type": "boolean",
+          "description": "Write the trigger/trace event log."
+        }
+      }
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "poll_timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds before the CI poller gives up."
+        },
+        "poll_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Seconds between CI poll attempts."
+        }
+      }
+    },
+    "columns": {
+      "type": "object",
+      "description": "Board column names for the five canonical statuses. All five are required; matching is case-insensitive.",
+      "additionalProperties": false,
+      "properties": {
+        "backlog": { "type": ["string", "null"] },
+        "ready": { "type": ["string", "null"] },
+        "in_progress": { "type": ["string", "null"] },
+        "in_review": { "type": ["string", "null"] },
+        "done": { "type": ["string", "null"] }
+      }
+    },
+    "tracker_config": {
+      "type": "object",
+      "description": "Adapter-specific configuration. The resolver passes this through uninterpreted; the selected adapter declares its own required keys in its ADAPTER.md and config-map.json.",
+      "additionalProperties": true
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tiers": {
+          "type": "object",
+          "description": "Named tiers mapped to concrete model aliases, so raising the frontier tier is one edit rather than thirteen.",
+          "additionalProperties": { "type": "string" }
+        },
+        "agents": {
+          "type": "object",
+          "description": "Per-agent bindings. `model` is either a tier name or a concrete model alias, resolved at dispatch. `effort` is policy the resolver clamps and validates; per-agent effort is NOT settable at dispatch time (see docs/configuration.md).",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "model": { "type": "string", "minLength": 1 },
+              "effort": {
+                "type": "string",
+                "enum": ["low", "medium", "high", "xhigh", "max"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

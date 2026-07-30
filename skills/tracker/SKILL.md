@@ -14,37 +14,44 @@ $ARGUMENTS
 
 ## Select the adapter
 
-Resolve the tracker with the standard precedence — env var, then project settings, then default:
+Resolve the tracker through the config resolver, which owns the layer precedence:
 
-```text
-SY_TRACKER = jira | github        # default: jira
+```bash
+TRACKER=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker)
 ```
 
 Then load exactly two files and use nothing else for tracker mechanics:
 
 1. `${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md` — the canonical verbs, statuses, and types.
-2. `${CLAUDE_PLUGIN_ROOT}/skills/tracker/${SY_TRACKER}/ADAPTER.md` — the native implementation.
+2. `${CLAUDE_PLUGIN_ROOT}/skills/tracker/${TRACKER}/ADAPTER.md` — the native implementation.
 
-This is the **single point** where tracker selection happens. No other skill or agent branches on the tracker. Fail fast before any work when:
+This is the **single point** where tracker selection happens. No other skill or agent branches on the tracker. One command covers every presence check below, and fails with the offending key and the layer it came from:
 
-- `SY_TRACKER` is set to anything other than `jira` or `github`;
-- any required column-name env var is unset — `SY_BACKLOG_COLNAME`, `SY_READY_COLNAME`, `SY_IN_PROGRESS_COLNAME`, `SY_IN_REVIEW_COLNAME`, `SY_DONE_COLNAME` (read from the repo's `.claude/settings.json` `env`; shared by every adapter);
-- the selected adapter's required configuration is absent (each adapter lists it and self-checks).
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate
+```
+
+It fails fast before any work when:
+
+- `tracker` names no adapter under `skills/tracker/`;
+- any required column name is unset — `columns.backlog`, `columns.ready`, `columns.in_progress`, `columns.in_review`, `columns.done` (shared by every adapter);
+- the selected adapter's required configuration is absent (each adapter declares it in its own `config-map.json`);
+- a retired `SY_*` environment variable is still set, which is an error rather than an override.
 
 Report the actionable error and stop; never fall through to a default that silently writes to the wrong system.
 
 ### Liveness: cached, not just presence
 
-The three presence checks above do not prove the config is *live* — a credential can be set and still be dead. Once presence passes, run the adapter's declared preflight hook (its own `ADAPTER.md` documents what "a real read" means for that tracker), gated by the shared cache so the network read does not repeat on every invocation:
+The presence checks above do not prove the config is *live* — a credential can be set and still be dead. Once presence passes, run the adapter's declared preflight hook (its own `ADAPTER.md` documents what "a real read" means for that tracker), gated by the shared cache so the network read does not repeat on every invocation:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker "$SY_TRACKER" --vars <adapter's required-var list, comma-separated>
+python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker "$TRACKER" --vars <adapter's secret env var list, comma-separated; omit if it has none>
 ```
 
 Exit `0` means a prior live check for this exact tracker/config is still fresh — proceed with no network call. Exit `2` means run the adapter's live-check command now; on success, record it so the next invocation gets the cached exit:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker "$SY_TRACKER" --vars <same list>
+python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker "$TRACKER" --vars <same list>
 ```
 
 A failure at any step — presence or liveness — stops here with the single named `## Action needed` block `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md` defines; never a fall-through and never a crash discovered later inside a write.
@@ -88,4 +95,4 @@ Core speaks only the contract: canonical verbs (`create-issue`, `create-child`, 
 
 ## References: load only when needed
 
-- `${SY_TRACKER}/references/*` — adapter-specific cookbooks and setup.
+- `${TRACKER}/references/*` — adapter-specific cookbooks and setup.

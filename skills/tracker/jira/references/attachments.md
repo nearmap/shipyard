@@ -53,7 +53,7 @@ python ${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py attach \
   PROJ-123 .scratch/PROJ-123-ship-session.txt
 ```
 
-The helper reads `ACLI_EMAIL`, `ACLI_TOKEN`, and optional `ACLI_SITE` from the environment. It prints created attachment metadata. Treat HTTP errors, empty results, or filename mismatch as failure.
+The helper reads `tracker_config.email` and `tracker_config.site` from resolved config and the `ACLI_TOKEN` secret from the environment. It prints created attachment metadata. Treat HTTP errors, empty results, or filename mismatch as failure.
 
 Rules:
 

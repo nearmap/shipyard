@@ -22,15 +22,15 @@ Every body and comment the toolbox produces is **Markdown**. The adapter renders
 
 Shipyard is opinionated about the **five** lifecycle columns and their workflow mapping — not their names. Core uses only these canonical tokens; each adapter maps a token to the tracker's actual column via a **required per-repo env var**. Matching is case-insensitive.
 
-| Canonical | Column env var | Set when | Meaning |
+| Canonical | Column config key | Set when | Meaning |
 |---|---|---|---|
-| `backlog` | `SY_BACKLOG_COLNAME` | `/sy:plan` creates the item | queued, not yet specced |
-| `ready` | `SY_READY_COLNAME` | `/sy:spec` plan approved | specced, ready to build |
-| `in-progress` | `SY_IN_PROGRESS_COLNAME` | `/sy:ship` builds | active build |
-| `in-review` | `SY_IN_REVIEW_COLNAME` | gate on a reviewable PR | reviewable gated PR exists |
-| `done` | `SY_DONE_COLNAME` | merge | terminal (inspect closure reason — see below) |
+| `backlog` | `columns.backlog` | `/sy:plan` creates the item | queued, not yet specced |
+| `ready` | `columns.ready` | `/sy:spec` plan approved | specced, ready to build |
+| `in-progress` | `columns.in_progress` | `/sy:ship` builds | active build |
+| `in-review` | `columns.in_review` | gate on a reviewable PR | reviewable gated PR exists |
+| `done` | `columns.done` | merge | terminal (inspect closure reason — see below) |
 
-The column-name env vars are **required** and read from the repo's `.claude/settings.json` `env`, so different repos on one machine can use different board labels while every adapter reads the same vars — the same config drives whichever tracker the repo uses.
+The column names are **required** and resolved from the repo's `.shipyard/config.json`, so different repos on one machine can use different board labels while every adapter reads the same keys — the same config drives whichever tracker the repo uses.
 
 **`blocked` is not a status.** A blocking relationship is expressed with `add-dependency`; the tracker surfaces it natively (Jira link / GitHub blocked indicator).
 
@@ -76,6 +76,7 @@ A `task`/`bug` carries at most one execution plan whose status is ACTIVE. Supers
 
 ## Configuration
 
-- `SY_TRACKER` = `jira` | `github` (default `jira`). Selects the adapter.
-- **Required column names** (all trackers), from the repo's `.claude/settings.json` `env`: `SY_BACKLOG_COLNAME`, `SY_READY_COLNAME`, `SY_IN_PROGRESS_COLNAME`, `SY_IN_REVIEW_COLNAME`, `SY_DONE_COLNAME`. Missing values fail fast.
-- Each adapter declares its own additional configuration and fails fast when it is missing.
+- `tracker` = `jira` | `github` (default `jira`). Selects the adapter.
+- **Required column names** (all trackers), from the repo's `.shipyard/config.json`: `columns.backlog`, `columns.ready`, `columns.in_progress`, `columns.in_review`, `columns.done`. Missing values fail fast.
+- Each adapter declares its own additional configuration in its `config-map.json` and fails fast when it is missing.
+- Secrets are never config: they stay in the environment. See `docs/configuration.md`.

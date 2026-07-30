@@ -24,11 +24,11 @@ Suggest, as a single optional aside (not an `## Action needed` block, per `${CLA
 Parent-owned, resolved once before START is dispatched (this worker never picks its own model), from the plan's ship profile and the actual process environment:
 
 ```text
-START_MODEL=<the plan's stated START model, literally, or ${SY_FRONTIER_MODEL:-fable} when it states "frontier">
-START_MODEL_FALLBACK=${SY_FRONTIER_FALLBACK:-opus}
+START_MODEL=<the plan's stated START model, literally, or `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier` when it states "frontier">
+START_MODEL_FALLBACK=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier_fallback)
 ```
 
-Pass `START_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-start`'s own frontmatter model wins and START silently runs below the plan's tier — a failure only visible later through usage-transcript archaeology. Never resolve below `sonnet`, the `ship-start` floor; a lower stated model is clamped up to it. The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `start_model_requested`; the usage transcript later provides `start_model_observed`, so do not claim they match until observed.
+Pass `START_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-start`'s own frontmatter model wins and START silently runs below the plan's tier — a failure only visible later through usage-transcript archaeology. Never resolve below `ship-start`'s floor in `config/floors.json`; a lower stated model is clamped up to it by the resolver (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`). The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `start_model_requested`; the usage transcript later provides `start_model_observed`, so do not claim they match until observed.
 
 If START cannot run at the requested model — a spend cap, a rate limit, or a `<synthetic>` refusal in place of a return — re-dispatch once at `START_MODEL_FALLBACK` clamped up to the `sonnet` floor, and set `start_model_observed` to the model that actually ran, per the same rule as gate. A plan written in the old single-word profile format, or one whose START tier is otherwise ambiguous, is never guessed upward: it resolves to the `sonnet` floor.
 
@@ -38,8 +38,8 @@ If START cannot run at the requested model — a spend cap, a rate limit, or a `
 2. run the sibling/stacked-PR scan: list open PRs, local and remote branches, and existing worktrees that touch the same surface. Overlap with an open sibling or stacked PR is resolved before branching — coordinate with it, stack on it explicitly, or stop — and the scan result is recorded in state so later phases inherit it;
 3. check plan-base freshness: diff the plan's `PLAN_BASE_SHA` against the fresh target/integration branch (`origin/main` where that is the target). Unrelated drift → continue. Drift touching plan anchors/dependencies → inspect those changes before building. Material contract or architecture drift → stop and return to `/sy:spec`;
 4. branch from the fresh target/integration branch;
-5. create the dedicated build worktree under the worktree root `${SY_WORKTREE_ROOT:-<repo>-worktrees}` (default: the sibling directory beside the repo; never inside it) and record its absolute path;
-6. write local resume state:
+5. create the dedicated build worktree under the resolved worktree root (`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get worktree.root`; defaults to the sibling directory beside the repo, never inside it) and record its absolute path;
+6. write local resume state, stamping the resolved-config fingerprint alongside the pinned SHAs — same discipline, same reason: a setting that changes mid-run silently changes what later phases do, so it is pinned and compared rather than re-read:
 
 ```yaml
 task: TASK-123
@@ -47,6 +47,7 @@ branch: task-123-example
 worktree: /abs/path
 plan_base_sha: <from ACTIVE plan>
 ship_base_sha: <fresh origin/main>
+config_fingerprint: <python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" fingerprint>
 process_tier: full
 pr: null
 head_sha: null

@@ -21,6 +21,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
+    "config",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -30,9 +31,26 @@ CANONICAL_VERBS = {
     "attach-artifact", "link-pr",
 }
 CANONICAL_STATUSES = {"backlog", "ready", "in-progress", "in-review", "done"}
-COLUMN_ENV = {
-    "SY_BACKLOG_COLNAME", "SY_READY_COLNAME", "SY_IN_PROGRESS_COLNAME",
-    "SY_IN_REVIEW_COLNAME", "SY_DONE_COLNAME",
+COLUMN_KEYS = {
+    "columns.backlog", "columns.ready", "columns.in_progress", "columns.in_review", "columns.done",
+}
+
+# Settings that used to be environment variables. `scripts/sy_config.py` is now the only reader;
+# any other file naming one is either a missed cut-over or a second resolution path for one key.
+LEGACY_CONFIG_ENV = {
+    "SY_TRACKER", "SY_WORKTREE_ROOT", "SY_MEMORY_DIR", "SY_DEBUG_EVALS", "SY_CI_POLL_TIMEOUT",
+    "SY_BACKLOG_COLNAME", "SY_READY_COLNAME", "SY_IN_PROGRESS_COLNAME", "SY_IN_REVIEW_COLNAME",
+    "SY_DONE_COLNAME", "SY_FRONTIER_MODEL", "SY_FRONTIER_FALLBACK", "SY_IMAGE_MODEL",
+    "SY_DEBATE_MODEL", "SY_GH_PROJECT", "SY_GH_REPO",
+}
+# The resolver owns the legacy map; the adapters own their own names; the docs explain the
+# migration. Everything else must go through `sy_config.py get`.
+CONFIG_ENV_ALLOWED = {
+    "scripts/sy_config.py",
+    "scripts/validate.py",
+    "docs/configuration.md",
+    "skills/tracker/jira/config-map.json",
+    "skills/tracker/github/config-map.json",
 }
 
 # Tracker vocabulary legal ONLY inside skills/tracker/ (docs and README are not scanned).
@@ -50,6 +68,14 @@ TRACKER_TOKENS = [
 REQUIRED = {
     ".claude-plugin/plugin.json",
     "hooks/hooks.json",
+    "config/defaults.json",
+    "config/floors.json",
+    "config/schema.json",
+    "docs/configuration.md",
+    "scripts/sy_config.py",
+    "skills/config/SKILL.md",
+    "skills/tracker/jira/config-map.json",
+    "skills/tracker/github/config-map.json",
     "scripts/session_usage.py",
     "scripts/review_guard.py",
     "scripts/eval_events.py",
@@ -83,6 +109,7 @@ REQUIRED = {
     "skills/shared/references/scope-discipline.md",
     "skills/shared/references/preflight.md",
     "skills/shared/references/debate.md",
+    "skills/shared/references/model-dispatch.md",
     "skills/plan/references/new-objective.md",
     "skills/plan/references/reentry.md",
     "skills/plan/references/roadmap-shaping.md",
@@ -176,6 +203,120 @@ def check_seam(errors: list[str]) -> None:
                 break
 
 
+def check_config_seam(errors: list[str]) -> None:
+    """No file but the resolver may name a config setting's old environment variable.
+
+    Same shape as check_seam: one mechanical rule replacing a promise that a settings value is
+    read in exactly one place. A stray name here means two code paths resolve one key, which is
+    what made the old secret/config boundary illegible.
+    """
+    for p in sorted(ROOT.rglob("*")):
+        if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
+            continue
+        rel = str(p.relative_to(ROOT))
+        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/")):
+            continue
+        text = p.read_text(encoding="utf-8")
+        for var in sorted(LEGACY_CONFIG_ENV):
+            if var in text:
+                line = text[: text.index(var)].count("\n") + 1
+                fail(
+                    f"CONFIG SEAM: {rel}:{line}: names retired env var {var}; read it with "
+                    f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" get <key>` instead",
+                    errors,
+                )
+                break
+
+
+def check_agent_floors(errors: list[str]) -> None:
+    """Every agent has a declared floor and a default binding, and its frontmatter honours both.
+
+    Shipyard's central invariant — model tier is a quality floor, not a cost dial — lived only in
+    prose across six files. This is the deterministic half: the shipped default may not sit below
+    the shipped floor, and every agent must appear in both files so a new agent cannot ship
+    unbounded.
+    """
+    order = ("haiku", "sonnet", "opus", "fable")
+    efforts = ("low", "medium", "high", "xhigh", "max")
+    try:
+        floors = json.loads((ROOT / "config/floors.json").read_text(encoding="utf-8"))
+        defaults = json.loads((ROOT / "config/defaults.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"config/floors.json or config/defaults.json unreadable: {exc}", errors)
+        return
+    tiers = defaults.get("models", {}).get("tiers", {})
+    bindings = defaults.get("models", {}).get("agents", {})
+    for agent in sorted(EXPECTED_AGENTS):
+        if agent not in floors:
+            fail(f"config/floors.json: no floor declared for agent {agent!r}", errors)
+        if agent not in bindings:
+            fail(f"config/defaults.json: no models.agents entry for agent {agent!r}", errors)
+        if agent not in floors or agent not in bindings:
+            continue
+        floor_model = tiers.get(floors[agent].get("min_model"), floors[agent].get("min_model"))
+        bound_model = tiers.get(bindings[agent].get("model"), bindings[agent].get("model"))
+        if floor_model in order and bound_model in order and order.index(bound_model) < order.index(floor_model):
+            fail(
+                f"config/defaults.json: {agent} defaults to {bound_model!r}, below its declared floor "
+                f"{floor_model!r} in config/floors.json",
+                errors,
+            )
+        floor_effort = floors[agent].get("min_effort")
+        bound_effort = bindings[agent].get("effort")
+        if floor_effort in efforts and bound_effort in efforts and efforts.index(bound_effort) < efforts.index(floor_effort):
+            fail(
+                f"config/defaults.json: {agent} defaults to effort {bound_effort!r}, below its declared floor "
+                f"{floor_effort!r}",
+                errors,
+            )
+        if not floors[agent].get("why"):
+            fail(f"config/floors.json: {agent} has no `why`, so the refusal message would be unactionable", errors)
+    for agent in sorted(set(floors) - EXPECTED_AGENTS):
+        fail(f"config/floors.json: floor declared for unknown agent {agent!r}", errors)
+
+
+def check_agent_frontmatter_tiers(errors: list[str]) -> None:
+    """Every agent declares both model and effort, and neither sits below its floor.
+
+    Frontmatter is the load-time floor: model is overridden at dispatch from resolved config, but
+    effort cannot be, so a missing or below-floor `effort:` is the one that silently ships weaker.
+    """
+    order = ("haiku", "sonnet", "opus", "fable")
+    efforts = ("low", "medium", "high", "xhigh", "max")
+    try:
+        floors = json.loads((ROOT / "config/floors.json").read_text(encoding="utf-8"))
+        tiers = json.loads((ROOT / "config/defaults.json").read_text(encoding="utf-8"))
+        tiers = tiers.get("models", {}).get("tiers", {})
+    except (OSError, json.JSONDecodeError):
+        return
+    for p in sorted((ROOT / "agents").glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
+        model = re.search(r"^model:\s*(\S+)", block, re.M)
+        effort = re.search(r"^effort:\s*(\S+)", block, re.M)
+        if not model:
+            fail(f"{p.relative_to(ROOT)}: frontmatter declares no model", errors)
+        if not effort:
+            fail(f"{p.relative_to(ROOT)}: frontmatter declares no effort", errors)
+        floor = floors.get(p.stem, {})
+        if effort and effort.group(1) not in efforts:
+            fail(f"{p.relative_to(ROOT)}: effort {effort.group(1)!r} is not one of {', '.join(efforts)}", errors)
+        elif effort and floor.get("min_effort") in efforts:
+            if efforts.index(effort.group(1)) < efforts.index(floor["min_effort"]):
+                fail(
+                    f"{p.relative_to(ROOT)}: effort {effort.group(1)!r} is below the declared floor "
+                    f"{floor['min_effort']!r}; effort cannot be raised at dispatch, so frontmatter is the floor",
+                    errors,
+                )
+        floor_model = tiers.get(floor.get("min_model"), floor.get("min_model"))
+        if model and model.group(1) in order and floor_model in order:
+            if order.index(model.group(1)) < order.index(floor_model):
+                fail(
+                    f"{p.relative_to(ROOT)}: model {model.group(1)!r} is below the declared floor {floor_model!r}",
+                    errors,
+                )
+
+
 def check_contract_completeness(errors: list[str]) -> None:
     contract = (ROOT / "skills/tracker/CONTRACT.md").read_text(encoding="utf-8")
     jira = (ROOT / "skills/tracker/jira/ADAPTER.md").read_text(encoding="utf-8")
@@ -188,10 +329,10 @@ def check_contract_completeness(errors: list[str]) -> None:
         for name, text in (("CONTRACT", contract), ("jira", jira), ("github", github)):
             if status not in text:
                 fail(f"contract completeness: status {status!r} missing from {name} mapping", errors)
-    for var in sorted(COLUMN_ENV):
+    for key in sorted(COLUMN_KEYS):
         for name, text in (("CONTRACT", contract), ("jira", jira), ("github", github)):
-            if var not in text:
-                fail(f"contract completeness: column env var {var} missing from {name}", errors)
+            if key not in text:
+                fail(f"contract completeness: column config key {key} missing from {name}", errors)
 
 
 def check_hooks(errors: list[str]) -> None:
@@ -258,8 +399,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("handoff must scale records by process tier", errors)
     if "design contract" not in gate or "verification obligation" not in gate:
         fail("gate must verify the design contract and verification obligations", errors)
-    if "SY_IMAGE_MODEL" not in img_ref or "img-inspector" not in img_ref:
-        fail("image-inspection reference must resolve SY_IMAGE_MODEL and route to sy:img-inspector", errors)
+    if "agent img-inspector" not in img_ref or "img-inspector" not in img_ref:
+        fail("image-inspection reference must resolve the inspector model via sy_config.py agent img-inspector", errors)
     if "img-inspector" not in gate:
         fail("gate must protect the image-inspection invariant (no image Reads; delegate to sy:img-inspector)", errors)
     if "img-inspector" not in impl:
@@ -290,8 +431,8 @@ def check_invariants(errors: list[str]) -> None:
         if "AskUserQuestion" not in text:
             fail(f"{name} skill must route user decisions through AskUserQuestion per user-interaction.md", errors)
 
-    if "## Action needed" not in preflight_ref or "docs/settings.md" not in preflight_ref:
-        fail("preflight reference must define the Action-needed failure shape and link docs/settings.md", errors)
+    if "## Action needed" not in preflight_ref or "docs/configuration.md" not in preflight_ref:
+        fail("preflight reference must define the Action-needed failure shape and link docs/configuration.md", errors)
     if "sy_preflight.py" not in preflight_ref or "cache" not in preflight_ref.lower():
         fail("preflight reference must describe the cached liveness check (sy_preflight.py)", errors)
     if "sy_preflight.py" not in tracker_skill:
@@ -302,8 +443,12 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (("plan", plan), ("spec", spec), ("ship", ship), ("spike", spike)):
         if "preflight.md" not in text:
             fail(f"{name} must run the tracker preflight (preflight.md) before other work", errors)
-    if "settings.local.json" not in init_repo or "settings.json" not in init_repo:
-        fail("init-repo must split shared vs secret config between settings.json and settings.local.json", errors)
+    if "config.local.json" not in init_repo or "config.json" not in init_repo:
+        fail("init-repo must split shared vs per-person config between config.json and config.local.json", errors)
+    if "migrate --settings" not in init_repo:
+        fail("init-repo must offer the legacy env-block migration step (sy_config.py migrate)", errors)
+    if "Secrets never go in either file" not in init_repo:
+        fail("init-repo must state that a secret never lands in a config file", errors)
     if "preflight.md" not in init_repo or "sy_preflight.py" not in init_repo:
         fail("init-repo must prove config live via the same preflight mechanism other commands use", errors)
 
@@ -344,6 +489,28 @@ def check_invariants(errors: list[str]) -> None:
     if "gate_false_pass" not in handoff or "human backstop" not in gate:
         fail("gate human-backstop note and ship metrics gate_false_pass field are required (shadow-run backstop)", errors)
 
+    if "config_fingerprint" not in start or "config_fingerprint" not in gate_ref:
+        fail("ship state must stamp config_fingerprint at START and compare it before review", errors)
+
+    dispatch_ref = read("skills/shared/references/model-dispatch.md")
+    if "does not inherit a model override" not in dispatch_ref:
+        fail("model-dispatch must state that a nested Agent call does not inherit a model override", errors)
+    if "no effort parameter on the `Agent` tool" not in dispatch_ref:
+        fail("model-dispatch must state plainly that effort cannot be set at dispatch time", errors)
+    if "sy_config.py" not in dispatch_ref or "agent <agent-name>" not in dispatch_ref:
+        fail("model-dispatch must resolve the model through sy_config.py agent <name>", errors)
+    for name, text in (
+        ("gate", read("agents/gate.md")), ("debate", read("agents/debate.md")),
+        ("ship-build", read("agents/ship-build.md")), ("ship-gate", read("agents/ship-gate.md")),
+        ("ship-start", read("agents/ship-start.md")),
+    ):
+        if "model-dispatch.md" not in text:
+            fail(f"agent {name} dispatches subagents and must cite model-dispatch.md", errors)
+    if "config/floors.json" not in read("skills/ship/SKILL.md"):
+        fail("ship SKILL must point the quality-floor invariant at config/floors.json, not prose alone", errors)
+    if "config/floors.json" not in read("skills/spec/SKILL.md"):
+        fail("spec SKILL must point the quality-floor invariant at config/floors.json, not prose alone", errors)
+
     for name, text in (("plan", plan), ("spec", spec), ("ship start", start)):
         if "sy_memory.py" not in text or "memory.md" not in text:
             fail(f"{name} must read durable cross-session memory back (sy_memory.py, per memory.md)", errors)
@@ -355,16 +522,18 @@ def check_invariants(errors: list[str]) -> None:
         ("ship", ship), ("start-resume", start), ("implementation", impl),
         ("immutable-gate", gate_ref), ("merge-accounting", merge),
     ):
-        if "SY_WORKTREE_ROOT" not in text:
-            fail(f"{name} must resolve the worktree root via SY_WORKTREE_ROOT (sibling-directory default)", errors)
+        if "worktree.root" not in text:
+            fail(f"{name} must resolve the worktree root via the worktree.root config key", errors)
 
     gate_fm = gate.split("---", 2)[1]
     if "Skill" not in gate_fm:
         fail("gate agent must allow the Skill tool", errors)
     if re.search(r"^skills:\s*$", gate_fm, re.M):
         fail("gate must not preload standards; conformance review is invoked lazily", errors)
-    if "SY_FRONTIER_MODEL" not in gate_ref:
-        fail("immutable-gate must resolve the reviewer via SY_FRONTIER_MODEL", errors)
+    if "agent gate" not in gate_ref:
+        fail("immutable-gate must resolve the reviewer via sy_config.py agent gate", errors)
+    if "models.tiers.frontier_fallback" not in gate_ref:
+        fail("immutable-gate must resolve the one-shot reviewer fallback from models.tiers.frontier_fallback", errors)
     if "START <model> / BUILD <model> / GATE <model>" not in spec:
         fail("spec ship profile must name START, BUILD, and GATE models individually (no single-word tier)", errors)
     if "Resolve START's and BUILD's models explicitly" not in ship:
@@ -429,6 +598,9 @@ def main() -> int:
     check_structure(errors)
     check_no_home_paths(errors)
     check_seam(errors)
+    check_config_seam(errors)
+    check_agent_floors(errors)
+    check_agent_frontmatter_tiers(errors)
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)
@@ -439,6 +611,7 @@ def main() -> int:
     run_self_test("scripts/eval_events.py", errors)
     run_self_test("scripts/sy_memory.py", errors)
     run_self_test("scripts/sy_preflight.py", errors)
+    run_self_test("scripts/sy_config.py", errors)
     run_self_test("scripts/scrub_known_secrets.py", errors)
     run_self_test("skills/tracker/github/gh_project.py", errors)
     run_self_test("skills/tracker/jira/jira_rest.py", errors)

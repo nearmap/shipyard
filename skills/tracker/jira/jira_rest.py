@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Small Jira REST helper for operations ACLI does not cover.
 
-Credentials are read from environment and never passed in process arguments.
+The account identifiers (email, site, project) come from resolved Shipyard config; only the
+credential itself stays in the environment, where `scripts/secret_guard.py` covers it and no
+`cat` of a config file can burn it into transcript history. Neither is ever passed in process
+arguments.
 """
 from __future__ import annotations
 
@@ -17,15 +20,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# The resolver lives in the plugin's scripts/ directory, which is not importable from an adapter
+# helper's own location, so the path is bootstrapped before importing it.
+sys.path.insert(0, str(Path(os.environ.get('CLAUDE_PLUGIN_ROOT') or Path(__file__).resolve().parents[3]) / 'scripts'))
+from sy_config import get as config_get  # noqa: E402
+
 
 def config() -> tuple[str, str]:
-    email = os.environ.get('ACLI_EMAIL')
+    """Base URL and Basic auth header, from resolved config plus the one env-held secret."""
+    email = str(config_get('tracker_config.email') or '')
     token = os.environ.get('ACLI_TOKEN')
-    if not email or not token:
-        raise SystemExit('jira_rest: ACLI_EMAIL and ACLI_TOKEN must be set')
-    site = os.environ.get('ACLI_SITE')
+    if not email:
+        raise SystemExit('jira_rest: tracker_config.email must be set in .shipyard/config.json')
+    if not token:
+        raise SystemExit('jira_rest: ACLI_TOKEN must be set in the environment (it is a secret, not config)')
+    site = str(config_get('tracker_config.site') or '')
     if not site:
-        raise SystemExit('jira_rest: ACLI_SITE must be set, e.g. yourorg.atlassian.net')
+        raise SystemExit('jira_rest: tracker_config.site must be set, e.g. yourorg.atlassian.net')
     base = site if site.startswith('http') else f'https://{site}'
     auth = base64.b64encode(f'{email}:{token}'.encode()).decode()
     return base.rstrip('/'), f'Basic {auth}'
@@ -117,9 +128,9 @@ def preflight() -> None:
     actually exists and is visible to this account. A credential can be present and still be
     dead, and an unknown project key does not error a JQL search — it just returns zero
     results — so this reads the project itself, which 404s loudly on a bad key."""
-    project = os.environ.get('ACLI_PROJECT')
+    project = str(config_get('tracker_config.project') or '')
     if not project:
-        raise SystemExit('jira_rest: ACLI_PROJECT must be set')
+        raise SystemExit('jira_rest: tracker_config.project must be set in .shipyard/config.json')
     base, auth = config()
     _, item = request('GET', f'{base}/rest/api/3/project/{urllib.parse.quote(project)}', auth)
     if not isinstance(item, dict) or item.get('key') != project:
@@ -234,9 +245,13 @@ def self_test() -> None:
     for argv, cmd in cases:
         parsed = parser.parse_args(argv)
         assert parsed.cmd == cmd, f'jira_rest self-test: {argv} parsed to {parsed.cmd!r}, expected {cmd!r}'
-    saved = {k: os.environ.get(k) for k in ('ACLI_EMAIL', 'ACLI_TOKEN', 'ACLI_SITE')}
+    # Identifiers come from the resolver now; only the credential is still an env var.
+    saved_token = os.environ.get('ACLI_TOKEN')
+    fake = {'tracker_config.email': 'a@b.c', 'tracker_config.site': 'example.atlassian.net'}
+    original = globals()['config_get']
+    globals()['config_get'] = lambda key: fake[key] if key in fake else original(key)
     try:
-        os.environ.update(ACLI_EMAIL='a@b.c', ACLI_TOKEN='tok', ACLI_SITE='example.atlassian.net')
+        os.environ['ACLI_TOKEN'] = 'tok'
         base, auth = config()
         assert base == 'https://example.atlassian.net', base
         assert auth.startswith('Basic '), auth
@@ -245,12 +260,19 @@ def self_test() -> None:
             'https://example.atlassian.net/rest/api/3/issue/AM-1?fields=attachment'
         )
         assert _attachment_url(base, '5') == 'https://example.atlassian.net/rest/api/3/attachment/5'
+        del os.environ['ACLI_TOKEN']
+        try:
+            config()
+        except SystemExit as exc:
+            assert 'secret, not config' in str(exc), exc
+        else:  # pragma: no cover
+            raise AssertionError('a missing credential must fail loudly and name where it belongs')
     finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        globals()['config_get'] = original
+        if saved_token is None:
+            os.environ.pop('ACLI_TOKEN', None)
+        else:
+            os.environ['ACLI_TOKEN'] = saved_token
     print('jira_rest self-test passed')
 
 

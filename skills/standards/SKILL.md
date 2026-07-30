@@ -22,3 +22,5 @@ If mode is omitted: `/sy:spec` and `/sy:ship` normally mean `resolve`; `sy:gate`
 Authority order is always: dedicated repo standards skill → repository-maintained standards docs/rules → Shipyard fallback. Lower authority never overrides higher authority.
 
 Keep returns compact and source-pointed. Human-facing plans may explain unusual constraints clearly; agent-facing standards contracts contain only task-relevant rules, primitives, lenses, and conflicts.
+
+Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

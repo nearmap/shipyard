@@ -22,7 +22,7 @@ Create/load the spike Task via the `tracker` skill: discover candidate hackday E
 
 - small cohesive evidence ⇒ read directly;
 - broad archaeology ⇒ `sy:sweep`;
-- one load-bearing production/data path ⇒ `sy:trace`, at most 3 depth agents in flight.
+- one load-bearing production/data path ⇒ `sy:trace`, at most the resolved `limits.max_depth_agents` cap in flight — resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`.
 
 Returned briefs are leads. Verify decisive spans and own the experimental conclusions. Seed every agent prompt with known anchors — paths, symbols, data locations — and name ground already covered.
 

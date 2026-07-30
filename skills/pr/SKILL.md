@@ -39,7 +39,11 @@ Title: `<TICKET> - <imperative summary>` when branch carries a ticket key.
 
 ## 3. Review threads
 
-A draft PR gets **no** automated review — Copilot and similar reviewers do not comment until the PR is marked ready, so a draft that is never promoted shows a permanently empty thread list that reads as "nothing to reconcile". Marking it ready with `gh pr ready <pr>` is necessary but not sufficient: observed runs show the automated reviewer does not fire on readiness alone, so an explicit request is the normal path, not a rare fallback. Immediately after marking ready, walk this ladder and stop at the first rung that lands:
+Resolve `ship.request_ci_reviewer` — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get ship.request_ci_reviewer` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — before marking the PR ready. This gates only the automated-reviewer *request* below; it is additive to, never a substitute for, `sy:gate`'s own independent review, which always runs regardless of this setting.
+
+When it resolves false, mark the PR ready with `gh pr ready <pr>` and skip straight to "Only then read the thread list" below — there is no bot request to make or confirm.
+
+When it resolves true: a draft PR gets **no** automated review — Copilot and similar reviewers do not comment until the PR is marked ready, so a draft that is never promoted shows a permanently empty thread list that reads as "nothing to reconcile". Marking it ready with `gh pr ready <pr>` is necessary but not sufficient: observed runs show the automated reviewer does not fire on readiness alone, so an explicit request is the normal path, not a rare fallback. Immediately after marking ready, walk this ladder and stop at the first rung that lands:
 
 1. **By login** — `gh pr edit <pr> --add-reviewer "@copilot"` (gh ≥2.87.0), or the repo's configured automated reviewer login. gh special-cases `@copilot` onto GitHub's bot path, so this is *not* the same call as a raw REST review request and usually succeeds where one does not.
 2. **By node id over GraphQL** — a raw REST `POST .../requested_reviewers` naming the bot's login fails `422 Reviews may only be requested from collaborators`, because a review bot is not a repository collaborator; rung 1 fails the same way on a gh old enough to lack the special case. The bot is also absent from `suggestedActors`, so read its node id off any review it has already left in this repo, then request by id:
@@ -79,17 +83,23 @@ Caller reads decisive threads and writes replies. Stage each reply body as a fil
 
 ## 4. Merge (verified-head only)
 
-Merging is `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), not part of the normal create/promote/cleanup flow. Whenever a merge runs, gate it on the exact validated commit and compose the squash message from the PR's own description (§2) rather than accepting GitHub's default, which concatenates every branch commit subject into the body:
+Merging is `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), not part of the normal create/promote/cleanup flow. Resolve the configured strategy once — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get ship.merge_strategy` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and gate every merge on the exact validated commit regardless of strategy:
 
 ```bash
+# squash: compose the message from the PR's own description (§2) rather than accepting GitHub's
+# default, which concatenates every branch commit subject into the body
 gh pr merge <pr> --squash \
   --subject "<TICKET> - <imperative summary>" \
   --body-file <staged summary file> \
   --match-head-commit <CI-green + reviewed SHA>
+
+# merge/rebase: no subject/body to compose
+gh pr merge <pr> --merge --match-head-commit <CI-green + reviewed SHA>
+gh pr merge <pr> --rebase --match-head-commit <CI-green + reviewed SHA>
 ```
 
-- `--match-head-commit` aborts the merge if the head moved since validation, so only the reviewed/CI-green commit can land, never a race-pushed one. Composing a message never relaxes that guard — drop the subject and body before you drop the head match.
-- stage the body file from the description's why plus its summary bullets, so the squashed commit reads as the changelog entry for the change rather than as build noise.
+- `--match-head-commit` aborts the merge if the head moved since validation, so only the reviewed/CI-green commit can land, never a race-pushed one — true for every strategy. Composing a message never relaxes that guard — drop the subject and body before you drop the head match.
+- Only `squash` composes a subject/body; stage it from the description's why plus its summary bullets, so the squashed commit reads as the changelog entry for the change rather than as build noise. `merge` and `rebase` pass neither flag.
 - `gh pr merge -F/--body-file` takes a **plain file path**, a different convention from the `-F key=@file` form used for comment bodies in §3 above; conflating the two silently posts the wrong thing.
 - add `--admin` only to clear a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give), and only with the owner's explicit go-ahead — it bypasses the ruleset, not CI/review freshness.
 

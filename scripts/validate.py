@@ -84,6 +84,7 @@ REQUIRED = {
     "scripts/sy_preflight.py",
     "scripts/scrub_known_secrets.py",
     "scripts/secret_guard.py",
+    "scripts/secret_words.py",
     "skills/tracker/SKILL.md",
     "skills/tracker/CONTRACT.md",
     "skills/tracker/jira/ADAPTER.md",
@@ -110,6 +111,7 @@ REQUIRED = {
     "skills/shared/references/preflight.md",
     "skills/shared/references/debate.md",
     "skills/shared/references/model-dispatch.md",
+    "skills/shared/references/config-values.md",
     "skills/plan/references/new-objective.md",
     "skills/plan/references/reentry.md",
     "skills/plan/references/roadmap-shaping.md",
@@ -380,6 +382,8 @@ def check_invariants(errors: list[str]) -> None:
     jira_adapter = read("skills/tracker/jira/ADAPTER.md")
     github_adapter = read("skills/tracker/github/ADAPTER.md")
     init_repo = read("skills/init-repo/SKILL.md")
+    checkpoint_handoff = read("skills/plan/references/checkpoint-handoff.md")
+    jira_attachments = read("skills/tracker/jira/references/attachments.md")
 
     if "--match-head-commit" not in merge:
         fail("merge path missing atomic head guard (--match-head-commit)", errors)
@@ -547,6 +551,49 @@ def check_invariants(errors: list[str]) -> None:
         if missing:
             fail(f"{name} must resolve the {phase} model and pass it as the Agent invocation's model override (missing: {', '.join(missing)})", errors)
 
+    # AM-1220: every site that used to hardcode one of these behaviors must instead name the
+    # live config key, mirroring the worktree.root pattern above — a literal number/behavior
+    # re-pasted at the site instead of resolved is exactly the drift this ticket closed off.
+    config_values_ref = read("skills/shared/references/config-values.md")
+    for name, text in (
+        ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),
+    ):
+        if "limits.max_depth_agents" not in text:
+            fail(f"{name} must name limits.max_depth_agents rather than a hardcoded depth-agent cap", errors)
+    for name, text in (
+        ("tracker", tracker_skill), ("plan", plan), ("roadmap-shaping", roadmap_shaping),
+        ("checkpoint-handoff", checkpoint_handoff),
+    ):
+        if "plan.max_active_tasks" not in text:
+            fail(f"{name} must name plan.max_active_tasks rather than a hardcoded active-task cap", errors)
+    for name, text in (
+        ("plan", plan), ("spec", spec), ("ship", ship), ("handoff-accounting", handoff),
+        ("merge-accounting", merge), ("jira-attachments", jira_attachments),
+    ):
+        if "transcript.attach" not in text:
+            fail(f"{name} must gate transcript rendering/attachment on transcript.attach", errors)
+    for name, text in (("ship", ship), ("immutable-gate", gate_ref), ("pr", pr)):
+        if "ship.request_ci_reviewer" not in text:
+            fail(f"{name} must gate the automated-reviewer request on ship.request_ci_reviewer", errors)
+    for name, text in (("pr", pr), ("merge-accounting", merge)):
+        if "ship.merge_strategy" not in text:
+            fail(f"{name} must resolve ship.merge_strategy rather than hardcoding a merge strategy", errors)
+    if "ship.escalation.max_needs_decision" not in ship or "ship.escalation.max_needs_trace" not in ship:
+        fail("ship must name ship.escalation.max_needs_decision/max_needs_trace rather than vague escalation thresholds", errors)
+    if "spec.light_tier_max_files" not in spec:
+        fail("spec must name spec.light_tier_max_files rather than an undefined 'small' threshold", errors)
+    for name, text in (
+        ("ship", ship), ("spec", spec), ("spike", spike), ("plan", plan), ("pr", pr),
+        ("immutable-gate", gate_ref), ("handoff-accounting", handoff), ("merge-accounting", merge),
+        ("tracker", tracker_skill), ("roadmap-shaping", roadmap_shaping),
+        ("checkpoint-handoff", checkpoint_handoff), ("jira-attachments", jira_attachments),
+        ("gate", gate),
+    ):
+        if "config-values.md" not in text:
+            fail(f"{name} names a live-resolved config value and must cite config-values.md", errors)
+    if "shipped default" not in config_values_ref or "never restate" not in config_values_ref.lower():
+        fail("config-values.md must forbid restating a shipped default as prose", errors)
+
 
 def run_self_test(rel: str, errors: list[str]) -> None:
     script = ROOT / rel
@@ -613,6 +660,7 @@ def main() -> int:
     run_self_test("scripts/sy_preflight.py", errors)
     run_self_test("scripts/sy_config.py", errors)
     run_self_test("scripts/scrub_known_secrets.py", errors)
+    run_self_test("scripts/secret_words.py", errors)
     run_self_test("skills/tracker/github/gh_project.py", errors)
     run_self_test("skills/tracker/jira/jira_rest.py", errors)
     run_self_test("scripts/ci_poll.sh", errors)

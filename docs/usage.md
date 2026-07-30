@@ -26,7 +26,7 @@ Every other command checks the tracker is genuinely usable — configured *and* 
 /sy:plan add usage-based billing to the API
 ```
 
-`/sy:plan` interviews you one question at a time (only when the answer changes the shape of the work), maps the code with read-only agents, and writes a living roadmap onto a single Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most four are active at once, and everything further out stays as text in the Epic until it is close enough to spec. Before the ladder is built, the roadmap's shape goes through a bounded proposer/adversary debate (`sy:debate`) — every time, not only when the shape looks contested — and you steer the disagreement rather than the plan quietly picking one.
+`/sy:plan` interviews you one question at a time (only when the answer changes the shape of the work), maps the code with read-only agents, and writes a living roadmap onto a single Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most a configured cap (`plan.max_active_tasks`) are active at once, and everything further out stays as text in the Epic until it is close enough to spec. Before the ladder is built, the roadmap's shape goes through a bounded proposer/adversary debate (`sy:debate`) — every time, not only when the shape looks contested — and you steer the disagreement rather than the plan quietly picking one.
 
 Re-enter later with `/sy:plan <epic>` to read what shipped since the last checkpoint and reshape the roadmap. You run `/sy:plan` when you start an objective and whenever the roadmap needs revisiting — not once per task.
 

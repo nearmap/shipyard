@@ -22,7 +22,8 @@ silent gap in exactly the case this exists to cover. Pass `--require` to turn th
 failure instead.
 
 Commands:
-  scrub <file> [<file> ...] [--vars A,B] [--require A,B] [--min-length N] [--report PATH] [--dry-run]
+  scrub <file> [<file> ...] [--vars A,B] [--require A,B] [--min-length N] [--extra-words JSON]
+               [--report PATH] [--dry-run]
   self-test
 """
 from __future__ import annotations
@@ -31,27 +32,26 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 
+from secret_words import looks_like_secret_name
+
 DEFAULT_MIN_LENGTH = 6
-_SECRET_WORDS = {
-    "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
-    "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",
-}
 
 
-def discover_secret_vars(min_length: int) -> dict[str, str]:
+def discover_secret_vars(min_length: int, extra_words: frozenset[str] = frozenset()) -> dict[str, str]:
     """Every env var whose name looks credential-shaped, with a value long enough to matter.
 
     Name-based, not value-based: a short value under a secret-shaped name is skipped (too
     likely to be a placeholder or boolean), but a long value under a non-secret-shaped name is
     left alone too, since scrubbing on value shape alone would redact ordinary long strings
-    (paths, URLs, ids) that happen to appear in the environment.
+    (paths, URLs, ids) that happen to appear in the environment. `extra_words` widens the match to
+    org-specific credential-name fragments (the `redaction.extra_words` config key) the built-in
+    set was never going to guess.
     """
     found = {}
     for name, value in os.environ.items():
-        if value and len(value) >= min_length and looks_like_secret_name(name):
+        if value and len(value) >= min_length and looks_like_secret_name(name, extra=extra_words):
             found[name] = value
     return found
 
@@ -86,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         print("scrub_known_secrets self-test passed")
         return 0
 
-    secrets = _resolve_secrets(args.vars, args.min_length)
+    extra_words = _parse_extra_words(args.extra_words)
+    secrets = _resolve_secrets(args.vars, args.min_length, extra_words)
     missing = _check_required(secrets, args.require)
     if missing:
         raise SystemExit(
@@ -120,9 +121,30 @@ def _check_required(secrets: dict[str, str], required: list[str]) -> list[str]:
     return sorted(name for name in required if name not in secrets)
 
 
-def _resolve_secrets(vars_arg: str | None, min_length: int) -> dict[str, str]:
+def _parse_extra_words(raw: str) -> frozenset[str]:
+    """`--extra-words` as a JSON array of strings. Empty/missing means none.
+
+    A failed command substitution (e.g. `--extra-words "$(cmd_that_produced_nothing)"`) yields an
+    empty string, which `json.loads` would otherwise raise `JSONDecodeError` on — and a non-string
+    element would raise `AttributeError` from `.upper()` deep in a comprehension. Both fail loudly
+    here with a clear message instead of a bare traceback from an unrelated line.
+    """
+    if not raw:
+        return frozenset()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"scrub_known_secrets: --extra-words is not valid JSON: {exc}") from None
+    if not isinstance(parsed, list) or not all(isinstance(w, str) for w in parsed):
+        raise SystemExit("scrub_known_secrets: --extra-words must be a JSON array of strings")
+    return frozenset(w.upper() for w in parsed)
+
+
+def _resolve_secrets(
+    vars_arg: str | None, min_length: int, extra_words: frozenset[str] = frozenset(),
+) -> dict[str, str]:
     if not vars_arg:
-        return discover_secret_vars(min_length)
+        return discover_secret_vars(min_length, extra_words)
     names = [v.strip() for v in vars_arg.split(",") if v.strip()]
     if not names:
         raise SystemExit("scrub_known_secrets: --vars must list at least one env var name")
@@ -131,16 +153,6 @@ def _resolve_secrets(vars_arg: str | None, min_length: int) -> dict[str, str]:
         for name in names
         if (value := os.environ.get(name, "")) and len(value) >= min_length
     }
-
-
-def looks_like_secret_name(name: str) -> bool:
-    """True when a variable or config key name is credential-shaped, by word rather than substring.
-
-    Word-split so `ACLI_TOKEN` matches while `TOKENIZER_PATH` does not. Shared with
-    `sy_config.py`, which uses it to refuse reading or storing a secret in a config file.
-    """
-    words = re.split(r"[^A-Za-z0-9]+", name.upper())
-    return any(word in _SECRET_WORDS for word in words if word)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -160,6 +172,11 @@ def _build_parser() -> argparse.ArgumentParser:
     scrub_parser.add_argument(
         "--min-length", type=int, default=DEFAULT_MIN_LENGTH, help="skip values shorter than this",
     )
+    scrub_parser.add_argument(
+        "--extra-words", default="[]",
+        help="JSON array of org-specific credential-name fragments to widen auto-discovery, e.g. the "
+             "resolved `redaction.extra_words` config key (default: none)",
+    )
     scrub_parser.add_argument("--report", help="also write the JSON summary to this path")
     scrub_parser.add_argument("--dry-run", action="store_true", help="report without modifying files")
 
@@ -168,24 +185,37 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _self_test() -> None:
-    names = ("SY_TEST_TOKEN", "SY_TEST_SHORT_KEY", "SY_TEST_NOTASECRET", "SY_TEST_LONG_SECRET")
+    names = ("SY_TEST_TOKEN", "SY_TEST_SHORT_KEY", "SY_TEST_NOTASECRET", "SY_TEST_LONG_SECRET", "SY_TEST_BEARER")
     saved = {k: os.environ.get(k) for k in names}
     os.environ["SY_TEST_TOKEN"] = "abcdef0123456789secretvalue"
     os.environ["SY_TEST_SHORT_KEY"] = "ab"
     os.environ["SY_TEST_NOTASECRET"] = "this-name-does-not-look-like-a-secret-but-is-long-enough"
     os.environ.pop("SY_TEST_LONG_SECRET", None)
+    os.environ["SY_TEST_BEARER"] = "abcdef0123456789bearervalue"
     try:
-        assert looks_like_secret_name("ACLI_TOKEN")
-        assert looks_like_secret_name("GITHUB_TOKEN")
-        assert looks_like_secret_name("AWS_SECRET_ACCESS_KEY")
-        assert not looks_like_secret_name("ACLI_SITE")
-        assert not looks_like_secret_name("PATH")
-        assert not looks_like_secret_name("SY_SOME_DIRECTORY")
-
         secrets = discover_secret_vars(min_length=6)
         assert secrets.get("SY_TEST_TOKEN") == "abcdef0123456789secretvalue"
         assert "SY_TEST_SHORT_KEY" not in secrets, "below min-length must be skipped"
         assert "SY_TEST_NOTASECRET" not in secrets, "non-secret-shaped name must be skipped regardless of length"
+        assert "SY_TEST_BEARER" not in secrets, "a fragment outside the built-in set is not a false positive"
+
+        widened = discover_secret_vars(min_length=6, extra_words=frozenset({"BEARER"}))
+        assert "SY_TEST_BEARER" in widened, "extra_words must widen auto-discovery"
+
+        assert _parse_extra_words("") == frozenset(), "empty --extra-words (a failed substitution) must mean none"
+        assert _parse_extra_words('["bearer", "Passkey"]') == frozenset({"BEARER", "PASSKEY"})
+        try:
+            _parse_extra_words("not json")
+        except SystemExit as exc:
+            assert "not valid JSON" in str(exc)
+        else:
+            raise AssertionError("malformed --extra-words JSON must fail loudly, not crash on a later line")
+        try:
+            _parse_extra_words("[1, 2]")
+        except SystemExit as exc:
+            assert "must be a JSON array of strings" in str(exc)
+        else:
+            raise AssertionError("a non-string element must fail loudly, not crash inside .upper()")
 
         explicit = _resolve_secrets("SY_TEST_TOKEN,SY_TEST_SHORT_KEY,SY_TEST_NOT_SET", min_length=6)
         assert explicit == {"SY_TEST_TOKEN": "abcdef0123456789secretvalue"}, "explicit --vars still filters by length"

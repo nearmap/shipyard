@@ -86,7 +86,7 @@ Core speaks only the contract: canonical verbs (`create-issue`, `create-child`, 
 
 ## Loop mapping
 
-- `/sy:plan` ↔ epic roadmap + direct executable children created in `backlog`, max 4 active.
+- `/sy:plan` ↔ epic roadmap + direct executable children created in `backlog`, max the resolved `plan.max_active_tasks` cap active (resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`).
 - `/sy:spec` ↔ task/bug + sole ACTIVE versioned plan; the approved plan moves the task to `ready`.
 - `/sy:ship` ↔ `in-progress` on build, `in-review` at a reviewable gated PR, `done` after merge;
   retrospective, standalone logs, and transcript live on the task.

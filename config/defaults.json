@@ -21,6 +21,34 @@
     "done": null
   },
   "tracker_config": {},
+  "limits": {
+    "max_depth_agents": 3
+  },
+  "plan": {
+    "max_active_tasks": 4
+  },
+  "spec": {
+    "light_tier_max_files": 3
+  },
+  "ship": {
+    "request_ci_reviewer": true,
+    "merge_strategy": "squash",
+    "escalation": {
+      "max_needs_decision": 3,
+      "max_needs_trace": 2
+    }
+  },
+  "transcript": {
+    "attach": false,
+    "truncation_limits": {
+      "tool_input": 1500,
+      "tool_result": 4000,
+      "thinking": 1200
+    }
+  },
+  "redaction": {
+    "extra_words": []
+  },
   "models": {
     "tiers": {
       "frontier": "fable",

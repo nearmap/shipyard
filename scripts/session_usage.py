@@ -365,7 +365,31 @@ def summarize(
 
 # ---- readable transcript rendering (replaces the manual /export step) ----
 
-RENDER_LIMITS = {"tool_input": 1500, "tool_result": 4000, "thinking": 1200}
+_DEFAULT_RENDER_LIMITS = {"tool_input": 1500, "tool_result": 4000, "thinking": 1200}
+_RENDER_LIMITS: dict[str, int] | None = None
+
+
+def render_limits() -> dict[str, int]:
+    """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
+
+    Resolved once per process and cached. `sy_config._flatten()` only ever stores leaf keys, so
+    `transcript.truncation_limits` as a whole path is never resolvable — each of its three fields
+    must be fetched individually. A repo whose config can't be resolved at all (run outside a
+    checkout, a corrupted layer), or whose resolved value isn't actually numeric (a hand-edited
+    layer bypassing `validate`), falls back to the shipped defaults rather than crashing a render
+    that's usually happening late in a session.
+    """
+    global _RENDER_LIMITS
+    if _RENDER_LIMITS is None:
+        try:
+            from sy_config import get as config_get
+            _RENDER_LIMITS = {
+                key: int(config_get(f"transcript.truncation_limits.{key}"))
+                for key in _DEFAULT_RENDER_LIMITS
+            }
+        except (SystemExit, ValueError, TypeError):
+            _RENDER_LIMITS = dict(_DEFAULT_RENDER_LIMITS)
+    return _RENDER_LIMITS
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -431,11 +455,11 @@ def _render_row(
                 lines.append(str(block["text"]).rstrip())
             elif kind == "thinking" and str(block.get("thinking", "")).strip():
                 lines.append(f"[{ts}] (thinking)")
-                lines.append(_indent(_truncate(str(block["thinking"]), RENDER_LIMITS["thinking"])))
+                lines.append(_indent(_truncate(str(block["thinking"]), render_limits()["thinking"])))
             elif kind == "tool_use":
                 name = str(block.get("name", "?"))
                 tool_names[str(block.get("id"))] = name
-                args = _truncate(json.dumps(block.get("input", {}), indent=2), RENDER_LIMITS["tool_input"])
+                args = _truncate(json.dumps(block.get("input", {}), indent=2), render_limits()["tool_input"])
                 lines.append(f"[{ts}] TOOL CALL {name}")
                 lines.append(_indent(args))
     elif record.get("type") == "user":
@@ -443,7 +467,7 @@ def _render_row(
             kind = block.get("type")
             if kind == "tool_result":
                 name = tool_names.get(str(block.get("tool_use_id")), "?")
-                body = _truncate(_tool_result_text(block.get("content")), RENDER_LIMITS["tool_result"])
+                body = _truncate(_tool_result_text(block.get("content")), render_limits()["tool_result"])
                 lines.append(f"[{ts}] RESULT ({name})")
                 lines.append(_indent(body))
             elif kind == "text" and str(block.get("text", "")).strip():
@@ -654,6 +678,62 @@ def _self_test() -> None:
             assert "[2026-07-09 10:00:06] USER" in rendered, "genuine user turn after enqueue+remove must render"
         finally:
             LEDGER_ROOT = old_ledger_root
+
+    _test_render_limits_override()
+
+
+def _test_render_limits_override() -> None:
+    """A `transcript.truncation_limits` config override must actually reach `render_limits()`.
+
+    `sy_config._flatten()` only stores leaf keys, so a naive whole-object `get()` on
+    `transcript.truncation_limits` silently raises and gets swallowed — this exercises the real
+    per-leaf resolution path against a live (faked) config layer, not just "it doesn't crash".
+    """
+    import json
+    import tempfile
+
+    import sy_config
+
+    global _RENDER_LIMITS
+    saved_limits = _RENDER_LIMITS
+    original_home, original_repo_root = Path.home, sy_config.repo_root
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        repo = Path(tmp) / "repo"
+        (home / ".shipyard").mkdir(parents=True)
+        (repo / ".shipyard").mkdir(parents=True)
+        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
+        sy_config.repo_root = lambda: repo
+        sy_config.reset_cache()
+        _RENDER_LIMITS = None
+        try:
+            assert render_limits() == _DEFAULT_RENDER_LIMITS, "no override must fall back to shipped defaults"
+
+            (repo / ".shipyard" / "config.json").write_text(
+                json.dumps({"transcript": {"truncation_limits": {"tool_result": 99}}}), encoding="utf-8",
+            )
+            sy_config.reset_cache()
+            _RENDER_LIMITS = None
+            overridden = render_limits()
+            assert overridden["tool_result"] == 99, "a config override must actually change render_limits()"
+            assert overridden["tool_input"] == _DEFAULT_RENDER_LIMITS["tool_input"], "an unset sibling keeps its default"
+
+            # get() doesn't itself enforce the schema (only `validate` does) -- a hand-edited layer
+            # bypassing validate can still reach here with a non-numeric value; int(...) must not
+            # crash the render, same as an unresolvable config.
+            (repo / ".shipyard" / "config.json").write_text(
+                json.dumps({"transcript": {"truncation_limits": {"tool_result": "not-a-number"}}}), encoding="utf-8",
+            )
+            sy_config.reset_cache()
+            _RENDER_LIMITS = None
+            assert render_limits() == _DEFAULT_RENDER_LIMITS, (
+                "a non-numeric resolved value must fall back to shipped defaults, not crash the render"
+            )
+        finally:
+            Path.home = original_home  # type: ignore[method-assign]
+            sy_config.repo_root = original_repo_root
+            sy_config.reset_cache()
+            _RENDER_LIMITS = saved_limits
 
 
 def main(argv: list[str] | None = None) -> int:

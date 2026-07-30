@@ -27,23 +27,43 @@ Start a new file with `"$schema": "https://raw.githubusercontent.com/nearmap/shi
 
 ## Every setting
 
-| Key | Required | Default | What it does |
-|---|---|---|---|
-| `tracker` | yes | `jira` | Which adapter under `skills/tracker/` to use. |
-| `columns.backlog` | **yes** | — | Board column name for the `backlog` status. |
-| `columns.ready` | **yes** | — | Board column name for `ready`. |
-| `columns.in_progress` | **yes** | — | Board column name for `in-progress`. |
-| `columns.in_review` | **yes** | — | Board column name for `in-review`. |
-| `columns.done` | **yes** | — | Board column name for `done`. |
-| `tracker_config.*` | adapter-specific | — | The selected adapter's own settings. Each adapter declares its required keys in its `config-map.json` and its `ADAPTER.md`. |
-| `worktree.root` | no | sibling `<repo>-worktrees/` | Where `/sy:ship` builds worktrees. Absolute paths only — a literal `~` is not expanded. |
-| `memory.dir` | no | `~/.claude/shipyard/memory` | Cross-session memory store. |
-| `debug.evals` | no | `false` | Write the trigger/trace event log. |
-| `ci.poll_timeout` | no | `1800` | Seconds before the CI poller gives up. Raise it for matrices that routinely run longer, so one poll call spans the wait. |
-| `ci.poll_interval` | no | `30` | Seconds between CI poll attempts. |
-| `models.tiers.*` | no | see below | Named tiers mapped to concrete model aliases. |
-| `models.agents.<name>.model` | no | see below | Which tier or model an agent runs at. **Live at dispatch.** |
-| `models.agents.<name>.effort` | no | see below | Effort policy for an agent. **Not applied at dispatch** — see [Effort](#effort-is-not-a-runtime-knob). |
+Shipped defaults live in exactly one place, `config/defaults.json` — this table documents what
+each key does and whether it's required, not its current value, so the two can never disagree. For
+what a key actually resolves to right now, in this repo, with every layer applied:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
+```
+
+| Key | Required | What it does |
+|---|---|---|
+| `tracker` | yes | Which adapter under `skills/tracker/` to use. |
+| `columns.backlog` | **yes** | Board column name for the `backlog` status. |
+| `columns.ready` | **yes** | Board column name for `ready`. |
+| `columns.in_progress` | **yes** | Board column name for `in-progress`. |
+| `columns.in_review` | **yes** | Board column name for `in-review`. |
+| `columns.done` | **yes** | Board column name for `done`. |
+| `tracker_config.*` | adapter-specific | The selected adapter's own settings. Each adapter declares its required keys in its `config-map.json` and its `ADAPTER.md`. |
+| `worktree.root` | no | Where `/sy:ship` builds worktrees. Unset derives a sibling `<repo>-worktrees/` directory beside the repo. Absolute paths only — a literal `~` is not expanded. |
+| `memory.dir` | no | Cross-session memory store. Unset derives a directory under `~/.claude/shipyard/`. |
+| `debug.evals` | no | Write the trigger/trace event log. |
+| `ci.poll_timeout` | no | Seconds before the CI poller gives up. Raise it for matrices that routinely run longer, so one poll call spans the wait. |
+| `ci.poll_interval` | no | Seconds between CI poll attempts. |
+| `models.tiers.*` | no | Named tiers mapped to concrete model aliases. |
+| `models.agents.<name>.model` | no | Which tier or model an agent runs at. **Live at dispatch.** |
+| `models.agents.<name>.effort` | no | Effort policy for an agent. **Not applied at dispatch** — see [Effort](#effort-is-not-a-runtime-knob). |
+| `limits.max_depth_agents` | no | Cross-cutting cap on simultaneous depth-investigation subagents (`sy:trace`/`sy:hunt`/etc.) in flight per phase — `/sy:ship`, `/sy:spec`, `/sy:spike`, and `sy:gate` all read this one key. |
+| `plan.max_active_tasks` | no | Cap on `/sy:spec`-ready Tasks a roadmap keeps active under one Epic at once. |
+| `spec.light_tier_max_files` | no | File-count proxy for "small": the `light` process tier is allowed only when the plan's declared file set is at most this many files and no risk lenses are activated. Tune per repo. |
+| `ship.request_ci_reviewer` | no | Whether GATE requests an automated code-review bot (e.g. Copilot) on the PR, on top of `sy:gate`'s own independent review. Safe to disable: `sy:gate` remains the non-negotiable floor either way, this is an additive second opinion. |
+| `ship.merge_strategy` | no | `squash`, `merge`, or `rebase`, passed to `gh pr merge`. Only `squash` composes a subject/body from the PR description. |
+| `ship.escalation.max_needs_decision` | no | A ship phase exceeding this many `needs-decision` returns without reaching `done` escalates to `/sy:spec` as underspecified. |
+| `ship.escalation.max_needs_trace` | no | A ship phase exceeding this many `needs-trace` returns without reaching `done` escalates to `/sy:spec` as missing evidence, on its own separate count. |
+| `transcript.attach` | no | Whether `/sy:plan`, `/sy:spec`, and (full-tier) `/sy:ship` render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself. |
+| `transcript.truncation_limits.tool_input` | no | Character limit per tool-input block when `scripts/session_usage.py` renders a readable transcript. |
+| `transcript.truncation_limits.tool_result` | no | Character limit per tool-result block. |
+| `transcript.truncation_limits.thinking` | no | Character limit per thinking block. |
+| `redaction.extra_words` | no | Org-specific credential-name fragments merged into the built-in secret-word list (`scripts/secret_words.py`) that `scripts/secret_guard.py` and `scripts/scrub_known_secrets.py` both match against. Each entry must be a single alphanumeric word — the matcher compares whole split words, never substrings, so a multi-word entry like `"ID_RSA"` is refused rather than silently never matching. |
 
 The five column names are matched case-insensitively against the real board. `blocked` is deliberately not a column: blocking is a dependency relationship, not a lifecycle state.
 
@@ -142,9 +162,11 @@ Secrets live in the environment and never in a config file. This is not a stylis
 - a config file is greppable and committed-adjacent, and any skill that `cat`s one burns the value into permanent transcript history, where every future transcript render reproduces it;
 - `scripts/secret_guard.py` covers environment-variable dumps as a `PreToolUse` hook; it does not cover file reads.
 
-The resolver enforces the boundary both ways: it refuses to *read* a credential-shaped key, and `validate` refuses any config layer that *declares* one. Detection is by word, so `ACLI_TOKEN` is a secret and `TOKENIZER_PATH` is not.
+The resolver enforces the boundary three ways: `get` refuses to *read* a credential-shaped key, `validate` refuses any config layer that *declares* one, and `show` refuses to print anything at all rather than risk echoing one — printing a secret even once makes it a permanent part of whatever transcript ran the command.
 
-Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env`, and its `ADAPTER.md` explains the one-time login it needs beyond that.
+`validate` doesn't stop at secrets, either: every key in every layer is checked against `config/schema.json`, which declares every legitimate setting — an undeclared key is refused by name whether or not it looks like a secret (a typo like `columns.raedy` is caught the same way `api_token` is), and a declared key with the wrong type, an out-of-enum value, or a value outside its `minimum`/`pattern` is refused too. An undeclared key that *also* looks credential-shaped gets the sharper, specific reason ("keep it in the environment") rather than the generic "not a key config/schema.json declares." Detection of "looks credential-shaped" is two-layered: a word heuristic (`scripts/secret_words.py`, shared with `secret_guard.py` and `scrub_known_secrets.py`, so `ACLI_TOKEN` matches and `TOKENIZER_PATH` doesn't) for a secret Shipyard never named, plus an exact match against every tracker adapter's own declared `secret_env` name for the ones it did — the word heuristic alone would miss a declared secret name that happens not to contain a trigger word.
+
+Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env` (e.g. jira's is `ACLI_TOKEN`; github currently declares none), and its `ADAPTER.md` explains the one-time login it needs beyond that. `validate` also checks that every name an adapter lists there is actually *present* in `os.environ` — set, non-empty — reporting it by name if not, the same way it reports a missing required config key. This is presence, not liveness: a token can be set and still be revoked or expired, which only the adapter's own liveness check (below) can tell.
 
 ## Migrating from the `env` block
 

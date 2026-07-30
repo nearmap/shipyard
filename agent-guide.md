@@ -8,7 +8,7 @@ Shipyard is a Claude Code plugin that runs a `plan → spec → ship` delivery l
 
 - **Tracker**: the pluggable backend — Jira or GitHub Projects — selected by the `tracker` config key. Core skills never speak tracker-native vocabulary; only `skills/tracker/<name>/` does.
 - **Five lifecycle columns**: `backlog → ready → in-progress → in-review → done`, mapped to whatever the user's board actually calls them via the `columns.*` config keys. `blocked` is not a column — it's a tracker-native dependency relationship.
-- **Plan**: a living roadmap on one Epic, produced by `/sy:plan`. At most four child tasks are active at once.
+- **Plan**: a living roadmap on one Epic, produced by `/sy:plan`. At most a configured cap (`plan.max_active_tasks`) child tasks are active at once.
 - **Spec**: a single ACTIVE execution plan per task, produced by `/sy:spec <task>` and approved by the user before anything is built. It's stamped with the commit it was planned against. Not every spec ends in a plan — when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead.
 - **Ship**: `/sy:ship <task>` builds the plan in its own worktree, gets CI green, and runs `sy:gate` — an independent reviewer on a frontier model, in an isolated read-only checkout, that must refute-test every bug candidate before reporting it. Head, CI-green, and reviewed commits must converge before it stops.
 - **Merge**: never automatic. The user's explicit word is required every time.

@@ -7,7 +7,7 @@ Re-render:
 - North Star;
 - conceptual horizon ladder, deepened where evidence warrants;
 - completed branches marked done;
-- current active set (≤4) with Task keys and kickoff lines;
+- current active set (≤ the resolved `plan.max_active_tasks` cap, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) with Task keys and kickoff lines;
 - queued/future work marked not yet decomposed;
 - critical path, blockers, and parallel-safe set.
 

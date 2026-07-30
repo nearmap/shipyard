@@ -37,10 +37,8 @@ import re
 import shlex
 import sys
 
-_SECRET_WORDS = {
-    "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
-    "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",
-}
+from secret_words import looks_like_secret_name as _base_looks_like_secret_name
+
 WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "timeout", "stdbuf", "command"}
 PRINTING_COMMANDS = {"echo", "printf", "print"}
 _ENV_ARG_FLAGS = {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
@@ -200,12 +198,40 @@ def _interpreter_reason(command: str) -> str | None:
     return None
 
 
+_EXTRA_WORDS: frozenset[str] | None = None
+
+
+def _extra_words() -> frozenset[str]:
+    """`redaction.extra_words` from resolved config, cached for this process.
+
+    Resolved in-process (not via subprocess — this hook already pays full interpreter startup on
+    every `Bash` call, so importing `sy_config` costs nothing beyond that). A misconfigured repo
+    must not turn every command into a hard failure: fall back to the built-in word list alone,
+    exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
+    """
+    global _EXTRA_WORDS
+    if _EXTRA_WORDS is None:
+        try:
+            from sy_config import get as _config_get
+            words = _config_get("redaction.extra_words", default=[])
+        except SystemExit:
+            words = []
+        _EXTRA_WORDS = frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
+    return _EXTRA_WORDS
+
+
 def _looks_like_secret_name(name: str) -> bool:
-    words = re.split(r"[^A-Za-z0-9]+", name.upper())
-    return any(word in _SECRET_WORDS for word in words if word)
+    return _base_looks_like_secret_name(name, extra=_extra_words())
 
 
 def _self_test() -> None:
+    # Pinned rather than live: a consuming repo's real redaction.extra_words could overlap one of
+    # the allow-cases below (e.g. a repo adding "SITE" or "HOME"), turning this self-test flaky
+    # depending on wherever it happens to run. The built-in word set is what this pass/fail list
+    # covers; _extra_words()'s own resolution is exercised separately, below.
+    global _EXTRA_WORDS
+    saved_extra_words = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
     allow = [
         "git status", "ls -la", "pytest -q",
         "set -euo pipefail", "set -x", "set -- a b c",
@@ -249,6 +275,45 @@ def _self_test() -> None:
     assert _looks_like_secret_name("GITHUB_TOKEN")
     assert not _looks_like_secret_name("ACLI_SITE")
     assert not _looks_like_secret_name("PATH")
+    _EXTRA_WORDS = saved_extra_words
+
+    _test_extra_words_from_config()
+
+
+def _test_extra_words_from_config() -> None:
+    """`redaction.extra_words` from a real (faked) config layer must actually widen the gate."""
+    from pathlib import Path
+    import tempfile
+
+    import sy_config
+
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    original_home, original_repo_root = Path.home, sy_config.repo_root
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        repo = Path(tmp) / "repo"
+        (home / ".shipyard").mkdir(parents=True)
+        (repo / ".shipyard").mkdir(parents=True)
+        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
+        sy_config.repo_root = lambda: repo
+        sy_config.reset_cache()
+        _EXTRA_WORDS = None
+        try:
+            assert not _looks_like_secret_name("NM_BEARER"), "no override must not widen the gate"
+
+            (repo / ".shipyard" / "config.json").write_text(
+                json.dumps({"redaction": {"extra_words": ["BEARER"]}}), encoding="utf-8",
+            )
+            sy_config.reset_cache()
+            _EXTRA_WORDS = None
+            assert _looks_like_secret_name("NM_BEARER"), "redaction.extra_words must widen the gate"
+            assert decision("Bash", {"command": "echo $NM_BEARER"}) is not None
+        finally:
+            Path.home = original_home  # type: ignore[method-assign]
+            sy_config.repo_root = original_repo_root
+            sy_config.reset_cache()
+            _EXTRA_WORDS = saved
 
 
 if __name__ == "__main__":

@@ -1,8 +1,9 @@
 ---
 name: plan
 description: >-
-  Turn a large objective or existing Epic into a living roadmap with at most four
-  active /sy:spec-ready Tasks, real seams, dependency order, and flat tracker execution.
+  Turn a large objective or existing Epic into a living roadmap with a configured cap
+  (plan.max_active_tasks) of active /sy:spec-ready Tasks, real seams, dependency order, and flat
+  tracker execution.
 argument-hint: "[large objective or existing epic key (<epic>)]"
 disable-model-invocation: true
 effort: high
@@ -20,7 +21,7 @@ $ARGUMENTS
 
 - Work backwards: North Star → capabilities → dependency order → near executable leaves.
 - Premise + prior-work check comes first: before shaping, validate the objective's premise and search for existing, shipped, duplicate, or sibling work (tracker `find-issues` plus a code/PR search); prior delivery or duplication reshapes or ends the roadmap rather than re-planning it.
-- At most **4** leaves may be active `/sy:spec`-ready/in-spec/in-ship/in-review at once.
+- At most the resolved `plan.max_active_tasks` cap of leaves may be active `/sy:spec`-ready/in-spec/in-ship/in-review at once — resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`.
 - One Task/Bug ≈ one coherent PR. Keep far work conceptual until evidence justifies decomposition.
 - Not every issue surfaced mid-ship earns its own leaf: a small, adjacent, low-risk fix folds into the current PR as a recorded scope extension, and a follow-up must justify itself against that (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
 - Objective is stable; path is provisional and should adapt to shipped evidence.
@@ -29,7 +30,7 @@ $ARGUMENTS
 
 ## Scope and delegation
 
-Read small cohesive evidence directly. Use `sy:sweep` for large code/ticket/PR/docs surfaces and `sy:seam` only for one unresolved boundary that changes roadmap shape. At most 3 depth agents in flight. Agent returns are compressed leads; verify decisive spans and own the cut.
+Read small cohesive evidence directly. Use `sy:sweep` for large code/ticket/PR/docs surfaces and `sy:seam` only for one unresolved boundary that changes roadmap shape. At most the resolved `limits.max_depth_agents` cap in flight — resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`. Agent returns are compressed leads; verify decisive spans and own the cut.
 
 Read durable cross-session memory early — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" list` (or `search` on the tools/surfaces the objective touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the objective enters the brief as a known anchor.
 
@@ -52,7 +53,7 @@ Load only the reference for the current state. Do not preload mutually exclusive
 
 ## Completion bar
 
-The Epic body must show North Star, conceptual horizon ladder, completed branches, current active set (≤4) with keys/kickoffs, queued conceptual work, critical path, blockers, and parallel-safe set. Every planning run that changes the tracker adds one decision-log delta ending in a `Plan checkpoint` footer, and delegates a subagent to render this session's transcript and attach it to the Epic, following the `tracker` skill's attachment flow (`$KIND=plan`). A roadmap entry or checkpoint that shipped evidence later overrules is corrected on its own surface, not left stale — the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`; and when the transcript-attach delegation is denied under auto-mode, the identical render-and-attach may run inline as that reference's authorized-alternate-route fallback, the rendered text handled by path only — deterministic scan only, no contextual review, so treat a clean result as evidence, not proof, per the `tracker` skill's attachment flow.
+The Epic body must show North Star, conceptual horizon ladder, completed branches, current active set (≤ the resolved `plan.max_active_tasks` cap) with keys/kickoffs, queued conceptual work, critical path, blockers, and parallel-safe set. Every planning run that changes the tracker adds one decision-log delta ending in a `Plan checkpoint` footer. Resolve `transcript.attach` — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`) — and when it is true, delegate a subagent to render this session's transcript and attach it to the Epic, following the `tracker` skill's attachment flow (`$KIND=plan`); when false, skip the attachment entirely. A roadmap entry or checkpoint that shipped evidence later overrules is corrected on its own surface, not left stale — the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`; and when `transcript.attach` is true and the transcript-attach delegation is denied under auto-mode, the identical render-and-attach may run inline as that reference's authorized-alternate-route fallback, the rendered text handled by path only — deterministic scan only, no contextual review, so treat a clean result as evidence, not proof, per the `tracker` skill's attachment flow.
 
 When every horizon is delivered and every child is `done` for delivered reasons, set the Epic `done`.
 

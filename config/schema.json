@@ -100,6 +100,101 @@
           }
         }
       }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_depth_agents": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cross-cutting cap on simultaneous depth-investigation subagents (sy:trace/sy:hunt/etc.) in flight per phase — ship, spec, spike, and sy:gate all read this same key."
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_active_tasks": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cap on /sy:spec-ready Tasks a roadmap keeps active under one Epic at once."
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "light_tier_max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "File-count proxy for \"small\": the light process tier is allowed only when the plan's declared file set is at most this many files and no risk lenses are activated."
+        }
+      }
+    },
+    "ship": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request_ci_reviewer": {
+          "type": "boolean",
+          "description": "Whether GATE requests an automated code-review bot (e.g. Copilot) on the PR, in addition to sy:gate's own independent review."
+        },
+        "merge_strategy": {
+          "type": "string",
+          "enum": ["squash", "merge", "rebase"],
+          "description": "Strategy passed to `gh pr merge`. Only squash composes a subject/body from the PR description; merge and rebase have none to compose."
+        },
+        "escalation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_needs_decision": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "A ship phase exceeding this many needs-decision returns without reaching done escalates to /sy:spec as underspecified."
+            },
+            "max_needs_trace": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "A ship phase exceeding this many needs-trace returns without reaching done escalates to /sy:spec as missing evidence, on its own separate count."
+            }
+          }
+        }
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attach": {
+          "type": "boolean",
+          "description": "Whether /sy:plan, /sy:spec, and (full-tier) /sy:ship render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself, not something most users need on by default."
+        },
+        "truncation_limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-block character limits applied when scripts/session_usage.py renders a readable transcript.",
+          "properties": {
+            "tool_input": { "type": "integer", "minimum": 1 },
+            "tool_result": { "type": "integer", "minimum": 1 },
+            "thinking": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "extra_words": {
+          "type": "array",
+          "description": "Org-specific credential-name fragments merged into the built-in secret-word list (scripts/secret_words.py) used by scripts/secret_guard.py and scripts/scrub_known_secrets.py. Each entry must be a single alphanumeric word (the matcher is word-based, not substring-based, so a multi-word entry like 'ID_RSA' would silently never match anything).",
+          "items": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9]+$" }
+        }
+      }
     }
   }
 }

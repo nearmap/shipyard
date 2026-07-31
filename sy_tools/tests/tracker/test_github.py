@@ -956,6 +956,10 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
             f"Could not resolve to a Repository with the name {HOST}/{REPO}'. (repo)",
         ),
         (f"ping x-access-token:{CANARY}@{HOST}/{REPO} done", f"ping {HOST}/{REPO} done"),
+        (f"x-access-token:{CANARY}@{HOST}", HOST),
+        (f"x-access-token:{CANARY}@{HOST}.git", f"{HOST}.git"),
+        (f"got 'x-access-token:{CANARY}@{HOST}'", f"got {HOST}'"),
+        (f"octocat@{HOST}", f"octocat@{HOST}"),
     ],
 )
 def test_stripping_credentials_survives_a_userinfo_that_holds_a_slash_or_a_second_at(value, expected):
@@ -1086,6 +1090,27 @@ async def test_a_credential_gh_quotes_back_inside_a_sentence_never_reaches_the_e
     message = str(raised.value)
     assert CANARY not in message, f"gh's own sentence carried the configured credential through: {message}"
     assert HOST in message, f"the failure must still name the repository gh refused: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_pathless_credentialed_authority_never_reaches_the_error(monkeypatch):
+    """Found by review, round 9: `user:pass@host` with no path or port at all was not stripped.
+
+    `git credential fill`/`.netrc` hand back exactly this shape, and so does a GHE operator pasting a
+    credentialed base host against `--repo`'s `HOST/OWNER/REPO` grammar. The prior two schemeless patterns
+    both required something after the host (a path or a `:port`); this one has neither, so distinguishing
+    it from a bare `user@host` address needs the colon inside the userinfo the two share.
+    """
+    configured = f"x-access-token:{CANARY}@{HOST}"
+    _configure(monkeypatch, **{"tracker_config.repo": configured})
+    _install(monkeypatch, (1, "", f"GraphQL: Could not resolve to a Repository with the name '{configured}'. (repo)"))
+
+    with pytest.raises(TrackerError, match="could not resolve it to a repository") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    message = str(raised.value)
+    assert CANARY not in message, f"a pathless credentialed authority leaked through gh's own sentence: {message}"
+    assert HOST in message, f"the failure must still name the host gh refused: {message}"
 
 
 @pytest.mark.anyio
@@ -1467,6 +1492,24 @@ async def test_a_board_name_the_config_does_not_match_fails_instead_of_emptying_
     assert not any(call[1:3] == ["issue", "view"] for call in fake.calls), (
         f"a filter no board value can match must not cost a candidate read: {fake.calls}"
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fields", [{"totalCount": 5}, {"fields": {}}, {}])
+async def test_a_field_list_with_no_field_list_is_a_failure_not_a_boardless_board(monkeypatch, fields):
+    """Found by review: `field-list` was read with the same tolerant helper the board-drift check exists to
+    catch drift through, so an unreadable `field-list` answer misdiagnosed itself as `columns.*` drift.
+
+    `_as_list` stays tolerant on purpose elsewhere, but a board this adapter could not read its own field
+    options from must not read as a board with none — that is indistinguishable from a genuine drift and
+    sends whoever reads the failure to fix configuration that was never wrong.
+    """
+    _configure(monkeypatch)
+    fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: _list_row()}, fields=fields)
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    with pytest.raises(TrackerError, match="no list of fields"):
+        await adapter.GithubAdapter().find_issues(status="ready")
 
 
 @pytest.mark.anyio

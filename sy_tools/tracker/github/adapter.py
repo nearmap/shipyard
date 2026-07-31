@@ -536,11 +536,18 @@ class GithubAdapter:
                 f"gh project view {number} --owner {owner} reported no project id; check "
                 "tracker_config.project against `gh project list`."
             )
-        fields = _gh_data([
-            "project", "field-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT
-        ])
+        field_args = ["project", "field-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT]
+        fields = _gh_data(field_args)
+        raw_fields = fields.get("fields") if isinstance(fields, dict) else None
+        if not isinstance(raw_fields, list):
+            raise TrackerError(
+                f"gh {_shown(field_args)} returned no list of fields for project {owner}/{number}, so its "
+                "Status/Type options could not be read — this must not be read as a board with no options on "
+                "it, which is exactly the drift a caller cannot tell apart from a genuine `columns.*` "
+                "misconfiguration. Check the installed gh version against the fields this adapter requests."
+            )
         resolved: dict[str, Any] = {"project_id": str(project_id), "fields": {}}
-        for field in _as_list(fields, "fields"):
+        for field in raw_fields:
             if isinstance(field, dict) and field.get("options") is not None and field.get("name"):
                 resolved["fields"][str(field["name"])] = {
                     "id": str(field.get("id") or ""),
@@ -1281,12 +1288,16 @@ def _stripped_token(token: str) -> str:
     `@` *inside* it separates userinfo from host, so an extra `@` in the userinfo carries no fragment of
     itself through.
 
-    Any other token is matched against the two schemeless remote spellings, `user:pass@host:path` and
-    `user:pass@host/path`, greedily to the last `@` for the same reason — both lose all of `user:pass@`.
-    The userinfo must be non-empty, so `@me` and `@me/abc` are left exactly as configured rather than
-    reported back to the operator as `me/abc`; and a host followed by a bare `:` is not the scp form, so
-    an address in a comment body (`someone@example.com: ...`) is not read as a credential. A token shaped
-    like none of these — `OWNER/REPO`, a flag, an email address — is returned unchanged.
+    Any other token is matched against three schemeless remote spellings: `user:pass@host:path` and
+    `user:pass@host/path`, matched greedily to the last `@` so an extra `@` in the userinfo loses none of
+    itself; and `user:pass@host` with no path or port at all — the bare RFC 3986 authority, which
+    `git credential fill`/`.netrc` hand back directly and which a base-host paste against `--repo`'s
+    `HOST/OWNER/REPO` grammar produces — which requires a colon inside the userinfo to tell it apart from
+    a bare `user@host` address with nothing after it. The userinfo must be non-empty, so `@me` and
+    `@me/abc` are left exactly as configured rather than reported back to the operator as `me/abc`; and a
+    host followed by a bare `:` is not the scp form, so an address in a comment body
+    (`someone@example.com: ...`) is not read as a credential. A token shaped like none of these —
+    `OWNER/REPO`, a flag, an email address — is returned unchanged.
 
     An address immediately followed by a path (`someone@example.com/team`) *is* the schemeless remote
     spelling and loses its local part. The two are not distinguishable by shape, and a comment body with a
@@ -1295,7 +1306,7 @@ def _stripped_token(token: str) -> str:
     if "//" in token:
         head, *segments = token.split("//")
         return head + "".join(f"//{_stripped_authority(segment)}" for segment in segments)
-    return re.sub(r"\S+@(?=[^\s@:/]+(?:/|:\S))", "", token)
+    return re.sub(r"\S+@(?=[^\s@:/]+(?:/|:\S))|\S*:\S*@(?=[^\s@:/]+$)", "", token)
 
 
 def _stripped_authority(segment: str) -> str:
@@ -1323,11 +1334,15 @@ def _safe(text: str) -> str:
     catches the one kind this process cannot recognise by value — a token misconfigured into a remote URL,
     which only ever existed in `tracker_config.repo`.
 
-    Every message in this file built from command output or from a configured value goes through here, and
-    the strip is part of it rather than something each site remembers to do: `gh`'s own stderr echoes a
-    credentialed repository value back for a GraphQL resolution error, an HTTP error naming the URL, and a
-    malformed-URL argument error, so the site-by-site version of this leaked from whichever verb was fixed
-    second.
+    Every message built from `gh` output, from `_shown`'s argv rendering, or from a configured
+    `tracker_config.repo`/`.project` value — the values that can actually carry a credential — goes
+    through here, and the strip is part of it rather than something each site remembers to do: `gh`'s own
+    stderr echoes a credentialed repository value back for a GraphQL resolution error, an HTTP error
+    naming the URL, and a malformed-URL argument error, so the site-by-site version of this leaked from
+    whichever verb was fixed second. A handful of messages interpolate caller-authored or `gh`-returned
+    content that is never credential-shaped by construction — an issue title, an assignee login, a label,
+    a configured `columns.*` display name, a board field's own option titles — and are not routed through
+    here; those values are never a token's home, only a repository or project reference is.
     """
     scrubbed, _ = scrub_text(
         _stripped_of_credentials(text.strip()), discover_secret_vars(extra_words=config.extra_secret_words())

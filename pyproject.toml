@@ -16,13 +16,16 @@ ruff = "*"
 ty = "*"
 pytest = "*"
 
-# `mcp` pulls both of these in already, but this package imports them directly — the Jira adapter
+# `mcp` pulls the first two in already, but this package imports them directly — the Jira adapter
 # speaks httpx2 and the GitHub adapter offloads its blocking `gh` calls with anyio — so they are
-# declared rather than inherited from a transitive edge that is free to move.
+# declared rather than inherited from a transitive edge that is free to move. `marklas` is the
+# Markdown/rich-text converter the Jira adapter calls in process, replacing the CLI deployment's
+# subprocess-into-an-isolated-venv hop.
 [tool.pixi.pypi-dependencies]
 mcp = ">=2.0.0"
 httpx2 = "*"
 anyio = "*"
+marklas = "*"
 
 [tool.pixi.tasks]
 sy-server = "python -m sy_tools.server"

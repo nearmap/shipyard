@@ -130,6 +130,8 @@ async def request(
         raise TrackerError(f"{method} {url} timed out after {TIMEOUT_SECONDS}s") from exc
     except httpx2.RequestError as exc:
         raise TrackerError(f"could not reach {url}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise TrackerError(f"{method} {url} returned a 2xx response whose body is not JSON") from exc
 
 
 def _credentials() -> tuple[str, str]:

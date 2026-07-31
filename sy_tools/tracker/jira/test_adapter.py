@@ -146,6 +146,16 @@ async def test_a_stalled_call_is_bounded_and_becomes_a_tracker_error(raised):
 
 
 @pytest.mark.anyio
+async def test_a_non_json_2xx_body_becomes_a_tracker_error():
+    """A proxy or SSO wall can answer 200 with HTML; that must map, not escape as a JSONDecodeError."""
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=b"<html>sign in</html>")
+
+    with pytest.raises(TrackerError, match="not JSON"):
+        await adapter.request("GET", MYSELF, "Basic x", transport=httpx2.MockTransport(handler))
+
+
+@pytest.mark.anyio
 async def test_a_rejected_call_becomes_a_tracker_error_naming_the_status():
     """A non-2xx is a failure, reported with its status and Jira's own detail — and no credential."""
     def handler(request: httpx2.Request) -> httpx2.Response:

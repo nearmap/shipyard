@@ -114,8 +114,20 @@ def scan_file(path: Path) -> list[dict]:
         if not report.is_file():
             return []
         body = report.read_text(encoding="utf-8").strip()
-        findings = json.loads(body) if body else []
-    return findings if isinstance(findings, list) else []
+        if not body:
+            return []
+        try:
+            findings = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise SanitizeError(
+                f"{SCANNER} produced an unparseable report; refusing to upload unverified."
+            ) from exc
+    if not isinstance(findings, list):
+        raise SanitizeError(
+            f"{SCANNER} report was a {type(findings).__name__}, not the expected list; "
+            "refusing to upload unverified."
+        )
+    return findings
 
 
 def sanitize(

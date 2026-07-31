@@ -146,6 +146,10 @@ def _gh_json(args: list[str]) -> dict[str, Any]:
 
 
 def _safe(text: str) -> str:
-    """Command output, with any credential this process holds redacted, ready to put in a message."""
-    scrubbed, _ = scrub_text(text.strip(), discover_secret_vars())
+    """Command output, with any credential this process holds redacted, ready to put in a message.
+
+    Discovery honours `redaction.extra_words`, so an org-specific credential name redacts here
+    exactly as it does on the attach-artifact sanitisation path.
+    """
+    scrubbed, _ = scrub_text(text.strip(), discover_secret_vars(extra_words=config.extra_secret_words()))
     return scrubbed[:STDERR_LIMIT]

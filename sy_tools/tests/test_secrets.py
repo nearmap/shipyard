@@ -76,6 +76,18 @@ def test_a_wedged_scanner_is_killed_and_refuses_the_upload(planted, monkeypatch)
         secrets.scan_file(planted)
 
 
+@pytest.mark.parametrize("body", ['{"not": "a list"}', "not json at all"])
+def test_an_unreadable_scanner_report_refuses_the_upload(planted, monkeypatch, body):
+    """A report the code cannot read as findings must fail closed, never count as zero findings."""
+    def fake_run(cmd: list[str], **_kwargs) -> subprocess.CompletedProcess:
+        Path(cmd[cmd.index("--report-path") + 1]).write_text(body, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(secrets.subprocess, "run", fake_run)
+    with pytest.raises(secrets.SanitizeError, match="refusing to upload unverified"):
+        secrets.scan_file(planted)
+
+
 def test_a_required_credential_absent_from_the_environment_fails_loudly(planted, monkeypatch):
     monkeypatch.delenv(FAKE_VAR)
     with pytest.raises(secrets.SanitizeError, match="not present in this process's environment"):

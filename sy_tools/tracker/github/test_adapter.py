@@ -146,6 +146,19 @@ async def test_a_credential_in_command_output_never_reaches_the_error_message(tm
 
 
 @pytest.mark.anyio
+async def test_extra_redaction_words_apply_to_error_messages(tmp_path, monkeypatch):
+    """`redaction.extra_words` must redact command output here exactly as on the attach path."""
+    monkeypatch.setenv("NM_BEARER", "org-secret-value-9f8e7d6c")
+    monkeypatch.setattr(adapter.config, "extra_secret_words", lambda: frozenset({"BEARER"}))
+    _install(monkeypatch, (1, "", "bad credentials: org-secret-value-9f8e7d6c"))
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+
+    assert "org-secret-value-9f8e7d6c" not in str(raised.value), "an org-named credential leaked"
+
+
+@pytest.mark.anyio
 async def test_preflight_reports_facts_without_the_token(monkeypatch):
     status = (
         "github.com\n  ✓ Logged in to github.com account octocat (keyring)\n"

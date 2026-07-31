@@ -58,6 +58,23 @@ async def test_initialize_list_and_call_roundtrip():
         assert set(_payload(result)) == {"valid", "errors", "tracker", "fingerprint"}
 
 
+def test_validate_config_reports_an_unresolvable_config_rather_than_crashing(monkeypatch):
+    """The tool whose whole contract is reporting a broken config must not crash on one.
+
+    `config.validate()` maps a ConfigError from `resolve()` into the errors list, so the report
+    must come back `valid: false` — not escalate into a tool error because the trailing
+    tracker/fingerprint lookups re-ran `resolve()` and hit the same failure.
+    """
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise server.config.ConfigError("repo layer is not valid JSON")
+
+    monkeypatch.setattr(server.config, "resolve", broken)
+    report = server.validate_config()
+    assert report["valid"] is False
+    assert report["errors"] == ["repo layer is not valid JSON"]
+    assert "tracker" not in report, "an unresolvable config has no resolved values to report"
+
+
 @pytest.mark.anyio
 async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
     """The distinction the MCP spec draws: the call reached the server and produced an answer.

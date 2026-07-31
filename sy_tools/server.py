@@ -122,12 +122,14 @@ def validate_config() -> dict[str, Any]:
     secret value.
     """
     errors = config.validate()
-    return {
-        "valid": not errors,
-        "errors": errors,
-        "tracker": config.get("tracker"),
-        "fingerprint": config.fingerprint(),
-    }
+    report: dict[str, Any] = {"valid": not errors, "errors": errors}
+    try:
+        report["tracker"] = config.get("tracker")
+        report["fingerprint"] = config.fingerprint()
+    except config.ConfigError:
+        pass  # unresolvable config: the errors list already carries the reason, and this
+        # tool's whole contract is to report a broken config rather than crash on one
+    return report
 
 
 if __name__ == "__main__":

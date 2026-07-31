@@ -32,7 +32,7 @@ def anyio_backend() -> str:
 
 
 def _server_process() -> StdioServerParameters:
-    """The child process exactly as `.mcp.json`'s `pixi run sy-server` task launches it."""
+    """The same module entry point `.mcp.json`'s task reaches, spawned directly rather than via pixi."""
     return StdioServerParameters(
         command=sys.executable, args=["-m", "sy_tools.server"], cwd=str(PLUGIN_ROOT)
     )

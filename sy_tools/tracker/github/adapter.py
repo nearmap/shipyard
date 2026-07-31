@@ -18,10 +18,12 @@ tracker has no CLI-scriptable file attachment, so an artifact becomes a secret g
 comment on the work item links to. Privacy is verified by reading the created gist back, not
 assumed from the flags passed: a public gist would publish a transcript irrevocably.
 
-Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token; every message
-built from command output is scrubbed of any credential this process holds, and every message built
-from `gh`'s argv is additionally stripped of the userinfo a configured remote URL can carry, since
-that credential is one this process does not hold and so cannot recognise by value.
+Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token, and every message
+built from command output or from a configured value goes through `_safe`, which both scrubs the
+credentials this process holds and drops the userinfo a configured remote URL can carry — a credential
+this process does not hold and so cannot recognise by value. Both halves live in that one function
+rather than at each site, because the site-by-site version leaked twice: first from the argv every
+verb renders, then from the stderr `gh` echoes a credentialed repository value back in.
 
 The canonical verbs are `async` because the seam above this module is uniformly async: the server
 serves calls concurrently, and a slow attachment must not block an unrelated tool call. `gh`
@@ -124,8 +126,9 @@ class GithubAdapter:
         board becomes the candidate set: every matching issue card in the scoped repository is
         enumerated, `limit` bounds the page rather than the fetch, `is_last` says whether a further
         match exists, and `text` is matched here against title and body instead of by GitHub's
-        server-side search. A query too wide to read within `MAX_BOARD_READS` fails saying so, and an
-        unrecognised status or type token is refused rather than answered with an empty page.
+        server-side search. A query too wide to read within `MAX_BOARD_READS` fails saying so; so does a
+        status or type this cannot match a card by — an unrecognised canonical token, or one whose
+        configured board name the board itself does not offer — rather than answering an empty page.
         """
         return await to_thread.run_sync(
             functools.partial(
@@ -253,7 +256,7 @@ class GithubAdapter:
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
         if status is not None or issue_type is not None:
-            return _board_page(status=status, issue_type=issue_type, parent=parent, text=text, limit=limit)
+            return self._board_page(status=status, issue_type=issue_type, parent=parent, text=text, limit=limit)
         args = [
             "issue", "list", *_repo_args(), "--state", "all", "--limit", str(limit), "--json", SUMMARY_FIELDS
         ]
@@ -363,24 +366,12 @@ class GithubAdapter:
     def _set_field(self, issue_url: str, field_name: str, option_name: str) -> str:
         """Ensure the issue is a board item, set one single-select field, and read the value back.
 
-        Ported from `gh_project.set_field`. The refresh retry is the load-bearing part: an option
-        added to the board after this board was resolved must work without restarting the server,
-        so a lookup miss re-resolves once before it is treated as a real miss.
+        Ported from `gh_project.set_field`, bar the option lookup: that is `_checked_option`, because the
+        board-filtered read has to make the very same check against the very same board fields before it
+        matches a card by one of them.
         """
         owner, number = _project_ref()
-        resolved = self._resolve(owner, number, refresh=False)
-        ids = _option_id(resolved, field_name, option_name)
-        if ids is None:
-            resolved = self._resolve(owner, number, refresh=True)
-            ids = _option_id(resolved, field_name, option_name)
-        if ids is None:
-            available = sorted((resolved["fields"].get(field_name) or {}).get("options", {}))
-            raise TrackerError(
-                f"project {owner}/{number} field {field_name!r} has no option matching {option_name!r} "
-                f"(case-insensitive); available: {available}. Fix the board option or the columns.* config "
-                f"key. See docs/github-setup.md."
-            )
-        field_id, option_id = ids
+        resolved, (field_id, option_id) = self._checked_option(owner, number, field_name, option_name)
         item_id = self._find_or_add_item(owner, number, issue_url)
         _gh([
             "project", "item-edit",
@@ -391,6 +382,141 @@ class GithubAdapter:
         ])
         _verify_field(owner, number, issue_url, field_name, option_name)
         return item_id
+
+    def _checked_option(
+        self, owner: str, number: str, field_name: str, option_name: str, *, context: str = ""
+    ) -> tuple[dict[str, Any], tuple[str, str]]:
+        """The board and the `(field_id, option_id)` for one native option name, or a failure naming the drift.
+
+        Ported from `gh_project.set_field`, and shared by the write path with the read filter because the
+        two meet the same fault: the board's real `Status` column or `Type` option name has drifted from
+        the `columns.*` config key naming it — renamed, retyped, or never created. Only the write path used
+        to notice. `_board_page` compared canonical tokens against values `canonical_status` had passed
+        through unmapped, so the same drift filtered every card out and `find_issues` answered `count: 0,
+        is_last: true` from a board with work on it, which is the one wrong answer a caller cannot tell from
+        an empty queue. `context` is what the read path adds to say the query was refused rather than
+        answered; the write path's message stays the one the CLI helper prints, word for word.
+
+        The refresh retry is the load-bearing part for both: an option added to the board after this board
+        was resolved must work without restarting the server, so a lookup miss re-resolves once before it
+        is treated as a real miss.
+        """
+        resolved = self._resolve(owner, number, refresh=False)
+        ids = _option_id(resolved, field_name, option_name)
+        if ids is None:
+            resolved = self._resolve(owner, number, refresh=True)
+            ids = _option_id(resolved, field_name, option_name)
+        if ids is None:
+            available = sorted((resolved["fields"].get(field_name) or {}).get("options", {}))
+            raise TrackerError(
+                f"project {owner}/{number} field {field_name!r} has no option matching {option_name!r} "
+                f"(case-insensitive); available: {available}. Fix the board option or the columns.* config "
+                f"key. See docs/github-setup.md.{context}"
+            )
+        return resolved, ids
+
+    def _board_page(
+        self, *, status: str | None, issue_type: str | None, parent: str | None, text: str | None, limit: int
+    ) -> dict:
+        """One page of the board items matching a status or type filter, read board-first.
+
+        The board item list is the candidate set: it is a project-item read bounded by the board's own
+        size, it carries `Status` and `Type`, and it never touches `gh issue list` or the Search API. Only
+        the surviving cards are then read individually for the fields a card does not carry — the labels
+        and parent `_summary` reports, plus the body a `text` filter needs — so the per-issue cost scales
+        with the filtered board, not with the repository.
+
+        Candidates are narrowed to actual issues in one concrete repository before any of them is read. A
+        board holds pull request and draft cards too, and `gh issue view` reads a pull request URL without
+        complaint, so a PR sitting in the filtered column would otherwise be returned as an issue; and the
+        repository is always exactly the one every other verb acts on — `tracker_config.repo` when it is
+        set, otherwise the one `gh` resolves from the working directory — never the whole board.
+
+        Reading stops one match past the page: `is_last` needs to know only whether a further match
+        exists, and each further candidate costs a `gh issue view` a caller would never see. `MAX_BOARD_READS`
+        bounds those reads for the case `limit` cannot: a `text` or `parent` filter that matches nothing
+        rejects every candidate after reading it, and past the bound this stops rather than spending a minute
+        per few hundred cards. Reaching the bound with a full page returns that page as the truncated page it
+        is, `is_last` false; reaching it without one fails, saying what to narrow, because a page that is
+        neither full nor known to be complete is exactly the answer a caller cannot act on.
+
+        `text` is therefore matched here, case-insensitively, as a substring of title or body. That is a
+        deliberate divergence from `gh issue list --search`: no attempt is made to reproduce GitHub's
+        server-side ranking or query syntax, in exchange for a result set that is complete for the board
+        rather than silently capped at the Search API's thousandth row.
+
+        The filter is checked in two places, because matching is what makes both checks necessary — an
+        unmatchable filter simply matches no card, and every miss came back as a complete empty page.
+        `native_status`/`native_type` reject an unrecognised *canonical* token before any `gh` call, the way
+        every write here does: `in_progress` for `in-progress` used to answer `count: 0, is_last: true`, which
+        the duplicate-work checks in `skills/plan/SKILL.md` and `skills/spec/SKILL.md` read as "no prior work".
+        `_checked_option` then rejects a native name the board does not actually offer, against the board's own
+        field options — the same read and the same failure the write path makes. That is the drift the
+        comparison below cannot see: it is canonical-to-canonical, over values `_normalize_item` produced, and
+        `canonical_status`/`canonical_type` pass a board value no configured column names through unchanged, so
+        a renamed column matches nothing and the empty page reports itself complete.
+
+        That check comes after the board read rather than before it, so a board this adapter cannot read
+        completely keeps its own failure: telling an operator to fix a column name over a board too large for
+        one read sends them to correct configuration that is already right.
+        """
+        wanted = {
+            STATUS_FIELD: native_status(status) if status is not None else None,
+            TYPE_FIELD: native_type(issue_type) if issue_type is not None else None,
+        }
+        owner, number = _project_ref()
+        repo = _effective_repo()
+        index = _item_index(owner, number)
+        for field_name, option_name in wanted.items():
+            if option_name is not None:
+                self._checked_option(
+                    owner, number, field_name, option_name,
+                    context=" This search is refused rather than answered with an empty page: no card can "
+                    "carry a board value the board does not offer.",
+                )
+        candidates = [
+            (url, item)
+            for url, item in index.items()
+            if (status is None or item["status"] == status)
+            and (issue_type is None or item["type"] == issue_type)
+            and _in_repo(url, repo)
+            and _is_issue_card(url, item)
+        ]
+        fields = f"{SUMMARY_FIELDS},body" if text else SUMMARY_FIELDS
+        needle = (text or "").strip().lower()
+        matched: list[dict[str, Any]] = []
+        reads = 0
+        bounded = False
+        for url, item in candidates:
+            if len(matched) > limit:
+                break
+            if reads >= MAX_BOARD_READS:
+                if len(matched) < limit:
+                    raise TrackerError(
+                        f"this search read the {MAX_BOARD_READS} board items one call reads individually "
+                        f"without filling a page of {limit} from them, and there are more; narrow it with a "
+                        "parent, a text term, or a status or type that fewer cards carry. The partial result "
+                        "is refused rather than reported as complete, because it would not be."
+                    )
+                bounded = True
+                break
+            data = _view(url, fields)
+            reads += 1
+            if not str(data.get("url") or ""):
+                raise TrackerError(f"gh issue view {url} returned no issue; treat the read as failed.")
+            summary = _summary(data, item)
+            if parent is not None and not _same_ref(summary["parent"], parent):
+                continue
+            if needle and needle not in f"{data.get('title') or ''}\n{data.get('body') or ''}".lower():
+                continue
+            matched.append(summary)
+        page = matched[:limit]
+        return {
+            "issues": page,
+            "count": len(page),
+            "is_last": len(matched) <= limit and not bounded,
+            "next_page_token": None,
+        }
 
     def _resolve(self, owner: str, number: str, *, refresh: bool) -> dict[str, Any]:
         """The board's node id and its single-select fields, cached for the life of this adapter.
@@ -560,94 +686,6 @@ def _url_of(issue: str) -> str:
     return url
 
 
-def _board_page(
-    *, status: str | None, issue_type: str | None, parent: str | None, text: str | None, limit: int
-) -> dict:
-    """One page of the board items matching a status or type filter, read board-first.
-
-    The board item list is the candidate set: it is a project-item read bounded by the board's own
-    size, it carries `Status` and `Type`, and it never touches `gh issue list` or the Search API. Only
-    the surviving cards are then read individually for the fields a card does not carry — the labels
-    and parent `_summary` reports, plus the body a `text` filter needs — so the per-issue cost scales
-    with the filtered board, not with the repository.
-
-    Candidates are narrowed to actual issues in one concrete repository before any of them is read. A
-    board holds pull request and draft cards too, and `gh issue view` reads a pull request URL without
-    complaint, so a PR sitting in the filtered column would otherwise be returned as an issue; and the
-    repository is always exactly the one every other verb acts on — `tracker_config.repo` when it is
-    set, otherwise the one `gh` resolves from the working directory — never the whole board.
-
-    Reading stops one match past the page: `is_last` needs to know only whether a further match
-    exists, and each further candidate costs a `gh issue view` a caller would never see. `MAX_BOARD_READS`
-    bounds those reads for the case `limit` cannot: a `text` or `parent` filter that matches nothing
-    rejects every candidate after reading it, and past the bound this stops rather than spending a minute
-    per few hundred cards. Reaching the bound with a full page returns that page as the truncated page it
-    is, `is_last` false; reaching it without one fails, saying what to narrow, because a page that is
-    neither full nor known to be complete is exactly the answer a caller cannot act on.
-
-    `text` is therefore matched here, case-insensitively, as a substring of title or body. That is a
-    deliberate divergence from `gh issue list --search`: no attempt is made to reproduce GitHub's
-    server-side ranking or query syntax, in exchange for a result set that is complete for the board
-    rather than silently capped at the Search API's thousandth row.
-
-    The filter tokens are validated before any of that, by the same `native_status`/`native_type` mapping
-    every write here validates through, and only for the raising: the comparison below is against values
-    `_normalize_item` has already canonicalised. Matching is what makes the check necessary — an
-    unrecognised token simply matches no card, so `in_progress` for `in-progress` came back as a complete
-    empty page, and the duplicate-work checks in `skills/plan/SKILL.md` and `skills/spec/SKILL.md` read
-    that as "no prior work" rather than as the bad query it is.
-    """
-    if status is not None:
-        native_status(status)
-    if issue_type is not None:
-        native_type(issue_type)
-    owner, number = _project_ref()
-    repo = _effective_repo()
-    candidates = [
-        (url, item)
-        for url, item in _item_index(owner, number).items()
-        if (status is None or item["status"] == status)
-        and (issue_type is None or item["type"] == issue_type)
-        and _repo_slug(url) == repo
-        and _is_issue_card(url, item)
-    ]
-    fields = f"{SUMMARY_FIELDS},body" if text else SUMMARY_FIELDS
-    needle = (text or "").strip().lower()
-    matched: list[dict[str, Any]] = []
-    reads = 0
-    bounded = False
-    for url, item in candidates:
-        if len(matched) > limit:
-            break
-        if reads >= MAX_BOARD_READS:
-            if len(matched) < limit:
-                raise TrackerError(
-                    f"this search read the {MAX_BOARD_READS} board items one call reads individually without "
-                    f"filling a page of {limit} from them, and there are more; narrow it with a parent, a text "
-                    "term, or a status or type that fewer cards carry. The partial result is refused rather "
-                    "than reported as complete, because it would not be."
-                )
-            bounded = True
-            break
-        data = _view(url, fields)
-        reads += 1
-        if not str(data.get("url") or ""):
-            raise TrackerError(f"gh issue view {url} returned no issue; treat the read as failed.")
-        summary = _summary(data, item)
-        if parent is not None and not _same_ref(summary["parent"], parent):
-            continue
-        if needle and needle not in f"{data.get('title') or ''}\n{data.get('body') or ''}".lower():
-            continue
-        matched.append(summary)
-    page = matched[:limit]
-    return {
-        "issues": page,
-        "count": len(page),
-        "is_last": len(matched) <= limit and not bounded,
-        "next_page_token": None,
-    }
-
-
 def _repo_slug(url: str) -> str:
     """The normalised `owner/repo` an issue URL belongs to, from its path so a GHES host works too.
 
@@ -659,10 +697,36 @@ def _repo_slug(url: str) -> str:
     so the two path segments before the `issues/<n>` tail are the pair, lowercased because GitHub's names
     are case-insensitive and `_effective_repo` lowercases the side this is compared against. The
     repository the *caller* spelled is not parsed here or anywhere in this file; `gh` resolves that one.
+
+    `""` means the URL holds no pair to compare, which `_in_repo` refuses rather than reads as "some other
+    repository".
     """
     parts = url.rstrip("/").split("/")
     pair = [part for part in parts[-4:-2] if part] if len(parts) >= 4 else []
     return "/".join(pair).lower() if len(pair) == 2 else ""
+
+
+def _in_repo(url: str, repo: str) -> bool:
+    """Whether a board card's issue URL belongs to `repo`, refusing a URL holding no pair to compare.
+
+    Found by review, sweeping for the pattern this path keeps growing: a card whose URL `_repo_slug` could
+    not read came back as `""`, which equals no repository, so the card was dropped from the candidate set
+    exactly as another repository's card is — and the page still reported itself complete. That is the same
+    silent shortening `_item_index`, `_raw_items` and `_listed_rows` each refuse one level up, and it also
+    took the `_is_issue_card` check out of reach for such a card, since this comparison runs first.
+
+    Every URL that reaches here is one `gh` printed for a board card, always
+    `<host>/<owner>/<repo>/issues|pull/<n>`, so a URL with no pair in it is shape drift rather than a card
+    belonging somewhere else.
+    """
+    slug = _repo_slug(url)
+    if not slug:
+        raise TrackerError(
+            f"the board card {url} carries no owner/repo for this search to compare against {repo}, so "
+            "whether it belongs to this repository is unknown; it must not be dropped from a page that then "
+            "reports itself complete. Check the installed gh version against the fields this adapter requests."
+        )
+    return slug == repo
 
 
 def _effective_repo() -> str:
@@ -691,14 +755,15 @@ def _effective_repo() -> str:
     exists for on the issue-reference side, on a value that arrives from configuration instead of a caller.
 
     It also reaches no message unstripped. An https remote can carry userinfo, so the failures that name
-    the value go through `_shown_repo`, and the `gh` failure this one wraps is safe for the same reason
-    one round further in: `_shown` strips every argv element, so the value `_repo_args()` hands to every
-    other verb cannot print its token either.
+    the value go through `_safe`, which drops it, and the `gh` failure this one wraps is safe for the same
+    reason one round further in: `_shown` strips every argv element and `_safe` strips `gh`'s own stderr,
+    so neither the value `_repo_args()` hands to every other verb nor the text `gh` echoes it back in can
+    print its token.
     """
     configured = str(config.get("tracker_config.repo", default="") or "")
     if configured.strip().startswith("-"):
         raise TrackerError(
-            f"tracker_config.repo is set to {_shown_repo(configured)!r}, which gh would read as a flag rather "
+            f"tracker_config.repo is set to {_safe(configured)!r}, which gh would read as a flag rather "
             "than a repository reference, so it is refused before gh is called. Set it to OWNER/REPO in "
             ".shipyard/config.json; see docs/github-setup.md."
         )
@@ -707,7 +772,7 @@ def _effective_repo() -> str:
         printed = _gh(args)
     except TrackerError as exc:
         source = (
-            f"tracker_config.repo is set to {_shown_repo(configured)!r}"
+            f"tracker_config.repo is set to {_safe(configured)!r}"
             if configured
             else "tracker_config.repo is unset, so this search is scoped to the repository gh resolves from the "
             "working directory"
@@ -837,12 +902,21 @@ def _same_ref(ref: str | None, other: str | None) -> bool:
 
 
 def _project_ref() -> tuple[str, str]:
-    """The configured board as `(owner, number)`. An unusable value fails before any write."""
+    """The configured board as `(owner, number)`. An unusable value fails before any write.
+
+    The owner half is checked to be shaped like one, not merely non-empty: `gh --owner` takes a login or
+    `@me`, and GitHub logins are alphanumerics and hyphens, so anything else is a misconfiguration that
+    `gh` would refuse anyway. Checking it here is what keeps the owner printable — it reaches the failure
+    message of every board read, write and verification in this file, and a value shaped like a URL can
+    carry userinfo, so `https://x-access-token:<token>@host/orgs/o/projects/3` would otherwise hand a
+    credential to half a dozen messages that have no way to recognise one. The single message that does
+    print the raw configured value goes through `_safe`, which strips it.
+    """
     ref = str(config.get("tracker_config.project", default="") or "")
     owner, sep, number = ref.rpartition("/")
-    if not sep or not owner or not number.isdigit():
+    if not sep or not number.isdigit() or not re.fullmatch(r"@me|[A-Za-z0-9][A-Za-z0-9-]*", owner):
         raise TrackerError(
-            f"tracker_config.project must be <owner>/<number> (e.g. @me/3 or my-org/3); got {ref!r}. "
+            f"tracker_config.project must be <owner>/<number> (e.g. @me/3 or my-org/3); got {_safe(ref)!r}. "
             "Set it in .shipyard/config.json; see docs/github-setup.md."
         )
     return owner, number
@@ -1156,67 +1230,85 @@ def _gh_json(args: list[str]) -> dict[str, Any]:
 
 
 def _shown(args: list[str]) -> str:
-    """The `gh` argv as a message may carry it: userinfo-stripped, joined, and scrubbed as output is.
+    """The `gh` argv as a message may carry it: each element stripped, joined, then scrubbed as output is.
 
     The argv is not obviously secret-bearing, but `--body` carries whatever the caller wrote and
     `_repo_args()` carries `tracker_config.repo` — into every verb's argv, not just the one that
     resolves the repository — so both go through the same redaction as stderr rather than being
     trusted to be clean.
 
-    Each element is stripped of URL credentials *before* the join, because `_safe` alone cannot do
-    it: `_safe` redacts the credentials this process holds in its own environment, and a token
-    misconfigured into a remote URL is not one of those. Doing it here covers every `gh` failure and
-    timeout message in this file at once, since all of them are built from this function.
+    The strip is per element and *before* the join, even though `_safe` strips too: the join makes one
+    string out of values that are separately bounded, and the over-stripping fallback for a malformed
+    authority would then be free to eat the argv elements after it.
     """
     return _safe(" ".join(_stripped_of_credentials(arg) for arg in args))
 
 
-def _shown_repo(value: str) -> str:
-    """A configured `tracker_config.repo` value as an error message may carry it, credential-free.
-
-    The same treatment `_shown` gives an argv element, for the two failures that name the configured
-    value directly rather than through `gh`'s argv.
-    """
-    return _safe(_stripped_of_credentials(value))
-
-
 def _stripped_of_credentials(value: str) -> str:
-    """`value` with any URL userinfo or scp-form `user@` prefix dropped, credential fragments included.
+    """`value` with the userinfo of every credentialed authority in it dropped, credential fragments included.
 
     `gh --repo` accepts an https remote, and an https remote can carry userinfo, so a misconfigured
-    `https://x-access-token:<token>@github.com/owner/repo.git` would otherwise be printed in cleartext
-    by the failure that names it. What is left — `https://host/owner/repo`, or `host:owner/repo` for an
-    SSH remote — is still the value the operator has to go and fix.
+    `https://x-access-token:<token>@github.com/owner/repo.git` would otherwise be printed in cleartext by
+    the failure that names it — and `gh`'s own stderr echoes such a value back for several failure shapes,
+    which is why this runs over command output too. What is left — `https://host/owner/repo`, or
+    `host:owner/repo` for an SSH remote — is still the value the operator has to go and fix.
+
+    Every `//` in the value opens an authority to strip, not just the first: a `--body` or a multi-line
+    stderr can hold a clean URL followed by a credentialed one, and stopping at the first left the second
+    one's userinfo printed in full.
 
     The boundary is found before the credential is, which is what a `re.sub` over the whole value could
-    not do: after the `//` that opens an authority, that component is cut out first (everything up to the
-    first following `/`, `?` or `#`) and only the last `@` *inside* that substring separates userinfo from
-    host, so neither an unencoded `/` nor an extra `@` in the userinfo can carry a fragment of it through.
-    A value whose authority is then not a host at all is not a URL this can reason about, and it falls back
-    to dropping everything before its last `@` — over-stripping a malformed value rather than printing what
-    may be a password with a slash in it. The scp-like form is matched whole for the same reason, greedily,
-    so `user:pass@host:path` loses all of `user:pass@`. A value shaped like neither — a bare `OWNER/REPO`,
-    a flag, `@me`, a comment body — is returned unchanged.
+    not do: `_stripped_authority` cuts the authority component out first and only the last `@` *inside* it
+    separates userinfo from host, so neither an unencoded `/` nor an extra `@` in the userinfo can carry a
+    fragment of it through.
+
+    A value carrying no `//` is matched whole against the two schemeless remote spellings, greedily to the
+    last `@` for the same reason: `user:pass@host:path` and `user:pass@host/path` both lose all of
+    `user:pass@`. The second was the gap — `x-access-token:<token>@github.com/owner/repo` has no colon
+    after its host, so the scp pattern did not recognise it and it passed through untouched. Anything
+    shaped like neither — a bare `OWNER/REPO`, a flag, `@me`, an email address in a comment body — is
+    returned unchanged.
     """
-    opened = value.find("//")
-    if opened != -1:
-        prefix, rest = value[: opened + 2], value[opened + 2 :]
-        boundary = min((cut for cut in (rest.find(char) for char in "/?#") if cut != -1), default=len(rest))
-        authority, tail = rest[:boundary], rest[boundary:]
-        host = authority[authority.rfind("@") + 1 :]
-        if re.fullmatch(r"[^\s/?#@:]+(?::\d*)?", host):
-            return prefix + host + tail
-        last = value.rfind("@")
-        return prefix + value[last + 1 :] if last > opened else value
-    scp = re.fullmatch(r"\S*@(?P<host>[^\s@:]+:\S*)", value)
-    return scp.group("host") if scp else value
+    if "//" in value:
+        head, *segments = value.split("//")
+        return head + "".join(f"//{_stripped_authority(segment)}" for segment in segments)
+    scp = re.fullmatch(r"\S*@(?P<rest>[^\s@:]+:\S*)", value)
+    schemeless = scp or re.fullmatch(r"\S*@(?P<rest>[^\s@:/]+(?::\d*)?/\S*)", value)
+    return schemeless.group("rest") if schemeless else value
+
+
+def _stripped_authority(segment: str) -> str:
+    """One `//`-opened piece of a value, with the userinfo of the authority it opens with dropped.
+
+    The authority is everything up to the first `/`, `?` or `#`, and the host is what follows its last
+    `@`. A segment whose host is then not a host at all is not something this can reason about as a URL,
+    so it falls back to dropping everything before the segment's last `@` — over-stripping a malformed
+    value rather than printing what may be a password with a slash in it.
+    """
+    boundary = min((cut for cut in (segment.find(char) for char in "/?#") if cut != -1), default=len(segment))
+    authority, tail = segment[:boundary], segment[boundary:]
+    host = authority[authority.rfind("@") + 1 :]
+    if re.fullmatch(r"[^\s/?#@:]+(?::\d*)?", host):
+        return host + tail
+    return segment[segment.rfind("@") + 1 :] if "@" in segment else segment
 
 
 def _safe(text: str) -> str:
-    """Command output, with any credential this process holds redacted, ready to put in a message.
+    """`text` as a message may carry it: credentials this process holds redacted, URL userinfo dropped.
 
-    Discovery honours `redaction.extra_words`, so an org-specific credential name redacts here
-    exactly as it does on the attach-artifact sanitisation path.
+    Both halves are needed and neither can do the other's job. Scrubbing catches the credentials this
+    process holds in its own environment; discovery honours `redaction.extra_words`, so an org-specific
+    credential name redacts here exactly as it does on the attach-artifact sanitisation path. Stripping
+    catches the one kind this process cannot recognise by value — a token misconfigured into a remote URL,
+    which only ever existed in `tracker_config.repo`.
+
+    Every message in this file built from command output or from a configured value goes through here, and
+    the strip is part of it rather than something each site remembers to do: `gh`'s own stderr echoes a
+    credentialed repository value back for a GraphQL resolution error, an HTTP error naming the URL, and a
+    malformed-URL argument error, so the site-by-site version of this leaked from whichever verb was fixed
+    second.
     """
-    scrubbed, _ = scrub_text(text.strip(), discover_secret_vars(extra_words=config.extra_secret_words()))
+    scrubbed, _ = scrub_text(
+        _stripped_of_credentials(text.strip()), discover_secret_vars(extra_words=config.extra_secret_words())
+    )
     return scrubbed[:STDERR_LIMIT]

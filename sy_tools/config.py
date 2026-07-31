@@ -151,6 +151,22 @@ def agent_binding(name: str) -> dict:
     }
 
 
+def scratch_dir(identifier: str) -> Path:
+    """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
+
+    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
+    """
+    parts = Path(identifier).parts
+    if not identifier or Path(identifier).is_absolute() or ".." in parts:
+        raise ConfigError(
+            f"refusing to create a scratch directory for {identifier!r}: an identifier must be a "
+            "relative name that stays inside the resolved scratch root."
+        )
+    path = Path(str(get("scratch.dir"))) / identifier
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def fingerprint() -> str:
     """Digest of every resolved value, for cache invalidation and reload reporting."""
     values, _ = resolve()
@@ -237,6 +253,9 @@ def _apply_derived_defaults(values: dict, provenance: dict[str, str], root: Path
     if values.get("memory", {}).get("dir") in (None, ""):
         values.setdefault("memory", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "memory")
         provenance["memory.dir"] = "derived-default"
+    if values.get("scratch", {}).get("dir") in (None, ""):
+        values.setdefault("scratch", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "scratch")
+        provenance["scratch.dir"] = "derived-default"
 
 
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:

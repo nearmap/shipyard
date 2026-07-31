@@ -25,6 +25,7 @@ Commands:
   validate                         schema, floors, and environment conflicts; exit 1 on any error
   agent <name> [--json]            floor-clamped dispatch model for one agent
   fingerprint                      stable digest of the resolved config, for cache invalidation
+  scratch-dir <identifier>         ephemeral working directory for one identifier, created if absent
   migrate --settings <path>        convert a legacy settings.json env block into config JSON
   self-test
 
@@ -112,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fingerprint":
         print(fingerprint())
         return 0
+    if args.command == "scratch-dir":
+        print(scratch_dir(args.identifier))
+        return 0
     if args.command == "migrate":
         return _migrate(Path(args.settings), Path(args.out) if args.out else None)
     _self_test()
@@ -139,6 +143,22 @@ def get(path: str, *, default: str | None = None) -> object:
         near = ", ".join(sorted(k for k in flat if k.startswith(path.split(".")[0]))) or "none"
         raise SystemExit(f"sy_config: unknown config key {path!r}. Keys under that prefix: {near}")
     return flat[path]
+
+
+def scratch_dir(identifier: str) -> Path:
+    """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
+
+    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
+    """
+    parts = Path(identifier).parts
+    if not identifier or Path(identifier).is_absolute() or ".." in parts:
+        raise SystemExit(
+            f"sy_config: refusing to create a scratch directory for {identifier!r}: an identifier "
+            "must be a relative name that stays inside the resolved scratch root."
+        )
+    path = Path(str(get("scratch.dir"))) / identifier
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def resolve() -> tuple[dict, dict[str, str]]:
@@ -543,6 +563,9 @@ def _apply_derived_defaults(values: dict, provenance: dict[str, str]) -> None:
     if values.get("memory", {}).get("dir") in (None, ""):
         values.setdefault("memory", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "memory")
         provenance["memory.dir"] = "derived-default"
+    if values.get("scratch", {}).get("dir") in (None, ""):
+        values.setdefault("scratch", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "scratch")
+        provenance["scratch.dir"] = "derived-default"
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -689,6 +712,8 @@ def _build_parser() -> argparse.ArgumentParser:
     a.add_argument("name")
     a.add_argument("--json", action="store_true", help="full binding: model, effort, requested values, clamp flags")
     sub.add_parser("fingerprint", help="stable digest of the resolved config")
+    d = sub.add_parser("scratch-dir", help="ephemeral working directory for one identifier, created if absent")
+    d.add_argument("identifier", help="relative name the directory is created under, e.g. a ticket key")
     m = sub.add_parser("migrate", help="convert a legacy settings.json env block into config JSON")
     m.add_argument("--settings", required=True, help="path to the settings.json holding the legacy env block")
     m.add_argument("--out", help="write here instead of stdout")
@@ -730,6 +755,20 @@ def _self_test() -> None:
             assert provenance["tracker"] == "shipped-default", "an absent layer must leave defaults in place"
             assert values["worktree"]["root"].endswith("repo-worktrees"), "worktree root must derive from the repo"
             assert provenance["worktree.root"] == "derived-default"
+            assert values["scratch"]["dir"] == str(home / ".claude" / "shipyard" / "scratch")
+            assert provenance["scratch.dir"] == "derived-default"
+
+            created = scratch_dir("AM-1")
+            assert created == home / ".claude" / "shipyard" / "scratch" / "AM-1" and created.is_dir(), (
+                "a scratch directory must be created under the resolved root and returned"
+            )
+            for escape in ("", "../elsewhere", str(home)):
+                try:
+                    scratch_dir(escape)
+                except SystemExit as exc:
+                    assert "stays inside the resolved scratch root" in str(exc)
+                else:
+                    raise AssertionError(f"a scratch identifier of {escape!r} must be refused")
 
             write_layer(home / CONFIG_DIRNAME / CONFIG_FILENAME, {"ci": {"poll_timeout": 60}})
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,

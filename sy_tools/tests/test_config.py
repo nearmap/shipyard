@@ -68,6 +68,17 @@ def test_layer_precedence_and_derived_defaults(fixture_repo):
     assert config.get("limits.max_depth_agents") == 3, "an unset key must fall through to the shipped default"
     assert config.get("worktree.root") == str(fixture_repo.parent / f"{fixture_repo.name}-worktrees")
     assert config.resolve()[1]["worktree.root"] == "derived-default"
+    assert config.get("scratch.dir") == str(Path.home() / ".claude" / "shipyard" / "scratch")
+    assert config.resolve()[1]["scratch.dir"] == "derived-default"
+
+
+def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixture_repo):
+    created = config.scratch_dir("AM-1")
+    assert created == Path(str(config.get("scratch.dir"))) / "AM-1"
+    assert created.is_dir(), "scratch_dir must create the directory it returns"
+    for escape in ("", "../elsewhere", str(fixture_repo)):
+        with pytest.raises(config.ConfigError, match="stays inside the resolved scratch root"):
+            config.scratch_dir(escape)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

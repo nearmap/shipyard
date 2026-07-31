@@ -107,8 +107,12 @@ class GithubAdapter:
     ) -> dict:
         """Search issues, optionally by canonical status, canonical type, parent or free text.
 
-        `gh` has no cursor, so this fetches up to `limit` issues and reports `is_last` from what
-        came back; `next_page_token` is always None rather than a cursor that cannot be resumed.
+        `gh` has no cursor, so `next_page_token` is always None rather than a cursor that cannot be
+        resumed. With no status or type filter, this fetches up to `limit` issues from `gh issue list`
+        and reports `is_last` from what came back. A status or type filter names a board value, so the
+        board becomes the candidate set: every matching card is enumerated, `limit` bounds the page
+        rather than the fetch, `is_last` says whether a further match exists, and `text` is matched
+        here against title and body instead of by GitHub's server-side search.
         """
         return await to_thread.run_sync(
             functools.partial(
@@ -207,49 +211,42 @@ class GithubAdapter:
         and `gh issue list` would otherwise hide every closed one. Status, type and parent are
         filtered here because they are board values and a sub-issue relation, not list flags.
 
-        A status or type filter names a board value, so the whole board is the candidate set and
-        `limit` is applied to what matched, not to what was fetched: `--limit limit` on the list call
-        would ask `gh` for the newest `limit` issues and then filter, so the one `ready` issue older
-        than that window would come back as `count: 0` — a caller reading "nothing to pick up" from
-        a board that has work on it. Every board item is enumerated instead, and each one's labels
-        and parent come from the one wide `issue list` read, which is also what applies `--search`.
-        An item that read does not cover is not this repo's issue (the board may span repos, and a
-        draft card has no issue at all), so it is not this repo-scoped search's to report.
+        With no board filter this is one `gh issue list` page: `--limit limit` is the page, `--search`
+        is GitHub's, and `is_last` is read from whether that page came back full.
+
+        A status or type filter names a board value, so the board — not the repository — is the
+        candidate set, and `_board_page` enumerates it board-first. Two different truncations made
+        the previous repo-wide read dishonest here. `--limit limit` on `issue list` asks for the
+        newest `limit` issues and filters after, so the one `ready` issue older than that window came
+        back as `count: 0` — a caller reading "nothing to pick up" from a board that has work on it.
+        Widening that list to `ITEM_LIMIT` then bounded the call by the repository's size instead of
+        the board's, which both costs about a second per hundred rows (a few thousand all-state issues
+        and the call alone exceeds `TIMEOUT_SECONDS`) and, with `--search`, routes through the Search
+        API, whose silent 1,000-row cap is invisible in `--json` output: board items beyond it were
+        dropped from the candidate set while `is_last` still reported the result complete.
         """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
-        board_filtered = status is not None or issue_type is not None
+        if status is not None or issue_type is not None:
+            return _board_page(status=status, issue_type=issue_type, parent=parent, text=text, limit=limit)
         args = [
-            "issue", "list", *_repo_args(), "--state", "all",
-            "--limit", ITEM_LIMIT if board_filtered else str(limit),
-            "--json", SUMMARY_FIELDS,
+            "issue", "list", *_repo_args(), "--state", "all", "--limit", str(limit), "--json", SUMMARY_FIELDS
         ]
         if text:
             args += ["--search", text]
         rows = [row for row in _as_list(_gh_data(args), "issues") if isinstance(row, dict)]
         owner, number = _project_ref()
         index = _item_index(owner, number)
-        if board_filtered:
-            by_url = {str(row.get("url") or ""): row for row in rows}
-            candidates = [
-                (by_url[url], item)
-                for url, item in index.items()
-                if url in by_url
-                and (status is None or item["status"] == status)
-                and (issue_type is None or item["type"] == issue_type)
-            ]
-        else:
-            candidates = [(row, index.get(str(row.get("url") or ""), {})) for row in rows]
         matched = [
             item
-            for item in (_summary(row, item) for row, item in candidates)
+            for item in (_summary(row, index.get(str(row.get("url") or ""), {})) for row in rows)
             if parent is None or _same_ref(item["parent"], parent)
         ]
         page = matched[:limit]
         return {
             "issues": page,
             "count": len(page),
-            "is_last": len(matched) <= limit if board_filtered else len(rows) < limit,
+            "is_last": len(rows) < limit,
             "next_page_token": None,
         }
 
@@ -448,13 +445,18 @@ class GithubAdapter:
         }
 
     def _sync_preflight(self) -> dict:
-        """Confirm `gh` is installed, authenticated, and scoped to write the board.
+        """Confirm `gh` is installed, authenticated, and able to reach the board.
 
         The `project` scope is checked, not just named in the failure text: every `set_status` and
         every `Type` write goes through Projects v2, so a `repo`-only token passes an authentication
         check and then dies on the first board write — the half-finished workflow this call exists to
-        prevent. Unreadable scopes are a failure for the same reason: a green preflight has to mean
-        the scopes were seen, not that the line they were on was missing.
+        prevent.
+
+        Only a classic or OAuth token has scopes to check, though: `gh auth status` prints no
+        `Token scopes:` line at all for a fine-grained PAT or an App token, which is the token type
+        GitHub now recommends. An absent line therefore cannot mean "unscoped" — that would fail a
+        working configuration — so capability is confirmed positively instead, by reading the board,
+        and `scopes` comes back as None rather than as an empty or invented list.
         """
         version = _gh(["--version"]).splitlines()
         try:
@@ -463,17 +465,16 @@ class GithubAdapter:
             raise TrackerError(f"{exc} Authenticate with `gh auth login` (scopes: project, read:project).") from None
         account = re.search(r"account (\S+)", status)
         line = re.search(r"Token scopes:(.*)", status)
-        if not line:
-            raise TrackerError(
-                "gh auth status reported no token scopes, so the project scope every board write needs "
-                "could not be confirmed. Re-authenticate with `gh auth login` (scopes: project, read:project)."
-            )
-        scopes = sorted(re.findall(r"'([^']+)'", line.group(1)))
-        if "project" not in scopes:
-            raise TrackerError(
-                f"the gh token is missing the 'project' scope, so every board write would fail; it has "
-                f"{scopes or 'no scopes'}. Grant it with `gh auth refresh -s project,read:project`."
-            )
+        scopes: list[str] | None = None
+        if line:
+            scopes = sorted(re.findall(r"'([^']+)'", line.group(1)))
+            if "project" not in scopes:
+                raise TrackerError(
+                    f"the gh token is missing the 'project' scope, so every board write would fail; it has "
+                    f"{scopes or 'no scopes'}. Grant it with `gh auth refresh -s project,read:project`."
+                )
+        else:
+            _confirm_board_access()
         return {
             "tool": "gh",
             "version": version[0] if version else "unknown",
@@ -524,6 +525,62 @@ def _url_of(issue: str) -> str:
     if not url:
         raise TrackerError(f"gh issue view {issue} reported no URL, so the board item cannot be identified.")
     return url
+
+
+def _board_page(
+    *, status: str | None, issue_type: str | None, parent: str | None, text: str | None, limit: int
+) -> dict:
+    """One page of the board items matching a status or type filter, read board-first.
+
+    The board item list is the candidate set: it is a project-item read bounded by the board's own
+    size, it carries `Status` and `Type`, and it never touches `gh issue list` or the Search API. Only
+    the surviving cards are then read individually for the fields a card does not carry — the labels
+    and parent `_summary` reports, plus the body a `text` filter needs — so the per-issue cost scales
+    with the filtered board, not with the repository.
+
+    Reading stops one match past the page: `is_last` needs to know only whether a further match
+    exists, and each further candidate costs a `gh issue view` a caller would never see.
+
+    `text` is therefore matched here, case-insensitively, as a substring of title or body. That is a
+    deliberate divergence from `gh issue list --search`: no attempt is made to reproduce GitHub's
+    server-side ranking or query syntax, in exchange for a result set that is complete for the board
+    rather than silently capped at the Search API's thousandth row.
+    """
+    owner, number = _project_ref()
+    repo = str(config.get("tracker_config.repo", default="") or "")
+    candidates = [
+        (url, item)
+        for url, item in _item_index(owner, number).items()
+        if (status is None or item["status"] == status)
+        and (issue_type is None or item["type"] == issue_type)
+        and (not repo or _repo_slug(url) == repo)
+    ]
+    fields = f"{SUMMARY_FIELDS},body" if text else SUMMARY_FIELDS
+    needle = (text or "").strip().lower()
+    matched: list[dict[str, Any]] = []
+    for url, item in candidates:
+        if len(matched) > limit:
+            break
+        data = _view(url, fields)
+        summary = _summary(data, item)
+        if parent is not None and not _same_ref(summary["parent"], parent):
+            continue
+        if needle and needle not in f"{data.get('title') or ''}\n{data.get('body') or ''}".lower():
+            continue
+        matched.append(summary)
+    page = matched[:limit]
+    return {"issues": page, "count": len(page), "is_last": len(matched) <= limit, "next_page_token": None}
+
+
+def _repo_slug(url: str) -> str:
+    """The `owner/repo` an issue URL belongs to, taken from the path so a GHES host works too.
+
+    A board may span repositories while this search is repo-scoped, so another repo's card is skipped
+    before it is read rather than after `gh` refuses it: dropping a candidate because a read failed is
+    how a truncated result comes back looking complete.
+    """
+    parts = url.rstrip("/").split("/")
+    return "/".join(parts[-4:-2]) if len(parts) >= 4 else ""
 
 
 def _summary(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
@@ -615,6 +672,26 @@ def _project_ref() -> tuple[str, str]:
             "Set it in .shipyard/config.json; see docs/github-setup.md."
         )
     return owner, number
+
+
+def _confirm_board_access() -> None:
+    """Prove the credential reaches Projects v2 by reading the board, for a token that reports no scopes.
+
+    Stands in for the scope check preflight cannot make on a fine-grained or App token: the failure it
+    exists to catch is a `repo`-only credential, and such a credential cannot read Projects v2 at all,
+    so one successful board read is positive evidence rather than an assumption. A grant that can read
+    the board but not write it is indistinguishable from here without performing a write, which a
+    preflight must not do; that residual case fails later, at the write, with its own message.
+    """
+    owner, number = _project_ref()
+    try:
+        _raw_items(owner, number)
+    except TrackerError as exc:
+        raise TrackerError(
+            f"the gh token reports no scopes and project {owner}/{number} could not be read with it, so the "
+            f"Projects v2 access every board write needs is unconfirmed: {exc} Grant it with `gh auth refresh "
+            "-s project,read:project`, or give a fine-grained token read and write access to the board."
+        ) from None
 
 
 def _option_id(resolved: dict[str, Any], field_name: str, option_name: str) -> tuple[str, str] | None:

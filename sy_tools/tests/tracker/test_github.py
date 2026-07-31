@@ -64,29 +64,31 @@ class _FakeSubprocess:
         return subprocess.CompletedProcess(argv, code, out, err)
 
 
-class _Truncating(_FakeSubprocess):
-    """A fake that truncates `issue list` to its `--limit`, the way `gh` itself does.
+class _BoardReads(_FakeSubprocess):
+    """A fake that answers a board-filtered search: the board, then one `issue view` per candidate.
 
-    A queue of fixed payloads cannot show the bug it was written for: `gh` returning fewer rows than
-    the repo holds is exactly the condition under which a board filter used to miss an issue.
+    `gh issue list` is refused outright, because that call is what used to bound the candidate set and
+    both of its bounds dropped board items invisibly: its own `--limit` hid anything older than the
+    newest rows, and behind `--search` the Search API caps at 1,000 rows with nothing in the `--json`
+    output to say so.
     """
 
-    def __init__(self, rows: list[dict], items: dict) -> None:
+    def __init__(self, items: dict, views: dict[str, dict]) -> None:
         super().__init__()
-        self._rows = rows
         self._items = items
+        self._views = views
 
     def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
         self.kwargs.append(dict(kwargs))
         self.threads.append(threading.get_ident())
         args = argv[1:]
-        if args[:2] == ["issue", "list"]:
-            payload: object = self._rows[: int(args[args.index("--limit") + 1])]
-        elif args[:2] == ["project", "item-list"]:
-            payload = self._items
+        if args[:2] == ["project", "item-list"]:
+            payload: object = self._items
+        elif args[:2] == ["issue", "view"]:
+            payload = self._views[args[2]]
         else:
-            raise AssertionError(f"this fake answers only the two reads a search makes: {argv}")
+            raise AssertionError(f"a board filter may read only the board and its own items: {argv}")
         return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
 
 
@@ -325,24 +327,59 @@ async def test_preflight_reports_facts_without_the_token(monkeypatch):
     assert "gho_exampletokenvalue" not in json.dumps(facts), "preflight must never return a token"
 
 
+def _auth_status(scopes_line: str = "") -> str:
+    """`gh auth status` output, with or without the `Token scopes:` line only some tokens produce."""
+    return f"github.com\n  ✓ Logged in to github.com account octocat (keyring)\n{scopes_line}"
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("scopes_line", "expected"),
-    [("  - Token scopes: 'gist', 'repo'\n", "'project' scope"), ("", "no token scopes")],
-)
-async def test_preflight_fails_a_token_that_cannot_write_the_board(monkeypatch, scopes_line, expected):
+async def test_preflight_fails_a_token_whose_scopes_lack_project(monkeypatch):
     """A `repo`-only token authenticates and then dies on the first `set-status`.
 
     That is the half-finished workflow preflight exists to prevent, so the scope it names as required
-    is the scope it checks — and scopes it could not read are a failure, not an empty list that passes.
+    is the scope it checks, whenever the scopes are there to check.
     """
-    status = f"github.com\n  ✓ Logged in to github.com account octocat (keyring)\n{scopes_line}"
-    _install(monkeypatch, (0, "gh version 2.94.0 (2025-01-01)\n", ""), (0, status, ""))
+    fake = _install(
+        monkeypatch,
+        (0, "gh version 2.94.0 (2025-01-01)\n", ""),
+        (0, _auth_status("  - Token scopes: 'gist', 'repo'\n"), ""),
+    )
 
-    with pytest.raises(TrackerError, match=expected) as raised:
+    with pytest.raises(TrackerError, match="'project' scope") as raised:
         await adapter.GithubAdapter().preflight()
 
     assert "gh auth" in str(raised.value), f"the failure must say how to fix it: {raised.value}"
+    assert len(fake.calls) == 2, "scopes that answer the question must not cost a board read"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("board_read", "reason"),
+    [((0, json.dumps(_items()), ""), "readable"), ((1, "", "HTTP 403 Resource not accessible"), "refused")],
+)
+async def test_preflight_confirms_a_scopeless_token_by_reading_the_board(monkeypatch, board, board_read, reason):
+    """`gh auth status` prints no scopes line for a fine-grained PAT or an App token.
+
+    Those are fully able to write Projects v2, so an absent line must not fail a working setup — but a
+    green preflight still has to mean something was checked, so the board is read instead and its
+    answer decides. `scopes: None` says which check ran; `[]` would read as "a token with no scopes".
+    """
+    fake = _install(monkeypatch, (0, "gh version 2.96.0 (2025-01-01)\n", ""), (0, _auth_status(), ""), board_read)
+
+    if reason == "refused":
+        with pytest.raises(TrackerError, match="unconfirmed") as raised:
+            await adapter.GithubAdapter().preflight()
+        assert "gh auth" in str(raised.value), f"the failure must say how to fix it: {raised.value}"
+    else:
+        facts = await adapter.GithubAdapter().preflight()
+        assert facts["authenticated"] is True and facts["account"] == "octocat", facts
+        assert facts["scopes"] is None, (
+            f"a fabricated or empty scope list hides which check confirmed capability: {facts}"
+        )
+
+    assert fake.calls[-1][1:3] == ["project", "item-list"], (
+        f"an absent scopes line must be answered by a positive board read: {fake.calls}"
+    )
 
 
 @pytest.mark.anyio
@@ -624,18 +661,21 @@ async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencie
 
 @pytest.mark.anyio
 async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(monkeypatch, board):
-    rows = [_list_row(), _list_row(number=8, url="https://github.com/octocat/repo/issues/8")]
-    fake = _install(monkeypatch, _json(rows), _json(_items(status="In Progress")))
+    fake = _install(monkeypatch, _json(_items(status="In Progress")), _json({**_list_row(), "body": "a widget"}))
 
     found = await adapter.GithubAdapter().find_issues(status="in-progress", text="widget")
 
-    assert fake.calls[0][1:] == [
-        "issue", "list", *REPO_ARGS, "--state", "all", "--limit", adapter.ITEM_LIMIT,
-        "--json", adapter.SUMMARY_FIELDS, "--search", "widget",
-    ], fake.calls[0]
-    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], "an issue off the board has no status to match"
+    assert fake.calls[0][1:] == ["project", "item-list", *OWNER_ARGS, "--limit", adapter.ITEM_LIMIT], fake.calls[0]
+    assert fake.calls[1][1:] == [
+        "issue", "view", ISSUE_URL, *REPO_ARGS, "--json", f"{adapter.SUMMARY_FIELDS},body"
+    ], "the labels, parent and body a card does not carry are read per surviving candidate"
+    assert not any(call[1:3] == ["issue", "list"] for call in fake.calls), (
+        "a board filter must not go through issue list: --search caps at 1,000 rows invisibly"
+    )
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], found
     assert (found["count"], found["is_last"], found["next_page_token"]) == (1, True, None), found
 
+    rows = [_list_row(), _list_row(number=8, url="https://github.com/octocat/repo/issues/8")]
     unfiltered = _install(monkeypatch, _json(rows), _json(_items()))
     full_page = await adapter.GithubAdapter().find_issues(limit=2)
     assert full_page["is_last"] is False, "a full page must not claim to be the last one"
@@ -645,38 +685,72 @@ async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(
 
 
 @pytest.mark.anyio
-async def test_a_board_issue_older_than_the_page_limit_is_still_found(monkeypatch, board):
-    """Found by review: filtering the newest `limit` issues reports a queue that has work as empty.
+async def test_a_board_issue_outside_any_issue_list_window_is_still_found(monkeypatch, board):
+    """Found by review, twice: the candidate set must be bounded by the board, not by a repo read.
 
-    The board value is the filter, so the board is the candidate set. Ranking the wanted issue below
-    `limit` newer ones used to yield `count: 0`, which a caller reads as "nothing to pick up".
+    `--limit limit` on `gh issue list` hid the wanted issue behind newer ones and reported `count: 0`
+    from a board that has work on it; widening that read to the repository put the candidate set behind
+    the Search API's silent 1,000-row cap instead, so items were dropped with `is_last: true`. Neither
+    bound can bite once the board itself is the candidate set — which is why the fake refuses to answer
+    `issue list` at all.
     """
-    newer = [_list_row(number=n, url=f"https://github.com/octocat/repo/issues/{n}") for n in (20, 19)]
-    fake = _Truncating([*newer, _list_row()], _items(status="Ready"))
+    fake = _BoardReads(_items(status="Ready"), {ISSUE_URL: _list_row()})
     monkeypatch.setattr(adapter, "subprocess", fake)
 
     found = await adapter.GithubAdapter().find_issues(status="ready", limit=2)
 
-    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], (
-        f"the ready issue was ranked third of three and went missing: {found}"
-    )
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], f"the ready issue went missing: {found}"
     assert (found["count"], found["is_last"]) == (1, True), found
-    listed = fake.calls[0]
-    assert listed[listed.index("--limit") + 1] == adapter.ITEM_LIMIT, (
-        "a status filter must be applied to the whole board, not to the newest `limit` repo issues"
+    assert [call[1:3] for call in fake.calls] == [["project", "item-list"], ["issue", "view"]], (
+        f"one board read plus one read per surviving candidate: {fake.calls}"
     )
 
 
 @pytest.mark.anyio
 async def test_a_filtered_result_longer_than_the_limit_is_paged_not_dropped(monkeypatch, board):
-    """`limit` still bounds the page; it just bounds the matches rather than the candidates."""
+    """`limit` bounds the page and `is_last` reports the rest honestly, at one read past the page.
+
+    The third candidate is deliberately unanswerable: knowing a further match exists is all `is_last`
+    needs, so reading the remainder of the board would only cost a caller time.
+    """
     other = "https://github.com/octocat/repo/issues/8"
-    rows = [_list_row(), _list_row(number=8, url=other)]
-    _install(monkeypatch, _json(rows), _json(_board_items([ISSUE_URL, other])))
+    third = "https://github.com/octocat/repo/issues/9"
+    fake = _install(
+        monkeypatch,
+        _json(_board_items([ISSUE_URL, other, third])),
+        _json(_list_row()),
+        _json(_list_row(number=8, url=other)),
+    )
 
     found = await adapter.GithubAdapter().find_issues(status="ready", limit=1)
 
     assert (found["count"], found["is_last"]) == (1, False), f"a truncated page must say so: {found}"
+    assert len(fake.calls) == 3, f"reads must stop one match past the page: {fake.calls}"
+
+
+@pytest.mark.anyio
+async def test_text_with_a_board_filter_matches_the_title_or_body_of_board_candidates(monkeypatch, board):
+    """Client-side by design: server-side ranking is not reproduced, completeness for the board is."""
+    other = "https://github.com/octocat/repo/issues/8"
+    views = {
+        ISSUE_URL: {**_list_row(), "body": "the WIDGET is broken"},
+        other: {**_list_row(number=8, url=other), "title": "Ship the widget", "body": "unrelated"},
+    }
+    fake = _BoardReads(_board_items([ISSUE_URL, other]), views)
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    body_match = await adapter.GithubAdapter().find_issues(status="ready", text="widget")
+
+    assert [item["url"] for item in body_match["issues"]] == [ISSUE_URL, other], (
+        f"a case-insensitive substring of title or body must match: {body_match}"
+    )
+    assert not any("--search" in call for call in fake.calls), "text must be applied over board candidates"
+
+    only_titles = _BoardReads(_board_items([ISSUE_URL, other]), views)
+    monkeypatch.setattr(adapter, "subprocess", only_titles)
+    titled = await adapter.GithubAdapter().find_issues(status="ready", text="ship the")
+
+    assert [item["url"] for item in titled["issues"]] == [other], f"the title must be searched too: {titled}"
 
 
 @pytest.mark.anyio

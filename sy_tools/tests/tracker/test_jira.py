@@ -133,12 +133,17 @@ async def test_a_confirmation_without_an_id_is_not_reported_as_attached(credenti
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("name", ['quote".txt', "carriage\rreturn.txt", "new\nline.txt"], ids=["quote", "cr", "lf"])
+@pytest.mark.parametrize(
+    "name",
+    ['quote".txt', "carriage\rreturn.txt", "new\nline.txt", "back\\slash.txt"],
+    ids=["quote", "cr", "lf", "backslash"],
+)
 async def test_a_filename_that_could_forge_multipart_headers_is_refused(credentials, monkeypatch, tmp_path, name):
-    """The multipart header is hand-built, so these three characters are header injection, not names.
+    """The multipart header is hand-built, so these four characters are header injection, not names.
 
-    All are legal in a POSIX filename: a quote closes `filename="..."` early and a CR or LF starts a
-    header line — or a whole extra part — that the caller never asked to send.
+    All are legal in a POSIX filename: a quote closes `filename="..."` early, a backslash can escape
+    into the quoted string, and a CR or LF starts a header line — or a whole extra part — that the
+    caller never asked to send.
     """
     hostile = tmp_path / name
     hostile.write_bytes(b"payload")

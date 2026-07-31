@@ -60,9 +60,10 @@ COMMENT_PAGE = 50
 """How many comments one read returns, newest first: a bound truncates the oldest rather than the
 most recent, which is the useful half of a long ship log."""
 
-FORBIDDEN_IN_FILENAME = ('"', "\r", "\n")
+FORBIDDEN_IN_FILENAME = ('"', "\\", "\r", "\n")
 """Characters an attachment's name may not contain, because the multipart header is built by hand:
-a quote closes `filename="..."` early and a CR or LF starts a header line of the caller's choosing."""
+a quote closes `filename="..."` early, a backslash can escape into the quoted string, and a CR or
+LF starts a header line of the caller's choosing."""
 
 RESULT_CEILING = 200
 """The hard cap on a search's `maxResults`, whatever a caller asks for. An unbounded search on a
@@ -151,9 +152,11 @@ class JiraAdapter:
         pages by opaque token and reports no total. Only the first page is fetched: a caller that
         wants more asks again with the returned token rather than having this verb walk the board.
 
-        `is_last` is derived from the absence of `nextPageToken`, not from `isLast`: the endpoint's
-        contract does not guarantee that field, and reading a missing one as "done" would report a
-        partial page as the whole result set.
+        `is_last` is derived from the absence of `nextPageToken`, not from `isLast`: the current
+        spec does document `isLast`, and it was present in every live response, but `nextPageToken`
+        is the field this verb's own pagination story depends on either way, so deriving `is_last`
+        from it keeps one source of truth instead of two that could disagree if `isLast` were ever
+        absent or wrong.
 
         Every interpolated value is a quoted JQL literal, so a title containing a quote cannot break
         out of its clause and widen the search.

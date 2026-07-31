@@ -21,7 +21,14 @@ from sy_tools.tracker.github import adapter
 GIST_URL = "https://gist.github.com/octocat/abc123"
 COMMENT_URL = "https://github.com/octocat/repo/issues/7#issuecomment-1"
 REPO = "octocat/repo"
+HOST = "github.com"
 PROJECT = "@me/3"
+CANARY = "canary-value-not-for-logs"
+"""A planted value that must never appear in a message, kept out of this process's environment.
+
+`_safe` redacts what this process holds, so a canary in the environment proves nothing about a value
+that arrives from configuration: the userinfo strip could be deleted and the assertion would still pass.
+"""
 ISSUE_URL = "https://github.com/octocat/repo/issues/7"
 PARENT_URL = "https://github.com/octocat/repo/issues/5"
 CHILD_URL = "https://github.com/octocat/repo/issues/9"
@@ -877,25 +884,80 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
     assert fake.calls == [], f"a value gh would read as a flag must never reach its argv: {fake.calls}"
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (REPO, REPO),
+        ("@me", "@me"),
+        (f"https://{HOST}/{REPO}.git", f"https://{HOST}/{REPO}.git"),
+        (f"git@{HOST}:{REPO}.git", f"{HOST}:{REPO}.git"),
+        (f"https://x-access-token:{CANARY}@{HOST}/{REPO}", f"https://{HOST}/{REPO}"),
+        (f"https://user:pa/ss@{CANARY}@{HOST}/{REPO}", f"https://{HOST}/{REPO}"),
+        (f"https://x-access-token:{CANARY}@{HOST}:8080", f"https://{HOST}:8080"),
+        (f"//x-access-token:{CANARY}@{HOST}/{REPO}", f"//{HOST}/{REPO}"),
+        (f"x-access-token:{CANARY}@{HOST}:{REPO}.git", f"{HOST}:{REPO}.git"),
+        ("a note about a@b.example and x: y", "a note about a@b.example and x: y"),
+    ],
+)
+def test_stripping_credentials_survives_a_userinfo_that_holds_a_slash_or_a_second_at(value, expected):
+    """The round-5 regex assumed the userinfo held neither `/` nor `@`, and stopped at either.
+
+    So a hostile or merely hand-mangled value walked the strip out of its own bounds and the remainder
+    printed. The authority component is bounded before the credential is looked for, and a value whose
+    authority is then not a host at all is over-stripped rather than trusted — better a value the
+    operator has to squint at than a password with a slash in it in a log.
+    """
+    assert adapter._stripped_of_credentials(value) == expected, "a credential-bearing shape was mis-stripped"
+
+
 @pytest.mark.anyio
-async def test_a_credential_in_the_configured_repo_never_reaches_the_error_message(monkeypatch):
+@pytest.mark.parametrize(
+    "configured",
+    [
+        f"https://x-access-token:{CANARY}@{HOST}/{REPO}.git",
+        f"https://user:pa/ss@{CANARY}@{HOST}/{REPO}",
+        f"x-access-token:{CANARY}@{HOST}:{REPO}.git",
+    ],
+)
+async def test_a_credential_in_the_configured_repo_never_reaches_the_error_message(monkeypatch, configured):
     """`gh --repo` accepts an https remote, and an https remote can carry userinfo.
 
     So a misconfigured `tracker_config.repo` can hold a token, and the failure that names the bad value
-    printed it verbatim. The remaining `https://host/owner/repo` is still what the operator has to fix.
+    printed it verbatim. What is left is still what the operator has to fix.
+
+    The canary is deliberately absent from this process's environment: planting it there proved only that
+    `_safe` redacts what this process holds, which is not what a token in a config value is, and the
+    URL-userinfo strip this covers could have been removed with the test still passing.
     """
-    monkeypatch.setenv("SHIPYARD_TEST_TOKEN", "s3cr3t-value-not-for-logs")
-    configured = f"https://x-access-token:s3cr3t-value-not-for-logs@github.com/{REPO}.git"
     _configure(monkeypatch, **{"tracker_config.repo": configured})
     monkeypatch.setattr(adapter, "subprocess", _BoardReads(_board_items([ISSUE_URL]), {}, resolved_repo=""))
 
     with pytest.raises(TrackerError, match="could not resolve it to a repository") as raised:
         await adapter.GithubAdapter().find_issues(status="ready")
 
-    assert "s3cr3t-value-not-for-logs" not in str(raised.value), "a credential in the config leaked into an error"
-    assert "tracker_config.repo" in str(raised.value) and "github.com" in str(raised.value), (
-        f"the failure must still name the value to fix: {raised.value}"
+    message = str(raised.value)
+    assert CANARY not in message, "a credential in the config leaked into an error"
+    assert "tracker_config.repo" in message, f"the failure must still say what to fix: {message}"
+    assert adapter._stripped_of_credentials(configured) in message, (
+        f"the failure must still show the sanitised value the operator has to go and fix: {message}"
     )
+
+
+@pytest.mark.anyio
+async def test_a_credential_in_the_configured_repo_never_reaches_another_verbs_failure(monkeypatch):
+    """Found by review: the strip covered the two messages about the value, not the argv it rides in.
+
+    `_repo_args()` hands `tracker_config.repo` to *every* verb, and every `gh` failure and timeout in
+    this adapter renders its own argv, so a 404 on a read printed the token the repo-resolution failure
+    no longer did. The strip therefore belongs on the argv, which is where all of those messages meet.
+    """
+    _configure(monkeypatch, **{"tracker_config.repo": f"https://x-access-token:{CANARY}@{HOST}/{REPO}.git"})
+    _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert CANARY not in str(raised.value), f"the configured repo leaked through a verb's own argv: {raised.value}"
 
 
 @pytest.mark.anyio
@@ -1190,6 +1252,27 @@ async def test_a_board_larger_than_one_read_fails_instead_of_answering_from_its_
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "count",
+    [{"totalCount": "1"}, {"totalCount": 1.0}, {"totalCount": True}, {"totalCount": False}, {"totalCount": None}, {}],
+)
+async def test_a_board_read_whose_item_count_is_unreadable_is_a_failure_not_a_skipped_check(
+    monkeypatch, board, count
+):
+    """Found by review: the completeness check fired only for a clean `int`, so drift bypassed it.
+
+    A `totalCount` of `"65"` — or a float, a bool, a null, or an absent key — skipped the guard entirely
+    and the truncated read was answered from as though it were the whole board: the same false
+    completeness this check exists to prevent, one type away from where it was fixed. `gh` prints the
+    count for every board, so an unreadable one is a shape this adapter must not read a board out of.
+    """
+    _install(monkeypatch, _repo_view(), _json({"items": _board_items([ISSUE_URL])["items"], **count}))
+
+    with pytest.raises(TrackerError, match="item count"):
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("payload", [{"totalCount": 5}, {"items": {}, "totalCount": 0}, {}])
 async def test_a_board_read_with_no_item_list_is_a_failure_not_an_empty_board(monkeypatch, board, payload):
     """`_as_list` is tolerant by design, and tolerance here reads an unreadable board as an empty one.
@@ -1324,6 +1407,51 @@ async def test_an_unreadable_issue_list_is_a_failure_not_an_empty_page(monkeypat
 
     with pytest.raises(TrackerError, match=expected):
         await adapter.GithubAdapter().find_issues()
+
+
+@pytest.mark.anyio
+async def test_a_listed_row_with_no_url_is_a_failure_not_an_unaddressable_result(monkeypatch, board):
+    """Found by review: the url-less row the board path and `get_issue` both refuse was a found issue here.
+
+    It came back as `{"id": "", "url": ""}` — a result naming an issue the caller cannot then read, comment
+    on or move, because `_checked_ref` rejects the empty reference every follow-up call would pass. A row
+    `gh issue list --json url` reports without one is a shape problem, so it fails like its siblings.
+    """
+    fake = _install(monkeypatch, _json([{key: value for key, value in _list_row().items() if key != "url"}]))
+
+    with pytest.raises(TrackerError, match="no issue URL"):
+        await adapter.GithubAdapter().find_issues()
+
+    assert [call[1:3] for call in fake.calls] == [["issue", "list"]], (
+        f"an unreadable page must fail before the board is read for it: {fake.calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_card_whose_content_is_not_an_object_does_not_break_a_board_write(monkeypatch, board):
+    """Found by review: the non-dict-`content` guard covered one of the three sites that read `content`.
+
+    The board index got it last round; the board-item lookup a write does and the write's verifying re-read
+    did not, so the same `content: "REDACTED"` card that `find_issues` now tolerates crossed the tool
+    boundary from `set_status` as a raw `AttributeError` instead of a `TrackerError`.
+    """
+    unviewable = {"id": "ITEM_9", "status": "Ready", "type": "Task", "content": "REDACTED"}
+    board_read = {"items": [unviewable, *_items(status="In progress")["items"]], "totalCount": 2}
+    _install(
+        monkeypatch,
+        _json({"url": ISSUE_URL}),
+        _json(PROJECT_VIEW),
+        _json(_fields()),
+        _json(board_read),
+        (0, "", ""),
+        _json(board_read),
+    )
+
+    moved = await adapter.GithubAdapter().set_status("7", "in-progress")
+
+    assert moved == {"id": ISSUE_URL, "status": "in-progress", "native": "In Progress"}, (
+        f"a card the credential may not view must not break the write's board scan or its re-read: {moved}"
+    )
 
 
 @pytest.mark.anyio

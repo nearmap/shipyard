@@ -18,8 +18,10 @@ tracker has no CLI-scriptable file attachment, so an artifact becomes a secret g
 comment on the work item links to. Privacy is verified by reading the created gist back, not
 assumed from the flags passed: a public gist would publish a transcript irrevocably.
 
-Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token, and every
-message built from command output is scrubbed of any credential this process holds.
+Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token; every message
+built from command output is scrubbed of any credential this process holds, and every message built
+from `gh`'s argv is additionally stripped of the userinfo a configured remote URL can carry, since
+that credential is one this process does not hold and so cannot recognise by value.
 
 The canonical verbs are `async` because the seam above this module is uniformly async: the server
 serves calls concurrently, and a slow attachment must not block an unrelated tool call. `gh`
@@ -225,7 +227,10 @@ class GithubAdapter:
         With no board filter this is one `gh issue list` page: `--limit limit` is the page, `--search`
         is GitHub's, and `is_last` is read from whether that page came back full — from every row `gh`
         returned, because a response this cannot read fails in `_listed_rows` rather than shortening the
-        page that `is_last` is then computed from.
+        page that `is_last` is then computed from. A row carrying no URL fails here for the same reason it
+        fails a `get_issue` and a board-path read: the URL is the `id` every other verb takes, so such a
+        row is an unaddressable entry that `_checked_ref` would reject on the caller's next call, not an
+        issue that was found.
 
         A status or type filter names a board value, so the board — not the repository — is the
         candidate set, and `_board_page` enumerates it board-first. Two different truncations made
@@ -255,11 +260,19 @@ class GithubAdapter:
         if text:
             args += ["--search", text]
         rows = _listed_rows(args)
+        urls = [str(row.get("url") or "") for row in rows]
+        if not all(urls):
+            raise TrackerError(
+                f"gh {_shown(args)} returned {urls.count('')} of {len(rows)} rows with no issue URL, which "
+                "is the reference every verb here identifies an issue by, so this page is refused rather "
+                "than answered with a row nothing could then act on. Check the installed gh version "
+                "against the fields this adapter requests."
+            )
         owner, number = _project_ref()
         index = _item_index(owner, number)
         matched = [
             item
-            for item in (_summary(row, index.get(str(row.get("url") or ""), {})) for row in rows)
+            for item in (_summary(row, index.get(url, {})) for row, url in zip(rows, urls, strict=True))
             if parent is None or _same_ref(item["parent"], parent)
         ]
         page = matched[:limit]
@@ -417,7 +430,7 @@ class GithubAdapter:
     def _find_or_add_item(self, owner: str, number: str, issue_url: str) -> str:
         """The board item for `issue_url`, added to the board only if it is not already on it."""
         for item in _raw_items(owner, number):
-            if (item.get("content") or {}).get("url") == issue_url:
+            if (_content_of(item) or {}).get("url") == issue_url:
                 return str(item.get("id") or "")
         added = _gh_json(["project", "item-add", number, "--owner", owner, "--url", issue_url, "--format", "json"])
         item_id = added.get("id")
@@ -676,6 +689,11 @@ def _effective_repo() -> str:
     The value reaches `gh` unparsed but not unchecked: one starting with `-` is refused here, because it
     lands in `gh`'s argv as a bare positional and `gh` would read it as a flag — the hazard `_checked_ref`
     exists for on the issue-reference side, on a value that arrives from configuration instead of a caller.
+
+    It also reaches no message unstripped. An https remote can carry userinfo, so the failures that name
+    the value go through `_shown_repo`, and the `gh` failure this one wraps is safe for the same reason
+    one round further in: `_shown` strips every argv element, so the value `_repo_args()` hands to every
+    other verb cannot print its token either.
     """
     configured = str(config.get("tracker_config.repo", default="") or "")
     if configured.strip().startswith("-"):
@@ -891,11 +909,27 @@ def _item_index(owner: str, number: str) -> dict[str, dict[str, Any]]:
     for raw in _raw_items(owner, number):
         item = _normalize_item(raw)
         if not item["url"]:
-            if not item["kind"] and isinstance(raw.get("content"), dict):
+            if not item["kind"] and _content_of(raw) is not None:
                 raise _unclassifiable_card(f"board item {raw.get('id') or 'with no id'}")
             continue
         index[str(item["url"])] = item
     return index
+
+
+def _content_of(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """A board item's `content` object, or None when the item carries nothing readable as one.
+
+    The three places that read a card's content — the board index, the board-item lookup a write does,
+    and the write's verifying re-read — all have to survive a `content` that is not an object: `gh`
+    renders a card the credential may not view as `content: null`, and any future non-object would
+    otherwise cross the tool boundary as an `AttributeError` rather than as a `TrackerError`. Shared
+    rather than repeated, because two of the three sites were fixed a round apart from the first.
+
+    None is `null`, absent, and not-an-object alike; `_item_index` is the only caller that needs to tell
+    "no content object" from "an empty one", and it has the raw item to do it with.
+    """
+    content = raw.get("content")
+    return content if isinstance(content, dict) else None
 
 
 def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -913,8 +947,7 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     boundary. `_item_index` is where the distinction between "no content object" and "an empty one" is
     drawn, on the raw item, because this collapse is exactly what loses it.
     """
-    raw_content = item.get("content")
-    content = raw_content if isinstance(raw_content, dict) else {}
+    content = _content_of(item) or {}
     return {
         "number": content.get("number"),
         "title": content.get("title") or item.get("title"),
@@ -947,7 +980,7 @@ def _verify_field(owner: str, number: str, issue_url: str, field_name: str, opti
         if attempt:
             time.sleep(VERIFY_BACKOFF_SECONDS * attempt)
         for raw in _raw_items(owner, number, strict=False):
-            if (raw.get("content") or {}).get("url") != issue_url:
+            if (_content_of(raw) or {}).get("url") != issue_url:
                 continue
             last = str(raw.get(field_name.lower()) or "")
             if last.strip().lower() == option_name.strip().lower():
@@ -967,6 +1000,12 @@ def _raw_items(owner: str, number: str, *, strict: bool = True) -> list[dict[str
     reads a card's absence from it as the write not having landed. `gh` returns `totalCount` for the board
     alongside the truncated `items`, so a board larger than one read fails here rather than answering
     completely from its first `ITEM_LIMIT` cards.
+
+    That count has to be readable as a number for the check to mean anything, so one that is absent or of
+    any other type fails too. `gh project item-list --format json` prints `totalCount` for every board,
+    including an empty one, so an unreadable count is shape drift rather than a `gh` version that omits it —
+    and making the completeness check only for a clean `int` is the same false completeness the check
+    exists to prevent, reintroduced one type away: a `totalCount` of `"65"` skipped it silently.
 
     A payload carrying no `items` list is that same failure and not an empty board. `_as_list` is
     deliberately tolerant, because the relations it also parses are legitimately absent; a board this
@@ -1002,13 +1041,21 @@ def _raw_items(owner: str, number: str, *, strict: bool = True) -> list[dict[str
             "Check the installed gh version against the fields this adapter requests."
         )
     total = data.get("totalCount") if isinstance(data, dict) else None
-    if strict and isinstance(total, int) and not isinstance(total, bool) and total > len(items):
-        raise TrackerError(
-            f"project {owner}/{number} holds {total} items but one read returned {len(items)} of them, the "
-            f"most this adapter's ITEM_LIMIT of {ITEM_LIMIT} asks for, so the board cannot be read in one "
-            "call and no answer derived from this read would be complete. Split the board, or archive its "
-            "finished cards."
-        )
+    if strict:
+        if not isinstance(total, int) or isinstance(total, bool):
+            raise TrackerError(
+                f"gh {_shown(args)} reported project {owner}/{number}'s item count as "
+                f"{type(total).__name__}, not a number, so whether this read holds the whole board cannot "
+                "be checked and no answer drawn from it could honestly be called complete. Check the "
+                "installed gh version against the fields this adapter requests."
+            )
+        if total > len(items):
+            raise TrackerError(
+                f"project {owner}/{number} holds {total} items but one read returned {len(items)} of them, "
+                f"the most this adapter's ITEM_LIMIT of {ITEM_LIMIT} asks for, so the board cannot be read "
+                "in one call and no answer derived from this read would be complete. Split the board, or "
+                "archive its finished cards."
+            )
     return items
 
 
@@ -1109,23 +1156,60 @@ def _gh_json(args: list[str]) -> dict[str, Any]:
 
 
 def _shown(args: list[str]) -> str:
-    """The `gh` argv as a message may carry it: joined, and scrubbed exactly as command output is.
+    """The `gh` argv as a message may carry it: userinfo-stripped, joined, and scrubbed as output is.
 
-    The argv is not obviously secret-bearing, but `--body` carries whatever the caller wrote, so it
-    goes through the same redaction as stderr rather than being trusted to be clean."""
-    return _safe(" ".join(args))
+    The argv is not obviously secret-bearing, but `--body` carries whatever the caller wrote and
+    `_repo_args()` carries `tracker_config.repo` — into every verb's argv, not just the one that
+    resolves the repository — so both go through the same redaction as stderr rather than being
+    trusted to be clean.
+
+    Each element is stripped of URL credentials *before* the join, because `_safe` alone cannot do
+    it: `_safe` redacts the credentials this process holds in its own environment, and a token
+    misconfigured into a remote URL is not one of those. Doing it here covers every `gh` failure and
+    timeout message in this file at once, since all of them are built from this function.
+    """
+    return _safe(" ".join(_stripped_of_credentials(arg) for arg in args))
 
 
 def _shown_repo(value: str) -> str:
     """A configured `tracker_config.repo` value as an error message may carry it, credential-free.
 
-    `gh --repo` accepts an https remote, and an https remote can carry userinfo — a misconfigured
-    `https://x-access-token:<token>@github.com/owner/repo.git` would otherwise print the token in
-    cleartext in the failure that names the bad value. The userinfo is dropped before `_safe` runs,
-    because `_safe` redacts only credentials this process itself holds in its environment, and the
-    remaining `https://host/owner/repo` is still the value the operator has to go and fix.
+    The same treatment `_shown` gives an argv element, for the two failures that name the configured
+    value directly rather than through `gh`'s argv.
     """
-    return _safe(re.sub(r"//[^/@\s]*@", "//", value))
+    return _safe(_stripped_of_credentials(value))
+
+
+def _stripped_of_credentials(value: str) -> str:
+    """`value` with any URL userinfo or scp-form `user@` prefix dropped, credential fragments included.
+
+    `gh --repo` accepts an https remote, and an https remote can carry userinfo, so a misconfigured
+    `https://x-access-token:<token>@github.com/owner/repo.git` would otherwise be printed in cleartext
+    by the failure that names it. What is left — `https://host/owner/repo`, or `host:owner/repo` for an
+    SSH remote — is still the value the operator has to go and fix.
+
+    The boundary is found before the credential is, which is what a `re.sub` over the whole value could
+    not do: after the `//` that opens an authority, that component is cut out first (everything up to the
+    first following `/`, `?` or `#`) and only the last `@` *inside* that substring separates userinfo from
+    host, so neither an unencoded `/` nor an extra `@` in the userinfo can carry a fragment of it through.
+    A value whose authority is then not a host at all is not a URL this can reason about, and it falls back
+    to dropping everything before its last `@` — over-stripping a malformed value rather than printing what
+    may be a password with a slash in it. The scp-like form is matched whole for the same reason, greedily,
+    so `user:pass@host:path` loses all of `user:pass@`. A value shaped like neither — a bare `OWNER/REPO`,
+    a flag, `@me`, a comment body — is returned unchanged.
+    """
+    opened = value.find("//")
+    if opened != -1:
+        prefix, rest = value[: opened + 2], value[opened + 2 :]
+        boundary = min((cut for cut in (rest.find(char) for char in "/?#") if cut != -1), default=len(rest))
+        authority, tail = rest[:boundary], rest[boundary:]
+        host = authority[authority.rfind("@") + 1 :]
+        if re.fullmatch(r"[^\s/?#@:]+(?::\d*)?", host):
+            return prefix + host + tail
+        last = value.rfind("@")
+        return prefix + value[last + 1 :] if last > opened else value
+    scp = re.fullmatch(r"\S*@(?P<host>[^\s@:]+:\S*)", value)
+    return scp.group("host") if scp else value
 
 
 def _safe(text: str) -> str:

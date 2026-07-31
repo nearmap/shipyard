@@ -60,6 +60,10 @@ COMMENT_PAGE = 50
 """How many comments one read returns, newest first: a bound truncates the oldest rather than the
 most recent, which is the useful half of a long ship log."""
 
+FORBIDDEN_IN_FILENAME = ('"', "\r", "\n")
+"""Characters an attachment's name may not contain, because the multipart header is built by hand:
+a quote closes `filename="..."` early and a CR or LF starts a header line of the caller's choosing."""
+
 RESULT_CEILING = 200
 """The hard cap on a search's `maxResults`, whatever a caller asks for. An unbounded search on a
 busy project is a large response assembled in memory for a caller that wanted a page."""
@@ -105,18 +109,24 @@ class JiraAdapter:
 
         Two calls, because Jira serves comments from their own endpoint: the field read is scoped to
         `ISSUE_FIELDS`, and the comment read is bounded and newest-first.
+
+        `comments_truncated` reports whether that bound actually cut anything off. A silently short
+        thread reads as a complete ship log, so a caller deciding on the strength of "no one raised
+        this" has to be able to tell a quiet issue from a clipped page.
         """
         base, auth = _credentials()
         fields = await _read_fields(base, auth, issue, ISSUE_FIELDS)
         _, thread = await request(
             "GET", f"{base}{API}/issue/{issue}/comment?maxResults={COMMENT_PAGE}&orderBy=-created", auth
         )
+        comments, truncated = _comments(issue, thread)
         return {
             **_summary(base, issue, fields),
             "body": adf.adf_to_markdown(fields.get("description")),
             "children": _keys(fields.get("subtasks")),
             "dependencies": _linked(fields.get("issuelinks"), BLOCKER_SIDE),
-            "comments": _comments(issue, thread),
+            "comments": comments,
+            "comments_truncated": truncated,
         }
 
     async def update_issue(self, issue: str, body: str) -> dict:
@@ -140,6 +150,10 @@ class JiraAdapter:
         The classic `GET /search` endpoint is gone (410), so this posts JQL to `/search/jql`, which
         pages by opaque token and reports no total. Only the first page is fetched: a caller that
         wants more asks again with the returned token rather than having this verb walk the board.
+
+        `is_last` is derived from the absence of `nextPageToken`, not from `isLast`: the endpoint's
+        contract does not guarantee that field, and reading a missing one as "done" would report a
+        partial page as the whole result set.
 
         Every interpolated value is a quoted JQL literal, so a title containing a quote cannot break
         out of its clause and widen the search.
@@ -175,7 +189,7 @@ class JiraAdapter:
         return {
             "issues": items,
             "count": len(items),
-            "is_last": bool(page.get("isLast", True)),
+            "is_last": not _field(page, "nextPageToken"),
             "next_page_token": _field(page, "nextPageToken"),
         }
 
@@ -292,7 +306,18 @@ class JiraAdapter:
         return {"id": issue, "comment_id": comment_id, "url": f"{_browse(base, issue)}?focusedCommentId={comment_id}"}
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
-        """Upload `path` to `issue` and return the response evidence confirming the write."""
+        """Upload `path` to `issue` and return the response evidence confirming the write.
+
+        The filename is checked before the body is built, not escaped: it goes into a hand-assembled
+        `Content-Disposition` header, where a quote malforms the part and a CR or LF — both legal in a
+        POSIX filename — appends attacker-chosen headers to the request. Refusing the three characters
+        is one comparison; escaping them correctly is a multipart quoting implementation.
+        """
+        if any(ch in path.name for ch in FORBIDDEN_IN_FILENAME):
+            raise TrackerError(
+                "attachment filename may not contain a quote, carriage return or newline: those would "
+                "break the multipart header this upload builds by hand. Rename the file and retry"
+            )
         if not path.is_file():
             raise TrackerError(f"attachment not found: {path}")
         base, auth = _credentials()
@@ -321,10 +346,16 @@ class JiraAdapter:
             raise TrackerError(
                 f"upload response did not confirm {path.name!r} on {issue}; treat the attachment as failed"
             )
+        attachment_id = _field(confirmed, "id")
+        if not attachment_id:
+            raise TrackerError(
+                f"upload of {path.name!r} on {issue} came back without an attachment id; there is nothing "
+                "to point at later, so treat the attachment as failed rather than reported"
+            )
         return {
             "issue": issue,
             "filename": path.name,
-            "id": str(confirmed.get("id", "")),
+            "id": attachment_id,
             "size": confirmed.get("size"),
             "created": confirmed.get("created"),
         }
@@ -443,12 +474,18 @@ def _summary(base: str, key: str, fields: dict) -> dict:
     }
 
 
-def _comments(issue: str, thread: object) -> list[dict]:
-    """One issue's comments, bodies converted to Markdown, in the order Jira returned them."""
+def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
+    """One issue's comments plus whether the page left any out, in the order Jira returned them.
+
+    The comment endpoint pages, so a bounded read cannot tell its caller "that is the whole thread"
+    without checking. Completeness is read off Jira's own `startAt`/`total` when both are there; when
+    `total` is absent the only honest signal left is a page that came back full, which is reported as
+    possibly truncated rather than assumed complete.
+    """
     entries = thread.get("comments") if isinstance(thread, dict) else None
     if not isinstance(entries, list):
         raise TrackerError(f"comment read of {issue} returned no comments list; got {_shape(thread)}")
-    return [
+    items = [
         {
             "id": _field(entry, "id") or "",
             "author": _field(entry.get("author"), "displayName") or "",
@@ -458,6 +495,12 @@ def _comments(issue: str, thread: object) -> list[dict]:
         for entry in entries
         if isinstance(entry, dict)
     ]
+    total = thread.get("total") if isinstance(thread, dict) else None
+    start = thread.get("startAt") if isinstance(thread, dict) else None
+    if isinstance(total, int) and not isinstance(total, bool):
+        seen = (start if isinstance(start, int) and not isinstance(start, bool) else 0) + len(entries)
+        return items, seen < total
+    return items, len(entries) >= COMMENT_PAGE
 
 
 def _linked(links: object, side: str) -> list[str]:
@@ -532,7 +575,11 @@ def _project() -> str:
 
 
 def _credentials() -> tuple[str, str]:
-    """Base URL and the `Authorization` header value: config identifiers plus the env-held secret."""
+    """Base URL and the `Authorization` header value: config identifiers plus the env-held secret.
+
+    The site is rejected if it carries userinfo, which is what makes this module's promise that no
+    credential reaches a URL true of the configured value too and not just of the env-held token.
+    """
     email = _identifier("tracker_config.email")
     site = _identifier("tracker_config.site")
     token = os.environ.get(TOKEN_ENV)
@@ -546,8 +593,14 @@ def _credentials() -> tuple[str, str]:
         raise TrackerError(
             f"{TOKEN_ENV} is unset in the environment; it is a secret and never lives in a config file"
         )
-    base = site if site.startswith("http") else f"https://{site}"
-    return base.rstrip("/"), "Basic " + base64.b64encode(f"{email}:{token}".encode()).decode()
+    base = (site if site.startswith("http") else f"https://{site}").rstrip("/")
+    if "@" in base.partition("://")[2].partition("/")[0]:
+        raise TrackerError(
+            "tracker_config.site must be a bare host such as yourorg.atlassian.net, with no "
+            "user:password@ part: an embedded credential would ride in every request URL, in the "
+            "browse links this returns and in any failure message quoting them"
+        )
+    return base, "Basic " + base64.b64encode(f"{email}:{token}".encode()).decode()
 
 
 def _identifier(key: str) -> str:

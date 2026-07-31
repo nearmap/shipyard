@@ -125,6 +125,31 @@ async def test_a_response_that_does_not_confirm_the_filename_fails(credentials, 
 
 
 @pytest.mark.anyio
+async def test_a_confirmation_without_an_id_is_not_reported_as_attached(credentials, artifact, monkeypatch):
+    """An id-less echo leaves nothing to link to later, so it is a failed upload, not an empty id."""
+    _transport(monkeypatch, [{"filename": artifact.name, "size": 16}])
+    with pytest.raises(TrackerError, match="without an attachment id"):
+        await adapter.JiraAdapter().attach_artifact("PROJ-1", artifact)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", ['quote".txt', "carriage\rreturn.txt", "new\nline.txt"], ids=["quote", "cr", "lf"])
+async def test_a_filename_that_could_forge_multipart_headers_is_refused(credentials, monkeypatch, tmp_path, name):
+    """The multipart header is hand-built, so these three characters are header injection, not names.
+
+    All are legal in a POSIX filename: a quote closes `filename="..."` early and a CR or LF starts a
+    header line — or a whole extra part — that the caller never asked to send.
+    """
+    hostile = tmp_path / name
+    hostile.write_bytes(b"payload")
+    calls = _transport(monkeypatch, [{"id": "1", "filename": name}])
+
+    with pytest.raises(TrackerError, match="quote, carriage return or newline"):
+        await adapter.JiraAdapter().attach_artifact("PROJ-1", hostile)
+    assert calls == [], "the name must be refused before anything is put on the wire"
+
+
+@pytest.mark.anyio
 async def test_the_credential_appears_only_in_the_authorization_header(credentials, artifact, monkeypatch, capsys):
     calls = _transport(monkeypatch, [{"id": "10501", "filename": artifact.name}])
     evidence = await adapter.JiraAdapter().attach_artifact("PROJ-1", artifact)
@@ -215,6 +240,32 @@ async def test_missing_inputs_name_what_is_missing(credentials, artifact, monkey
     monkeypatch.setattr(adapter.config, "get", lambda path, *, default=None: default)
     with pytest.raises(TrackerError, match=r"tracker_config\.email"):
         await adapter.JiraAdapter().preflight()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "site",
+    [f"someone:s3cret@{FAKE_SITE}", f"https://someone:s3cret@{FAKE_SITE}"],
+    ids=["bare", "with-scheme"],
+)
+async def test_a_site_carrying_userinfo_is_refused_without_echoing_it(monkeypatch, artifact, site):
+    """A `user:pass@host` site would ride in every request URL, every browse link and every failure.
+
+    Refused where the site is first turned into a base URL, so no verb can build one — and the
+    rejection must not quote the value, which would put the embedded secret in the message instead.
+    """
+    values = {"tracker_config.email": FAKE_EMAIL, "tracker_config.site": site, "tracker_config.project": FAKE_PROJECT}
+    monkeypatch.setattr(adapter.config, "get", lambda path, *, default=None: values.get(path, default))
+    monkeypatch.setenv(adapter.TOKEN_ENV, FAKE_TOKEN)
+    calls = _transport(monkeypatch, MYSELF_BODY)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().preflight()
+
+    message = str(failure.value)
+    assert "user:password@" in message, f"the failure must say what is wrong with the site: {message}"
+    assert "s3cret" not in message, "the rejection must not repeat the credential embedded in the site"
+    assert calls == [], "a site that cannot be trusted in a URL must fail before any call is made"
 
 
 # ---- the canonical verbs -------------------------------------------------------------------------
@@ -337,7 +388,9 @@ async def test_get_issue_reads_canonical_fields_markdown_and_only_the_blockers(c
     assert calls[1]["url"].startswith(f"{BASE}/issue/PROJ-7/comment?maxResults="), calls[1]["url"]
     assert set(full) == {
         "id", "title", "body", "status", "type", "parent", "children", "labels", "dependencies", "url", "comments",
+        "comments_truncated",
     }, f"the return shape is a frozen cross-adapter contract: {sorted(full)}"
+    assert full["comments_truncated"] is False, "a thread Jira reports as complete must not read as clipped"
     assert (full["status"], full["type"]) == ("in-review", "task"), f"natives were not canonicalised: {full}"
     assert full["parent"] == "PROJ-1", f"the parent key was not extracted: {full['parent']}"
     assert full["children"] == ["PROJ-8", "PROJ-9"]
@@ -369,6 +422,36 @@ async def test_get_issue_survives_an_issue_with_no_body_no_children_and_no_comme
     assert full["comments"] == []
     assert full["status"] == "Backlog", "a column this repo does not map must pass through, not vanish"
     assert full["type"] == "bug"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("thread", "truncated"),
+    [
+        (THREAD, False),
+        ({**THREAD, "total": 120}, True),
+        ({"comments": [{"id": str(n)} for n in range(adapter.COMMENT_PAGE)]}, True),
+    ],
+    ids=["complete", "counted-short", "full-page-with-no-total"],
+)
+async def test_get_issue_says_whether_the_comment_page_left_anything_out(
+    credentials, monkeypatch, thread, truncated
+):
+    """A clipped thread reads exactly like a quiet issue, so the bound has to be visible.
+
+    Both signals Jira offers are covered: the counted case, where `startAt` plus the page is short of
+    `total`, and the case where `total` is missing entirely and a page that came back full is all
+    there is to go on.
+    """
+    _transport(monkeypatch, ISSUE, thread)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    assert full["comments_truncated"] is truncated, (
+        f"a page of {len(thread['comments'])} against total={thread.get('total')!r} must read as "
+        f"truncated={truncated}: {full['comments_truncated']}"
+    )
+    assert len(full["comments"]) == len(thread["comments"]), "every comment on the page must still be returned"
 
 
 @pytest.mark.anyio
@@ -406,8 +489,35 @@ async def test_find_issues_searches_the_supported_endpoint_with_scoped_jql(crede
     )
     assert body["maxResults"] == 5 and body["fields"] == list(adapter.SUMMARY_FIELDS), body
     assert page == {
-        "issues": page["issues"], "count": 1, "is_last": False, "next_page_token": "eyJzdGFydEF0Ijo1MH0",
-    }, f"paging must come from isLast/nextPageToken: {page}"
+        "issues": [{
+            "id": "PROJ-7",
+            "title": "Ship the thing",
+            "status": "in-review",
+            "type": "task",
+            "parent": "PROJ-1",
+            "labels": ["decomposed", "shipyard"],
+            "url": f"https://{FAKE_SITE}/browse/PROJ-7",
+        }],
+        "count": 1,
+        "is_last": False,
+        "next_page_token": "eyJzdGFydEF0Ijo1MH0",
+    }, f"the page must carry the canonicalised issues plus paging from nextPageToken: {page}"
+
+
+@pytest.mark.anyio
+async def test_find_issues_reads_exhaustion_from_the_token_not_from_isLast(credentials, monkeypatch):
+    """`/search/jql` does not guarantee `isLast`, so a page with a next token is never the last one.
+
+    Treating an absent `isLast` as "done" silently reports one page as the whole result set, which is
+    exactly how a decomposition ends up planned against a truncated board.
+    """
+    _transport(monkeypatch, {"issues": [], "nextPageToken": "eyJzdGFydEF0Ijo1MH0"})
+    page = await adapter.JiraAdapter().find_issues()
+    assert page["is_last"] is False, f"a page carrying a next token is not the last page: {page}"
+
+    _transport(monkeypatch, {"issues": []})
+    exhausted = await adapter.JiraAdapter().find_issues()
+    assert exhausted["is_last"] is True and exhausted["next_page_token"] is None, exhausted
 
 
 @pytest.mark.anyio

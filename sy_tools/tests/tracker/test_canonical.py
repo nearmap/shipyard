@@ -59,11 +59,15 @@ def test_an_unset_column_name_fails_loudly_rather_than_defaulting(monkeypatch):
 
 
 def test_every_adapter_implements_the_whole_protocol():
-    """Full method parity, mechanically: `TrackerAdapter` is `@runtime_checkable`, so this is an assert.
+    """Every Protocol attribute is present on both adapters. Signatures are *not* checked here.
 
-    The invariant is that no adapter is ever missing a verb, at any commit — not that it is complete
-    once. Living here rather than in `test_server.py` because the import lines below name the
-    concrete adapters, and `test_seam.py` exempts only this directory for exactly that reason.
+    `TrackerAdapter` is `@runtime_checkable`, and `isinstance` against a runtime-checkable Protocol
+    tests attribute presence only — so this catches a missing verb at any commit, and would not
+    catch a verb whose parameters have drifted from the Protocol's. Argument-level wiring is pinned
+    separately by `WIRING` in `sy_tools/tests/test_server.py`.
+
+    Living here rather than in `test_server.py` because the import lines below name the concrete
+    adapters, and `test_tracker_seam.py` exempts only this directory for exactly that reason.
     """
     from sy_tools.tracker.github.adapter import GithubAdapter
     from sy_tools.tracker.jira.adapter import JiraAdapter

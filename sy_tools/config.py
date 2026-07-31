@@ -155,16 +155,35 @@ def scratch_dir(identifier: str) -> Path:
     """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
 
     The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
+
+    Containment is checked against the resolved candidate rather than inferred from the string. An
+    identifier of `"."` or `""` has no path parts at all, so every string-shaped guard passes it and
+    the root itself would be returned: two identifiers would collide there, and a caller that
+    cleans up what it was handed would delete every other identifier's data. Resolving also catches
+    a `..` hidden mid-path and a symlink already inside the root that `mkdir(parents=True)` would
+    otherwise follow straight out of it.
     """
-    parts = Path(identifier).parts
-    if not identifier or Path(identifier).is_absolute() or ".." in parts:
-        raise ConfigError(
-            f"refusing to create a scratch directory for {identifier!r}: an identifier must be a "
-            "relative name that stays inside the resolved scratch root."
+    root = Path(str(get("scratch.dir")))
+    refusal = ConfigError(
+        f"refusing to create a scratch directory for {identifier!r}: an identifier must be a "
+        "relative name that stays inside the resolved scratch root."
+    )
+    try:
+        relative = Path(identifier)
+        candidate = root / relative
+        contained = (
+            bool(relative.parts)
+            and bool(identifier.strip())
+            and not relative.is_absolute()
+            and ".." not in relative.parts
+            and candidate.resolve().is_relative_to(root.resolve())
         )
-    path = Path(str(get("scratch.dir"))) / identifier
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    except (ValueError, OSError):
+        raise refusal from None
+    if not contained:
+        raise refusal
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
 
 
 def fingerprint() -> str:

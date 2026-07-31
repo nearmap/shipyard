@@ -64,6 +64,32 @@ class _FakeSubprocess:
         return subprocess.CompletedProcess(argv, code, out, err)
 
 
+class _Truncating(_FakeSubprocess):
+    """A fake that truncates `issue list` to its `--limit`, the way `gh` itself does.
+
+    A queue of fixed payloads cannot show the bug it was written for: `gh` returning fewer rows than
+    the repo holds is exactly the condition under which a board filter used to miss an issue.
+    """
+
+    def __init__(self, rows: list[dict], items: dict) -> None:
+        super().__init__()
+        self._rows = rows
+        self._items = items
+
+    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        self.kwargs.append(dict(kwargs))
+        self.threads.append(threading.get_ident())
+        args = argv[1:]
+        if args[:2] == ["issue", "list"]:
+            payload: object = self._rows[: int(args[args.index("--limit") + 1])]
+        elif args[:2] == ["project", "item-list"]:
+            payload = self._items
+        else:
+            raise AssertionError(f"this fake answers only the two reads a search makes: {argv}")
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+
 def _install(monkeypatch: pytest.MonkeyPatch, *results: tuple[int, str, str]) -> _FakeSubprocess:
     fake = _FakeSubprocess(*results)
     monkeypatch.setattr(adapter, "subprocess", fake)
@@ -123,6 +149,22 @@ def _items(*, status: str = "Backlog", issue_type: str = "Task", present: bool =
     return {"items": [item], "totalCount": 1}
 
 
+def _board_items(urls: list[str], *, status: str = "Ready", issue_type: str = "Task") -> dict:
+    """A board holding one item per URL, all in one column: what a queue query is really asked about."""
+    return {
+        "items": [
+            {
+                "id": f"ITEM_{number}",
+                "status": status,
+                "type": issue_type,
+                "content": {"number": number, "title": TITLE, "url": url},
+            }
+            for number, url in enumerate(urls, start=1)
+        ],
+        "totalCount": len(urls),
+    }
+
+
 def _issue_view() -> dict:
     """A `gh issue view --json` payload with every relation the canonical read reports."""
     return {
@@ -170,13 +212,13 @@ async def test_attach_artifact_gists_the_file_then_links_it_from_a_comment(tmp_p
     fake = _install(monkeypatch, *_happy_path())
     path = _artifact(tmp_path)
 
-    evidence = await adapter.GithubAdapter().attach_artifact("AM-1", path)
+    evidence = await adapter.GithubAdapter().attach_artifact("1", path)
 
     create, verify, comment = fake.calls
     assert create[:3] == ["gh", "gist", "create"], create
     assert str(path) in create, "the gist must be created from the artifact file itself"
     assert verify[:3] == ["gh", "api", "gists/abc123"], "privacy must be re-read, not assumed"
-    assert comment[:4] == ["gh", "issue", "comment", "AM-1"], comment
+    assert comment[:4] == ["gh", "issue", "comment", "1"], comment
     body = comment[comment.index("--body") + 1]
     assert GIST_URL in body, "the comment must carry the gist URL, or the artifact is undiscoverable"
     assert evidence["gist_url"] == GIST_URL, "evidence must report the URL the transport produced"
@@ -188,7 +230,7 @@ async def test_the_blocking_gh_work_runs_off_the_event_loop_thread(tmp_path, mon
     """The offload must be real: `gh` blocks, so it may not block the loop that serves other calls."""
     fake = _install(monkeypatch, *_happy_path())
 
-    await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+    await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     loop_thread = threading.get_ident()
     assert fake.threads, "no gh call was recorded, so nothing was proved about where it ran"
@@ -202,7 +244,7 @@ async def test_the_blocking_gh_work_runs_off_the_event_loop_thread(tmp_path, mon
 async def test_the_gist_is_never_created_public(tmp_path, monkeypatch):
     fake = _install(monkeypatch, *_happy_path())
 
-    await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+    await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     assert "--public" not in fake.calls[0], (
         "gh gists are secret by default; passing --public would publish the transcript irrevocably"
@@ -214,7 +256,7 @@ async def test_a_gist_that_reads_back_public_is_refused_before_any_comment(tmp_p
     fake = _install(monkeypatch, *_happy_path(secret=False))
 
     with pytest.raises(TrackerError, match="public"):
-        await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+        await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     assert len(fake.calls) == 2, "a public gist must not be linked from the work item"
 
@@ -228,7 +270,7 @@ async def test_a_failed_gist_call_is_never_a_silent_success(tmp_path, monkeypatc
     fake = _install(monkeypatch, result)
 
     with pytest.raises(TrackerError):
-        await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+        await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     assert len(fake.calls) == 1, f"{reason} must stop the attachment, not fall through to a comment"
 
@@ -239,9 +281,21 @@ async def test_a_credential_in_command_output_never_reaches_the_error_message(tm
     _install(monkeypatch, (1, "", "bad credentials: s3cr3t-value-not-for-logs"))
 
     with pytest.raises(TrackerError) as raised:
-        await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+        await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     assert "s3cr3t-value-not-for-logs" not in str(raised.value), "a held credential leaked into an error"
+
+
+@pytest.mark.anyio
+async def test_a_credential_in_the_command_arguments_never_reaches_the_error_message(monkeypatch, board):
+    """The argv is interpolated into failures too, and `--body` carries whatever the caller wrote."""
+    monkeypatch.setenv("SHIPYARD_TEST_TOKEN", "s3cr3t-value-not-for-logs")
+    _install(monkeypatch, (1, "", "HTTP 422"))
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().update_issue("7", "token: s3cr3t-value-not-for-logs")
+
+    assert "s3cr3t-value-not-for-logs" not in str(raised.value), "a credential in the argv leaked into an error"
 
 
 @pytest.mark.anyio
@@ -252,7 +306,7 @@ async def test_extra_redaction_words_apply_to_error_messages(tmp_path, monkeypat
     _install(monkeypatch, (1, "", "bad credentials: org-secret-value-9f8e7d6c"))
 
     with pytest.raises(TrackerError) as raised:
-        await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+        await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     assert "org-secret-value-9f8e7d6c" not in str(raised.value), "an org-named credential leaked"
 
@@ -272,11 +326,31 @@ async def test_preflight_reports_facts_without_the_token(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scopes_line", "expected"),
+    [("  - Token scopes: 'gist', 'repo'\n", "'project' scope"), ("", "no token scopes")],
+)
+async def test_preflight_fails_a_token_that_cannot_write_the_board(monkeypatch, scopes_line, expected):
+    """A `repo`-only token authenticates and then dies on the first `set-status`.
+
+    That is the half-finished workflow preflight exists to prevent, so the scope it names as required
+    is the scope it checks — and scopes it could not read are a failure, not an empty list that passes.
+    """
+    status = f"github.com\n  ✓ Logged in to github.com account octocat (keyring)\n{scopes_line}"
+    _install(monkeypatch, (0, "gh version 2.94.0 (2025-01-01)\n", ""), (0, status, ""))
+
+    with pytest.raises(TrackerError, match=expected) as raised:
+        await adapter.GithubAdapter().preflight()
+
+    assert "gh auth" in str(raised.value), f"the failure must say how to fix it: {raised.value}"
+
+
+@pytest.mark.anyio
 async def test_a_hung_gh_is_bounded_and_becomes_an_actionable_failure(tmp_path, monkeypatch):
     """A `gh` that never returns must not wedge a server that has other calls to serve."""
     fake = _install(monkeypatch, *_happy_path())
 
-    await adapter.GithubAdapter().attach_artifact("AM-1", _artifact(tmp_path))
+    await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
 
     assert all(call["timeout"] == TIMEOUT_SECONDS for call in fake.kwargs), fake.kwargs
 
@@ -306,7 +380,11 @@ async def test_missing_gh_is_an_actionable_preflight_failure(monkeypatch):
 
 @pytest.mark.anyio
 async def test_set_status_resolves_the_board_case_insensitively_and_reads_the_move_back(monkeypatch, board):
-    """The board spells the column `In progress`; this repo's config spells it `In Progress`."""
+    """The board spells the column `In progress`; this repo's config spells it `In Progress`.
+
+    The argv is asserted whole because both board reads must ask for `--limit 10000`: `field-list`
+    defaults to 30 fields, and a board wide enough to push `Status` past that would resolve without it.
+    """
     fake = _install(
         monkeypatch,
         _json({"url": ISSUE_URL}),
@@ -322,7 +400,7 @@ async def test_set_status_resolves_the_board_case_insensitively_and_reads_the_mo
     assert [call[1:] for call in fake.calls] == [
         ["issue", "view", "7", *REPO_ARGS, "--json", "url"],
         ["project", "view", *OWNER_ARGS],
-        ["project", "field-list", *OWNER_ARGS],
+        ["project", "field-list", *OWNER_ARGS, "--limit", "10000"],
         ["project", "item-list", *OWNER_ARGS, "--limit", "10000"],
         ["project", "item-edit", "--id", "ITEM_1", "--project-id", "PVT_1",
          "--field-id", "F_status", "--single-select-option-id", "o_progress"],
@@ -505,6 +583,46 @@ async def test_get_issue_reports_board_values_relations_labels_and_comments(monk
 
 
 @pytest.mark.anyio
+async def test_an_issue_id_gh_would_read_as_a_flag_is_refused_before_any_call(monkeypatch, board, tmp_path):
+    """An id crosses the tool boundary opaque and lands in `gh`'s argv, where a leading dash is a flag.
+
+    With `tracker_config.repo` unset there is no `--repo` ahead of it, so `-Rowner/repo` would retarget
+    the write to a repository the caller named.
+    """
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="not an issue reference"):
+        await adapter.GithubAdapter().update_issue("-Rattacker/repo", "new body")
+    with pytest.raises(TrackerError, match="not an issue reference"):
+        await adapter.GithubAdapter().get_issue("--json")
+    with pytest.raises(TrackerError, match="not an issue reference"):
+        await adapter.GithubAdapter().post_comment("-Rattacker/repo", "hello")
+    with pytest.raises(TrackerError, match="not an issue reference"):
+        await adapter.GithubAdapter().attach_artifact("-Rattacker/repo", tmp_path / "missing.txt")
+
+    assert fake.calls == [], "an id gh would parse as a flag must never reach its argv"
+
+
+@pytest.mark.anyio
+async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencies(monkeypatch, board):
+    """`dependencies: []` is what a caller reads as "not blocked", so an unparseable relation must raise.
+
+    A genuinely absent relation still means no dependencies: that distinction is the whole point.
+    """
+    malformed = {**_issue_view(), "blockedBy": {"nodes": {"4": {"url": BLOCKER_URL}}}}
+    _install(monkeypatch, _json(malformed), _json(_items()))
+
+    with pytest.raises(TrackerError, match="not a list of issues"):
+        await adapter.GithubAdapter().get_issue("7")
+
+    absent = {key: value for key, value in _issue_view().items() if key != "blockedBy"}
+    _install(monkeypatch, _json(absent), _json(_items()))
+    assert (await adapter.GithubAdapter().get_issue("7"))["dependencies"] == [], (
+        "an issue gh reports no blockedBy for really has no dependencies"
+    )
+
+
+@pytest.mark.anyio
 async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(monkeypatch, board):
     rows = [_list_row(), _list_row(number=8, url="https://github.com/octocat/repo/issues/8")]
     fake = _install(monkeypatch, _json(rows), _json(_items(status="In Progress")))
@@ -512,15 +630,64 @@ async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(
     found = await adapter.GithubAdapter().find_issues(status="in-progress", text="widget")
 
     assert fake.calls[0][1:] == [
-        "issue", "list", *REPO_ARGS, "--state", "all", "--limit", "50", "--json", adapter.SUMMARY_FIELDS,
-        "--search", "widget",
+        "issue", "list", *REPO_ARGS, "--state", "all", "--limit", adapter.ITEM_LIMIT,
+        "--json", adapter.SUMMARY_FIELDS, "--search", "widget",
     ], fake.calls[0]
     assert [item["url"] for item in found["issues"]] == [ISSUE_URL], "an issue off the board has no status to match"
     assert (found["count"], found["is_last"], found["next_page_token"]) == (1, True, None), found
 
-    _install(monkeypatch, _json(rows), _json(_items()))
+    unfiltered = _install(monkeypatch, _json(rows), _json(_items()))
     full_page = await adapter.GithubAdapter().find_issues(limit=2)
     assert full_page["is_last"] is False, "a full page must not claim to be the last one"
+    assert unfiltered.calls[0][unfiltered.calls[0].index("--limit") + 1] == "2", (
+        "with no board-value filter the list call is the page, so it may still page at `limit`"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_board_issue_older_than_the_page_limit_is_still_found(monkeypatch, board):
+    """Found by review: filtering the newest `limit` issues reports a queue that has work as empty.
+
+    The board value is the filter, so the board is the candidate set. Ranking the wanted issue below
+    `limit` newer ones used to yield `count: 0`, which a caller reads as "nothing to pick up".
+    """
+    newer = [_list_row(number=n, url=f"https://github.com/octocat/repo/issues/{n}") for n in (20, 19)]
+    fake = _Truncating([*newer, _list_row()], _items(status="Ready"))
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    found = await adapter.GithubAdapter().find_issues(status="ready", limit=2)
+
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], (
+        f"the ready issue was ranked third of three and went missing: {found}"
+    )
+    assert (found["count"], found["is_last"]) == (1, True), found
+    listed = fake.calls[0]
+    assert listed[listed.index("--limit") + 1] == adapter.ITEM_LIMIT, (
+        "a status filter must be applied to the whole board, not to the newest `limit` repo issues"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_filtered_result_longer_than_the_limit_is_paged_not_dropped(monkeypatch, board):
+    """`limit` still bounds the page; it just bounds the matches rather than the candidates."""
+    other = "https://github.com/octocat/repo/issues/8"
+    rows = [_list_row(), _list_row(number=8, url=other)]
+    _install(monkeypatch, _json(rows), _json(_board_items([ISSUE_URL, other])))
+
+    found = await adapter.GithubAdapter().find_issues(status="ready", limit=1)
+
+    assert (found["count"], found["is_last"]) == (1, False), f"a truncated page must say so: {found}"
+
+
+@pytest.mark.anyio
+async def test_a_non_positive_limit_is_refused_rather_than_forwarded_to_gh(monkeypatch, board):
+    """`--limit 0` asks `gh` for every issue; the other adapter refuses it, and so must this one."""
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="limit must be a positive number of issues"):
+        await adapter.GithubAdapter().find_issues(limit=0)
+
+    assert fake.calls == [], "the refusal must come before any gh call"
 
 
 @pytest.mark.anyio
@@ -546,24 +713,40 @@ async def test_assign_uses_the_native_add_assignee_flag_and_reports_the_resolved
     """
     fake = _install(
         monkeypatch,
+        _json({"login": "octocat"}),
         (0, f"{ISSUE_URL}\n", ""),
         (0, json.dumps({"assignees": [{"login": "octocat"}]}), ""),
     )
 
     assigned = await adapter.GithubAdapter().assign("7")
 
-    assert fake.calls[0][1:] == ["issue", "edit", "7", *REPO_ARGS, "--add-assignee", "@me"], fake.calls[0]
+    assert fake.calls[0][1:] == ["api", "user"], f"'@me' must be resolved to a login to check against: {fake.calls}"
+    assert fake.calls[1][1:] == ["issue", "edit", "7", *REPO_ARGS, "--add-assignee", "@me"], fake.calls[1]
     assert assigned == {"id": ISSUE_URL, "assignee": "octocat"}, assigned
 
 
 @pytest.mark.anyio
-async def test_an_assignment_that_reads_back_empty_is_a_failure(monkeypatch, board):
-    fake = _install(monkeypatch, (0, f"{ISSUE_URL}\n", ""), (0, json.dumps({"assignees": []}), ""))
+@pytest.mark.parametrize(
+    ("assignees", "reason"),
+    [([], "no assignee at all"), ([{"login": "hubot"}], "somebody else's issue")],
+)
+async def test_an_assignment_the_read_back_does_not_confirm_is_a_failure(monkeypatch, board, assignees, reason):
+    """`--add-assignee` is a no-op on an already-assigned issue and exits zero either way.
+
+    So a non-empty assignee list proves someone owns the issue, not that this account does; reporting
+    the first login back would fabricate a confirmation of a write that never happened.
+    """
+    fake = _install(
+        monkeypatch,
+        _json({"login": "octocat"}),
+        (0, f"{ISSUE_URL}\n", ""),
+        (0, json.dumps({"assignees": assignees}), ""),
+    )
 
     with pytest.raises(TrackerError, match="unconfirmed"):
         await adapter.GithubAdapter().assign("7")
 
-    assert len(fake.calls) == 2, "the read-back must happen before the result is trusted"
+    assert len(fake.calls) == 3, f"the read-back must happen before the result is trusted ({reason})"
 
 
 @pytest.mark.anyio
@@ -761,9 +944,23 @@ def _drive_both(monkeypatch, cli_helper, fields: dict, items: dict) -> tuple[_Ro
     return router, theirs
 
 
+def _comparable(call: list[str]) -> list[str]:
+    """One `gh` call with the adapter's deliberate `field-list --limit` divergence normalised away.
+
+    The CLI helper inherits `gh`'s 30-field default and cannot be changed here: its deployment stays
+    byte-identical. The adapter asks for the board's fields at `gh`'s maximum instead, because a board
+    wide enough to push `Status` past the thirtieth field would otherwise resolve without it. Only that
+    one flag is normalised, so every other difference in the two call sequences still fails the test.
+    """
+    if call[:2] == ["project", "field-list"] and "--limit" in call:
+        at = call.index("--limit")
+        return call[:at] + call[at + 2 :]
+    return call
+
+
 def _assert_same_calls(mine: list[list[str]], theirs: list[list[str]]) -> None:
     """The two must issue the same `gh` calls, bar the adapter's documented extra read-back."""
-    stripped = [call[1:] for call in mine]
+    stripped = [_comparable(call[1:]) for call in mine]
     assert stripped[: len(theirs)] == theirs, (
         f"the ported write diverges from the CLI helper's gh calls.\nported: {stripped}\nhelper: {theirs}"
     )
@@ -781,7 +978,9 @@ def test_the_ported_board_resolution_matches_the_cli_helper(monkeypatch, cli_hel
     theirs = cli_helper._resolve("@me", "3", refresh=True)
 
     assert mine == theirs, f"the ported resolver disagrees with the CLI helper.\nported: {mine}\nhelper: {theirs}"
-    assert [call[1:] for call in router.calls] == theirs_calls, "the two resolvers issue different gh calls"
+    assert [_comparable(call[1:]) for call in router.calls] == theirs_calls, (
+        "the two resolvers issue different gh calls"
+    )
     assert set(mine["fields"]) == {"Status", "Type"}, f"both must keep only the single-selects: {set(mine['fields'])}"
     for option in ("In progress", "IN PROGRESS", " in progress ", "On hold"):
         assert adapter._option_id(mine, "Status", option) == cli_helper._option_id(theirs, "Status", option), option
@@ -821,7 +1020,9 @@ def test_the_ported_unmatched_option_failure_matches_the_cli_helper(monkeypatch,
     assert str(mine.value) == str(theirs.value.code), (
         f"the two failures must say the same thing.\nported: {mine.value}\nhelper: {theirs.value.code}"
     )
-    assert [call[1:] for call in router.calls] == theirs_calls, "both must re-resolve once before failing"
+    assert [_comparable(call[1:]) for call in router.calls] == theirs_calls, (
+        "both must re-resolve once before failing"
+    )
     assert isinstance(theirs.value, SystemExit) and not isinstance(mine.value, SystemExit), (
         "deliberate divergence: the CLI helper exits the process, the adapter raises TrackerError, because "
         "this process has other tool calls to serve after a bad one"

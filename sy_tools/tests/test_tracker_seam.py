@@ -1,16 +1,14 @@
-"""The tracker seam, at the MCP package's location.
+"""The tracker seam, at the MCP package's location: only `sy_tools/tracker/` names a real tracker.
 
 CONTRIBUTING.md's rule is that exactly one place knows how to talk to a specific tracker.
 `scripts/validate.py`'s `check_seam` enforces that for `skills/tracker/`; this enforces the same
 rule for `sy_tools/`, where the legal zone is `sy_tools/tracker/`. It is a pytest check rather than a new
 entry in `check_seam`'s scan list so `scripts/validate.py` stays untouched by this change.
 
-Adapter *tests* are the second legal zone. Every test in this package lives under
-`sy_tools/tests/`, mirroring the package it covers, so the tests that exercise one concrete adapter
-land in `sy_tools/tests/tracker/` — outside the tracker package but unavoidably naming a tracker.
-The exemption is deliberately narrow: only `test_*.py` directly under that directory. A non-test
-module dropped there is still core code and is still scanned, so the seam cannot be evaded by
-choosing a directory.
+Adapter *tests* are the second legal zone: a test that exercises one concrete adapter has to name
+it. That exemption is deliberately narrow — only `test_*.py` directly under
+`sy_tools/tests/tracker/`. A non-test module dropped there is still core code and is still scanned,
+so the seam cannot be evaded by choosing a directory.
 
 This file is the third exemption, for the same reason `check_seam` exempts `validate.py`
 (`scripts/validate.py:631`): the scanner has to spell out the tokens it looks for.
@@ -69,18 +67,3 @@ def test_the_legal_zone_exists_and_is_where_the_adapters_live():
     adapters = sorted(p.parent.name for p in LEGAL_ZONE.rglob("adapter.py"))
     assert adapters, "sy_tools/tracker/ must hold the adapter implementations"
     assert (LEGAL_ZONE / "__init__.py").is_file(), "tracker selection must have exactly one home"
-
-
-def test_every_test_lives_under_the_tests_package():
-    """Tests mirror the package they cover from one root; none are co-located with their source.
-
-    Asserted rather than assumed because the seam exemption above is scoped to one directory: a test
-    written beside its adapter would silently keep passing while sitting outside the mirror, and the
-    next reader would copy it.
-    """
-    strays = sorted(
-        str(p.relative_to(MCP_ROOT.parent))
-        for p in MCP_ROOT.rglob("test_*.py")
-        if MCP_ROOT / "tests" not in p.parents
-    )
-    assert not strays, f"tests must live under sy_tools/tests/, mirroring the package: {strays}"

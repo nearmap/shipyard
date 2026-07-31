@@ -58,9 +58,13 @@ IssueId = Annotated[
 
 
 def _required(**fields: str) -> None:
-    """Reject an empty required string argument as a tool error before any tracker call happens."""
+    """Reject an empty or whitespace-only required string argument before any tracker call happens.
+
+    Whitespace counts as empty: a title of `"\\n"` passes schema validation and would otherwise
+    create a permanently blank issue that no search can find again.
+    """
     for name, value in fields.items():
-        if not value:
+        if not value.strip():
             raise ToolError(f"{name!r} is required and must be a non-empty string")
 
 

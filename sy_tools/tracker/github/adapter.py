@@ -206,24 +206,50 @@ class GithubAdapter:
         `--state all` is deliberate: a done issue is still an issue a caller may be searching for,
         and `gh issue list` would otherwise hide every closed one. Status, type and parent are
         filtered here because they are board values and a sub-issue relation, not list flags.
+
+        A status or type filter names a board value, so the whole board is the candidate set and
+        `limit` is applied to what matched, not to what was fetched: `--limit limit` on the list call
+        would ask `gh` for the newest `limit` issues and then filter, so the one `ready` issue older
+        than that window would come back as `count: 0` — a caller reading "nothing to pick up" from
+        a board that has work on it. Every board item is enumerated instead, and each one's labels
+        and parent come from the one wide `issue list` read, which is also what applies `--search`.
+        An item that read does not cover is not this repo's issue (the board may span repos, and a
+        draft card has no issue at all), so it is not this repo-scoped search's to report.
         """
-        args = ["issue", "list", *_repo_args(), "--state", "all", "--limit", str(limit), "--json", SUMMARY_FIELDS]
+        if limit <= 0:
+            raise TrackerError(f"limit must be a positive number of issues, got {limit}")
+        board_filtered = status is not None or issue_type is not None
+        args = [
+            "issue", "list", *_repo_args(), "--state", "all",
+            "--limit", ITEM_LIMIT if board_filtered else str(limit),
+            "--json", SUMMARY_FIELDS,
+        ]
         if text:
             args += ["--search", text]
         rows = [row for row in _as_list(_gh_data(args), "issues") if isinstance(row, dict)]
         owner, number = _project_ref()
         index = _item_index(owner, number)
+        if board_filtered:
+            by_url = {str(row.get("url") or ""): row for row in rows}
+            candidates = [
+                (by_url[url], item)
+                for url, item in index.items()
+                if url in by_url
+                and (status is None or item["status"] == status)
+                and (issue_type is None or item["type"] == issue_type)
+            ]
+        else:
+            candidates = [(row, index.get(str(row.get("url") or ""), {})) for row in rows]
         matched = [
             item
-            for item in (_summary(row, index.get(str(row.get("url") or ""), {})) for row in rows)
-            if (status is None or item["status"] == status)
-            and (issue_type is None or item["type"] == issue_type)
-            and (parent is None or _same_ref(item["parent"], parent))
+            for item in (_summary(row, item) for row, item in candidates)
+            if parent is None or _same_ref(item["parent"], parent)
         ]
+        page = matched[:limit]
         return {
-            "issues": matched,
-            "count": len(matched),
-            "is_last": len(rows) < limit,
+            "issues": page,
+            "count": len(page),
+            "is_last": len(matched) <= limit if board_filtered else len(rows) < limit,
             "next_page_token": None,
         }
 
@@ -241,11 +267,21 @@ class GithubAdapter:
         `assignee` is read back rather than echoing the request: `@me` names an intent, and only the
         resolved account evidences which identity now owns the issue — which is also what the other
         adapter reports, so one caller-visible shape covers both.
+
+        `@me` is resolved to a login before the write, because that is the only thing the read-back
+        can be checked against: `--add-assignee` on an already-assigned issue is a no-op that exits
+        zero, so a non-empty assignee list proves someone owns the issue, not that this account does.
         """
         if assignee != "@me":
             raise TrackerError(
                 f"only self-assignment is supported by this adapter; got {assignee!r}. Pass '@me', or "
                 "assign someone else with `gh issue edit --add-assignee`."
+            )
+        target = str(_gh_json(["api", "user"]).get("login") or "")
+        if not target:
+            raise TrackerError(
+                "gh reported no login for the authenticated account, so an assignment to '@me' could not "
+                "be confirmed against one; nothing was assigned."
             )
         url = _edit(issue, "--add-assignee", assignee)
         logins = [
@@ -253,9 +289,12 @@ class GithubAdapter:
             for entry in _as_list(_view(url, "assignees").get("assignees"), "nodes")
             if isinstance(entry, dict) and (login := str(entry.get("login") or ""))
         ]
-        if not logins:
-            raise TrackerError(f"{url} reports no assignee after the write, so the assignment is unconfirmed.")
-        return {"id": url, "assignee": logins[0]}
+        if not any(login.strip().lower() == target.strip().lower() for login in logins):
+            raise TrackerError(
+                f"{url} does not read back as assigned to {target}; the assignment is unconfirmed "
+                f"(assignees: {logins or 'none'})."
+            )
+        return {"id": url, "assignee": target}
 
     def _sync_link_parent(self, issue: str, parent: str) -> dict:
         """Set the parent issue, GitHub's native sub-issue relation."""
@@ -285,7 +324,7 @@ class GithubAdapter:
 
     def _sync_post_comment(self, issue: str, body: str) -> dict:
         """Post a comment, taking its id from the URL the write printed."""
-        url = _gh(["issue", "comment", issue, *_repo_args(), "--body", body])
+        url = _gh(["issue", "comment", _checked_ref(issue), *_repo_args(), "--body", body])
         issue_url, _, fragment = url.partition("#issuecomment-")
         if not fragment:
             raise TrackerError(f"commenting on {issue} returned no comment URL, so the comment is unconfirmed.")
@@ -327,7 +366,9 @@ class GithubAdapter:
         """The board's node id and its single-select fields, cached for the life of this adapter.
 
         Only fields carrying options are kept: everything else on the board is a text, number or
-        date field this adapter never writes.
+        date field this adapter never writes. The fields are asked for at `gh`'s maximum rather than
+        its 30-row default, because a board wide enough to push `Status` past the thirtieth field
+        would otherwise resolve as a board that has no `Status` at all.
         """
         key = f"{owner}/{number}"
         if not refresh and key in self._boards:
@@ -339,7 +380,9 @@ class GithubAdapter:
                 f"gh project view {number} --owner {owner} reported no project id; check "
                 "tracker_config.project against `gh project list`."
             )
-        fields = _gh_data(["project", "field-list", number, "--owner", owner, "--format", "json"])
+        fields = _gh_data([
+            "project", "field-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT
+        ])
         resolved: dict[str, Any] = {"project_id": str(project_id), "fields": {}}
         for field in _as_list(fields, "fields"):
             if isinstance(field, dict) and field.get("options") is not None and field.get("name"):
@@ -374,6 +417,7 @@ class GithubAdapter:
         that the gist is not public, and the URL of the comment that carries the link. Any step
         that produces no output, or exits non-zero, is a failure rather than a warning.
         """
+        issue = _checked_ref(issue)
         if not path.is_file():
             raise TrackerError(f"artifact not found: {path}")
 
@@ -404,26 +448,61 @@ class GithubAdapter:
         }
 
     def _sync_preflight(self) -> dict:
-        """Confirm `gh` is installed and authenticated, reporting only non-secret facts."""
+        """Confirm `gh` is installed, authenticated, and scoped to write the board.
+
+        The `project` scope is checked, not just named in the failure text: every `set_status` and
+        every `Type` write goes through Projects v2, so a `repo`-only token passes an authentication
+        check and then dies on the first board write — the half-finished workflow this call exists to
+        prevent. Unreadable scopes are a failure for the same reason: a green preflight has to mean
+        the scopes were seen, not that the line they were on was missing.
+        """
         version = _gh(["--version"]).splitlines()
         try:
             status = _gh(["auth", "status"])
         except TrackerError as exc:
             raise TrackerError(f"{exc} Authenticate with `gh auth login` (scopes: project, read:project).") from None
         account = re.search(r"account (\S+)", status)
-        scopes = re.search(r"Token scopes:(.*)", status)
+        line = re.search(r"Token scopes:(.*)", status)
+        if not line:
+            raise TrackerError(
+                "gh auth status reported no token scopes, so the project scope every board write needs "
+                "could not be confirmed. Re-authenticate with `gh auth login` (scopes: project, read:project)."
+            )
+        scopes = sorted(re.findall(r"'([^']+)'", line.group(1)))
+        if "project" not in scopes:
+            raise TrackerError(
+                f"the gh token is missing the 'project' scope, so every board write would fail; it has "
+                f"{scopes or 'no scopes'}. Grant it with `gh auth refresh -s project,read:project`."
+            )
         return {
             "tool": "gh",
             "version": version[0] if version else "unknown",
             "authenticated": True,
             "account": account.group(1) if account else None,
-            "scopes": sorted(re.findall(r"'([^']+)'", scopes.group(1))) if scopes else [],
+            "scopes": scopes,
         }
+
+
+def _checked_ref(issue: str) -> str:
+    """`issue` if it is a reference `gh` reads as an issue, refusing anything it could read as a flag.
+
+    An id crosses the tool boundary as an opaque string and lands in `gh`'s argv as a positional, so
+    without this an id shaped like `-Rowner/repo` is a flag: with `tracker_config.repo` unset there is
+    no `--repo` ahead of it to lose the race, and the write retargets to a repo the caller named.
+    The accepted shapes are the ones this adapter itself produces and resolves: a URL, or a number.
+    """
+    ref = issue.strip()
+    if not re.fullmatch(r"https://\S+|#?\d+", ref):
+        raise TrackerError(
+            f"{issue!r} is not an issue reference this adapter accepts; pass the issue number, #number, "
+            "or its https:// URL. Anything else is refused rather than handed to gh as an argument."
+        )
+    return ref
 
 
 def _edit(issue: str, flag: str, value: str) -> str:
     """One `gh issue edit` write, returning the issue URL it printed as proof the write landed."""
-    url = _gh(["issue", "edit", issue, *_repo_args(), flag, value])
+    url = _gh(["issue", "edit", _checked_ref(issue), *_repo_args(), flag, value])
     if not url.startswith("https://"):
         raise TrackerError(
             f"gh issue edit {flag} on {issue} printed no issue URL, so the write is unconfirmed: "
@@ -434,7 +513,7 @@ def _edit(issue: str, flag: str, value: str) -> str:
 
 def _view(issue: str, fields: str) -> dict[str, Any]:
     """One `gh issue view --json` read of the named fields."""
-    return _gh_json(["issue", "view", issue, *_repo_args(), "--json", fields])
+    return _gh_json(["issue", "view", _checked_ref(issue), *_repo_args(), "--json", fields])
 
 
 def _url_of(issue: str) -> str:
@@ -495,12 +574,22 @@ def _ref(node: object) -> str | None:
 def _refs(payload: object) -> list[str]:
     """Every related issue in a `{nodes: [...]}` relation, tolerating a bare list.
 
-    Tolerant because `subIssues` and `blockedBy` are recent `gh` fields whose wrapper has changed
-    shape once already; an unexpected shape yields no relations rather than a `KeyError`.
+    Tolerant of both wrappers because `subIssues` and `blockedBy` are recent `gh` fields whose shape
+    has changed once already, and of an absent relation, which honestly means no related issues.
+
+    A relation that is present but not a list is a failure, not an empty one: `dependencies` is what a
+    caller reads to decide whether an issue is blocked, and a shape this cannot parse must not come
+    back as "nothing is blocking it" — that reads identically to a genuinely unblocked issue.
     """
-    nodes = payload.get("nodes") if isinstance(payload, dict) else payload
-    if not isinstance(nodes, list):
+    if payload is None:
         return []
+    nodes = payload.get("nodes", []) if isinstance(payload, dict) else payload
+    if not isinstance(nodes, list):
+        raise TrackerError(
+            f"a related-issue relation read back as {type(nodes).__name__}, not a list of issues, so the "
+            "relations on this issue are unknown; it must not be reported as having none. Check the "
+            "installed gh version against the fields this adapter requests."
+        )
     return [ref for ref in (_ref(node) for node in nodes) if ref]
 
 
@@ -624,12 +713,12 @@ def _gh(args: list[str]) -> str:
         raise TrackerError("gh is not installed or not on PATH; install the GitHub CLI.") from None
     except subprocess.TimeoutExpired:
         raise TrackerError(
-            f"gh {' '.join(args)} did not finish within {TIMEOUT_SECONDS}s and was killed; it may be "
+            f"gh {_shown(args)} did not finish within {TIMEOUT_SECONDS}s and was killed; it may be "
             "waiting on a credential prompt or a stalled network. Run the same command in a terminal "
             "to see what it wants."
         ) from None
     if proc.returncode != 0:
-        raise TrackerError(f"gh {' '.join(args)} failed: {_safe(proc.stderr)}")
+        raise TrackerError(f"gh {_shown(args)} failed: {_safe(proc.stderr)}")
     return proc.stdout.strip()
 
 
@@ -642,15 +731,23 @@ def _gh_data(args: list[str]) -> Any:
     try:
         return json.loads(out) if out else {}
     except json.JSONDecodeError:
-        raise TrackerError(f"gh {' '.join(args)} returned output that is not JSON.") from None
+        raise TrackerError(f"gh {_shown(args)} returned output that is not JSON.") from None
 
 
 def _gh_json(args: list[str]) -> dict[str, Any]:
     """`_gh_data`, rejecting anything but a JSON object."""
     parsed = _gh_data(args)
     if not isinstance(parsed, dict):
-        raise TrackerError(f"gh {' '.join(args)} returned {type(parsed).__name__}, expected a JSON object.")
+        raise TrackerError(f"gh {_shown(args)} returned {type(parsed).__name__}, expected a JSON object.")
     return parsed
+
+
+def _shown(args: list[str]) -> str:
+    """The `gh` argv as a message may carry it: joined, and scrubbed exactly as command output is.
+
+    The argv is not obviously secret-bearing, but `--body` carries whatever the caller wrote, so it
+    goes through the same redaction as stderr rather than being trusted to be clean."""
+    return _safe(" ".join(args))
 
 
 def _safe(text: str) -> str:

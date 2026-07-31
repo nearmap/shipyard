@@ -149,16 +149,35 @@ def scratch_dir(identifier: str) -> Path:
     """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
 
     The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
+
+    Containment is checked against the resolved candidate rather than inferred from the string. An
+    identifier of `"."` or `""` has no path parts at all, so every string-shaped guard passes it and
+    the root itself would be returned: two identifiers would collide there, and a caller that
+    cleans up what it was handed would delete every other identifier's data. Resolving also catches
+    a `..` hidden mid-path and a symlink already inside the root that `mkdir(parents=True)` would
+    otherwise follow straight out of it.
     """
-    parts = Path(identifier).parts
-    if not identifier or Path(identifier).is_absolute() or ".." in parts:
-        raise SystemExit(
-            f"sy_config: refusing to create a scratch directory for {identifier!r}: an identifier "
-            "must be a relative name that stays inside the resolved scratch root."
+    root = Path(str(get("scratch.dir")))
+    refusal = SystemExit(
+        f"sy_config: refusing to create a scratch directory for {identifier!r}: an identifier "
+        "must be a relative name that stays inside the resolved scratch root."
+    )
+    try:
+        relative = Path(identifier)
+        candidate = root / relative
+        contained = (
+            bool(relative.parts)
+            and bool(identifier.strip())
+            and not relative.is_absolute()
+            and ".." not in relative.parts
+            and candidate.resolve().is_relative_to(root.resolve())
         )
-    path = Path(str(get("scratch.dir"))) / identifier
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    except (ValueError, OSError):
+        raise refusal from None
+    if not contained:
+        raise refusal
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
 
 
 def resolve() -> tuple[dict, dict[str, str]]:
@@ -762,13 +781,17 @@ def _self_test() -> None:
             assert created == home / ".claude" / "shipyard" / "scratch" / "AM-1" and created.is_dir(), (
                 "a scratch directory must be created under the resolved root and returned"
             )
-            for escape in ("", "../elsewhere", str(home)):
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (created.parent / "link").symlink_to(outside, target_is_directory=True)
+            for escape in ("", ".", "./", "..", " ", "../elsewhere", "a/../../b", "link/x", "a\0b", str(home)):
                 try:
                     scratch_dir(escape)
                 except SystemExit as exc:
                     assert "stays inside the resolved scratch root" in str(exc)
                 else:
                     raise AssertionError(f"a scratch identifier of {escape!r} must be refused")
+            assert not any(outside.iterdir()), "a symlink inside the scratch root must not be followed out of it"
 
             write_layer(home / CONFIG_DIRNAME / CONFIG_FILENAME, {"ci": {"poll_timeout": 60}})
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,

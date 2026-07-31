@@ -3,7 +3,7 @@
 `skills/tracker/CONTRACT.md` states that tracker selection happens in exactly one place. This is
 that place for the MCP deployment: every tool in `sy_tools/server.py` asks `adapter()` for a
 `TrackerAdapter` and speaks only canonical verbs to it. Nothing above this module names a
-tracker, and `sy_tools/tests/test_seam.py` fails the build if anything does.
+tracker, and `sy_tools/tests/test_tracker_seam.py` fails the build if anything does.
 """
 from __future__ import annotations
 

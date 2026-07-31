@@ -73,12 +73,39 @@ def test_layer_precedence_and_derived_defaults(fixture_repo):
 
 
 def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixture_repo):
+    """An identifier that resolves anywhere but strictly inside the root is refused, root included.
+
+    `"."` and `"./"` are the load-bearing cases: they have no path parts, so a string-shaped guard
+    admits them and hands back the scratch root itself — shared by every identifier, and deleted by
+    the first caller that cleans up what it was given.
+    """
+    root = Path(str(config.get("scratch.dir")))
     created = config.scratch_dir("AM-1")
-    assert created == Path(str(config.get("scratch.dir"))) / "AM-1"
+    assert created == root / "AM-1"
     assert created.is_dir(), "scratch_dir must create the directory it returns"
-    for escape in ("", "../elsewhere", str(fixture_repo)):
+
+    outside = fixture_repo / "outside"
+    outside.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    escapes = ("", ".", "./", " ", "..", "../elsewhere", "a/../../b", "link/x", "a\0b", str(fixture_repo))
+    for escape in escapes:
         with pytest.raises(config.ConfigError, match="stays inside the resolved scratch root"):
             config.scratch_dir(escape)
+    assert not any(outside.iterdir()), "a symlink inside the scratch root must not be followed out of it"
+
+
+def test_scratch_dir_refuses_the_same_identifiers_as_the_cli_resolver(fixture_repo):
+    """The guard is duplicated across the two deployments, so its rejections are compared, not trusted."""
+    for identifier in (".", "..", "a/../../b"):
+        proc = subprocess.run(
+            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", identifier],
+            cwd=fixture_repo, capture_output=True, text=True, check=False,
+            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+        )
+        assert proc.returncode != 0, f"the CLI accepted {identifier!r}: {proc.stdout}"
+        assert "stays inside the resolved scratch root" in proc.stderr, proc.stderr
+        with pytest.raises(config.ConfigError, match="stays inside the resolved scratch root"):
+            config.scratch_dir(identifier)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

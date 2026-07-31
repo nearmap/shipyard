@@ -183,11 +183,16 @@ async def test_a_tracker_failure_comes_back_as_a_tool_result(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_an_empty_issue_id_is_refused_before_the_tracker_is_touched(monkeypatch):
-    """An empty string passes schema validation, so the guard has to be in the tool."""
+@pytest.mark.parametrize("blank", ["", " ", "\n", "\t"])
+async def test_a_blank_issue_id_is_refused_before_the_tracker_is_touched(monkeypatch, blank):
+    """A blank string passes schema validation, so the guard has to be in the tool.
+
+    Whitespace-only is included because it is indistinguishable from empty to a reader of the
+    result: `create-issue title="\\n"` would create an issue with no findable title at all.
+    """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("get-issue", {"issue": ""})
+        result = await client.call_tool("get-issue", {"issue": blank})
     assert result.is_error is True
     assert "'issue' is required" in _text(result)
 

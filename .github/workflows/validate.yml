@@ -34,6 +34,6 @@ jobs:
           locked: true
       - run: pixi run ruff check sy_tools/
       - run: pixi run ty check sy_tools/
-      # Every test lives under sy_tools/tests/, mirroring the package it covers; test_seam.py
+      # Every test lives under sy_tools/tests/, mirroring the package it covers; test_layout.py
       # asserts that, so this stays the whole package rather than a list of directories.
       - run: pixi run pytest sy_tools/

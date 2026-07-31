@@ -17,11 +17,18 @@ the stream and desynchronises the client, which is why the ported adapter code r
 printing and why every diagnostic goes to stderr.
 
 Run it with `pixi run sy-server` (which is `python -m sy_tools.server`); `.mcp.json` registers
-exactly that. The manifest carries no `env` block, which is deliberate and was settled empirically
-rather than from documentation: a stdio server inherits the launching process's environment, so
-the one real secret (the tracker credential) arrives without ever being named in a committed file.
-Verified with a discriminating control — the same `validate_config` call reports the credential
-present when it is exported and missing when it is not.
+exactly that, and passes `--manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml` because it has to.
+Claude Code launches a plugin-provided stdio server with the *consumer project's* directory as its
+working directory, not the plugin's, and `pixi` finds its manifest by walking up from there — so a
+bare `pixi run` resolves only in this repo's own dev loop and fails in every real install. It does
+interpolate `${CLAUDE_PLUGIN_ROOT}` inside the manifest's JSON strings, which is what makes the
+absolute form work; `"cwd"` is not an option, because Claude Code ignores that key silently.
+
+The manifest carries no `env` block, which is deliberate and was settled empirically rather than
+from documentation: a stdio server inherits the launching process's environment, so the one real
+secret (the tracker credential) arrives without ever being named in a committed file. Verified with
+a discriminating control — the same `validate_config` call reports the credential present when it
+is exported and missing when it is not.
 """
 from __future__ import annotations
 

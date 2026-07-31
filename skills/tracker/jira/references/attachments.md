@@ -19,9 +19,11 @@ Whether an artifact is attached at all is gated by `transcript.attach` (resolve 
 
 ## Attach
 
+Call the `sy` server's tool whose declared name is `attach-artifact`, resolving it from the tools actually available to you rather than typing a literal identifier: the exposed name carries a deployment-dependent prefix, `mcp__plugin_sy_sy__attach-artifact` for a marketplace install and `mcp__sy__attach-artifact` where a project-level `.mcp.json` provides the server instead. Both point at this same tool; hardcoding either one breaks the other deployment.
+
 ```
-mcp__sy__attach-artifact {"issue": "PROJ-123", "path": ".scratch/PROJ-123-ship-transcript.txt",
-                          "kind": "transcript", "caller": "ship", "process_tier": "full"}
+attach-artifact {"issue": "PROJ-123", "path": ".scratch/PROJ-123-ship-transcript.txt",
+                 "kind": "transcript", "caller": "ship", "process_tier": "full"}
 ```
 
 One call does gate, both sanitisation passes, and upload. It re-checks the gate itself and returns a no-op skip when it is off — nothing is read, scrubbed, scanned, or uploaded — so the gate cannot be forgotten at the upload site. Pass `caller` and `process_tier` honestly: a `ship` caller without the `full` tier is skipped, and one that omits `process_tier` is skipped too, which is the safe direction to fail. Only `kind: transcript` is gated; other kinds attach unconditionally.

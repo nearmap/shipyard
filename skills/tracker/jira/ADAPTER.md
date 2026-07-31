@@ -150,7 +150,7 @@ Ask before crossing into another project or portfolio hierarchy.
 
 ### `attach-artifact`
 
-Jira supports native work-item attachments. Render the artifact, then hand the path to the `sy` MCP server's `attach-artifact` tool (`mcp__sy__attach-artifact`): it checks the gate, runs both sanitisation passes in order, and uploads over this adapter's REST path, so no pass can be skipped and `ACLI_TOKEN` never reaches argv or stdout. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
+Jira supports native work-item attachments. Render the artifact, then hand the path to the `sy` MCP server's `attach-artifact` tool: it checks the gate, runs both sanitisation passes in order, and uploads over this adapter's REST path, so no pass can be skipped and `ACLI_TOKEN` never reaches argv or stdout. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
 
 `jira_rest.py attach <ID> <FILE>` still ships and still works, but it uploads exactly what it is given — it does not scan. Use it only when the server is unavailable, and only after running both passes yourself.
 

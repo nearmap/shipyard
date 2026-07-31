@@ -67,7 +67,8 @@ def test_a_scanner_finding_after_the_scrub_refuses_the_upload(planted, monkeypat
 
 
 def test_a_wedged_scanner_is_killed_and_refuses_the_upload(planted, monkeypatch):
-    def wedge(*_args, **_kwargs):
+    def wedge(*_args, **kwargs):
+        assert kwargs.get("timeout") == secrets.SCANNER_TIMEOUT_SECONDS, "scanner call must be bounded"
         raise subprocess.TimeoutExpired(cmd=secrets.SCANNER, timeout=secrets.SCANNER_TIMEOUT_SECONDS)
 
     monkeypatch.setattr(secrets.subprocess, "run", wedge)

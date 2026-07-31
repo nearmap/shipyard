@@ -28,16 +28,268 @@ import secrets
 import httpx2
 
 from ... import config
-from .. import TIMEOUT_SECONDS, TrackerError
+from .. import TIMEOUT_SECONDS, TrackerError, canonical_status, canonical_type, native_status, native_type
+from . import adf
 
 TOKEN_ENV = "ACLI_TOKEN"
 API = "/rest/api/3"
+
+SUMMARY_FIELDS = ("summary", "status", "issuetype", "parent", "labels")
+"""The fields behind every key `find-issues` reports per item, and the same keys inside `get-issue`.
+
+One tuple rather than two lists because the two verbs are required to agree: an item from a search
+must carry the same keys, canonicalised the same way, as the corresponding read.
+"""
+
+ISSUE_FIELDS = (*SUMMARY_FIELDS, "description", "subtasks", "issuelinks")
+"""Exactly what a full read needs. Named explicitly instead of `*all`, which fetches every custom
+field on the board — kilobytes of noise per issue that nothing above this seam looks at."""
+
+BLOCKS = "Blocks"
+"""The Jira link type behind the canonical `add-dependency` relation."""
+
+BLOCKER_SIDE = "outwardIssue"
+BLOCKED_SIDE = "inwardIssue"
+"""Which end of a `Blocks` link each role occupies, in both the write and the read.
+
+Named rather than inlined because the two are trivially swappable and a swap is silent: it inverts
+every dependency the server reports while every call still succeeds. See `_linked` for the measured
+read semantics that fix these two values."""
+
+COMMENT_PAGE = 50
+"""How many comments one read returns, newest first: a bound truncates the oldest rather than the
+most recent, which is the useful half of a long ship log."""
+
+RESULT_CEILING = 200
+"""The hard cap on a search's `maxResults`, whatever a caller asks for. An unbounded search on a
+busy project is a large response assembled in memory for a caller that wanted a page."""
 
 
 class JiraAdapter:
     """The canonical tracker verbs, implemented against the Jira Cloud REST API."""
 
     name = "jira"
+
+    def __init__(self) -> None:
+        self._account_id: str | None = None
+
+    async def create_issue(self, issue_type: str, title: str, body: str = "", parent: str | None = None) -> dict:
+        """Create an issue of a canonical type in the configured project; `parent` makes it a child.
+
+        `reporter` is listed as required by Jira's own `createmeta` but is deliberately not sent:
+        omitting it makes Jira default the reporter to the authenticated account, and sending it
+        would let a shared config file decide who a person's issues are reported by.
+
+        Jira enforces its own hierarchy here — a type that cannot be parented to `parent`'s type is
+        rejected with a 400 naming the field, which surfaces as that same detail on a `TrackerError`.
+        """
+        project = _project()
+        native = native_type(issue_type)
+        base, auth = _credentials()
+        fields: dict[str, object] = {
+            "project": {"key": project},
+            "issuetype": {"name": native},
+            "summary": title,
+            "description": adf.markdown_to_adf(body),
+        }
+        if parent:
+            fields["parent"] = {"key": parent}
+        created = await _send_json("POST", f"{base}{API}/issue", auth, {"fields": fields}, expect=(200, 201))
+        key = _field(created, "key")
+        if not key:
+            raise TrackerError(f"create in {project} returned no issue key; treat the issue as not created")
+        return {"id": key, "url": _browse(base, key), "type": issue_type, "title": title, "parent": parent}
+
+    async def get_issue(self, issue: str) -> dict:
+        """Read one issue and its comments, with rich text as Markdown and statuses canonicalised.
+
+        Two calls, because Jira serves comments from their own endpoint: the field read is scoped to
+        `ISSUE_FIELDS`, and the comment read is bounded and newest-first.
+        """
+        base, auth = _credentials()
+        fields = await _read_fields(base, auth, issue, ISSUE_FIELDS)
+        _, thread = await request(
+            "GET", f"{base}{API}/issue/{issue}/comment?maxResults={COMMENT_PAGE}&orderBy=-created", auth
+        )
+        return {
+            **_summary(base, issue, fields),
+            "body": adf.adf_to_markdown(fields.get("description")),
+            "children": _keys(fields.get("subtasks")),
+            "dependencies": _linked(fields.get("issuelinks"), BLOCKER_SIDE),
+            "comments": _comments(issue, thread),
+        }
+
+    async def update_issue(self, issue: str, body: str) -> dict:
+        """Replace `issue`'s description with `body`, converted to Jira rich text."""
+        base, auth = _credentials()
+        payload = {"fields": {"description": adf.markdown_to_adf(body)}}
+        await _send_json("PUT", f"{base}{API}/issue/{issue}", auth, payload)
+        return {"id": issue, "updated": True, "url": _browse(base, issue)}
+
+    async def find_issues(
+        self,
+        *,
+        status: str | None = None,
+        issue_type: str | None = None,
+        parent: str | None = None,
+        text: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """One page of issues in the configured project matching the given filters, newest API only.
+
+        The classic `GET /search` endpoint is gone (410), so this posts JQL to `/search/jql`, which
+        pages by opaque token and reports no total. Only the first page is fetched: a caller that
+        wants more asks again with the returned token rather than having this verb walk the board.
+
+        Every interpolated value is a quoted JQL literal, so a title containing a quote cannot break
+        out of its clause and widen the search.
+        """
+        project = _project()
+        if limit <= 0:
+            raise TrackerError(f"limit must be a positive number of issues, got {limit}")
+        clauses = [f"project = {_jql(project)}"]
+        if status:
+            clauses.append(f"status = {_jql(native_status(status))}")
+        if issue_type:
+            clauses.append(f"issuetype = {_jql(native_type(issue_type))}")
+        if parent:
+            clauses.append(f"parent = {_jql(parent)}")
+        if text:
+            clauses.append(f"text ~ {_jql(text)}")
+        base, auth = _credentials()
+        payload = {
+            "jql": " AND ".join(clauses),
+            "maxResults": min(limit, RESULT_CEILING),
+            "fields": list(SUMMARY_FIELDS),
+        }
+        page = await _send_json("POST", f"{base}{API}/search/jql", auth, payload, expect=(200,))
+        entries = page.get("issues") if isinstance(page, dict) else None
+        if not isinstance(page, dict) or not isinstance(entries, list):
+            raise TrackerError(f"search returned no issues list; got {_shape(page)}")
+        items = []
+        for entry in entries:
+            fields = entry.get("fields") if isinstance(entry, dict) else None
+            if not isinstance(fields, dict):
+                raise TrackerError(f"a search result carried no fields block; got {_shape(entry)}")
+            items.append(_summary(base, _field(entry, "key") or "", fields))
+        return {
+            "issues": items,
+            "count": len(items),
+            "is_last": bool(page.get("isLast", True)),
+            "next_page_token": _field(page, "nextPageToken"),
+        }
+
+    async def set_status(self, issue: str, status: str) -> dict:
+        """Move `issue` to the column this repo uses for a canonical status, verified by reading back.
+
+        The target is matched on each transition's `to.name`, never on the transition's own `name`:
+        they often coincide, but they are different fields and matching the wrong one is a silent
+        move to the wrong column. When nothing reachable matches, this fails listing the reachable
+        targets rather than retrying blind or accepting the current status — a workflow gap has to be
+        seen, not absorbed.
+        """
+        target = native_status(status)
+        base, auth = _credentials()
+        _, listing = await request("GET", f"{base}{API}/issue/{issue}/transitions", auth)
+        available = listing.get("transitions") if isinstance(listing, dict) else None
+        if not isinstance(available, list) or not available:
+            raise TrackerError(f"no transitions are available on {issue}; got {_shape(listing)}")
+        wanted = target.strip().lower()
+        reachable = {_field(t.get("to"), "name") or "?": _field(t, "id") for t in available if isinstance(t, dict)}
+        matched = next((tid for name, tid in reachable.items() if name.strip().lower() == wanted), None)
+        if not matched:
+            raise TrackerError(
+                f"no transition from {issue}'s current status reaches {target!r}; "
+                f"reachable targets: {', '.join(sorted(reachable))}"
+            )
+        await _send_json("POST", f"{base}{API}/issue/{issue}/transitions", auth, {"transition": {"id": matched}})
+        moved = _field((await _read_fields(base, auth, issue, ("status",))).get("status"), "name")
+        if (moved or "").strip().lower() != wanted:
+            raise TrackerError(
+                f"{issue} still reads {moved!r} after transition {matched} toward {target!r}; "
+                "treat the move as failed"
+            )
+        return {"id": issue, "status": status, "native": moved}
+
+    async def assign(self, issue: str, assignee: str = "@me") -> dict:
+        """Assign `issue` to the authenticated account. Only self-assignment is supported.
+
+        Any other assignee is refused rather than quietly self-assigned: an assignment silently
+        landing on the wrong person is worse than a failure that names the limit.
+        """
+        if assignee != "@me":
+            raise TrackerError(
+                f"only self-assignment is supported by this adapter; got {assignee!r}, expected '@me'"
+            )
+        base, auth = _credentials()
+        account_id = await self._account(base, auth)
+        await _send_json("PUT", f"{base}{API}/issue/{issue}/assignee", auth, {"accountId": account_id})
+        return {"id": issue, "assignee": account_id}
+
+    async def link_parent(self, issue: str, parent: str) -> dict:
+        """Set `issue`'s parent, which on Jira is a field write rather than a link."""
+        base, auth = _credentials()
+        await _send_json("PUT", f"{base}{API}/issue/{issue}", auth, {"fields": {"parent": {"key": parent}}})
+        return {"id": issue, "parent": parent}
+
+    async def add_dependency(self, issue: str, blocked_by: str) -> dict:
+        """Record that `blocked_by` blocks `issue`, then re-read to prove the direction really took.
+
+        Direction comes straight from Jira's REST model, which is unambiguous: the outward issue
+        performs the type's outward action, so for `Blocks` the outward issue is the blocker. The
+        verification read is not belt-and-braces — a reversed dependency reads as plausible and
+        misleads every later decomposition, so a link whose direction cannot be confirmed is a
+        failure rather than a warning.
+        """
+        base, auth = _credentials()
+        payload = {
+            "type": {"name": BLOCKS},
+            BLOCKER_SIDE: {"key": blocked_by},
+            BLOCKED_SIDE: {"key": issue},
+        }
+        await _send_json("POST", f"{base}{API}/issueLink", auth, payload, expect=(200, 201, 204))
+        links = (await _read_fields(base, auth, blocked_by, ("issuelinks",))).get("issuelinks")
+        if issue not in _linked(links, BLOCKED_SIDE):
+            raise TrackerError(
+                f"direction not confirmed after creating the link: reading {blocked_by} shows no "
+                f"{BLOCKS} link naming {issue} as the blocked issue. Refusing to report the "
+                "dependency; check and fix by hand"
+            )
+        return {"id": issue, "blocked_by": blocked_by, "verified": True}
+
+    async def add_label(self, issue: str, label: str) -> dict:
+        """Add `label` to `issue`, preserving the labels already there.
+
+        Jira has no append: the field is replaced wholesale, so the current set is read and written
+        back with `label` unioned in. A labels field that does not read back as a list of strings
+        aborts the write instead of being coerced — coercing it would delete labels.
+        """
+        base, auth = _credentials()
+        current = (await _read_fields(base, auth, issue, ("labels",))).get("labels") or []
+        if not isinstance(current, list) or not all(isinstance(x, str) for x in current):
+            raise TrackerError(
+                f"{issue} returned a labels field that is not a list of strings; refusing to write it "
+                "back and lose the labels it does have"
+            )
+        intended = current if label in current else [*current, label]
+        await _send_json("PUT", f"{base}{API}/issue/{issue}", auth, {"fields": {"labels": intended}})
+        return {"id": issue, "labels": intended}
+
+    async def post_comment(self, issue: str, body: str) -> dict:
+        """Comment on `issue` with `body` converted from Markdown to Jira rich text.
+
+        The conversion happens here rather than client-side because the node classes a Markdown-ish
+        client drops silently — bullet lists and fenced code — are exactly the ones a ship log is
+        made of.
+        """
+        base, auth = _credentials()
+        created = await _send_json(
+            "POST", f"{base}{API}/issue/{issue}/comment", auth, {"body": adf.markdown_to_adf(body)}, expect=(200, 201)
+        )
+        comment_id = _field(created, "id")
+        if not comment_id:
+            raise TrackerError(f"comment on {issue} returned no id; treat the comment as not posted")
+        return {"id": issue, "comment_id": comment_id, "url": f"{_browse(base, issue)}?focusedCommentId={comment_id}"}
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload `path` to `issue` and return the response evidence confirming the write."""
@@ -84,14 +336,25 @@ class JiraAdapter:
         rather than a presence check. `myself` is the cheapest one Jira offers.
         """
         base, auth = _credentials()
-        _, item = await request("GET", f"{base}{API}/myself", auth)
-        account_id = item.get("accountId") if isinstance(item, dict) else None
-        if not account_id:
-            raise TrackerError(
-                f"preflight read of {base}{API}/myself returned no account; the credential in "
-                f"{TOKEN_ENV} may be revoked or belong to another site"
-            )
-        return {"ok": True, "site": base, "account_id": str(account_id)}
+        return {"ok": True, "site": base, "account_id": await self._account(base, auth)}
+
+    async def _account(self, base: str, auth: str) -> str:
+        """The authenticated account's id, read from `myself` once per adapter instance.
+
+        The cache is per-instance and not a module global on purpose: `tracker.adapter()` builds a
+        fresh adapter per call, so an instance attribute expires naturally when a credential is
+        rotated, where a module-level cache would keep serving the previous account's id.
+        """
+        if self._account_id is None:
+            _, item = await request("GET", f"{base}{API}/myself", auth)
+            account_id = _field(item, "accountId")
+            if not account_id:
+                raise TrackerError(
+                    f"read of {base}{API}/myself returned no account; the credential in "
+                    f"{TOKEN_ENV} may be revoked or belong to another site"
+                )
+            self._account_id = account_id
+        return self._account_id
 
 
 async def request(
@@ -132,6 +395,140 @@ async def request(
         raise TrackerError(f"could not reach {url}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise TrackerError(f"{method} {url} returned a 2xx response whose body is not JSON") from exc
+
+
+async def _send_json(
+    method: str,
+    url: str,
+    auth: str,
+    payload: dict,
+    *,
+    expect: tuple[int, ...] = (204,),
+) -> object:
+    """One JSON-bodied call whose status is asserted, returning the parsed body (often None).
+
+    Jira answers its writes with either a 204 and an empty body or a 201 and an echo, and a status
+    outside what the endpoint is known to return means the write did not land the way the caller
+    reports it did — so `expect` is per call site rather than "any 2xx".
+    """
+    status, body = await request(method, url, auth, json.dumps(payload).encode(), {"Content-Type": "application/json"})
+    if status not in expect:
+        raise TrackerError(f"expected HTTP {'/'.join(str(x) for x in expect)} from {method} {url}, got {status}")
+    return body
+
+
+async def _read_fields(base: str, auth: str, issue: str, names: tuple[str, ...]) -> dict:
+    """The named `fields` block of one issue, or a `TrackerError` naming the shape that came back."""
+    _, item = await request("GET", f"{base}{API}/issue/{issue}?fields={','.join(names)}", auth)
+    fields = item.get("fields") if isinstance(item, dict) else None
+    if not isinstance(fields, dict):
+        raise TrackerError(f"read of {issue} returned no fields block; got {_shape(item)}")
+    return fields
+
+
+def _summary(base: str, key: str, fields: dict) -> dict:
+    """The keys `find-issues` reports per item, which `get-issue` also returns verbatim.
+
+    Both verbs build their common half here so the two can never drift into reporting the same issue
+    under different key names or with one side canonicalised and the other native.
+    """
+    return {
+        "id": key,
+        "title": str(fields.get("summary") or ""),
+        "status": canonical_status(_field(fields.get("status"), "name")),
+        "type": canonical_type(_field(fields.get("issuetype"), "name")),
+        "parent": _field(fields.get("parent"), "key"),
+        "labels": [x for x in fields.get("labels") or [] if isinstance(x, str)],
+        "url": _browse(base, key),
+    }
+
+
+def _comments(issue: str, thread: object) -> list[dict]:
+    """One issue's comments, bodies converted to Markdown, in the order Jira returned them."""
+    entries = thread.get("comments") if isinstance(thread, dict) else None
+    if not isinstance(entries, list):
+        raise TrackerError(f"comment read of {issue} returned no comments list; got {_shape(thread)}")
+    return [
+        {
+            "id": _field(entry, "id") or "",
+            "author": _field(entry.get("author"), "displayName") or "",
+            "created": _field(entry, "created") or "",
+            "body": adf.adf_to_markdown(entry.get("body")),
+        }
+        for entry in entries
+        if isinstance(entry, dict)
+    ]
+
+
+def _linked(links: object, side: str) -> list[str]:
+    """The `Blocks`-linked issues sitting on one absolute side of a read issue's links.
+
+    A read carries only the *counterpart* of each link, and the field it arrives under names that
+    counterpart's absolute role — the same roles the write posts, not roles relative to the issue
+    being read. So on a read of X, a counterpart under `BLOCKER_SIDE` blocks X, and one under
+    `BLOCKED_SIDE` is blocked by X.
+
+    This was measured, not assumed, because getting it backwards is silent and inverts every
+    dependency: a link posted as "AM-1245 blocks AM-1246" reads back on AM-1246 with AM-1245 under
+    `outwardIssue`, and on AM-1245 with AM-1246 under `inwardIssue`. Confirmed against real linked
+    issues whose summaries make the intended direction unambiguous.
+    """
+    if not isinstance(links, list):
+        return []
+    found = []
+    for link in links:
+        if not isinstance(link, dict) or (_field(link.get("type"), "name") or "").lower() != BLOCKS.lower():
+            continue
+        key = _field(link.get(side), "key")
+        if key:
+            found.append(key)
+    return found
+
+
+def _keys(value: object) -> list[str]:
+    """Every issue key in a list-of-issues field, ignoring entries that carry none."""
+    if not isinstance(value, list):
+        return []
+    return [key for entry in value if (key := _field(entry, "key"))]
+
+
+def _field(value: object, key: str) -> str | None:
+    """One string member of a nested object, or None when the object or the member is absent.
+
+    Every relational Jira field is a nested object whose presence is optional (`parent` is missing
+    rather than null on an orphan), so reaching into one is a guard, not an index.
+    """
+    if not isinstance(value, dict):
+        return None
+    member = value.get(key)
+    return str(member) if member else None
+
+
+def _jql(value: str) -> str:
+    """One JQL string literal, escaped so a value cannot terminate its own clause."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _browse(base: str, issue: str) -> str:
+    """The human-facing URL for an issue — what a caller pastes into a PR or a comment."""
+    return f"{base}/browse/{issue}"
+
+
+def _shape(value: object) -> str:
+    """A response's shape for a failure message: its keys or its type, never its content."""
+    if isinstance(value, dict):
+        return f"an object with keys {sorted(str(k) for k in value)}"
+    return type(value).__name__
+
+
+def _project() -> str:
+    """The configured project key, which creation and search cannot be scoped without."""
+    project = _identifier("tracker_config.project")
+    if not project:
+        raise TrackerError(
+            "tracker_config.project is unset; set it in .shipyard/config.json, e.g. the board's key"
+        )
+    return project
 
 
 def _credentials() -> tuple[str, str]:

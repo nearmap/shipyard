@@ -22,8 +22,9 @@ import pytest
 
 from sy_tools import SERVER_NAME, SERVER_VERSION
 
+from .test_server import TOOL_NAMES
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
-TOOL_NAMES = {"attach-artifact", "reload_config", "validate_config"}
 
 
 @pytest.fixture
@@ -48,7 +49,9 @@ async def test_a_real_client_handshakes_with_a_real_server_process():
         assert client.protocol_version, "the handshake must have settled on a protocol version"
 
         listed = await client.list_tools()
-        assert {t.name for t in listed.tools} == TOOL_NAMES, "the wire must expose the same three tools"
+        assert {t.name for t in listed.tools} == TOOL_NAMES, (
+            "the wire must expose the same surface the in-process client sees"
+        )
 
         result = await client.call_tool("validate_config", {})
         assert result.is_error is False, result.content

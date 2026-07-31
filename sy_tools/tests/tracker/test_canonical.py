@@ -58,6 +58,22 @@ def test_an_unset_column_name_fails_loudly_rather_than_defaulting(monkeypatch):
         tracker.column_names()
 
 
+def test_every_adapter_implements_the_whole_protocol():
+    """Full method parity, mechanically: `TrackerAdapter` is `@runtime_checkable`, so this is an assert.
+
+    The invariant is that no adapter is ever missing a verb, at any commit — not that it is complete
+    once. Living here rather than in `test_server.py` because the import lines below name the
+    concrete adapters, and `test_seam.py` exempts only this directory for exactly that reason.
+    """
+    from sy_tools.tracker.github.adapter import GithubAdapter
+    from sy_tools.tracker.jira.adapter import JiraAdapter
+
+    verbs = [v for v in vars(tracker.TrackerAdapter) if not v.startswith("_")]
+    assert len(verbs) >= 12, f"the Protocol lost verbs: {sorted(verbs)}"
+    for adapter in (GithubAdapter(), JiraAdapter()):
+        assert isinstance(adapter, tracker.TrackerAdapter), f"{type(adapter).__name__} is missing a canonical verb"
+
+
 def test_an_unknown_canonical_token_is_refused(columns):
     with pytest.raises(tracker.TrackerError, match="unknown canonical status"):
         tracker.native_status("blocked")

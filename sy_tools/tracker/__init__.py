@@ -49,7 +49,16 @@ class TrackerError(RuntimeError):
 
 @runtime_checkable
 class TrackerAdapter(Protocol):
-    """The canonical-verb surface every adapter implements. Phase 1 covers `attach-artifact`.
+    """Every canonical verb of `skills/tracker/CONTRACT.md`, and the only surface core may speak.
+
+    The per-method docstrings are where a reader learns what a verb *means*, independently of either
+    tracker — an adapter's own docstring describes how it gets there, not what it owes the caller.
+    Issue ids are opaque strings that round-trip untouched; only an adapter may interpret one.
+
+    Three contract verbs have no method of their own, because each is one of these writes carrying
+    different content: `create-child` is `create_issue` with `parent` set, `post-log` is a
+    `post_comment` carrying only a fenced JSON block, and `link-pr`'s durable half is a
+    `post_comment` carrying the PR URL. Keeping them out means one write path per effect.
 
     The verbs are `async` because both transports are I/O-bound and the server serves calls
     concurrently: a slow upload must not be able to block an unrelated tool call. An adapter whose
@@ -58,6 +67,54 @@ class TrackerAdapter(Protocol):
     """
 
     name: str
+
+    async def create_issue(self, issue_type: str, title: str, body: str = "", parent: str | None = None) -> dict:
+        """Create an issue of canonical `issue_type` with `title` and Markdown `body`, under `parent` if given."""
+        ...
+
+    async def get_issue(self, issue: str) -> dict:
+        """Read one issue: title, Markdown body, canonical status and type, relations, labels, comments."""
+        ...
+
+    async def update_issue(self, issue: str, body: str) -> dict:
+        """Replace `issue`'s whole Markdown body with `body`; never appends."""
+        ...
+
+    async def find_issues(
+        self,
+        *,
+        status: str | None = None,
+        issue_type: str | None = None,
+        parent: str | None = None,
+        text: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """One page of issues in the configured project by canonical status, type, parent and/or free text."""
+        ...
+
+    async def set_status(self, issue: str, status: str) -> dict:
+        """Move `issue` into the column this repo names for canonical `status`, and report the native name."""
+        ...
+
+    async def assign(self, issue: str, assignee: str = "@me") -> dict:
+        """Assign `issue` and report the resolved account. `@me` is the caller need both adapters serve."""
+        ...
+
+    async def link_parent(self, issue: str, parent: str) -> dict:
+        """Re-parent the existing issue `issue` under `parent`."""
+        ...
+
+    async def add_dependency(self, issue: str, blocked_by: str) -> dict:
+        """Record that `issue` is blocked by `blocked_by`, and verify the direction really took."""
+        ...
+
+    async def add_label(self, issue: str, label: str) -> dict:
+        """Add `label` to `issue`, preserving the labels already on it, and return the resulting set."""
+        ...
+
+    async def post_comment(self, issue: str, body: str) -> dict:
+        """Post `body` as a Markdown comment on `issue` and return the comment the write created."""
+        ...
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload an already-sanitised artifact to `issue` and return verified response evidence."""

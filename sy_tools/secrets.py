@@ -22,6 +22,7 @@ import tempfile
 
 DEFAULT_MIN_LENGTH = 6
 SCANNER = "gitleaks"
+SCANNER_TIMEOUT_SECONDS = 60
 
 # Kept in step with `scripts/secret_words.py`; duplicated rather than imported so this package
 # stands alone (see the module docstring in `sy_tools/__init__.py`).
@@ -97,11 +98,17 @@ def scan_file(path: Path) -> list[dict]:
         )
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.json"
-        proc = subprocess.run(
-            [SCANNER, "dir", str(path), "--redact", "--report-format", "json",
-             "--report-path", str(report), "--exit-code", "0", "--log-level", "error"],
-            capture_output=True, text=True, check=False,
-        )
+        try:
+            proc = subprocess.run(
+                [SCANNER, "dir", str(path), "--redact", "--report-format", "json",
+                 "--report-path", str(report), "--exit-code", "0", "--log-level", "error"],
+                capture_output=True, text=True, check=False, timeout=SCANNER_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SanitizeError(
+                f"{SCANNER} did not finish within {SCANNER_TIMEOUT_SECONDS}s and was killed; "
+                "refusing to upload an unscanned artifact."
+            ) from exc
         if proc.returncode != 0:
             raise SanitizeError(f"{SCANNER} failed: {proc.stderr.strip()[:500]}")
         if not report.is_file():

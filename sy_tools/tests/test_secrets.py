@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -63,6 +64,15 @@ def test_a_scanner_finding_after_the_scrub_refuses_the_upload(planted, monkeypat
     monkeypatch.setattr(secrets, "scan_file", lambda _p: [{"RuleID": "generic-api-key"}])
     with pytest.raises(secrets.SanitizeError, match="refusing to upload"):
         secrets.sanitize(planted, require=(FAKE_VAR,))
+
+
+def test_a_wedged_scanner_is_killed_and_refuses_the_upload(planted, monkeypatch):
+    def wedge(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=secrets.SCANNER, timeout=secrets.SCANNER_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(secrets.subprocess, "run", wedge)
+    with pytest.raises(secrets.SanitizeError, match="did not finish"):
+        secrets.scan_file(planted)
 
 
 def test_a_required_credential_absent_from_the_environment_fails_loudly(planted, monkeypatch):

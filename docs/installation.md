@@ -27,6 +27,8 @@ claude plugin marketplace add nearmap/shipyard   # registers the marketplace, na
 claude plugin install sy@shipyard --scope project   # install the plugin, scoped to this repo
 ```
 
+A marketplace install has no checkout to pre-warm, so the first launch of the bundled `sy` MCP server materialises its pixi environment on the spot (~10s on a fast connection); on a slow link that first connect can exceed Claude Code's 30s MCP timeout — just reconnect, the partially-downloaded environment persists and the retry connects immediately.
+
 **From a local checkout.** Point the same command at the directory instead:
 
 ```bash

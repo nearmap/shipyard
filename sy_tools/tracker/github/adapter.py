@@ -223,7 +223,9 @@ class GithubAdapter:
         filtered here because they are board values and a sub-issue relation, not list flags.
 
         With no board filter this is one `gh issue list` page: `--limit limit` is the page, `--search`
-        is GitHub's, and `is_last` is read from whether that page came back full.
+        is GitHub's, and `is_last` is read from whether that page came back full — from every row `gh`
+        returned, because a response this cannot read fails in `_listed_rows` rather than shortening the
+        page that `is_last` is then computed from.
 
         A status or type filter names a board value, so the board — not the repository — is the
         candidate set, and `_board_page` enumerates it board-first. Two different truncations made
@@ -252,7 +254,7 @@ class GithubAdapter:
         ]
         if text:
             args += ["--search", text]
-        rows = [row for row in _as_list(_gh_data(args), "issues") if isinstance(row, dict)]
+        rows = _listed_rows(args)
         owner, number = _project_ref()
         index = _item_index(owner, number)
         matched = [
@@ -670,14 +672,24 @@ def _effective_repo() -> str:
     instead of being normalised into something that matches no card while the page reports itself
     complete. `gh`'s answer is then checked to be one `owner/repo` pair for the same reason: a repository
     this cannot compare a card against is as invisible to a caller as a board with nothing on it.
+
+    The value reaches `gh` unparsed but not unchecked: one starting with `-` is refused here, because it
+    lands in `gh`'s argv as a bare positional and `gh` would read it as a flag — the hazard `_checked_ref`
+    exists for on the issue-reference side, on a value that arrives from configuration instead of a caller.
     """
     configured = str(config.get("tracker_config.repo", default="") or "")
+    if configured.strip().startswith("-"):
+        raise TrackerError(
+            f"tracker_config.repo is set to {_shown_repo(configured)!r}, which gh would read as a flag rather "
+            "than a repository reference, so it is refused before gh is called. Set it to OWNER/REPO in "
+            ".shipyard/config.json; see docs/github-setup.md."
+        )
     args = ["repo", "view", *([configured] if configured else []), "--json", "nameWithOwner", "-q", ".nameWithOwner"]
     try:
         printed = _gh(args)
     except TrackerError as exc:
         source = (
-            f"tracker_config.repo is set to {configured!r}"
+            f"tracker_config.repo is set to {_shown_repo(configured)!r}"
             if configured
             else "tracker_config.repo is unset, so this search is scoped to the repository gh resolves from the "
             "working directory"
@@ -717,8 +729,8 @@ def _unclassifiable_card(ref: str) -> TrackerError:
     """The failure a board card carrying no content type gets, shared by both places that can see one.
 
     Returned rather than raised so each caller raises it at its own site, and shared so the two cannot
-    drift: `_item_index` meets such a card when it also has no URL, `_is_issue_card` when it has one, and
-    both are the same unreadable shape rather than two different problems.
+    drift: `_item_index` meets such a card when its content object also carries no URL, `_is_issue_card`
+    when it carries one, and both are the same unreadable shape rather than two different problems.
     """
     return TrackerError(
         f"the board reports no content type for {ref}, so whether that card holds an issue or a pull "
@@ -826,11 +838,16 @@ def _confirm_board_access() -> None:
     so one successful board read is positive evidence rather than an assumption. A grant that can read
     the board but not write it is indistinguishable from here without performing a write, which a
     preflight must not do; that residual case fails later, at the write, with its own message.
+
+    Only `gh` refusing the read is relabelled as the scope problem, because only that shape can be one.
+    Everything else `_raw_items` can raise — a board larger than one read, a payload it will not parse as
+    a board, a `gh` that is missing or hung — keeps its own message: telling an operator to grant the
+    `project` scope over a board too large to read sends them to fix a credential that is already correct.
     """
     owner, number = _project_ref()
     try:
         _raw_items(owner, number)
-    except TrackerError as exc:
+    except _GhFailure as exc:
         raise TrackerError(
             f"the gh token reports no scopes and project {owner}/{number} could not be read with it, so the "
             f"Projects v2 access every board write needs is unconfirmed: {exc} Grant it with `gh auth refresh "
@@ -856,16 +873,25 @@ def _item_index(owner: str, number: str) -> dict[str, dict[str, Any]]:
     A card with no URL is left out rather than indexed: a `DraftIssue` legitimately has none, and nothing
     here can address a card that is not an issue or a pull request anyway.
 
-    A card with neither a URL nor a content type is not that case — it is a shape this cannot read — and
-    it fails here instead of being dropped as though it were a draft. Dropping it silently is how a card
-    goes missing from a page that still reports itself complete, and it also took the same failure
-    `_is_issue_card` raises out of reach: every url-less card was gone before that check ever saw one.
+    A card carrying a `content` object with neither a URL nor a content type inside it is not that case —
+    it is a shape this cannot read — and it fails here instead of being dropped as though it were a draft.
+    Dropping it silently is how a card goes missing from a page that still reports itself complete, and it
+    also took the same failure `_is_issue_card` raises out of reach: every url-less card was gone before
+    that check ever saw one.
+
+    A card with no `content` object at all is the third case, and it is neither of those: Projects v2
+    reports an item the credential may not view as `REDACTED`, which `gh` renders as `content: null`, so
+    such a card is a documented board state and not a malformed response. It is skipped like a draft —
+    silently, because it carries no URL for any caller to have acted on and no verb here could address it
+    if it did — and the raise is reserved for a `content` object that is present but says nothing. The two
+    are told apart on the raw item, before `_normalize_item` collapses `null` into `{}`: a check that could
+    not tell them apart failed every read of the whole board over one card nobody can see.
     """
     index = {}
     for raw in _raw_items(owner, number):
         item = _normalize_item(raw)
         if not item["url"]:
-            if not item["kind"]:
+            if not item["kind"] and isinstance(raw.get("content"), dict):
                 raise _unclassifiable_card(f"board item {raw.get('id') or 'with no id'}")
             continue
         index[str(item["url"])] = item
@@ -880,8 +906,15 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     that helper lists board items as board items, while `find_issues` here owes its caller issues and
     has to be able to tell which cards are ones. It is deliberately not folded into `type`, which is the
     board's own single-select and the canonical `epic`/`task`/`bug` vocabulary.
+
+    A `content` that is anything but an object reads as no content, rather than being asked for keys it
+    has no `get` for: `null` is what `gh` renders a card the credential may not view as, and any other
+    non-object would otherwise leave an `AttributeError` — not a `TrackerError` — crossing the tool
+    boundary. `_item_index` is where the distinction between "no content object" and "an empty one" is
+    drawn, on the raw item, because this collapse is exactly what loses it.
     """
-    content = item.get("content") or {}
+    raw_content = item.get("content")
+    content = raw_content if isinstance(raw_content, dict) else {}
     return {
         "number": content.get("number"),
         "title": content.get("title") or item.get("title"),
@@ -903,12 +936,17 @@ def _verify_field(owner: str, number: str, issue_url: str, field_name: str, opti
     `item-list`, then present with the right value a second later. Failing on the first read turns a
     write that landed into a reported failure, so the retry is what makes read-back verification
     usable here at all — but it stays bounded, because a genuinely unset field must still fail.
+
+    The read is therefore asked for without `_raw_items`' completeness checks: this loop already treats an
+    incomplete read as "not yet, read again", and a transient `totalCount` disagreement raised on the first
+    attempt would abort the very retry that exists to absorb it — reporting a landed write as failed, which
+    is the failure this whole function is built to avoid.
     """
     last = ""
     for attempt in range(VERIFY_ATTEMPTS):
         if attempt:
             time.sleep(VERIFY_BACKOFF_SECONDS * attempt)
-        for raw in _raw_items(owner, number):
+        for raw in _raw_items(owner, number, strict=False):
             if (raw.get("content") or {}).get("url") != issue_url:
                 continue
             last = str(raw.get(field_name.lower()) or "")
@@ -920,7 +958,7 @@ def _verify_field(owner: str, number: str, issue_url: str, field_name: str, opti
     )
 
 
-def _raw_items(owner: str, number: str) -> list[dict[str, Any]]:
+def _raw_items(owner: str, number: str, *, strict: bool = True) -> list[dict[str, Any]]:
     """Every item on the board, unmapped, in one read bounded by this adapter's own `ITEM_LIMIT`.
 
     `ITEM_LIMIT` is not a `gh` maximum — `gh` documents none — so nothing but this read's own bound
@@ -934,18 +972,29 @@ def _raw_items(owner: str, number: str) -> list[dict[str, Any]]:
     deliberately tolerant, because the relations it also parses are legitimately absent; a board this
     could not read must not come back looking like a board with nothing on it, which reads identically to
     a genuinely empty one. `items: []` is accepted: a board really can hold nothing.
+
+    `strict=False` drops those completeness checks for `_verify_field` alone, which already tolerates an
+    incomplete read: the board's item list is eventually consistent, so that caller retries with backoff
+    and treats a card it cannot find as "not yet", never as "the write failed". A `totalCount` that
+    disagrees with the items returned is exactly what a mid-pagination read of a busy board can transiently
+    look like, and raising on it inside that retry loop aborted the retry on its first attempt and reported
+    a write that had landed as a failure. The read still cannot make that caller optimistic — an
+    unverifiable write stays a bounded failure with its own message — so the tolerance costs nothing the
+    search paths need, and they keep the checks, because a page they call complete has to be.
     """
     args = ["project", "item-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT]
     data = _gh_data(args)
     raw = data.get("items") if isinstance(data, dict) else None
     if not isinstance(raw, list):
+        if not strict:
+            return []
         raise TrackerError(
             f"gh {_shown(args)} returned no list of items for project {owner}/{number}, so the board could "
             "not be read and must not be reported as one with nothing on it. Check the installed gh version "
             "against the fields this adapter requests."
         )
     items = [item for item in raw if isinstance(item, dict)]
-    if len(items) != len(raw):
+    if strict and len(items) != len(raw):
         raise TrackerError(
             f"gh {_shown(args)} returned {len(raw) - len(items)} of project {owner}/{number}'s "
             f"{len(raw)} entries as something other than an item object, so those cards cannot be read "
@@ -953,7 +1002,7 @@ def _raw_items(owner: str, number: str) -> list[dict[str, Any]]:
             "Check the installed gh version against the fields this adapter requests."
         )
     total = data.get("totalCount") if isinstance(data, dict) else None
-    if isinstance(total, int) and not isinstance(total, bool) and total > len(items):
+    if strict and isinstance(total, int) and not isinstance(total, bool) and total > len(items):
         raise TrackerError(
             f"project {owner}/{number} holds {total} items but one read returned {len(items)} of them, the "
             f"most this adapter's ITEM_LIMIT of {ITEM_LIMIT} asks for, so the board cannot be read in one "
@@ -961,6 +1010,34 @@ def _raw_items(owner: str, number: str) -> list[dict[str, Any]]:
             "finished cards."
         )
     return items
+
+
+def _listed_rows(args: list[str]) -> list[dict[str, Any]]:
+    """`gh issue list --json`'s rows, refusing a payload it cannot read rather than calling it empty.
+
+    The check `_raw_items` makes on the board read, made here on the sibling path a `find_issues` with no
+    board filter takes. `_as_list` is tolerant by design and stays so — the optional relations it also
+    parses are legitimately absent — but tolerance here read an unparseable response as "no issues match",
+    and `is_last` then reported that page complete: the same false completeness the board path has now been
+    fixed for four times, on the one path it was never applied to. `gh` prints a bare array; an object
+    carrying an `issues` list is tolerated in case it ever wraps it, and `[]` remains a real empty page.
+    """
+    payload = _gh_data(args)
+    rows = payload.get("issues") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise TrackerError(
+            f"gh {_shown(args)} returned no list of issues, so this search could not be read and must not be "
+            "reported as a repository with nothing matching in it. Check the installed gh version against the "
+            "fields this adapter requests."
+        )
+    objects = [row for row in rows if isinstance(row, dict)]
+    if len(objects) != len(rows):
+        raise TrackerError(
+            f"gh {_shown(args)} returned {len(rows) - len(objects)} of {len(rows)} rows as something other than "
+            "an issue object, so those issues cannot be read and dropping them would shorten this page without "
+            "saying so. Check the installed gh version against the fields this adapter requests."
+        )
+    return objects
 
 
 def _as_list(data: object, key: str) -> list[Any]:
@@ -975,6 +1052,17 @@ def _repo_args() -> list[str]:
     """`--repo` when configured, so a write does not depend on the server's working directory."""
     repo = config.get("tracker_config.repo", default=None)
     return ["--repo", str(repo)] if repo else []
+
+
+class _GhFailure(TrackerError):
+    """A `gh` invocation that exited non-zero: the tool ran and refused the operation.
+
+    A `TrackerError` either way for every caller, and subclassed only so one of them can tell `gh`
+    refusing a call — the shape a credential problem takes — from this adapter refusing `gh`'s answer.
+    `_confirm_board_access` relabels the first as a missing scope and must not relabel the second: a
+    board too large to read in one call, or a payload of the wrong shape, is not a token problem, and
+    naming it as one sends whoever reads the preflight to `gh auth refresh` over an unrelated fault.
+    """
 
 
 def _gh(args: list[str]) -> str:
@@ -996,7 +1084,7 @@ def _gh(args: list[str]) -> str:
             "to see what it wants."
         ) from None
     if proc.returncode != 0:
-        raise TrackerError(f"gh {_shown(args)} failed: {_safe(proc.stderr)}")
+        raise _GhFailure(f"gh {_shown(args)} failed: {_safe(proc.stderr)}")
     return proc.stdout.strip()
 
 
@@ -1026,6 +1114,18 @@ def _shown(args: list[str]) -> str:
     The argv is not obviously secret-bearing, but `--body` carries whatever the caller wrote, so it
     goes through the same redaction as stderr rather than being trusted to be clean."""
     return _safe(" ".join(args))
+
+
+def _shown_repo(value: str) -> str:
+    """A configured `tracker_config.repo` value as an error message may carry it, credential-free.
+
+    `gh --repo` accepts an https remote, and an https remote can carry userinfo — a misconfigured
+    `https://x-access-token:<token>@github.com/owner/repo.git` would otherwise print the token in
+    cleartext in the failure that names the bad value. The userinfo is dropped before `_safe` runs,
+    because `_safe` redacts only credentials this process itself holds in its environment, and the
+    remaining `https://host/owner/repo` is still the value the operator has to go and fix.
+    """
+    return _safe(re.sub(r"//[^/@\s]*@", "//", value))
 
 
 def _safe(text: str) -> str:

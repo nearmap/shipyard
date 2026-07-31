@@ -860,6 +860,45 @@ async def test_a_repo_value_gh_refuses_fails_before_the_board_is_read(monkeypatc
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("configured", ["-Rowner/repo", "--json"])
+async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_called(monkeypatch, configured):
+    """The configured value is now a bare positional in `gh repo view`'s argv, so it can be a flag.
+
+    Exactly the hazard `_checked_ref` guards on the issue-reference side, one path further out: a value
+    starting with `-` is parsed by `gh` as an option rather than as the repository to resolve.
+    """
+    _configure(monkeypatch, **{"tracker_config.repo": configured})
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="read as a flag") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert "tracker_config.repo" in str(raised.value), f"the failure must say what to fix: {raised.value}"
+    assert fake.calls == [], f"a value gh would read as a flag must never reach its argv: {fake.calls}"
+
+
+@pytest.mark.anyio
+async def test_a_credential_in_the_configured_repo_never_reaches_the_error_message(monkeypatch):
+    """`gh --repo` accepts an https remote, and an https remote can carry userinfo.
+
+    So a misconfigured `tracker_config.repo` can hold a token, and the failure that names the bad value
+    printed it verbatim. The remaining `https://host/owner/repo` is still what the operator has to fix.
+    """
+    monkeypatch.setenv("SHIPYARD_TEST_TOKEN", "s3cr3t-value-not-for-logs")
+    configured = f"https://x-access-token:s3cr3t-value-not-for-logs@github.com/{REPO}.git"
+    _configure(monkeypatch, **{"tracker_config.repo": configured})
+    monkeypatch.setattr(adapter, "subprocess", _BoardReads(_board_items([ISSUE_URL]), {}, resolved_repo=""))
+
+    with pytest.raises(TrackerError, match="could not resolve it to a repository") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert "s3cr3t-value-not-for-logs" not in str(raised.value), "a credential in the config leaked into an error"
+    assert "tracker_config.repo" in str(raised.value) and "github.com" in str(raised.value), (
+        f"the failure must still name the value to fix: {raised.value}"
+    )
+
+
+@pytest.mark.anyio
 async def test_only_issue_cards_answer_an_issue_search(monkeypatch):
     """`find_issues` owes the caller issues, and a board column holds PR and draft cards too.
 
@@ -929,6 +968,45 @@ async def test_a_card_with_neither_a_content_type_nor_a_url_is_a_failure_not_a_s
         await adapter.GithubAdapter().find_issues(status="ready")
 
     assert "ITEM_2" in str(raised.value), f"the failure must name the card it cannot read: {raised.value}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("card", "reason"),
+    [
+        ({"id": "ITEM_1", "status": "Ready", "type": "Task", "content": None}, "REDACTED"),
+        ({"id": "ITEM_1", "status": "Ready", "type": "Task"}, "no content key at all"),
+        ({"id": "ITEM_1", "status": "Ready", "type": "Task", "content": "REDACTED"}, "content that is not an object"),
+    ],
+)
+async def test_a_card_the_token_may_not_view_is_skipped_rather_than_failing_every_read(monkeypatch, card, reason):
+    """Found by review: the url-less guard could not tell a documented board state from a broken payload.
+
+    Projects v2 returns an item the credential may not view as `REDACTED`, and `gh` renders that card's
+    `content` as `null` — no type, no URL, nothing any verb here could address. Raising on it failed the
+    whole board, so one invisible card broke `find_issues` and, because the index is built for the entire
+    board, `get_issue` on every other issue too. A `content` object that is present but empty is still the
+    unreadable shape the sibling test above covers; only "no content object at all" is skipped — including
+    a `content` that is not an object, which must not reach the board index as an `AttributeError` either.
+    """
+    _configure(monkeypatch)
+    issue = {"id": "ITEM_2", "status": "Ready", "type": "Task", "content": _content(7, ISSUE_URL, "Issue")}
+    items = {"items": [card, issue], "totalCount": 2}
+
+    monkeypatch.setattr(adapter, "subprocess", _BoardReads(items, {ISSUE_URL: _list_row()}))
+    found = await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], (
+        f"a card the token cannot view ({reason}) must not take the rest of the board with it: {found}"
+    )
+    assert (found["count"], found["is_last"]) == (1, True), found
+
+    _install(monkeypatch, _json(_issue_view()), _json(items))
+    read = await adapter.GithubAdapter().get_issue("7")
+
+    assert (read["url"], read["status"]) == (ISSUE_URL, "ready"), (
+        f"one unviewable card poisoned the board index every other read goes through: {read}"
+    )
 
 
 @pytest.mark.anyio
@@ -1166,6 +1244,96 @@ async def test_a_genuinely_empty_board_is_still_an_empty_page(monkeypatch, board
     assert (found["count"], found["is_last"], found["issues"]) == (0, True, []), (
         f"a board with nothing on it is an empty page, completely read: {found}"
     )
+
+
+@pytest.mark.anyio
+async def test_the_write_verification_retry_tolerates_a_board_read_the_search_paths_refuse(monkeypatch, board):
+    """The verifying re-read is retried because the item list is eventually consistent, and a board `gh`
+    pages through internally can transiently answer with a `totalCount` its items disagree with.
+
+    Raising on that inside the retry loop aborts the retry on its first attempt and reports a write that
+    landed as failed — the exact failure the retry exists to prevent, reintroduced one level down. The
+    same payload must still fail a search and the preflight, where completeness is what makes the answer
+    true rather than something a later read can correct.
+    """
+    monkeypatch.setattr(adapter.time, "sleep", lambda _seconds: None)
+    hiccup, malformed = {"items": [], "totalCount": 3}, {"items": {}, "totalCount": 0}
+    _install(
+        monkeypatch,
+        _json({"url": ISSUE_URL}),
+        _json(PROJECT_VIEW),
+        _json(_fields()),
+        _json(_items()),
+        (0, "", ""),
+        _json(hiccup),
+        _json(malformed),
+        _json(_items(status="In progress")),
+    )
+
+    moved = await adapter.GithubAdapter().set_status("7", "in-progress")
+
+    assert moved == {"id": ISSUE_URL, "status": "in-progress", "native": "In Progress"}, (
+        f"a transient board-read hiccup must not report a landed write as failed: {moved}"
+    )
+
+    for payload, expected in ((hiccup, "ITEM_LIMIT"), (malformed, "no list of items")):
+        _install(monkeypatch, _repo_view(), _json(payload))
+        with pytest.raises(TrackerError, match=expected):
+            await adapter.GithubAdapter().find_issues(status="ready")
+
+
+@pytest.mark.anyio
+async def test_a_board_read_failure_that_is_not_about_scopes_keeps_its_own_preflight_message(monkeypatch, board):
+    """The scopeless-token fallback reads the board, and only `gh` refusing that read is a scope problem.
+
+    A board too large to read in one call, or a payload this adapter will not parse as a board, is a
+    correctly credentialled setup with a different fault, and relabelling it sends whoever reads the
+    preflight to `gh auth refresh` over something no grant will fix.
+    """
+    _install(
+        monkeypatch, (0, "gh version 2.96.0 (2025-01-01)\n", ""), (0, _auth_status(), ""), _json({"totalCount": 5})
+    )
+
+    with pytest.raises(TrackerError, match="no list of items") as raised:
+        await adapter.GithubAdapter().preflight()
+
+    assert "auth refresh" not in str(raised.value), (
+        f"a board-shape failure must not be reported as a missing token scope: {raised.value}"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (_json({}), "no list of issues"),
+        ((0, "", ""), "no list of issues"),
+        (_json({"issues": {}}), "no list of issues"),
+        (_json("not a list"), "no list of issues"),
+        (_json([_list_row(), "junk"]), "other than an issue object"),
+    ],
+)
+async def test_an_unreadable_issue_list_is_a_failure_not_an_empty_page(monkeypatch, board, result, expected):
+    """The path with no board filter never got the hardening the board-filtered path was given four times.
+
+    `gh issue list` went through the deliberately tolerant `_as_list`, so a response this cannot read came
+    back as `count: 0, is_last: true` — a caller told the repository holds nothing matching, which is the
+    one wrong answer it cannot tell from the truth.
+    """
+    _install(monkeypatch, result)
+
+    with pytest.raises(TrackerError, match=expected):
+        await adapter.GithubAdapter().find_issues()
+
+
+@pytest.mark.anyio
+async def test_a_repository_with_no_matching_issues_is_still_an_empty_page(monkeypatch, board):
+    """The counterpart to the check above: `gh issue list` printing `[]` is a real, complete answer."""
+    _install(monkeypatch, _json([]), _json(_items(present=False)))
+
+    found = await adapter.GithubAdapter().find_issues()
+
+    assert (found["count"], found["is_last"], found["issues"]) == (0, True, []), found
 
 
 @pytest.mark.anyio

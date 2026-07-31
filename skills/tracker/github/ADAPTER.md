@@ -111,13 +111,9 @@ Verify every write by reading it back (`gh issue view ... --json ...` / `$GHP ge
 
 ### `attach-artifact` — gist + link (deliberate asymmetry)
 
-GitHub issues have no CLI-scriptable file attachment, so the transcript is uploaded as a **secret** (private) gist and linked from the log comment. Scan first, exactly as the Jira adapter does, then:
+GitHub issues have no CLI-scriptable file attachment, so the transcript is uploaded as a **secret** (private) gist and linked from the log comment. Hand the rendered path to the `sy` MCP server's `attach-artifact` tool: it checks the gate and runs both sanitisation passes — the same ones, in the same order, as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter.
 
-```bash
-gh gist create --desc "shipyard transcript <ID>" .scratch/<ID>-ship-transcript.txt   # prints the gist URL
-```
-
-Reference the gist URL from the `# Claude Code ship metrics` comment (`transcript_attachment: <gist-url>`). Never upload an unscanned transcript; if safe redaction is uncertain, stop rather than publishing.
+Reference the returned gist URL from the `# Claude Code ship metrics` comment (`transcript_attachment: <gist-url>`). A skipped call means no gist exists — say so rather than inventing a URL. `gh gist create --desc "shipyard transcript <ID>" <FILE>` still works as a recovery path, but it uploads exactly what it is given: scan first yourself, and if safe redaction is uncertain, stop rather than publishing.
 
 ## Deliberate asymmetries vs Jira
 

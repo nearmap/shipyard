@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sy": {
+      "command": "pixi",
+      "args": ["run", "--manifest-path", "${CLAUDE_PLUGIN_ROOT}/pyproject.toml", "sy-server"]
+    }
+  }
+}

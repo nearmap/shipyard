@@ -7,6 +7,19 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 command -v python >/dev/null 2>&1 || { echo "ERROR: python not found on PATH" >&2; exit 1; }
 
+# Hard, and checked for every tracker: the `sy` MCP server is launched as `pixi run sy-server`, so
+# without pixi it cannot start at all.
+command -v pixi >/dev/null 2>&1 || \
+  { echo "ERROR: pixi not found on PATH; the sy MCP server runs as 'pixi run sy-server'. Install it: https://pixi.sh/latest/#installation" >&2; exit 1; }
+
+# Pre-warm the server's environment. --locked refuses to re-resolve, so a pyproject.toml that has
+# moved away from the committed pixi.lock stops here instead of installing something untested.
+echo "Preparing the sy MCP server environment..."
+if ! (cd "$PLUGIN_ROOT" && pixi install --locked); then
+  echo "ERROR: 'pixi install --locked' failed. If it reports a lock mismatch, pixi.lock and pyproject.toml disagree in this checkout — that is the plugin's bug, not yours; report it rather than running 'pixi install' without --locked." >&2
+  exit 1
+fi
+
 MIN_CLAUDE_VERSION="2.1.218"
 version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
 
@@ -39,7 +52,7 @@ case "$TRACKER" in
 esac
 
 command -v gitleaks >/dev/null 2>&1 || \
-  echo "NOTE: gitleaks not installed; transcript attachment stops before publish until a deterministic scanner is available." >&2
+  echo "NOTE: gitleaks not on PATH; the MCP server resolves its own from pixi.lock, so only the off-tool path (running the two sanitisation passes by hand) stops before publish." >&2
 
 # CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes
 # every agent off whatever the resolver decided. `sy_config.py validate` already fails on it; this

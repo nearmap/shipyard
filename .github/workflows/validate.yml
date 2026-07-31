@@ -17,3 +17,23 @@ jobs:
         with:
           python-version: "3.12"
       - run: python scripts/validate.py
+
+  sy-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # One environment for the interpreter, the SDK, and the dev tooling — including gitleaks,
+      # which is a real dependency: it is the second sanitisation pass `sy_tools/secrets.py`'s
+      # `scan_file` shells out to, and its absence from PATH fails loud by design (the tested
+      # invariant), so a missing gitleaks would surface here as a redaction-test failure.
+      # `locked: true` fails the job if pixi.lock and pyproject.toml have drifted apart, rather
+      # than quietly re-resolving and testing an environment nobody committed.
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          cache: true
+          locked: true
+      - run: pixi run ruff check sy_tools/
+      - run: pixi run ty check sy_tools/
+      # The whole package, not just sy_tools/tests/: the adapter tests live beside their adapters
+      # inside the sy_tools/tracker/ seam zone, because their names are tracker-native.
+      - run: pixi run pytest sy_tools/

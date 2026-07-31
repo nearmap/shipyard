@@ -927,6 +927,8 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
     [
         (REPO, REPO),
         ("@me", "@me"),
+        ("@me/abc", "@me/abc"),
+        ("someone@example.com: see the board", "someone@example.com: see the board"),
         (f"https://{HOST}/{REPO}.git", f"https://{HOST}/{REPO}.git"),
         (f"git@{HOST}:{REPO}.git", f"{HOST}:{REPO}.git"),
         (f"https://x-access-token:{CANARY}@{HOST}/{REPO}", f"https://{HOST}/{REPO}"),
@@ -945,6 +947,15 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
             f"GraphQL: no repo\nhttps://{HOST}/{REPO}\nhttps://{HOST}/{REPO}",
         ),
         (f"https://x-access-token:tok%40{CANARY}@ghe.example.com:8443/{REPO}", f"https://ghe.example.com:8443/{REPO}"),
+        (
+            f"Could not resolve to a Repository with the name 'x-access-token:{CANARY}@{HOST}:{REPO}.git'. (repo)",
+            f"Could not resolve to a Repository with the name {HOST}:{REPO}.git'. (repo)",
+        ),
+        (
+            f"Could not resolve to a Repository with the name 'x-access-token:{CANARY}@{HOST}/{REPO}'. (repo)",
+            f"Could not resolve to a Repository with the name {HOST}/{REPO}'. (repo)",
+        ),
+        (f"ping x-access-token:{CANARY}@{HOST}/{REPO} done", f"ping {HOST}/{REPO} done"),
     ],
 )
 def test_stripping_credentials_survives_a_userinfo_that_holds_a_slash_or_a_second_at(value, expected):
@@ -958,8 +969,17 @@ def test_stripping_credentials_survives_a_userinfo_that_holds_a_slash_or_a_secon
     Two shapes were still carried through whole afterwards, and both are reachable: a value or an output
     line holding more than one `//` authority had only its first stripped, so a clean URL followed by a
     credentialed one printed the second in cleartext; and a schemeless `userinfo@host/path` was not the
-    scp form the second branch matched, which wants a colon after the host. The last two rows are the
-    control: the clean URL beside the credentialed one is left exactly as it was.
+    scp form the second branch matched, which wants a colon after the host.
+
+    Both schemeless spellings were then matched against the *whole* value, which is not the shape they
+    arrive in: `gh` quotes the reference it refused inside a sentence, and a `--body` wraps prose around
+    whatever the caller wrote, so neither ever fullmatched and both printed the token. Stripping is now per
+    whitespace-separated token, and the last three rows are those two prose shapes plus a body — the
+    opening quote goes with the userinfo, which is the cosmetic half of a trade for removing the secret.
+
+    The controls: a bare `OWNER/REPO`, `@me` and `@me/abc` (a legitimate self-reference, not an empty
+    userinfo to strip), an address followed by a colon in prose, and the clean URL beside the credentialed
+    one, all left exactly as they were.
     """
     assert adapter._stripped_of_credentials(value) == expected, "a credential-bearing shape was mis-stripped"
 
@@ -1042,6 +1062,66 @@ async def test_a_credential_gh_echoes_back_in_its_own_stderr_never_reaches_the_e
     message = str(raised.value)
     assert CANARY not in message, f"gh's own stderr echoed the configured credential back: {message}"
     assert f"{HOST}/{REPO}" in message, f"the failure must still say which repository gh refused: {message}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "configured", [f"x-access-token:{CANARY}@{HOST}:{REPO}.git", f"x-access-token:{CANARY}@{HOST}/{REPO}"]
+)
+async def test_a_credential_gh_quotes_back_inside_a_sentence_never_reaches_the_error(monkeypatch, configured):
+    """Found by review: `gh` does not echo the refused reference alone, it quotes it inside a sentence.
+
+    Real `gh` (2.96.0) answers a credentialed `--repo` with `Could not resolve to a Repository with the
+    name '<value>'. (repository)`, and the two schemeless spellings a git remote can take — scp
+    `user:pass@host:path` and `user:pass@host/path` — were recognised only when they matched the whole
+    string, which surrounding prose and `gh`'s own quotes and trailing period make impossible. Both are
+    values `tracker_config.repo` accepts, so both reached this message with the token in them.
+    """
+    _configure(monkeypatch, **{"tracker_config.repo": configured})
+    _install(monkeypatch, (1, "", f"GraphQL: Could not resolve to a Repository with the name '{configured}'. (repo)"))
+
+    with pytest.raises(TrackerError, match="could not resolve it to a repository") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    message = str(raised.value)
+    assert CANARY not in message, f"gh's own sentence carried the configured credential through: {message}"
+    assert HOST in message, f"the failure must still name the repository gh refused: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_credential_embedded_in_a_comment_body_never_reaches_the_error(monkeypatch, board):
+    """A `--body` is free-form caller text, so a credentialed reference in it sits mid-sentence.
+
+    Same gap as `gh`'s own prose, from the other direction: the body reaches every `gh` failure through
+    `_shown`, and a reference pasted into the middle of one never matched a whole-value pattern. The text
+    around it survives, because the failure is only useful if it still shows which comment failed.
+    """
+    _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().post_comment("7", f"ping x-access-token:{CANARY}@{HOST}/{REPO} done")
+
+    message = str(raised.value)
+    assert CANARY not in message, f"a credential in a comment body leaked through the argv: {message}"
+    assert "ping" in message and "done" in message, f"the rest of the body must still be shown: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_project_value_holding_the_self_reference_syntax_is_reported_verbatim(monkeypatch):
+    """`@me` is legitimate syntax, and an empty userinfo is not a credential to strip.
+
+    The schemeless pattern allowed zero characters before the `@`, so `@me/abc` was reported back to
+    whoever has to fix it as `me/abc` — a value they never set, in the one message whose whole job is to
+    name the value that is wrong.
+    """
+    _configure(monkeypatch, **{"tracker_config.project": "@me/abc"})
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match=r"tracker_config\.project must be") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert "'@me/abc'" in str(raised.value), f"a value with no credential in it must be shown as set: {raised.value}"
+    assert fake.calls == [], f"an unusable project value must be refused before any gh call: {fake.calls}"
 
 
 @pytest.mark.anyio

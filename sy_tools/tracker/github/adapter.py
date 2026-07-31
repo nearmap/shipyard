@@ -1237,9 +1237,9 @@ def _shown(args: list[str]) -> str:
     resolves the repository — so both go through the same redaction as stderr rather than being
     trusted to be clean.
 
-    The strip is per element and *before* the join, even though `_safe` strips too: the join makes one
-    string out of values that are separately bounded, and the over-stripping fallback for a malformed
-    authority would then be free to eat the argv elements after it.
+    The strip is per element and *before* the join, even though `_safe` strips too: an element is the unit
+    the caller controls, so an over-stripping fallback for a malformed authority in one of them cannot
+    reach an element the join happened to put next to it.
     """
     return _safe(" ".join(_stripped_of_credentials(arg) for arg in args))
 
@@ -1253,28 +1253,49 @@ def _stripped_of_credentials(value: str) -> str:
     which is why this runs over command output too. What is left — `https://host/owner/repo`, or
     `host:owner/repo` for an SSH remote — is still the value the operator has to go and fix.
 
-    Every `//` in the value opens an authority to strip, not just the first: a `--body` or a multi-line
-    stderr can hold a clean URL followed by a credentialed one, and stopping at the first left the second
-    one's userinfo printed in full.
+    The value is stripped one whitespace-separated token at a time, and the whitespace is put back: a
+    credentialed reference is rarely the whole value. Real `gh` (2.96.0) quotes one *inside a sentence* —
+    ``Could not resolve to a Repository with the name 'x-access-token:<token>@github.com:owner/repo.git'.``
+    — and a `--body` carries whatever the caller wrote around one. Matching the whole value, which is what
+    the schemeless spellings used to require, therefore missed every prose case; a token cannot contain
+    whitespace, so bounding a match inside one needs no lookahead past the token and several credentialed
+    references in one line are each stripped independently.
 
-    The boundary is found before the credential is, which is what a `re.sub` over the whole value could
-    not do: `_stripped_authority` cuts the authority component out first and only the last `@` *inside* it
-    separates userinfo from host, so neither an unencoded `/` nor an extra `@` in the userinfo can carry a
-    fragment of it through.
+    Leading and trailing punctuation around a token's credentialed reference — `gh`'s quotes and its
+    trailing period — is not preserved: the userinfo prefix is what is dropped, and dropping an opening
+    quote with it is a cosmetic cost paid to remove the secret.
 
-    A value carrying no `//` is matched whole against the two schemeless remote spellings, greedily to the
-    last `@` for the same reason: `user:pass@host:path` and `user:pass@host/path` both lose all of
-    `user:pass@`. The second was the gap — `x-access-token:<token>@github.com/owner/repo` has no colon
-    after its host, so the scp pattern did not recognise it and it passed through untouched. Anything
-    shaped like neither — a bare `OWNER/REPO`, a flag, `@me`, an email address in a comment body — is
-    returned unchanged.
+    Adversarially malformed userinfo is not guaranteed to be stripped in full; real-world credential
+    shapes are. A userinfo holding a raw, unencoded `/` is not RFC 3986 (it would be `%2F`), and no
+    genuine remote or token an operator configures carries one, so `/` is read as the path boundary it is
+    in every compliant value rather than guessed at.
     """
-    if "//" in value:
-        head, *segments = value.split("//")
+    return "".join(piece if piece.isspace() else _stripped_token(piece) for piece in re.split(r"(\s+)", value))
+
+
+def _stripped_token(token: str) -> str:
+    """One whitespace-free piece of a value, with the userinfo of the credentialed authority in it dropped.
+
+    A token opening an authority with `//` is bounded before the credential is looked for, which is what a
+    `re.sub` could not do: `_stripped_authority` cuts the authority component out first and only the last
+    `@` *inside* it separates userinfo from host, so an extra `@` in the userinfo carries no fragment of
+    itself through.
+
+    Any other token is matched against the two schemeless remote spellings, `user:pass@host:path` and
+    `user:pass@host/path`, greedily to the last `@` for the same reason — both lose all of `user:pass@`.
+    The userinfo must be non-empty, so `@me` and `@me/abc` are left exactly as configured rather than
+    reported back to the operator as `me/abc`; and a host followed by a bare `:` is not the scp form, so
+    an address in a comment body (`someone@example.com: ...`) is not read as a credential. A token shaped
+    like none of these — `OWNER/REPO`, a flag, an email address — is returned unchanged.
+
+    An address immediately followed by a path (`someone@example.com/team`) *is* the schemeless remote
+    spelling and loses its local part. The two are not distinguishable by shape, and a comment body with a
+    mangled address in it costs less than a body with a token in it.
+    """
+    if "//" in token:
+        head, *segments = token.split("//")
         return head + "".join(f"//{_stripped_authority(segment)}" for segment in segments)
-    scp = re.fullmatch(r"\S*@(?P<rest>[^\s@:]+:\S*)", value)
-    schemeless = scp or re.fullmatch(r"\S*@(?P<rest>[^\s@:/]+(?::\d*)?/\S*)", value)
-    return schemeless.group("rest") if schemeless else value
+    return re.sub(r"\S+@(?=[^\s@:/]+(?:/|:\S))", "", token)
 
 
 def _stripped_authority(segment: str) -> str:

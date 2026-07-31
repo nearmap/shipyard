@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+from typing import Any
 
 import pytest
 
@@ -71,18 +72,28 @@ class _BoardReads(_FakeSubprocess):
     both of its bounds dropped board items invisibly: its own `--limit` hid anything older than the
     newest rows, and behind `--search` the Search API caps at 1,000 rows with nothing in the `--json`
     output to say so.
+
+    `resolved_repo` is what `gh repo view` answers when `tracker_config.repo` is unset: a slug for a
+    working directory `gh` can resolve, `""` for one it cannot, and None to assert the call is never
+    made at all — a configured repo must not be re-resolved.
     """
 
-    def __init__(self, items: dict, views: dict[str, dict]) -> None:
+    def __init__(self, items: dict, views: dict[str, dict], *, resolved_repo: str | None = None) -> None:
         super().__init__()
         self._items = items
         self._views = views
+        self._resolved_repo = resolved_repo
 
     def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
         self.kwargs.append(dict(kwargs))
         self.threads.append(threading.get_ident())
         args = argv[1:]
+        if args[:2] == ["repo", "view"]:
+            assert self._resolved_repo is not None, f"the configured repo must not be re-resolved: {argv}"
+            if not self._resolved_repo:
+                return subprocess.CompletedProcess(argv, 1, "", "no git remotes found")
+            return subprocess.CompletedProcess(argv, 0, f"{self._resolved_repo}\n", "")
         if args[:2] == ["project", "item-list"]:
             payload: object = self._items
         elif args[:2] == ["issue", "view"]:
@@ -98,6 +109,24 @@ def _install(monkeypatch: pytest.MonkeyPatch, *results: tuple[int, str, str]) ->
     return fake
 
 
+def _configure(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
+    """Patch the config every board-touching verb reads, overriding named keys.
+
+    Keyword names are the config paths with dots replaced by nothing usable, so callers pass them as
+    `**{"tracker_config.repo": ...}`; the overrides exist because the repo value's spelling — and its
+    absence — is itself under test.
+    """
+    values: dict[str, object] = {
+        **COLUMNS, "tracker_config.project": PROJECT, "tracker_config.repo": REPO, **overrides
+    }
+    original = adapter.config.get
+
+    def fake_get(path: str, **kwargs: object) -> object:
+        return values[path] if path in values else original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(adapter.config, "get", fake_get)
+
+
 @pytest.fixture
 def board(monkeypatch: pytest.MonkeyPatch) -> None:
     """The config every board-touching verb reads: this repo's column names, the board and the repo.
@@ -105,13 +134,7 @@ def board(monkeypatch: pytest.MonkeyPatch) -> None:
     One fixture rather than per-test patching, because the `gh` call sequence a verb makes depends
     on these values and a test that quietly disagrees with another about them proves nothing.
     """
-    values = {**COLUMNS, "tracker_config.project": PROJECT, "tracker_config.repo": REPO}
-    original = adapter.config.get
-
-    def fake_get(path: str, **kwargs: object) -> object:
-        return values[path] if path in values else original(path, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(adapter.config, "get", fake_get)
+    _configure(monkeypatch)
 
 
 def _json(payload: object) -> tuple[int, str, str]:
@@ -138,20 +161,29 @@ def _fields(*, status_options: tuple[str, ...] = ("Backlog", "In progress", "Don
     }
 
 
-def _items(*, status: str = "Backlog", issue_type: str = "Task", present: bool = True) -> dict:
+def _content(number: int, url: str, kind: str | None) -> dict:
+    """A card's `content`, carrying the `Issue`/`PullRequest`/`DraftIssue` type `gh` reports.
+
+    `kind=None` omits the key, which is the malformed case: a card `gh` reports with a URL but no
+    content type cannot be classified, and must not be guessed at in either direction.
+    """
+    content: dict[str, object] = {"number": number, "title": TITLE, "url": url}
+    return content if kind is None else {**content, "type": kind}
+
+
+def _items(
+    *, status: str = "Backlog", issue_type: str = "Task", present: bool = True, kind: str | None = "Issue"
+) -> dict:
     """An `item-list` payload holding the issue under test, or an empty board."""
     if not present:
         return {"items": [], "totalCount": 0}
-    item = {
-        "id": "ITEM_1",
-        "status": status,
-        "type": issue_type,
-        "content": {"number": 7, "title": TITLE, "url": ISSUE_URL},
-    }
+    item = {"id": "ITEM_1", "status": status, "type": issue_type, "content": _content(7, ISSUE_URL, kind)}
     return {"items": [item], "totalCount": 1}
 
 
-def _board_items(urls: list[str], *, status: str = "Ready", issue_type: str = "Task") -> dict:
+def _board_items(
+    urls: list[str], *, status: str = "Ready", issue_type: str = "Task", kinds: list[str | None] | None = None
+) -> dict:
     """A board holding one item per URL, all in one column: what a queue query is really asked about."""
     return {
         "items": [
@@ -159,9 +191,11 @@ def _board_items(urls: list[str], *, status: str = "Ready", issue_type: str = "T
                 "id": f"ITEM_{number}",
                 "status": status,
                 "type": issue_type,
-                "content": {"number": number, "title": TITLE, "url": url},
+                "content": _content(number, url, kind),
             }
-            for number, url in enumerate(urls, start=1)
+            for number, (url, kind) in enumerate(
+                zip(urls, kinds if kinds is not None else ["Issue"] * len(urls), strict=True), start=1
+            )
         ],
         "totalCount": len(urls),
     }
@@ -754,6 +788,221 @@ async def test_text_with_a_board_filter_matches_the_title_or_body_of_board_candi
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "configured",
+    [REPO, "OctoCat/Repo", f"github.com/{REPO}", f"https://github.com/{REPO}", f"https://github.com/{REPO}/"],
+)
+async def test_every_repo_spelling_gh_accepts_finds_the_same_board_cards(monkeypatch, configured):
+    """Found by review: the repo filter compared raw strings, so a spelling change emptied the page.
+
+    Every spelling here is one `gh --repo` takes and one `_repo_args()` already hands it for every other
+    verb, so each names the same repository the board cards live in. Comparing them literally answered
+    `count: 0, is_last: true` for three of the five — a correctly configured repo reported as an empty
+    queue, which is the one wrong answer a caller cannot tell from the truth.
+    """
+    _configure(monkeypatch, **{"tracker_config.repo": configured})
+    fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: _list_row()})
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    found = await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], (
+        f"{configured!r} names the repo the card is in, but the card went missing: {found}"
+    )
+    assert (found["count"], found["is_last"]) == (1, True), found
+
+
+@pytest.mark.anyio
+async def test_a_repo_value_that_names_no_repository_fails_before_any_read(monkeypatch):
+    """A value `gh` would reject must not be normalised into a match; it is a misconfiguration."""
+    _configure(monkeypatch, **{"tracker_config.repo": "repo"})
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="owner/repo"):
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert fake.calls == [], "an unusable repo value must fail before the board is read"
+
+
+@pytest.mark.anyio
+async def test_only_issue_cards_answer_an_issue_search(monkeypatch):
+    """`find_issues` owes the caller issues, and a board column holds PR and draft cards too.
+
+    `gh issue view` reads a pull request URL without complaint, so a PR card used to come back as an
+    issue — which the duplicate-work checks in the plan and spec skills read as prior work. The PR here
+    has no `issue view` answer at all, so a read of it fails the test rather than passing quietly.
+    """
+    _configure(monkeypatch)
+    pull = "https://github.com/octocat/repo/pull/8"
+    items = {
+        "items": [
+            {"id": "ITEM_1", "status": "Ready", "type": "Task", "content": _content(7, ISSUE_URL, "Issue")},
+            {"id": "ITEM_2", "status": "Ready", "type": "Task", "content": _content(8, pull, "PullRequest")},
+            {"id": "ITEM_3", "status": "Ready", "type": "Task", "title": "a draft", "content": {"type": "DraftIssue"}},
+        ],
+        "totalCount": 3,
+    }
+    fake = _BoardReads(items, {ISSUE_URL: _list_row()})
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    found = await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], f"a non-issue card leaked in: {found}"
+    assert (found["count"], found["is_last"]) == (1, True), found
+    assert [call[1:3] for call in fake.calls] == [["project", "item-list"], ["issue", "view"]], (
+        f"a pull request card must be excluded before it costs a read: {fake.calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_card_with_no_content_type_is_a_failure_rather_than_a_guess(monkeypatch):
+    """Guessing "issue" publishes a PR as one; guessing "not an issue" drops a real issue silently."""
+    _configure(monkeypatch)
+    fake = _BoardReads(_board_items([ISSUE_URL], kinds=[None]), {ISSUE_URL: _list_row()})
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    with pytest.raises(TrackerError, match="no content type"):
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert [call[1:3] for call in fake.calls] == [["project", "item-list"]], (
+        f"an unclassifiable card must not be read as an issue: {fake.calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_an_unset_repo_scopes_the_search_to_the_repo_gh_resolves_not_the_whole_board(monkeypatch):
+    """Unset means "the repo `gh` resolves here", exactly as `_repo_args()` means it for every write.
+
+    A board may span repositories, so treating unset as "no repo filter" answered a queue query with
+    another repository's work — work no other verb in this adapter would have touched.
+    """
+    _configure(monkeypatch, **{"tracker_config.repo": ""})
+    elsewhere = "https://github.com/octocat/other-repo/issues/3"
+    fake = _BoardReads(
+        _board_items([ISSUE_URL, elsewhere]), {ISSUE_URL: _list_row()}, resolved_repo="OctoCat/Repo"
+    )
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    found = await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert [item["url"] for item in found["issues"]] == [ISSUE_URL], (
+        f"another repository's card answered this repository's queue: {found}"
+    )
+    assert fake.calls[0][1:] == ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], fake.calls[0]
+    assert [call[1:3] for call in fake.calls] == [
+        ["repo", "view"], ["project", "item-list"], ["issue", "view"]
+    ], f"the resolved repo must scope the candidates before any of them is read: {fake.calls}"
+
+
+@pytest.mark.anyio
+async def test_a_repo_gh_cannot_resolve_is_a_failure_not_a_board_wide_search(monkeypatch):
+    """No repository to scope to must fail loudly, not widen the search to every repo on the board."""
+    _configure(monkeypatch, **{"tracker_config.repo": ""})
+    fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: _list_row()}, resolved_repo="")
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    with pytest.raises(TrackerError, match="working directory") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    assert "tracker_config.repo" in str(raised.value), f"the failure must say how to fix it: {raised.value}"
+    assert [call[1:3] for call in fake.calls] == [["repo", "view"]], (
+        f"an unresolved repo must not fall back to reading the whole board: {fake.calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_filter_that_matches_nothing_stops_at_the_read_bound_instead_of_scanning_the_column(monkeypatch):
+    """`limit` cannot bound the reads when `text` rejects every candidate after it has been read.
+
+    Each rejected candidate is one `gh issue view` subprocess, individually bounded by `TIMEOUT_SECONDS`
+    and in aggregate by nothing, so a wide column turned a query into minutes and then reported nothing
+    — indistinguishable from an empty board. The bound fails instead, saying what to narrow.
+    """
+    _configure(monkeypatch)
+    monkeypatch.setattr(adapter, "MAX_BOARD_READS", 3)
+    urls = [f"https://github.com/octocat/repo/issues/{number}" for number in range(1, 7)]
+    views = {
+        url: {**_list_row(number=number, url=url), "body": "nothing a needle matches"}
+        for number, url in enumerate(urls, start=1)
+    }
+    fake = _BoardReads(_board_items(urls), views)
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    with pytest.raises(TrackerError, match="narrow") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready", text="widget")
+
+    assert "3" in str(raised.value), f"the failure must name the bound it hit: {raised.value}"
+    reads = [call for call in fake.calls if call[1:3] == ["issue", "view"]]
+    assert len(reads) == adapter.MAX_BOARD_READS, (
+        f"the bound must stop the reads rather than report after them all: {len(reads)} reads"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_column_wider_than_the_read_bound_still_answers_a_plain_page(monkeypatch):
+    """The bound is on reads, not on the column: with no text or parent filter, `limit` bounds them.
+
+    Refusing a query that costs `limit + 1` reads because the column behind it is large would break the
+    queue query this verb exists for, on exactly the busy board where it matters most.
+    """
+    _configure(monkeypatch)
+    monkeypatch.setattr(adapter, "MAX_BOARD_READS", 3)
+    urls = [f"https://github.com/octocat/repo/issues/{number}" for number in range(1, 7)]
+    views = {url: _list_row(number=number, url=url) for number, url in enumerate(urls, start=1)}
+    fake = _BoardReads(_board_items(urls), views)
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    found = await adapter.GithubAdapter().find_issues(status="ready", limit=2)
+
+    assert (found["count"], found["is_last"]) == (2, False), f"a page of a wide column must still come back: {found}"
+    reads = [call for call in fake.calls if call[1:3] == ["issue", "view"]]
+    assert len(reads) == 3, f"one read past the page is all a bounded page costs: {len(reads)} reads"
+
+
+@pytest.mark.anyio
+async def test_the_read_bound_reached_with_a_full_page_returns_it_as_a_truncated_page(monkeypatch):
+    """A page the caller asked for is not worth discarding, and must not be called complete either.
+
+    Two matches fill the page of two, then the bound stops the read that would have decided whether a
+    third exists. Raising here would throw away results that are correct; `is_last: true` would claim
+    the board holds nothing else, which is the false-completeness bug this whole path keeps growing.
+    """
+    _configure(monkeypatch)
+    monkeypatch.setattr(adapter, "MAX_BOARD_READS", 3)
+    urls = [f"https://github.com/octocat/repo/issues/{number}" for number in range(1, 7)]
+    views = {
+        url: {**_list_row(number=number, url=url), "body": "the widget" if number <= 2 else "unrelated"}
+        for number, url in enumerate(urls, start=1)
+    }
+    fake = _BoardReads(_board_items(urls), views)
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    found = await adapter.GithubAdapter().find_issues(status="ready", text="widget", limit=2)
+
+    assert [item["url"] for item in found["issues"]] == urls[:2], f"the matches read must survive: {found}"
+    assert (found["count"], found["is_last"]) == (2, False), (
+        f"a page the bound cut short must report itself unfinished: {found}"
+    )
+    reads = [call for call in fake.calls if call[1:3] == ["issue", "view"]]
+    assert len(reads) == 3, f"the bound must still bound the reads: {len(reads)}"
+
+
+@pytest.mark.anyio
+async def test_a_candidate_read_that_returns_no_issue_is_a_failure_not_a_result(monkeypatch):
+    """A zero-exit read with no url is a failed read, as `get_issue` already treats it.
+
+    Without the check the card became a result whose `id` and `url` were empty strings: a caller handed
+    an issue it cannot then read, inside a page reporting itself complete.
+    """
+    _configure(monkeypatch)
+    fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: {}})
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    with pytest.raises(TrackerError, match="returned no issue"):
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+
+@pytest.mark.anyio
 async def test_a_non_positive_limit_is_refused_rather_than_forwarded_to_gh(monkeypatch, board):
     """`--limit 0` asks `gh` for every issue; the other adapter refuses it, and so must this one."""
     fake = _install(monkeypatch)
@@ -1058,9 +1307,17 @@ def test_the_ported_board_resolution_matches_the_cli_helper(monkeypatch, cli_hel
     assert set(mine["fields"]) == {"Status", "Type"}, f"both must keep only the single-selects: {set(mine['fields'])}"
     for option in ("In progress", "IN PROGRESS", " in progress ", "On hold"):
         assert adapter._option_id(mine, "Status", option) == cli_helper._option_id(theirs, "Status", option), option
-    for raw in (_items()["items"][0], {"type": None, "status": "Icebox", "content": {"number": 1, "url": ISSUE_URL}}):
-        assert adapter._normalize_item(raw) == cli_helper._normalize_item(raw), (
+    no_type: dict[str, Any] = {"type": None, "status": "Icebox", "content": {"number": 1, "url": ISSUE_URL}}
+    raw_items: tuple[dict[str, Any], dict[str, Any]] = (_items()["items"][0], no_type)
+    for raw in raw_items:
+        mapped = adapter._normalize_item(raw)
+        assert {key: value for key, value in mapped.items() if key != "kind"} == cli_helper._normalize_item(raw), (
             f"the ported item mapping disagrees with the CLI helper's for {raw}"
+        )
+        assert mapped["kind"] == (raw.get("content") or {}).get("type"), (
+            "the adapter's one addition is the card's own content type, carried through unmapped: the CLI "
+            "helper lists board items as board items, while find_issues owes its caller issues and must be "
+            f"able to tell a pull request card from an issue card. Got {mapped['kind']!r} for {raw}"
         )
 
 

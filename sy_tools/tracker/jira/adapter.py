@@ -312,14 +312,15 @@ class JiraAdapter:
         """Upload `path` to `issue` and return the response evidence confirming the write.
 
         The filename is checked before the body is built, not escaped: it goes into a hand-assembled
-        `Content-Disposition` header, where a quote malforms the part and a CR or LF — both legal in a
-        POSIX filename — appends attacker-chosen headers to the request. Refusing the three characters
-        is one comparison; escaping them correctly is a multipart quoting implementation.
+        `Content-Disposition` header, where a quote or backslash malforms the quoted string and a CR
+        or LF — both legal in a POSIX filename — appends attacker-chosen headers to the request.
+        Refusing the four characters is one comparison; escaping them correctly is a multipart
+        quoting implementation.
         """
         if any(ch in path.name for ch in FORBIDDEN_IN_FILENAME):
             raise TrackerError(
-                "attachment filename may not contain a quote, carriage return or newline: those would "
-                "break the multipart header this upload builds by hand. Rename the file and retry"
+                "attachment filename may not contain a quote, backslash, carriage return or newline: "
+                "those would break the multipart header this upload builds by hand. Rename the file and retry"
             )
         if not path.is_file():
             raise TrackerError(f"attachment not found: {path}")

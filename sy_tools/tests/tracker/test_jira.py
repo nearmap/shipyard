@@ -149,7 +149,7 @@ async def test_a_filename_that_could_forge_multipart_headers_is_refused(credenti
     hostile.write_bytes(b"payload")
     calls = _transport(monkeypatch, [{"id": "1", "filename": name}])
 
-    with pytest.raises(TrackerError, match="quote, carriage return or newline"):
+    with pytest.raises(TrackerError, match="quote, backslash, carriage return or newline"):
         await adapter.JiraAdapter().attach_artifact("PROJ-1", hostile)
     assert calls == [], "the name must be refused before anything is put on the wire"
 

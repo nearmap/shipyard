@@ -122,7 +122,8 @@ class GithubAdapter:
         board becomes the candidate set: every matching issue card in the scoped repository is
         enumerated, `limit` bounds the page rather than the fetch, `is_last` says whether a further
         match exists, and `text` is matched here against title and body instead of by GitHub's
-        server-side search. A query too wide to read within `MAX_BOARD_READS` fails saying so.
+        server-side search. A query too wide to read within `MAX_BOARD_READS` fails saying so, and an
+        unrecognised status or type token is refused rather than answered with an empty page.
         """
         return await to_thread.run_sync(
             functools.partial(
@@ -237,10 +238,10 @@ class GithubAdapter:
 
         Three properties of that board path are the caller's to rely on. Only issues come back, never a
         pull request or draft card sharing the column. The page is scoped to one concrete repository —
-        `tracker_config.repo`, or the repository `gh` resolves from the working directory, matched in
-        whichever spelling either is written in — and never to the board at large. And the per-candidate
-        reads are bounded by `MAX_BOARD_READS`, past which the call fails with what to narrow instead of
-        returning a page it cannot honestly call complete.
+        `tracker_config.repo`, or the repository `gh` resolves from the working directory, in either case
+        resolved by `gh` itself so any spelling `--repo` accepts names the same one — and never to the
+        board at large. And the per-candidate reads are bounded by `MAX_BOARD_READS`, past which the call
+        fails with what to narrow instead of returning a page it cannot honestly call complete.
         """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
@@ -573,7 +574,18 @@ def _board_page(
     deliberate divergence from `gh issue list --search`: no attempt is made to reproduce GitHub's
     server-side ranking or query syntax, in exchange for a result set that is complete for the board
     rather than silently capped at the Search API's thousandth row.
+
+    The filter tokens are validated before any of that, by the same `native_status`/`native_type` mapping
+    every write here validates through, and only for the raising: the comparison below is against values
+    `_normalize_item` has already canonicalised. Matching is what makes the check necessary — an
+    unrecognised token simply matches no card, so `in_progress` for `in-progress` came back as a complete
+    empty page, and the duplicate-work checks in `skills/plan/SKILL.md` and `skills/spec/SKILL.md` read
+    that as "no prior work" rather than as the bad query it is.
     """
+    if status is not None:
+        native_status(status)
+    if issue_type is not None:
+        native_type(issue_type)
     owner, number = _project_ref()
     repo = _effective_repo()
     candidates = [
@@ -627,64 +639,59 @@ def _repo_slug(url: str) -> str:
     A board may span repositories while this search is repo-scoped, so another repo's card is skipped
     before it is read rather than after `gh` refuses it: dropping a candidate because a read failed is
     how a truncated result comes back looking complete.
+
+    Only `gh`'s own output for a board card is parsed here — always `<host>/<owner>/<repo>/issues/<n>` —
+    so the two path segments before the `issues/<n>` tail are the pair, lowercased because GitHub's names
+    are case-insensitive and `_effective_repo` lowercases the side this is compared against. The
+    repository the *caller* spelled is not parsed here or anywhere in this file; `gh` resolves that one.
     """
     parts = url.rstrip("/").split("/")
-    return _normalized_repo("/".join(parts[-4:-2])) if len(parts) >= 4 else ""
-
-
-def _normalized_repo(value: str) -> str:
-    """`owner/repo`, lowercased, from any spelling `gh --repo` accepts, or "" from one it does not.
-
-    Both sides of the search's repository comparison go through this, because the two sides are spelled
-    by different hands: one comes out of an issue URL, the other out of `tracker_config.repo`. `gh --repo`
-    documents `[HOST/]OWNER/REPO` and takes a full URL as well, so every other verb here works with all
-    of those spellings — comparing them as raw strings did not, and a repo configured `Octocat/Repo` or
-    `https://github.com/octocat/repo` therefore returned an empty page from a board full of its cards:
-    the one wrong answer a caller cannot tell from an empty queue.
-
-    Only the spellings `gh` itself accepts are normalised away: the last two path segments, so a scheme
-    and a host fall away, and case, because GitHub's own names are case-insensitive. Anything `gh` would
-    reject is not made to match here either.
-    """
-    parts = [part for part in value.strip().split("/") if part]
-    return "/".join(parts[-2:]).lower() if len(parts) >= 2 else ""
+    pair = [part for part in parts[-4:-2] if part] if len(parts) >= 4 else []
+    return "/".join(pair).lower() if len(pair) == 2 else ""
 
 
 def _effective_repo() -> str:
-    """The single repository a board-filtered search is scoped to, normalised.
+    """The single repository a board-filtered search is scoped to, as `gh` itself resolves it.
 
     `_repo_args()` sets the pattern every write here follows: `tracker_config.repo` when it is set, and
     otherwise whatever repository `gh` resolves from the working directory. A search has to answer about
     the same one, so an unset value resolves that repository rather than widening the search to the whole
     board: a page mixing another repo's cards into this repo's queue is read as this repo's queue.
 
-    An unresolvable repository is a failure, not a fallback to board-wide. It is the same failure every
-    other verb already has in that situation — `gh` itself refuses a repo-scoped call it cannot target —
-    and answering board-wide instead would quietly return work from a repository the caller never named.
+    Both branches ask `gh` rather than parsing the value here. `gh --repo` accepts `OWNER/REPO`,
+    `HOST/OWNER/REPO`, an https URL with or without a `.git` suffix, and an scp-like SSH remote, and every
+    hand-written parser of that grammar was one spelling short of it — each miss answering `count: 0` from
+    a board full of the configured repo's cards, the one wrong answer a caller cannot tell from an empty
+    queue. `gh repo view` takes exactly the references `--repo` takes and prints the canonical pair, so
+    the two sides of the comparison agree by construction instead of by this file keeping up with `gh`.
+
+    An unresolvable value is a failure rather than a fallback to board-wide, and `gh` refusing it is that
+    check: a value which is not a repository reference at all — an issue URL, say — is refused there
+    instead of being normalised into something that matches no card while the page reports itself
+    complete. `gh`'s answer is then checked to be one `owner/repo` pair for the same reason: a repository
+    this cannot compare a card against is as invisible to a caller as a board with nothing on it.
     """
     configured = str(config.get("tracker_config.repo", default="") or "")
-    if configured:
-        repo = _normalized_repo(configured)
-        if not repo:
-            raise TrackerError(
-                f"tracker_config.repo must name a repository as owner/repo, optionally host- or https://-"
-                f"qualified; got {configured!r}. Fix it in .shipyard/config.json; see docs/github-setup.md."
-            )
-        return repo
+    args = ["repo", "view", *([configured] if configured else []), "--json", "nameWithOwner", "-q", ".nameWithOwner"]
     try:
-        printed = _gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+        printed = _gh(args)
     except TrackerError as exc:
+        source = (
+            f"tracker_config.repo is set to {configured!r}"
+            if configured
+            else "tracker_config.repo is unset, so this search is scoped to the repository gh resolves from the "
+            "working directory"
+        )
         raise TrackerError(
-            f"tracker_config.repo is unset, so this search is scoped to the repository gh resolves from the "
-            f"working directory, and resolving it failed: {exc} Set tracker_config.repo in "
-            ".shipyard/config.json, or run from a checkout with a GitHub remote."
+            f"{source}, and gh could not resolve it to a repository: {exc} Fix tracker_config.repo in "
+            ".shipyard/config.json, or run from a checkout with a GitHub remote; see docs/github-setup.md."
         ) from None
-    resolved = _normalized_repo(printed)
-    if not resolved:
+    resolved = printed.strip().lower()
+    if not re.fullmatch(r"[^\s/]+/[^\s/]+", resolved):
         raise TrackerError(
-            "tracker_config.repo is unset and gh reported no owner/repo for the working directory, so this "
-            "search has no repository to scope to and will not answer for the whole board instead. Set "
-            "tracker_config.repo in .shipyard/config.json; see docs/github-setup.md."
+            f"gh resolved this search's repository to {_safe(printed) or 'nothing'!r}, which is not one "
+            "owner/repo pair, so the search has no repository to scope to and will not answer for the whole "
+            "board instead. Check tracker_config.repo in .shipyard/config.json; see docs/github-setup.md."
         )
     return resolved
 
@@ -702,12 +709,22 @@ def _is_issue_card(url: str, item: dict[str, Any]) -> bool:
     """
     kind = str(item.get("kind") or "")
     if not kind:
-        raise TrackerError(
-            f"the board reports no content type for {url}, so whether that card holds an issue or a pull "
-            "request is unknown and it must not be answered as either. Check the installed gh version "
-            "against the fields this adapter requests."
-        )
-    return kind == "Issue"
+        raise _unclassifiable_card(url)
+    return kind.strip().lower() == "issue"
+
+
+def _unclassifiable_card(ref: str) -> TrackerError:
+    """The failure a board card carrying no content type gets, shared by both places that can see one.
+
+    Returned rather than raised so each caller raises it at its own site, and shared so the two cannot
+    drift: `_item_index` meets such a card when it also has no URL, `_is_issue_card` when it has one, and
+    both are the same unreadable shape rather than two different problems.
+    """
+    return TrackerError(
+        f"the board reports no content type for {ref}, so whether that card holds an issue or a pull "
+        "request is unknown and it must not be answered as either. Check the installed gh version "
+        "against the fields this adapter requests."
+    )
 
 
 def _summary(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
@@ -834,12 +851,24 @@ def _option_id(resolved: dict[str, Any], field_name: str, option_name: str) -> t
 
 
 def _item_index(owner: str, number: str) -> dict[str, dict[str, Any]]:
-    """Every board item, canonicalised and keyed by the URL of the issue it holds."""
+    """Every board item, canonicalised and keyed by the URL of the issue it holds.
+
+    A card with no URL is left out rather than indexed: a `DraftIssue` legitimately has none, and nothing
+    here can address a card that is not an issue or a pull request anyway.
+
+    A card with neither a URL nor a content type is not that case — it is a shape this cannot read — and
+    it fails here instead of being dropped as though it were a draft. Dropping it silently is how a card
+    goes missing from a page that still reports itself complete, and it also took the same failure
+    `_is_issue_card` raises out of reach: every url-less card was gone before that check ever saw one.
+    """
     index = {}
     for raw in _raw_items(owner, number):
         item = _normalize_item(raw)
-        if item["url"]:
-            index[str(item["url"])] = item
+        if not item["url"]:
+            if not item["kind"]:
+                raise _unclassifiable_card(f"board item {raw.get('id') or 'with no id'}")
+            continue
+        index[str(item["url"])] = item
     return index
 
 
@@ -892,9 +921,46 @@ def _verify_field(owner: str, number: str, issue_url: str, field_name: str, opti
 
 
 def _raw_items(owner: str, number: str) -> list[dict[str, Any]]:
-    """Every item on the board, unmapped. The limit is `gh`'s maximum, not a page size."""
-    data = _gh_data(["project", "item-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT])
-    return [item for item in _as_list(data, "items") if isinstance(item, dict)]
+    """Every item on the board, unmapped, in one read bounded by this adapter's own `ITEM_LIMIT`.
+
+    `ITEM_LIMIT` is not a `gh` maximum — `gh` documents none — so nothing but this read's own bound
+    guarantees the list is the whole board, and every caller treats it as the whole board: `_board_page`
+    reads `is_last` from it, the preflight reads reachability from it, and the write-back verification
+    reads a card's absence from it as the write not having landed. `gh` returns `totalCount` for the board
+    alongside the truncated `items`, so a board larger than one read fails here rather than answering
+    completely from its first `ITEM_LIMIT` cards.
+
+    A payload carrying no `items` list is that same failure and not an empty board. `_as_list` is
+    deliberately tolerant, because the relations it also parses are legitimately absent; a board this
+    could not read must not come back looking like a board with nothing on it, which reads identically to
+    a genuinely empty one. `items: []` is accepted: a board really can hold nothing.
+    """
+    args = ["project", "item-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT]
+    data = _gh_data(args)
+    raw = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        raise TrackerError(
+            f"gh {_shown(args)} returned no list of items for project {owner}/{number}, so the board could "
+            "not be read and must not be reported as one with nothing on it. Check the installed gh version "
+            "against the fields this adapter requests."
+        )
+    items = [item for item in raw if isinstance(item, dict)]
+    if len(items) != len(raw):
+        raise TrackerError(
+            f"gh {_shown(args)} returned {len(raw) - len(items)} of project {owner}/{number}'s "
+            f"{len(raw)} entries as something other than an item object, so those cards cannot be read "
+            "and dropping them would shorten every answer drawn from this board without saying so. "
+            "Check the installed gh version against the fields this adapter requests."
+        )
+    total = data.get("totalCount") if isinstance(data, dict) else None
+    if isinstance(total, int) and not isinstance(total, bool) and total > len(items):
+        raise TrackerError(
+            f"project {owner}/{number} holds {total} items but one read returned {len(items)} of them, the "
+            f"most this adapter's ITEM_LIMIT of {ITEM_LIMIT} asks for, so the board cannot be read in one "
+            "call and no answer derived from this read would be complete. Split the board, or archive its "
+            "finished cards."
+        )
+    return items
 
 
 def _as_list(data: object, key: str) -> list[Any]:

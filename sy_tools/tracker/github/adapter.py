@@ -1342,9 +1342,9 @@ def _safe(text: str) -> str:
     has — is unambiguously a credential boundary *in this narrow, known context*, the same way scrubbing
     already treats an environment variable's value as unambiguously sensitive because of what it is, not
     what it looks like. The exact prefix is registered for the same literal-value replacement scrubbing
-    already does, so the schemeless and colon-less shapes the second pass cannot safely touch — with a
-    colon, without one, with or without a path — are caught here by matching the value itself rather than
-    guessing at its shape; a scheme-bearing echo is already the first pass's, case-insensitively. Below
+    already does, so the schemeless and colon-less shapes the strip cannot safely touch — with a colon,
+    without one, with or without a path — are caught here by matching the value itself rather than
+    guessing at its shape; a scheme-bearing echo is already the strip's, scheme-case-agnostically. Below
     `DEFAULT_MIN_LENGTH` a prefix is not registered at all: a degenerate one- or two-character value would
     otherwise redact every short, unrelated `@`-bearing substring a message happens to carry.
 

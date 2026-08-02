@@ -188,7 +188,10 @@ class JiraAdapter:
             fields = entry.get("fields") if isinstance(entry, dict) else None
             if not isinstance(fields, dict):
                 raise TrackerError(f"a search result carried no fields block; got {_shape(entry)}")
-            items.append(_summary(base, _field(entry, "key") or "", fields))
+            key = _field(entry, "key")
+            if not key:
+                raise TrackerError(f"a search result carried no issue key; got {_shape(entry)}")
+            items.append(_summary(base, key, fields))
         return {
             "issues": items,
             "count": len(items),

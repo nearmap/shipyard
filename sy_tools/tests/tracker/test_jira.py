@@ -526,6 +526,28 @@ async def test_find_issues_reads_exhaustion_from_the_token_not_from_isLast(crede
 
 
 @pytest.mark.anyio
+async def test_find_issues_fails_on_a_result_with_no_key(credentials, monkeypatch):
+    """Found by review: a search result missing `key` was passed through as an id-less, unaddressable row.
+
+    `_field(entry, "key") or ""` defaulted a missing key to an empty string, so `_summary` built an entry
+    with `id: ""` and a `url` truncated to `.../browse/` — a row that reads as a found issue but cannot be
+    acted on. The `fields` block just above already fails loudly on the identical kind of drift; the key
+    must too.
+    """
+    fields = {
+        "summary": "Ship the thing",
+        "status": {"name": "In Review"},
+        "issuetype": {"name": "Task"},
+        "parent": {"key": "PROJ-1", "fields": {"summary": "The epic"}},
+        "labels": ["decomposed", "shipyard"],
+    }
+    _transport(monkeypatch, {"isLast": True, "issues": [{"id": "10001", "fields": fields}]})
+
+    with pytest.raises(TrackerError, match="no issue key"):
+        await adapter.JiraAdapter().find_issues()
+
+
+@pytest.mark.anyio
 async def test_find_issues_quotes_a_value_that_could_close_its_own_clause(credentials, monkeypatch):
     calls = _transport(monkeypatch, {"issues": [], "isLast": True})
 

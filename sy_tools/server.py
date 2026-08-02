@@ -248,7 +248,7 @@ async def preflight() -> dict[str, Any]:
 
 @mcp.tool(name="attach-artifact")
 async def attach_artifact(
-    issue: Annotated[str, Field(description="Canonical issue id, e.g. PROJ-123.")],
+    issue: IssueId,
     path: Annotated[str, Field(description="Path to the artifact to attach.")],
     kind: Annotated[
         str, Field(description="Artifact kind. `transcript` is gated; anything else is ungated.")

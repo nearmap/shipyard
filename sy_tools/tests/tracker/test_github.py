@@ -1114,6 +1114,46 @@ async def test_a_pathless_credentialed_authority_never_reaches_the_error(monkeyp
 
 
 @pytest.mark.anyio
+async def test_a_colon_less_pathless_credential_never_reaches_the_error(monkeypatch):
+    """Found by review, round 10: a bare `<token>@host` with no colon was still not stripped.
+
+    GitHub's own documented PAT-in-URL form uses the token itself as the username with nothing after it —
+    `https://<PAT>@github.com/...` — and that shape is identical to a real email address once free of its
+    scheme and path, so no generic pattern can tell them apart in arbitrary text without also mangling a
+    genuine address elsewhere. `tracker_config.repo` is never legitimately an email address, though, so
+    this is caught by matching its own configured value directly rather than guessing at its shape.
+    """
+    configured = f"{CANARY}@{HOST}"
+    _configure(monkeypatch, **{"tracker_config.repo": configured})
+    _install(monkeypatch, (1, "", f"GraphQL: Could not resolve to a Repository with the name '{configured}'. (repo)"))
+
+    with pytest.raises(TrackerError, match="could not resolve it to a repository") as raised:
+        await adapter.GithubAdapter().find_issues(status="ready")
+
+    message = str(raised.value)
+    assert CANARY not in message, f"a colon-less pathless credential leaked through gh's own sentence: {message}"
+    assert HOST in message, f"the failure must still name the host gh refused: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_real_email_address_in_a_comment_body_is_still_left_alone(monkeypatch, board):
+    """Control for the round-10 fix: the exact-match pass must not catch ordinary content.
+
+    `tracker_config.repo`/`.project` hold no credential in this test, so the new pass has nothing to
+    match, and a real address pasted into a comment body must survive exactly as free-text stripping
+    already left it — this is the case the generic pattern deliberately does not touch either.
+    """
+    _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().post_comment("7", "cc brett@nearmap.com for visibility")
+
+    assert "brett@nearmap.com" in str(raised.value), (
+        f"a real address with no configured credential to match must not be touched: {raised.value}"
+    )
+
+
+@pytest.mark.anyio
 async def test_a_credential_embedded_in_a_comment_body_never_reaches_the_error(monkeypatch, board):
     """A `--body` is free-form caller text, so a credentialed reference in it sits mid-sentence.
 

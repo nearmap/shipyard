@@ -1328,11 +1328,22 @@ def _stripped_authority(segment: str) -> str:
 def _safe(text: str) -> str:
     """`text` as a message may carry it: credentials this process holds redacted, URL userinfo dropped.
 
-    Both halves are needed and neither can do the other's job. Scrubbing catches the credentials this
-    process holds in its own environment; discovery honours `redaction.extra_words`, so an org-specific
-    credential name redacts here exactly as it does on the attach-artifact sanitisation path. Stripping
-    catches the one kind this process cannot recognise by value — a token misconfigured into a remote URL,
-    which only ever existed in `tracker_config.repo`.
+    Three passes, and none can do the others' job. Scrubbing catches the credentials this process holds
+    in its own environment; discovery honours `redaction.extra_words`, so an org-specific credential name
+    redacts here exactly as it does on the attach-artifact sanitisation path. Stripping catches a
+    credential this process cannot recognise by value, by its shape in free text — a token misconfigured
+    into a remote URL. But a bare `<token>@host` with no path, port, or colon in it is shape-identical to
+    a real email address, and no pattern can tell the two apart in *free* text without also mangling every
+    genuine address a `gh` error or a comment body carries; found by review, round 10.
+
+    The third pass sidesteps that ambiguity by not pattern-matching at all: `tracker_config.repo` and
+    `.project` are held directly, not inferred from arbitrary output, so any `@` in either — other than
+    the literal `@me`/`@me/...` self-reference, which is the one legitimate use of `@` a project value
+    has — is unambiguously a credential boundary *in this narrow, known context*, the same way scrubbing
+    already treats an environment variable's value as unambiguously sensitive because of what it is, not
+    what it looks like. The exact prefix is registered for the same literal-value replacement scrubbing
+    already does, so whichever shape `gh` echoes it back in — with a colon, without one, with or without a
+    path — is caught by matching the value itself rather than guessing at its shape.
 
     Every message built from `gh` output, from `_shown`'s argv rendering, or from a configured
     `tracker_config.repo`/`.project` value — the values that can actually carry a credential — goes
@@ -1344,7 +1355,31 @@ def _safe(text: str) -> str:
     a configured `columns.*` display name, a board field's own option titles — and are not routed through
     here; those values are never a token's home, only a repository or project reference is.
     """
-    scrubbed, _ = scrub_text(
-        _stripped_of_credentials(text.strip()), discover_secret_vars(extra_words=config.extra_secret_words())
+    secrets = dict(discover_secret_vars(extra_words=config.extra_secret_words()))
+    configured_paths = (
+        ("TRACKER_CONFIG_REPO", "tracker_config.repo"),
+        ("TRACKER_CONFIG_PROJECT", "tracker_config.project"),
     )
+    for name, path in configured_paths:
+        prefix = _configured_secret_prefix(path)
+        if prefix and len(prefix) >= 6:
+            secrets[name] = prefix
+    scrubbed, _ = scrub_text(_stripped_of_credentials(text.strip()), secrets)
     return scrubbed[:STDERR_LIMIT]
+
+
+def _configured_secret_prefix(path: str) -> str | None:
+    """The credential-bearing prefix of a configured repository/project reference, or `None` without one.
+
+    Read directly from config rather than matched against arbitrary text, which is what lets this catch
+    the one shape no pattern safely can: a bare `<token>@host` is indistinguishable from an email address
+    in free text, but `tracker_config.repo`/`.project` is never legitimately an email address, so any `@`
+    in it is unambiguously a credential boundary here — except the literal `@me` or `@me/...` self-
+    reference, `tracker_config.project`'s one legitimate use of `@`, which this leaves alone rather than
+    reporting it back to the operator as a value they never configured.
+    """
+    value = str(config.get(path, default="") or "")
+    if not value or value == "@me" or value.startswith("@me/"):
+        return None
+    at = value.rfind("@")
+    return value[: at + 1] if at != -1 else None

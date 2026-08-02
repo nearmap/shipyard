@@ -44,7 +44,7 @@ from typing import Any
 from anyio import to_thread
 
 from ... import config
-from ...secrets import discover_secret_vars, scrub_text
+from ...secrets import DEFAULT_MIN_LENGTH, discover_secret_vars, scrub_text
 from .. import (
     TIMEOUT_SECONDS,
     TrackerError,
@@ -1342,8 +1342,11 @@ def _safe(text: str) -> str:
     has — is unambiguously a credential boundary *in this narrow, known context*, the same way scrubbing
     already treats an environment variable's value as unambiguously sensitive because of what it is, not
     what it looks like. The exact prefix is registered for the same literal-value replacement scrubbing
-    already does, so whichever shape `gh` echoes it back in — with a colon, without one, with or without a
-    path — is caught by matching the value itself rather than guessing at its shape.
+    already does, so the schemeless and colon-less shapes the second pass cannot safely touch — with a
+    colon, without one, with or without a path — are caught here by matching the value itself rather than
+    guessing at its shape; a scheme-bearing echo is already the first pass's, case-insensitively. Below
+    `DEFAULT_MIN_LENGTH` a prefix is not registered at all: a degenerate one- or two-character value would
+    otherwise redact every short, unrelated `@`-bearing substring a message happens to carry.
 
     Every message built from `gh` output, from `_shown`'s argv rendering, or from a configured
     `tracker_config.repo`/`.project` value — the values that can actually carry a credential — goes
@@ -1362,7 +1365,7 @@ def _safe(text: str) -> str:
     )
     for name, path in configured_paths:
         prefix = _configured_secret_prefix(path)
-        if prefix and len(prefix) >= 6:
+        if prefix and len(prefix) >= DEFAULT_MIN_LENGTH:
             secrets[name] = prefix
     scrubbed, _ = scrub_text(_stripped_of_credentials(text.strip()), secrets)
     return scrubbed[:STDERR_LIMIT]
@@ -1377,6 +1380,11 @@ def _configured_secret_prefix(path: str) -> str | None:
     in it is unambiguously a credential boundary here — except the literal `@me` or `@me/...` self-
     reference, `tracker_config.project`'s one legitimate use of `@`, which this leaves alone rather than
     reporting it back to the operator as a value they never configured.
+
+    The carve-out does not generalise beyond that one literal form: a typo like `myorg@3` is treated as a
+    credential too, and reported redacted rather than verbatim — hiding the very value the operator would
+    need to see to fix it. That is the same trade this file already makes everywhere else in this
+    direction: erring toward over-redaction of an ambiguous value costs a confusing message, not a leak.
     """
     value = str(config.get(path, default="") or "")
     if not value or value == "@me" or value.startswith("@me/"):

@@ -262,8 +262,11 @@ def validate() -> list[str]:
 
     flat = _flatten(values)
     tracker = flat.get("tracker")
-    if tracker and not (plugin_root() / "skills" / "tracker" / str(tracker)).is_dir():
-        errors.append(f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/")
+    if tracker and str(tracker) not in _known_trackers():
+        errors.append(
+            f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/. "
+            f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
+        )
     required = list(REQUIRED_PATHS) + list(_adapter_map().get("required", []))
     for path in required:
         if flat.get(path) in (None, ""):
@@ -512,7 +515,16 @@ def _adapter_map_path(tracker: object) -> Path:
 
 
 def _known_trackers() -> list[str]:
-    """Every tracker that ships a `config-map.json`, for naming the alternatives in a refusal."""
+    """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
+
+    A configured `tracker` is checked against these enumerated names rather than by asking whether
+    `skills/tracker/<value>/` exists. `".."` and `"."` both name existing directories, so the
+    path-existence form passed them clean and then found no `config-map.json` for them, skipping every
+    `required` and `secret_env` check that config validation exists to enforce; `"../tracker/<name>"`
+    traversed to a real adapter's map under a name no adapter answers to. `sy_tools/tracker/__init__.py`
+    refuses each of them at tool-call time, which is exactly the point — validation is meant to catch it
+    before then.
+    """
     tracker_dir = plugin_root() / "skills" / "tracker"
     return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []
 
@@ -810,7 +822,9 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
     with a lingering `env` block as a real state, so truncating it destroyed exactly the keys the run
     before it had written. Migrated values win on conflict — that is the point of running `migrate` —
     which is the same precedence `_deep_merge` gives a higher layer, and a destination that cannot be
-    parsed is a refusal from `_load_json` rather than a file this command overwrites blind.
+    parsed is a refusal from `_load_json` rather than a file this command overwrites blind. The write
+    itself goes through `_write_atomically`, so a merge that cannot be written leaves the destination
+    exactly as it was rather than truncated mid-value.
     """
     env = _load_json(settings_path).get("env", {})
     if not env:
@@ -840,8 +854,7 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
     if out_path:
         existing = _load_json(out_path) if out_path.is_file() else {}
         merged = _deep_merge(existing, config)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_atomically(out_path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
         preserved = sorted(set(_flatten(existing)) - set(_flatten(config)))
         print(json.dumps({"written": str(out_path), **summary, "preserved": preserved}))
     else:
@@ -849,6 +862,33 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
         # stdout carries the config alone so it stays pipeable; the summary is the same either way.
         print(json.dumps(summary), file=sys.stderr)
     return 0
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Write `text` to `path` through a sibling temporary file and one `os.replace`, or refuse by name.
+
+    The same temp-write-then-replace pattern as `scripts/sy_memory.py::_atomic_write`, for a stronger
+    reason: `migrate --out` is pointed straight at a repo's `.shipyard/config.json` by the documented
+    flow, and a plain `write_text` truncates the destination before it writes a byte. A write that then
+    fails partway — a full disk, a quota, a file-size limit — left that file cut off mid-value and
+    unparseable, so every later read of it was a `_load_json` refusal, while the operator saw a raw
+    `OSError` traceback that said nothing about the destination now being broken. Replacing onto the
+    destination is atomic on POSIX, so it either carries the whole merge or is untouched, and any
+    `OSError` (including an `--out` that names a directory, which `os.replace` refuses) arrives as this
+    module's own refusal. The partial temporary file is removed, so a failed run leaves nothing behind.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise SystemExit(
+            f"sy_config: {path} could not be written: {exc}. Nothing was migrated — the destination is "
+            "still exactly as it was before this run, so fix the cause and run migrate again."
+        ) from None
 
 
 def _migrating_tracker(env: dict, settings_path: Path) -> str:
@@ -1090,6 +1130,20 @@ def _self_test() -> None:
             assert _schema_violations(_load_schema(), _load_json(plugin_root() / "config" / "defaults.json"), "") == [], (
                 "the shipped defaults.json must itself be clean against the schema it ships alongside"
             )
+
+            # A tracker naming no adapter must be refused by the enumerated names, not by testing a
+            # path built from the value: "." and ".." are existing directories, so the path form
+            # reported a clean config and then skipped every adapter-specific required/secret_env
+            # check, and a traversal loaded a different adapter's map than the string names.
+            traversal = f"../tracker/{_known_trackers()[0]}"  # reaches a real adapter's map sideways
+            for bogus in (".", "..", traversal):
+                write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"tracker": bogus})
+                assert any(repr(bogus) in e and "has no adapter" in e for e in validate()), (
+                    f"tracker {bogus!r} names no adapter and must be refused, not validated clean"
+                )
+            for known in _known_trackers():
+                write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"tracker": known})
+                assert not any("has no adapter" in e for e in validate()), f"{known} is a shipped adapter"
 
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,
                         {"columns": {"ready": "Ready"}, "ci": {"poll_timeout": 90}})

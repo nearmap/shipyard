@@ -293,9 +293,10 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
 
     flat = _flatten(values)
     tracker = flat.get("tracker")
-    if tracker and not (plugin_root() / "skills" / "tracker" / str(tracker)).is_dir():
+    if tracker and str(tracker) not in _known_trackers():
         errors.append(
-            f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/"
+            f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/. "
+            f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
         )
     for path_key in (*REQUIRED_PATHS, *adapter_map().get("required", [])):
         if flat.get(path_key) in (None, ""):
@@ -309,6 +310,21 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
             )
     errors.extend(_validate_models(values, provenance))
     return errors
+
+
+def _known_trackers() -> list[str]:
+    """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
+
+    Mirrors `scripts/sy_config.py::_known_trackers`. A configured `tracker` is checked against these
+    enumerated names rather than by asking whether `skills/tracker/<value>/` exists: `".."` and `"."`
+    both name existing directories, so the path-existence form reported a clean config and then found no
+    `config-map.json` for them, silently skipping every `required` and `secret_env` check this validator
+    exists to enforce, while `"../tracker/<name>"` traversed to a real adapter's map under a name no
+    adapter answers to. `sy_tools/tracker/__init__.py` refuses all three at tool-call time, which is the
+    point: `validate_config` is what is supposed to catch them before a tool call ever runs.
+    """
+    tracker_dir = plugin_root() / "skills" / "tracker"
+    return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []
 
 
 def adapter_map() -> dict:

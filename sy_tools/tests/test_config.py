@@ -397,6 +397,91 @@ def test_migrate_merges_into_an_existing_out_file_rather_than_truncating_it(tmp_
     assert "columns.done" in json.loads(probe.stdout)["preserved"], probe.stdout
 
 
+def test_migrate_leaves_an_existing_out_file_intact_when_the_write_fails(tmp_path):
+    """`--out` is pointed at the repo's own `.shipyard/config.json`, so a half-written merge destroys it.
+
+    `write_text` truncates the destination before it writes a byte, so a write that fails partway — a full
+    disk, a quota, the file-size limit this probe imposes — left that file cut off mid-value and
+    unparseable, every later read of it a refusal, while the operator got a raw `OSError` traceback saying
+    nothing about the destination now being broken. Written through a sibling temporary file and one
+    `os.replace` instead: the destination either carries the whole merge or is byte-identical to before.
+    """
+    tracker, _ = _a_tracker_the_shipped_defaults_do_not_select()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".shipyard").mkdir()
+    out = tmp_path / ".shipyard" / "config.json"
+    out.write_text(json.dumps({"tracker": tracker, "columns": FIXTURE_COLUMNS}, indent=2) + "\n", encoding="utf-8")
+    before = out.read_bytes()
+    settings = {"env": {_legacy_env_name("ci.poll_timeout"): "45"}}
+    (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+
+    probe = _size_limited_migrate_probe(tmp_path, out, limit=64)
+    assert probe.returncode != 0, f"a write that could not complete must refuse: {probe.stdout!r}"
+    assert "Traceback" not in probe.stderr, f"raw traceback from the CLI: {probe.stderr!r}"
+    assert "could not be written" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
+    assert probe.stdout == "", f"a refusal must not also report a file it wrote: {probe.stdout!r}"
+    assert out.read_bytes() == before, "the destination was modified by a migration that failed"
+    json.loads(out.read_text(encoding="utf-8"))  # raises if the destination was left truncated
+    assert not list(out.parent.glob("*.tmp")), "a failed write must not leave its temporary file behind"
+
+
+def _size_limited_migrate_probe(cwd: Path, out: Path, *, limit: int) -> subprocess.CompletedProcess:
+    """`sy_config.py migrate --out` in a child process whose writes fail past `limit` bytes.
+
+    The limit is imposed after the import, so it constrains the migration's own write rather than
+    anything on the way in, and `SIGXFSZ` is ignored so exceeding it arrives as the `OSError` a full disk
+    or a quota would raise instead of killing the child on the signal Linux delivers alongside it.
+    """
+    probe = (
+        "import resource, signal, sy_config\n"
+        "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+        f"resource.setrlimit(resource.RLIMIT_FSIZE, ({limit}, {limit}))\n"
+        f"raise SystemExit(sy_config.main(['migrate', '--settings', 'settings.json', '--out', {str(out)!r}]))\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", probe], cwd=cwd, capture_output=True, text=True, check=False,
+        env={
+            **os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
+            "CLAUDE_PROJECT_DIR": str(cwd), "HOME": str(cwd / "home"),
+        },
+    )
+
+
+def test_both_validators_refuse_a_tracker_that_only_resolves_as_a_path(fixture_repo):
+    """`tracker` must be checked against the enumerated adapter names, not by joining it onto a path.
+
+    `"."` and `".."` name existing directories — `skills/tracker/` itself and its parent — so the
+    `.is_dir()` form reported a clean configuration and then found no `config-map.json` for either,
+    silently skipping every adapter-declared `required` key and `secret_env` variable, which is exactly
+    the class of fault config validation exists to catch. A traversal like `../tracker/<adapter>` went
+    further and loaded a real adapter's map under a name no adapter answers to. `sy_tools/tracker`
+    refuses all three at tool-call time, so nothing is broken end to end — but catching them *before*
+    runtime is the whole purpose of this check, and the guard is duplicated across both deployments, so
+    both are asked rather than one trusted to stand in for the other.
+    """
+    adapter, _ = _a_tracker_the_shipped_defaults_do_not_select()
+    layer = fixture_repo / ".shipyard" / "config.json"
+    try:
+        for bogus in (".", "..", f"../tracker/{adapter}"):
+            layer.write_text(json.dumps({**FIXTURE_LAYER, "tracker": bogus}), encoding="utf-8")
+            config.reload()
+            assert any("has no adapter" in e for e in config.validate()), (
+                f"the server validator passed tracker {bogus!r} clean"
+            )
+            proc = subprocess.run(
+                [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "validate"],
+                cwd=fixture_repo, capture_output=True, text=True, check=False, env={**os.environ},
+            )
+            assert proc.returncode != 0, f"the CLI validator passed tracker {bogus!r} clean: {proc.stdout!r}"
+            assert "has no adapter" in proc.stderr, proc.stderr
+        layer.write_text(json.dumps({**FIXTURE_LAYER, "tracker": adapter}), encoding="utf-8")
+        config.reload()
+        assert not any("has no adapter" in e for e in config.validate()), "a shipped adapter must pass"
+    finally:
+        layer.write_text(json.dumps(FIXTURE_LAYER), encoding="utf-8")
+        config.reload()
+
+
 def _a_tracker_the_shipped_defaults_do_not_select() -> tuple[str, dict[str, str]]:
     """A shipped adapter declaring legacy names that is *not* the tracker `defaults.json` selects.
 

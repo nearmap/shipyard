@@ -711,6 +711,12 @@ class GithubAdapter:
         the same reason the download does: without `--filename`, `gh gist view --raw` prepends the gist's
         description, so the comparison could never match and a replacement that had landed was reported as
         unconfirmed. The comparison ignores surrounding whitespace only, since `_gh` trims its output.
+
+        An issue carrying no artifact of that name is a first upload, not an error: the verb's contract is
+        replace-by-filename with zero existing explicitly fine, and routing that through the resolver's
+        exactly-one rule made this adapter refuse every first `attachment-update` where the other adapter
+        performs one. So it does what a fresh attach does — the same gist, privacy re-read and linking
+        comment — and reports `replaced: 0`, which is how a caller tells a supersede from an upload.
         """
         issue = _checked_ref(issue)
         if not path.is_file():
@@ -722,7 +728,18 @@ class GithubAdapter:
                 f"{path.name} is not UTF-8 text, and a gist holds text: this tracker has no binary "
                 "attachment, so there is nothing to replace it with. Attach the artifact as text."
             ) from None
-        gist_id, filename, gist_url = _resolve_gist(issue, path.name)
+        found = _find_gist(issue, path.name)
+        if found is None:
+            fresh = self._sync_attach_artifact(issue, path)
+            return {
+                "issue": issue,
+                "filename": path.name,
+                "id": _gist_id(fresh["gist_url"]),
+                "gist_url": fresh["gist_url"],
+                "replaced": 0,
+                "comment_url": fresh["comment_url"],
+            }
+        gist_id, filename, gist_url = found
         _gh(["gist", "edit", gist_id, "--filename", filename, str(path)])
         if _gh(["gist", "view", gist_id, "--raw", "--filename", filename]).strip() != intended.strip():
             raise TrackerError(
@@ -835,20 +852,17 @@ def _gist_id(gist_url: str) -> str:
     return gist_url.rstrip("/").rsplit("/", 1)[-1]
 
 
-def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
-    """The one artifact gist `filename_or_id` names on `issue`, as `(gist_id, filename, gist_url)`.
+def _artifact_gists(issue: str, filename_or_id: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """`(the artifacts on `issue` that `filename_or_id` selects, every artifact its comments record)`.
 
     The issue's own comments are the index: `attach-artifact` records the artifact's filename and the gist
     URL in one, and nothing else on this tracker ties the two together. So the comments are read and
     matched, by gist id first and then by exact filename.
 
-    Exactly one match, or a failure listing every artifact the comments record — the same rule the other
-    adapter applies to attachments sharing a filename, and for the same reason: attaching one transcript
-    twice leaves two gists under one name, and picking either would download or irrevocably delete an
-    arbitrary one of them. Two comments naming the same filename *and* the same gist are one artifact
-    recorded twice, so they collapse rather than reading as an ambiguity a caller cannot resolve.
-
-    The listing goes through `_safe`: it is built from comment bodies, which carry whatever a caller wrote.
+    Both lists come back from the one read, because how many matched decides the outcome and everything
+    recorded is what a failure has to list. Each entry is `(filename, gist_id, gist_url)`. Two comments
+    naming the same filename *and* the same gist are one artifact recorded twice, so they collapse rather
+    than reading as an ambiguity a caller cannot resolve.
     """
     links = list(
         dict.fromkeys(
@@ -859,14 +873,56 @@ def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
     )
     by_id = [link for link in links if link[1] == filename_or_id]
     matches = by_id if len(by_id) == 1 else [link for link in links if link[0] == filename_or_id]
-    if len(matches) == 1:
-        filename, gist_id, gist_url = matches[0]
-        return gist_id, filename, gist_url
+    return matches, links
+
+
+def _not_one_artifact(
+    issue: str,
+    filename_or_id: str,
+    matches: list[tuple[str, str, str]],
+    links: list[tuple[str, str, str]],
+) -> TrackerError:
+    """The refusal for a name that selects other than one artifact, listing what the comments do record.
+
+    The listing goes through `_safe`: it is built from comment bodies, which carry whatever a caller wrote.
+    """
     listing = ", ".join(f"{filename} -> {gist_id}" for filename, gist_id, _ in (matches or links))
-    raise TrackerError(
+    return TrackerError(
         f"{len(matches)} artifacts on {issue} match {filename_or_id!r}; expected exactly one, so pass the gist "
         f"id to name the one you mean. The artifact comments on {issue} record: {_safe(listing) or 'none'}"
     )
+
+
+def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
+    """The one artifact gist `filename_or_id` names on `issue`, as `(gist_id, filename, gist_url)`.
+
+    Exactly one match, or a failure — the same rule the other adapter applies to attachments sharing a
+    filename, and for the same reason: attaching one transcript twice leaves two gists under one name,
+    and picking either would download or irrevocably delete an arbitrary one of them. Zero is a failure
+    too, for the verbs that have nothing to act on without a match; `_find_gist` is the one for the verb
+    where zero is a legitimate answer.
+    """
+    matches, links = _artifact_gists(issue, filename_or_id)
+    if len(matches) != 1:
+        raise _not_one_artifact(issue, filename_or_id, matches, links)
+    filename, gist_id, gist_url = matches[0]
+    return gist_id, filename, gist_url
+
+
+def _find_gist(issue: str, filename_or_id: str) -> tuple[str, str, str] | None:
+    """`_resolve_gist`, returning None instead of raising when the issue records no such artifact.
+
+    `attachment-update` is replace-by-filename with zero existing explicitly fine — a plain first upload —
+    so a no-match there is a decision for the caller, not a failure. More than one still raises: which of
+    two namesakes to overwrite is exactly the question nothing here can answer.
+    """
+    matches, links = _artifact_gists(issue, filename_or_id)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise _not_one_artifact(issue, filename_or_id, matches, links)
+    filename, gist_id, gist_url = matches[0]
+    return gist_id, filename, gist_url
 
 
 def _confirm_gist_gone(gist_id: str) -> None:
@@ -1393,14 +1449,23 @@ class _GhFailure(TrackerError):
 
 
 def _gh(args: list[str]) -> str:
-    """Run `gh` and return its trimmed stdout. Writes nothing to this process's stdout.
+    """Run `gh` in the consuming repository and return its trimmed stdout. Writes nothing to stdout.
+
+    The working directory is the repository the configuration resolved against, never this process's
+    own. `_repo_args()` is empty whenever `tracker_config.repo` is unset — a documented-optional
+    field — and an unqualified `gh` call then resolves its target repository from wherever it runs.
+    That is not where the server runs: a `pixi run <declared-task>` launch puts the process in the
+    *plugin's* checkout, which has an `origin` of its own, so an unqualified write would land in
+    Shipyard's repository rather than the consumer's and report success for it. Pinning `cwd` to the
+    resolved root makes the two agree by construction, config-configured repo or not.
 
     The timeout bounds a `gh` that never returns — a network stall, or a credential helper
     prompting on a stdin no one is answering — because this process has other calls to serve.
     """
     try:
         proc = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS
+            ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS,
+            cwd=config.resolved_root(),
         )
     except FileNotFoundError:
         raise TrackerError("gh is not installed or not on PATH; install the GitHub CLI.") from None

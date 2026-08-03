@@ -249,8 +249,8 @@ async def post_comment(
     log is always its own comment, never appended to prose, and honouring that is yours to do.
     `link-pr`'s durable half is this call carrying the PR URL.
 
-    A body carrying a `shipyard.ship_metrics.v1` block is validated against that schema before
-    anything is posted; every other body passes through unchanged.
+    A body that names `shipyard.ship_metrics.v1` must carry a fenced JSON block that validates
+    against that schema, or nothing is posted; every other body passes through unchanged.
     """
     _required(issue=issue)
     _validate_machine_log(body)
@@ -269,14 +269,17 @@ whether a block is a machine log is the `schema` key inside it, not the fence it
 def _validate_machine_log(body: str) -> None:
     """Reject a malformed `shipyard.ship_metrics.v1` block before the comment is posted.
 
-    The trigger is the parsed block's own `schema` key, not the `# Claude Code ship metrics` heading
-    above it: the heading is prose a caller can vary, while the schema id is the thing every later
-    reader keys off. A block that is not JSON, or whose JSON is not an object, or whose `schema` says
-    something else, is left entirely alone — this tool posts prose comments too, and a comment
-    quoting a code sample must not have to satisfy a metrics schema.
+    Naming the schema id anywhere in the body is what arms this check, and a body that names it must
+    then carry exactly one fenced block that validates against it. Everything else — prose, a code
+    sample, another machine log's schema id — never mentions this id and passes through untouched.
 
-    A `ToolError` rather than a silent pass because the incident this closes off is a metrics comment
-    that landed with a field name nobody noticed was wrong and was read as authoritative afterwards.
+    Arming on the id rather than only on a *parsed* block is deliberate, and is what closes the
+    bypasses this had: a trailing comma inside the fence, a CRLF body whose closing fence the pattern
+    cannot see, a heading with the block pasted as prose, all reached the tracker unvalidated because
+    each one failed to produce a block to validate and a missing block was read as "nothing to check".
+    The cost is that a prose comment quoting the schema id must now carry a valid block or be reworded;
+    the incident this closes off is a metrics comment that landed with a field name nobody noticed was
+    wrong and was read as authoritative afterwards, and an unparseable one is that same incident.
     """
     if SCHEMA_ID not in body:
         return
@@ -296,6 +299,15 @@ def _validate_machine_log(body: str) -> None:
                 + "; ".join(f"{'.'.join(str(p) for p in e['loc']) or '<root>'}: {e['msg']}" for e in exc.errors())
                 + ". The field definitions are in skills/ship/references/handoff-accounting.md."
             ) from None
+        return
+    raise ToolError(
+        f"this comment names {SCHEMA_ID} but carries no fenced block that parses as one, so it was not "
+        "posted. A machine log is a fenced JSON object whose `schema` key is that id: check the JSON "
+        "parses (a trailing comma is the usual culprit), that the closing fence is on its own line with "
+        "Unix line endings, and that the block is fenced at all. If the comment is prose that merely "
+        "mentions the schema, say `the ship metrics log` instead — naming the id arms this check. The "
+        "field definitions are in skills/ship/references/handoff-accounting.md."
+    )
 
 
 @mcp.tool(name="preflight")

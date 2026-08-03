@@ -95,8 +95,10 @@ type — parent links, board membership — and converting back does not undo th
 
 `attachment-update` deletes every attachment of the same filename before uploading, and
 `attachment-delete` removes an artifact from the issue's durable record. Neither is undoable; confirm
-the target first. Both resolve by filename under an exactly-one-match rule, taking the tracker-native
-id instead to disambiguate duplicates — an ambiguous match fails rather than picking one.
+the target first. Both resolve by filename, taking the tracker-native id instead to disambiguate
+duplicates — an ambiguous match fails rather than picking one. Zero matches is where the two part:
+`attachment-delete` has nothing to remove and fails, while `attachment-update` is a plain first
+upload that reports having replaced nothing.
 
 ### Machine logs are standalone (`post-log`)
 

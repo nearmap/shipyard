@@ -470,6 +470,15 @@ async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
         ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
         ("a corrected gate verdict with no reason", _metrics_comment(gate_false_pass=True)),
         ("a string where a count belongs", _metrics_comment(review_fix_rounds="two")),
+        ("json the fence holds but nothing parses", _metrics_comment().replace('"PROJ-1"\n', '"PROJ-1",\n')),
+        ("no fence at all, because the body is CRLF", _metrics_comment().replace("\n", "\r\n")),
+        ("the block pasted as prose with no fence", _metrics_comment().replace("```json\n", "").replace("\n```", "")),
+        (
+            "two fenced blocks and neither is the log",
+            "# Claude Code ship metrics\n\n```bash\nsy_config.py get tracker\n```\n\n"
+            + '```json\n{"schema": "shipyard.claude_usage.v1"}\n```\n'
+            + f"The {SCHEMA_ID} block was meant to be here.\n",
+        ),
     ],
 )
 async def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_posted(monkeypatch, case, body):
@@ -492,12 +501,17 @@ async def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_poste
     [
         ("plain prose", "TL;DR: the gate passed."),
         ("a different machine log", "# Claude Code usage\n\n```json\n{\"schema\": \"shipyard.claude_usage.v1\"}\n```"),
-        ("the schema id mentioned in prose only", f"The metrics comment uses {SCHEMA_ID} and nothing else."),
+        ("prose about metrics that names no schema", "TL;DR: the ship metrics log is on the task."),
         ("a fenced block that is not JSON", "```bash\nsy_config.py get tracker\n```"),
+        ("a valid log beside an unrelated fenced block", _metrics_comment() + "\n```bash\ngit log -1\n```\n"),
     ],
 )
 async def test_a_body_that_is_not_a_ship_metrics_log_passes_through_unvalidated(monkeypatch, case, body):
-    """Only a block whose own `schema` key claims this schema is this validation's business."""
+    """A body that never names this schema is not this validation's business, whatever else it holds.
+
+    The boundary moved with the bypass fix: naming the schema id now demands a block that validates,
+    so what proves the check stays narrow is a body that talks about metrics without claiming the id.
+    """
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:

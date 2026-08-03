@@ -68,16 +68,36 @@ def repo_root() -> Path:
     the manifest's own directory rather than inheriting the caller's. Falling back to `git
     rev-parse --show-toplevel` from cwd keeps every non-Claude-Code invocation working exactly as
     before (manual `pixi run sy-server`, `docs/smoke_mcp.py`, the pytest suite).
+
+    Both paths go through the same `git rev-parse`, so a pointer at a subdirectory resolves to the
+    checkout root exactly as cwd does, and a pointer that names no checkout is a `ConfigError`
+    rather than a silent fall-through: every layer above the shipped defaults lives under
+    `<root>/.shipyard/`, so an unusable root resolves to the shipped defaults with no tracker, no
+    column names and nothing said about why.
     """
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if project_dir:
-        return Path(project_dir)
+        root = _git_toplevel(Path(project_dir))
+        if root is None:
+            raise ConfigError(
+                f"CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a git checkout, "
+                "so no repository configuration can be resolved from it. Point it at the consuming "
+                "repository, or unset it to resolve from the working directory."
+            )
+        return root
+    return _git_toplevel(Path.cwd()) or Path.cwd()
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """The resolved root of the git checkout containing `start`, or None when there is not one."""
+    if not start.is_dir():
+        return None
     proc = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
+        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
     )
     out = proc.stdout.strip()
-    return Path(out) if proc.returncode == 0 and out else Path.cwd()
+    return Path(out).resolve() if proc.returncode == 0 and out else None
 
 
 def layers(root: Path) -> list[tuple[str, Path]]:
@@ -212,7 +232,7 @@ def validate() -> list[str]:
     except ConfigError as exc:
         return [str(exc)]
 
-    for label, path in layers(_state_root()):
+    for label, path in layers(resolved_root()):
         if path.is_file():
             errors.extend(f"{label} layer {path}: {message}" for message in _layer_violations(path))
 
@@ -253,8 +273,14 @@ def extra_secret_words() -> frozenset[str]:
     return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
 
 
-def _state_root() -> Path:
-    """The repo root the hot state resolved against, so `validate` reports the same layer paths."""
+def resolved_root() -> Path:
+    """The consuming repository the hot configuration resolved against.
+
+    `repo_root()` re-derives; this reports what the live values were actually resolved from, so
+    `validate` names the same layer paths it read and a caller that must act *inside* the consumer's
+    checkout — a subprocess whose own working directory would otherwise decide which repository it
+    talks to — cannot pick a different one than the configuration did.
+    """
     resolve()
     assert _STATE is not None
     return _STATE.root

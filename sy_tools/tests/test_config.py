@@ -41,6 +41,30 @@ def _cli(root: Path, *args: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def _agreed_repo_root() -> Path | None:
+    """The repo root both resolvers derive from the current environment, or None if both refuse.
+
+    Asked of the two together because the failure this guards is a *disagreement*: the CLI runs in the
+    same cwd and the same environment as this process, so the only thing that can separate them is
+    their own resolution logic. One resolving while the other refuses is a disagreement too, and fails.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", "import sy_config; print(sy_config.repo_root())"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts")},
+    )
+    if proc.returncode != 0:
+        with pytest.raises(config.ConfigError, match="CLAUDE_PROJECT_DIR"):
+            config.repo_root()
+        assert "CLAUDE_PROJECT_DIR" in proc.stderr, proc.stderr
+        return None
+    resolved = config.repo_root()
+    assert resolved == Path(proc.stdout.strip()), (
+        f"the resolvers disagree: sy_tools.config says {resolved}, sy_config.py says {proc.stdout.strip()!r}"
+    )
+    return resolved
+
+
 @pytest.fixture
 def fixture_repo(tmp_path, monkeypatch):
     """A throwaway git checkout carrying one committed config layer, with both resolvers pointed at it."""
@@ -60,24 +84,61 @@ def test_repo_root_prefers_claude_project_dir_over_cwd(fixture_repo, tmp_path, m
     """A `pixi run <declared-task>` dispatch resets cwd to the manifest's own directory (a real,
     measured pixi behaviour — see `sy_tools/server.py`'s module docstring), so `repo_root()` must
     not trust cwd when Claude Code's own pointer is available; it should win even when cwd disagrees.
+
+    The pointer resolves through git exactly as cwd does, so a pointer at a *subdirectory* of the
+    checkout still lands on the checkout root — which is where the only `.shipyard/` layers are.
     """
     other = tmp_path.parent / "not-the-cwd"
-    other.mkdir()
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(other))
-    assert config.repo_root() == other
+    (other / "deep" / "nested").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=other, check=True)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(other / "deep" / "nested"))
+
+    assert _agreed_repo_root() == other.resolve(), "a subdirectory pointer must resolve to the checkout root"
     assert fixture_repo != other, "the fixture must actually be a different directory than cwd"
+
+
+def test_a_claude_project_dir_that_names_no_checkout_is_refused(fixture_repo, tmp_path, monkeypatch):
+    """Silently falling back leaves every layer above the shipped defaults unread and says nothing.
+
+    That is the shape of the failure: `tracker` reports `shipped-default`, `columns.ready` is None,
+    and no error names the pointer that caused it — so the pointer is validated instead.
+    """
+    for bogus in (tmp_path / "definitely-not-a-repo", tmp_path / "not-a-repo" / "either"):
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(bogus))
+        assert _agreed_repo_root() is None, f"{bogus} resolved to something rather than being refused"
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR")  # the fixture teardown re-resolves before monkeypatch unwinds
 
 
 def test_repo_root_falls_back_to_git_toplevel_without_the_env_var(fixture_repo):
     """Every invocation Claude Code doesn't launch (manual `pixi run sy-server`, `docs/smoke_mcp.py`,
     pytest itself) has no `CLAUDE_PROJECT_DIR` to read, so `repo_root()` must keep resolving from cwd.
     """
-    assert config.repo_root() == fixture_repo.resolve()
+    assert _agreed_repo_root() == fixture_repo.resolve()
 
 
 def test_resolution_matches_the_cli_resolver(fixture_repo):
     expected = _cli(fixture_repo, "show", "--json")
     values, provenance = config.resolve()
+    assert values == expected["values"], "resolved values must match sy_config.py show --json exactly"
+    assert provenance == expected["provenance"], "each key must be attributed to the same layer"
+
+
+def test_resolution_matches_the_cli_resolver_through_the_project_pointer(fixture_repo, tmp_path, monkeypatch):
+    """Parity with the env pointer set, from a cwd that is a *different* checkout.
+
+    The deleted-var case cannot reveal a resolver that never learned the pointer: with cwd already
+    inside the fixture both agree by accident. Here cwd is the plugin's own checkout and only the
+    pointer names the fixture, so a resolver ignoring it reads the wrong repo's layers — which is
+    exactly what a worktree-local `.shipyard/config.local.json` invisible to one side looks like.
+    """
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture_repo))
+    monkeypatch.chdir(PLUGIN_ROOT)
+    config.reload()
+
+    assert _agreed_repo_root() == fixture_repo.resolve()
+    expected = _cli(PLUGIN_ROOT, "show", "--json")
+    values, provenance = config.resolve()
+    assert values["columns"]["ready"] == FIXTURE_COLUMNS["ready"], "the pointer's repo layer must be read"
     assert values == expected["values"], "resolved values must match sy_config.py show --json exactly"
     assert provenance == expected["provenance"], "each key must be attributed to the same layer"
 

@@ -334,15 +334,44 @@ def plugin_root() -> Path:
 
 
 def repo_root() -> Path:
-    """The consuming repository's root, else the working directory when not in a checkout."""
+    """The consuming repository's root: the session's own pointer when set, else derived from cwd.
+
+    `CLAUDE_PROJECT_DIR` wins for the same reason the MCP server's resolver honours it — Claude Code
+    sets it for every hook and stdio server it launches, and it survives a dispatch that resets the
+    working directory. Both resolvers must agree on it or the same key resolves two ways: a
+    worktree-local `.shipyard/config.local.json` would be read by one and invisible to the other.
+
+    Both paths go through the same `git rev-parse`, so a pointer at a subdirectory resolves to the
+    checkout root, and a pointer naming no checkout is refused rather than silently resolving the
+    shipped defaults with no layer above them.
+    """
     global _REPO_ROOT
     if _REPO_ROOT is None:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-        )
-        _REPO_ROOT = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else Path.cwd()
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+        if project_dir:
+            root = _git_toplevel(Path(project_dir))
+            if root is None:
+                raise SystemExit(
+                    f"sy_config: CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a "
+                    "git checkout, so no repository configuration can be resolved from it. Point it at the "
+                    "consuming repository, or unset it to resolve from the working directory."
+                )
+            _REPO_ROOT = root
+        else:
+            _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
     return _REPO_ROOT
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """The resolved root of the git checkout containing `start`, or None when there is not one."""
+    if not start.is_dir():
+        return None
+    proc = subprocess.run(
+        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+    )
+    out = proc.stdout.strip()
+    return Path(out).resolve() if proc.returncode == 0 and out else None
 
 
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:

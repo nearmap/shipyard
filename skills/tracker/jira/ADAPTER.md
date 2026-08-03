@@ -75,7 +75,7 @@ Jira supports native work-item attachments. Render the artifact, then hand the p
 
 `attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
 
-The lifecycle verbs — `attachment-download`, `attachment-update`, `attachment-delete` — resolve the target by filename under an exactly-one-match rule, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous or absent match fails rather than guessing.
+The lifecycle verbs — `attachment-download`, `attachment-update`, `attachment-delete` — resolve the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match fails rather than guessing, and so does an absent one for `attachment-download` and `attachment-delete`. An absent one for `attachment-update` is a first upload instead, reported as `replaced: 0`.
 
 `attachment-delete` is destructive and `attachment-update` deletes every same-named attachment before it uploads — confirm the target first; there is no undo.
 

@@ -2264,6 +2264,74 @@ async def test_attachment_update_replaces_the_gist_file_in_place_and_reads_it_ba
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "comments",
+    [[], [_artifact_comment(filename="some-other-artifact.txt")]],
+    ids=["no-artifacts-at-all", "an-artifact-under-a-different-name"],
+)
+async def test_a_first_attachment_update_uploads_instead_of_refusing(monkeypatch, board, tmp_path, comments):
+    """Zero existing is a plain upload by contract, so an issue with no namesake must not be a failure.
+
+    Routing this through the exactly-one resolver made every first `attachment-update` fail on this
+    tracker while the other performed one — a contract the seam states and only one side kept.
+    """
+    path = _artifact(tmp_path)
+    fake = _install(monkeypatch, _json({"comments": comments}), *_happy_path())
+
+    uploaded = await adapter.GithubAdapter().attachment_update("7", path)
+
+    assert [call[1:3] for call in fake.calls] == [
+        ["issue", "view"], ["gist", "create"], ["api", f"gists/{GIST_ID}"], ["issue", "comment"],
+    ], f"a first update must attach the artifact the way attach-artifact does: {fake.calls}"
+    assert uploaded == {
+        "issue": "7",
+        "filename": ARTIFACT_NAME,
+        "id": GIST_ID,
+        "gist_url": GIST_URL,
+        "replaced": 0,
+        "comment_url": COMMENT_URL,
+    }, f"a first update must report replacing nothing, not report a supersede: {uploaded}"
+
+
+@pytest.mark.anyio
+async def test_an_update_naming_two_namesakes_still_refuses_rather_than_uploading_a_third(
+    monkeypatch, board, tmp_path
+):
+    """Only *zero* matches became an upload: which of two to overwrite is still unanswerable."""
+    fake = _install(
+        monkeypatch,
+        _json({"comments": [_artifact_comment(), _artifact_comment(gist_url=OTHER_GIST_URL, comment_id="IC_2")]}),
+    )
+
+    with pytest.raises(TrackerError, match="2 artifacts"):
+        await adapter.GithubAdapter().attachment_update("7", _artifact(tmp_path))
+
+    assert len(fake.calls) == 1, f"an ambiguous name must not lead to a gist being written: {fake.calls}"
+
+
+@pytest.mark.anyio
+async def test_every_gh_call_runs_in_the_repository_the_configuration_resolved_against(
+    monkeypatch, board, tmp_path
+):
+    """`--repo` is optional, and an unqualified `gh` resolves its target repo from where it runs.
+
+    Where it runs is not the consumer's checkout: a `pixi run <declared-task>` launch puts the server in
+    the plugin's own checkout, which has an `origin` of its own, so a write with no `--repo` would land
+    in the wrong repository and report success. Pinned to the resolved root instead, so the two agree.
+    """
+    elsewhere = tmp_path / "the-consumer-checkout"
+    elsewhere.mkdir()
+    monkeypatch.setattr(adapter.config, "resolved_root", lambda: elsewhere)
+    fake = _install(monkeypatch, *_happy_path())
+
+    await adapter.GithubAdapter().attach_artifact("1", _artifact(tmp_path))
+
+    assert [call["cwd"] for call in fake.kwargs] == [elsewhere] * len(fake.calls), (
+        f"a gh call ran somewhere other than the consumer's checkout: {fake.kwargs}"
+    )
+
+
+@pytest.mark.anyio
 async def test_a_gist_still_holding_the_previous_artifact_is_not_a_completed_replacement(
     monkeypatch, board, tmp_path
 ):

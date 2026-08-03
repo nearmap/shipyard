@@ -11,10 +11,13 @@ tools reach is the server's business, resolved from configuration — this file 
 adapter, and would smoke a tracker added after it was written. `validate_config` runs first and
 reports the tracker it resolved, so the transcript still says what was exercised.
 
-The working directory is inherited deliberately: the server resolves configuration relative to where
-it was launched, so running this from a consuming project smokes that project's board. The manifest
-path is absolute for the opposite reason — `pixi` finds its manifest by walking up from the working
-directory, which is not where this plugin lives.
+The server resolves configuration from `CLAUDE_PROJECT_DIR` when it is set, and otherwise from a `git
+rev-parse` of its own working directory. Nothing sets that pointer here — this script is not launched
+by Claude Code — so the cwd-derived half is the path it relies on: run it from the consuming project
+and that project's board is what gets smoked. The manifest path is absolute for the opposite reason —
+`pixi` finds its manifest by walking up from the working directory, which is not where this plugin
+lives. The environment is forwarded whole, because the tracker credential arrives in it and the SDK's
+stdio client otherwise passes on only a fixed handful of variables.
 
 Verbs exercised: preflight, create-issue, create-child, get-issue, update-issue, find-issues,
   set-status, assign, link-parent, add-dependency, add-label, post-comment, post-log, link-pr,
@@ -35,6 +38,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import time
 from typing import TYPE_CHECKING, Any
@@ -79,13 +83,43 @@ VERB_TOOLS: dict[str, str] = {
 
 REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
 
+UNEXERCISED_TOOLS = frozenset({"reload_config"})
+"""Tools the server registers that this scenario deliberately does not call.
+
+Named rather than implied, so the self-test can compare the two sets exactly: a tool added to the
+server and smoked by nobody has to be an explicit decision, not an omission that passes."""
+
+SERVER_SOURCE = PLUGIN_ROOT / "sy_tools" / "server.py"
+TOOL_REGISTRATION = re.compile(r"""@mcp\.tool\(name=["']([^"']+)["']\)""")
+
 
 def _server_params() -> dict[str, Any]:
-    """How to launch the real server: the way `.mcp.json` launches it, with an absolute manifest."""
+    """How to launch the real server: the way `.mcp.json` launches it, with an absolute manifest.
+
+    The environment is passed explicitly and in full. `stdio_client` does not inherit the caller's
+    when `env` is omitted — it forwards a fixed, credential-free allowlist (`DEFAULT_INHERITED_ENV_VARS`:
+    HOME, LOGNAME, PATH, SHELL, TERM, USER) — so the tracker credential the caller's shell already holds
+    would never reach the spawned server, and a live run would fail authentication rather than smoke
+    anything. Which variable that credential is named in is the adapter's business, not this file's,
+    which is why the whole environment goes rather than a list this script would have to keep current.
+    """
     return {
         "command": "pixi",
         "args": ["run", "--manifest-path", str(PLUGIN_ROOT / "pyproject.toml"), "sy-server"],
+        "env": dict(os.environ),
     }
+
+
+def _registered_tools() -> frozenset[str]:
+    """Every tool name the shipped server registers, read out of its source.
+
+    Read, not imported: `scripts/validate.py` runs this self-test on a bare interpreter, where importing
+    the server would die on the SDK it is built on before a single name could be compared. Every
+    registration is a literal `@mcp.tool(name=...)` decorator, so the source is an exact index of them —
+    and comparing against it is what makes a renamed or deleted tool fail here rather than at the first
+    live run, which is what this offline check is for.
+    """
+    return frozenset(TOOL_REGISTRATION.findall(SERVER_SOURCE.read_text(encoding="utf-8")))
 
 
 def _issue_id(payload: dict[str, Any] | None) -> str:
@@ -236,9 +270,43 @@ class Smoke:
             f"what came back is not what was attached: sent {sent.strip()!r}, got {landed.strip()!r}",
         )
 
-        artifact.write_text(f"shipyard smoke transcript for {run_tag}\nrevised, still no secrets.\n", encoding="utf-8")
-        await self.call("attachment-update", {"issue": issue, "path": str(artifact)})
-        await self.call("attachment-delete", {"issue": issue, "filename_or_id": artifact.name})
+        # `kind` and `caller` mirror the attach above for the same reason: `attachment-update` defaults
+        # to the gated `transcript` kind, and a gated call returns `{"updated": false, "skipped": true}`,
+        # which is a successful tool call that replaced nothing. Un-gated and read back, or this verb is
+        # counted as exercised by a skip.
+        revised = f"shipyard smoke transcript for {run_tag}\nrevised, still no secrets.\n"
+        artifact.write_text(revised, encoding="utf-8")
+        updated = await self.call("attachment-update", {
+            "issue": issue, "path": str(artifact), "kind": "report", "caller": "smoke",
+        })
+        if updated is not None:
+            replaced = await self._read_back(issue, artifact.name, tmp / "replaced.txt")
+            self.check(
+                "attachment-update",
+                bool(updated.get("updated")) and replaced is not None and replaced.strip() == revised.strip(),
+                f"the replacement did not land: sent {revised.strip()!r}, the issue holds {replaced!r} ({updated})",
+            )
+
+        if await self.call("attachment-delete", {"issue": issue, "filename_or_id": artifact.name}) is not None:
+            self.check(
+                "attachment-delete",
+                await self._read_back(issue, artifact.name, tmp / "after-delete.txt") is None,
+                f"{artifact.name} still downloads from {issue} after the delete reported success",
+            )
+
+    async def _read_back(self, issue: str, filename: str, destination: Path) -> str | None:
+        """Download `filename` off `issue` without tallying a verb: None when the tracker refuses.
+
+        Untallied deliberately. These are `attachment-update`'s and `attachment-delete`'s own evidence,
+        and one of the two *expects* the refusal — routing it through `call` would score the missing
+        artifact that proves the delete worked as a failing `attachment-download`.
+        """
+        result = await self.client.call_tool(VERB_TOOLS["attachment-download"], {
+            "issue": issue, "filename_or_id": filename, "output_path": str(destination),
+        })
+        if result.is_error:
+            return None
+        return destination.read_text(encoding="utf-8") if destination.is_file() else ""
 
     async def tidy(self) -> None:
         """Move the issues this run created — and only those — to `done`."""
@@ -296,10 +364,19 @@ def _self_test() -> None:
     assert parser.parse_args(["run"]).command == "run"
     assert parser.parse_args(["self-test"]).command == "self-test"
 
-    args = _server_params()["args"]
+    params = _server_params()
+    args = params["args"]
     assert args[1:3] == ["--manifest-path", str(PLUGIN_ROOT / "pyproject.toml")], args
     assert Path(args[2]).is_absolute(), "the manifest must be resolved from this file, never from cwd"
+    assert params["env"] == dict(os.environ), "the server must inherit the credentials the caller holds"
 
+    registered = _registered_tools()
+    assert registered, f"no @mcp.tool registration was found in {SERVER_SOURCE}; the scan is broken"
+    assert registered == REQUIRED_TOOLS | UNEXERCISED_TOOLS, (
+        "the scenario and the server disagree about the tool surface. Only the scenario names: "
+        f"{sorted(REQUIRED_TOOLS - registered)}; only the server registers: "
+        f"{sorted(registered - REQUIRED_TOOLS - UNEXERCISED_TOOLS)}"
+    )
     assert len(REQUIRED_TOOLS) == 17, sorted(REQUIRED_TOOLS)
     assert all(tool and tool == tool.strip() for tool in REQUIRED_TOOLS), sorted(REQUIRED_TOOLS)
     assert VERB_TOOLS["create-child"] == VERB_TOOLS["create-issue"], "a child is the create-issue write"

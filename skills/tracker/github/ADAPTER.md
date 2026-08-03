@@ -79,7 +79,7 @@ GitHub issues have no CLI-scriptable file attachment, so the artifact is uploade
 
 `attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
 
-The lifecycle verbs — `attachment-download`, `attachment-update`, `attachment-delete` — act on that gist, which they locate from the link comment `attach-artifact` posted, resolving by artifact filename under an exactly-one-match rule and taking a gist id instead to disambiguate. An ambiguous or absent match fails rather than guessing. `attachment-delete` is destructive and `attachment-update` replaces before it verifies — there is no undo.
+The lifecycle verbs — `attachment-download`, `attachment-update`, `attachment-delete` — act on that gist, which they locate from the link comment `attach-artifact` posted, resolving by artifact filename and taking a gist id instead to disambiguate. An ambiguous match fails rather than guessing, and so does an absent one for `attachment-download` and `attachment-delete`. An absent one for `attachment-update` is a first upload instead: the same gist, privacy re-read and link comment `attach-artifact` writes, reported as `replaced: 0`. `attachment-delete` is destructive and `attachment-update` replaces before it verifies — there is no undo.
 
 Reference the returned gist URL from the `# Claude Code ship metrics` comment (`transcript_attachment: <gist-url>`). A skipped call means no gist exists — say so rather than inventing a URL.
 

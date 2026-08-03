@@ -270,18 +270,40 @@ def validate() -> list[str]:
     schema — are the only things still touching disk, and a layer edited into invalid JSON after that
     point raised out of the one tool whose whole job is diagnosing exactly this fault. Everything after
     resolution therefore reports its own read failure as an error too, on any call, warm or cold.
+
+    The one check that needs nothing resolved — an environment variable Claude Code lets outrank this
+    resolver — runs first and survives a resolution failure, exactly as in the CLI: a root that will
+    not resolve is no reason to hide a live problem that has nothing to do with it.
     """
-    errors: list[str] = []
+    errors: list[str] = list(_outranking_env_conflicts())
     try:
         values, provenance = resolve()
     except ConfigError as exc:
-        return [str(exc)]
+        return [str(exc), *errors]
 
     try:
         errors.extend(_post_resolution_violations(values, provenance))
     except ConfigError as exc:
         errors.append(str(exc))
     return errors
+
+
+def _outranking_env_conflicts() -> list[str]:
+    """A variable Claude Code lets outrank this resolver: an error, never an override.
+
+    Mirrors `scripts/sy_config.py::_outranking_env_conflicts`, message included, because the CLI's
+    `validate` and the `validate_config` tool are one contract read two ways — and this is now the
+    only path a session takes, so a fault reported by the CLI alone is a fault nobody sees. Unlike the
+    retired-`SY_*` half of the CLI's report (see the module docstring), this names no config key, so it
+    opens no second resolution path for one. It reads only the environment: the value is never read,
+    only its presence.
+    """
+    if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
+        return [
+            "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
+            "would silently reroute every agent off the model this config resolved. Unset it."
+        ]
+    return []
 
 
 def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> list[str]:

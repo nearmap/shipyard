@@ -489,9 +489,9 @@ def reload_config() -> dict[str, Any]:
 def validate_config() -> dict[str, Any]:
     """Report every reason the resolved configuration would be rejected.
 
-    Covers schema violations, missing required keys, an unknown tracker, a required credential
-    absent from the environment, and model-floor breaches. Side-effect-free, and never prints a
-    secret value.
+    Covers schema violations, missing required keys, an unknown tracker, a required credential absent
+    from the environment, an environment variable that outranks the resolved per-agent models, and
+    model-floor breaches. Side-effect-free, and never prints a secret value.
     """
     errors = config.validate()
     report: dict[str, Any] = {"valid": not errors, "errors": errors}

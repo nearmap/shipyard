@@ -53,6 +53,7 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
 _PRINT_CALL = re.compile(r"\b(print|console\.log|sys\.stdout\.write|process\.stdout\.write|puts|warn)\s*\(")
+_IN_PLACE_EDIT = re.compile(r"\bsed\s+-[^\n;]*i\b|\bperl\s+-[^\n;]*pi\b")
 _ADVICE = (
     'this can print a secret value into this command\'s own tool-call result, which becomes '
     'permanent transcript history. Use a presence-only check instead (`[ -n "$VAR" ]`), or for '
@@ -84,16 +85,23 @@ def emit(reason: str | None, warning: str | None) -> None:
 
 
 def decision(tool: str, args: dict) -> str | None:
-    """Return a deny reason, or None to allow."""
+    """Return a deny reason, or None to allow.
+
+    The in-place-edit exemption (`sed -i`, `perl -pi` — review_guard's concern, not this hook's) is
+    applied per segment, not to the command string as a whole. Matched against the whole string and
+    returning early, it disarmed the entire gate for any compound command that merely *contained*
+    such a token: `sed -i.bak s/a/b/ f && echo $ACLI_TOKEN` was allowed, so the cheapest way past
+    this hook was to prefix a harmless in-place edit. Every other segment is still checked.
+    """
     if tool != "Bash":
         return None
     command = str(args.get("command", ""))
-    if re.search(r"\bsed\s+-[^\n;]*i\b", command) or re.search(r"\bperl\s+-[^\n;]*pi\b", command):
-        return None  # in-place edits are review_guard's concern, not this hook's
     reason = _interpreter_reason(command)
     if reason:
         return f"secret guard: {reason} — {_ADVICE}"
     for segment in re.split(r"[;&|\n]+", command):
+        if _IN_PLACE_EDIT.search(segment):
+            continue
         reason = _segment_reason(segment.strip())
         if reason:
             return f"secret guard: {reason} — {_ADVICE}"
@@ -307,8 +315,38 @@ def _self_test() -> None:
     assert not _looks_like_secret_name("PATH")
     _EXTRA_WORDS = saved_extra_words
 
+    _test_in_place_edit_exemption_is_per_segment()
     _test_extra_words_from_config()
     _test_unresolvable_config_warns_rather_than_dropping_silently()
+
+
+def _test_in_place_edit_exemption_is_per_segment() -> None:
+    """The `sed -i`/`perl -pi` exemption may only excuse the segment the token appears in.
+
+    Matched against the whole command string it was a general bypass of this hook: prefixing any
+    denied command with a harmless in-place edit allowed the whole thing, so every anti-pattern here
+    exists to stop was one `sed -i` away from becoming permanent transcript history. Pinned with the
+    built-in word list alone, for the same reason the pass/fail lists above are.
+    """
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
+    try:
+        for command in (
+            "sed -i.bak s/a/b/ f && echo $ACLI_TOKEN",
+            "perl -pi -e x f ; echo $ACLI_TOKEN",
+            "sed -i s/x/y/ f | env",
+            "sed -i s/x/y/ f && printenv GITHUB_TOKEN",
+        ):
+            assert decision("Bash", {"command": command}) is not None, (
+                f"an in-place edit must not excuse another segment: {command!r}"
+            )
+        for command in ("sed -i.bak s/a/b/ f", "perl -pi -e s/a/b/ f", "sed -i s/x/y/ f && ls"):
+            assert decision("Bash", {"command": command}) is None, (
+                f"the exemption itself must survive for the segment it applies to: {command!r}"
+            )
+    finally:
+        _EXTRA_WORDS = saved
 
 
 def _test_extra_words_from_config() -> None:

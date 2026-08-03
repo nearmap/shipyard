@@ -126,12 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def get(path: str, *, default: str | None = None) -> object:
+def get(path: str, *, default: object | None = None) -> object:
     """One resolved value by dotted path. Refuses credential-shaped keys outright.
 
     An unknown key is an error unless `default` is given: a key an adapter documents as optional
     has no entry to resolve, and a caller that knows it is optional says so explicitly rather than
     every unknown key silently becoming empty.
+
+    A default is any JSON-shaped value, not only a string: config values are lists and objects too,
+    and `secret_guard.py` already passes `default=[]` for `redaction.extra_words`.
     """
     if _looks_like_secret(path.replace(".", "_")):
         raise SystemExit(
@@ -876,8 +879,21 @@ def _write_atomically(path: Path, text: str) -> None:
     destination is atomic on POSIX, so it either carries the whole merge or is untouched, and any
     `OSError` (including an `--out` that names a directory, which `os.replace` refuses) arrives as this
     module's own refusal. The partial temporary file is removed, so a failed run leaves nothing behind.
+
+    A destination with no filename at all — `--out .`, `--out /` — is refused before anything is
+    derived from it. It never reached the `OSError` guard: deriving the sibling temporary name from an
+    empty basename raises `ValueError`, so the one case this refusal names first (an `--out` that is a
+    directory) escaped as a raw traceback instead of the refusal itself.
     """
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    def refuse(cause: str) -> SystemExit:
+        return SystemExit(
+            f"sy_config: {path} could not be written: {cause}. Nothing was migrated — the destination is "
+            "still exactly as it was before this run, so fix the cause and run migrate again."
+        )
+
+    if not path.name:
+        raise refuse("it names a directory rather than a file, so there is no config file to write")
+    tmp = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(text, encoding="utf-8")
@@ -885,10 +901,7 @@ def _write_atomically(path: Path, text: str) -> None:
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
-        raise SystemExit(
-            f"sy_config: {path} could not be written: {exc}. Nothing was migrated — the destination is "
-            "still exactly as it was before this run, so fix the cause and run migrate again."
-        ) from None
+        raise refuse(str(exc)) from None
 
 
 def _migrating_tracker(env: dict, settings_path: Path) -> str:
@@ -1221,6 +1234,18 @@ def _self_test() -> None:
             assert summary["unmapped_and_not_migrated"] == ["SY_NOT_A_SETTING"], (
                 "a name with no config key at all is a different report from a credential left on purpose"
             )
+
+            # An `--out` naming no file must arrive as this module's own refusal. A path with an empty
+            # basename (`.`, `/`) never reached the `OSError` guard at all: deriving the sibling
+            # temporary name from it raises `ValueError`, so the very case that refusal names first —
+            # an `--out` pointed at a directory — escaped as a raw traceback.
+            for bogus in (Path("."), repo / CONFIG_DIRNAME):
+                try:
+                    _migrate(settings, bogus)
+                except SystemExit as exc:
+                    assert "could not be written" in str(exc) and "Nothing was migrated" in str(exc), str(exc)
+                else:
+                    raise AssertionError(f"migrate --out {bogus} names no file to write and must refuse")
 
             settings.write_text(json.dumps({"env": {_TRACKER_ENV: "jria"}}), encoding="utf-8")
             try:

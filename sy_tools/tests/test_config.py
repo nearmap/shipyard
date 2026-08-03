@@ -224,6 +224,35 @@ def test_validate_reports_a_missing_required_key(fixture_repo, monkeypatch):
     assert any("columns.ready is required" in e for e in config.validate())
 
 
+def test_validate_reports_an_outranking_subagent_model_exactly_as_the_cli_does(fixture_repo, monkeypatch):
+    """`CLAUDE_CODE_SUBAGENT_MODEL` outranks every per-agent model the resolver computes, silently.
+
+    The CLI validator has refused it since the model floors existed; this one omitted the check, and the
+    MCP server is now the only path a session takes — so the deployment that reported it was the one
+    nothing runs, and a floor-defeating variable validated clean. Compared against the CLI's own emitted
+    line rather than a copy of it, like every other parity assertion in this file, and the check must
+    survive a configuration that cannot be resolved at all: it reads only the environment.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "validate"],
+        cwd=fixture_repo, capture_output=True, text=True, check=False,
+        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    )
+    assert proc.returncode == 1, f"the CLI must refuse an outranking model variable: {proc.stdout!r}"
+    cli_line = next(
+        line.strip().removeprefix("- ") for line in proc.stderr.splitlines()
+        if "CLAUDE_CODE_SUBAGENT_MODEL" in line
+    )
+    assert cli_line in config.validate(), f"the MCP validator must report the CLI's line: {config.validate()}"
+    assert cli_line in server.validate_config()["errors"], "and it must reach the tool's own report"
+
+    monkeypatch.delenv("CLAUDE_CODE_SUBAGENT_MODEL")
+    assert not any("CLAUDE_CODE_SUBAGENT_MODEL" in e for e in config.validate()), (
+        "the check must read the live environment, not report unconditionally"
+    )
+
+
 def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(tmp_path):
     """`sy_config.validate()` reaches `repo_root()` through `layers()`, before it calls `resolve()`.
 

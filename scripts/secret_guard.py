@@ -53,8 +53,6 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
 _PRINT_CALL = re.compile(r"\b(print|console\.log|sys\.stdout\.write|process\.stdout\.write|puts|warn)\s*\(")
-_IN_PLACE_EDITORS = {"sed", "perl"}
-_IN_PLACE_FLAG = re.compile(r"^-[A-Za-z]*i|^--in-place")
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _ADVICE = (
     'this can print a secret value into this command\'s own tool-call result, which becomes '
@@ -89,17 +87,15 @@ def emit(reason: str | None, warning: str | None) -> None:
 def decision(tool: str, args: dict) -> str | None:
     """Return a deny reason, or None to allow.
 
-    The in-place-edit exemption (`sed -i`, `perl -pi` — review_guard's concern, not this hook's) is
-    applied per segment, not to the command string as a whole. Matched against the whole string and
-    returning early, it disarmed the entire gate for any compound command that merely *contained*
-    such a token: `sed -i.bak s/a/b/ f && echo $ACLI_TOKEN` was allowed, so the cheapest way past
-    this hook was to prefix a harmless in-place edit. Every other segment is still checked.
-
-    Within a segment the exemption keys on the segment's actually-invoked command, not on its text.
-    A text search reproduced the same fail-open one level down, because the token can appear in a
-    segment whose real command is a printing one: `echo "sed -i" $ACLI_TOKEN`, `echo $ACLI_TOKEN
-    # sed -i` and `printf "ran sed -i %s" "$ACLI_TOKEN"` were all allowed, each of them the exact
-    leak this hook exists to deny with the exempting token as a quoted argument or a comment.
+    Every segment of a compound command is checked, and no segment can excuse another. This hook
+    once carried an exemption for a segment that ran an in-place edit (`sed -i`, `perl -pi` —
+    review_guard's concern, not this hook's), which was a bypass twice over: matched against the
+    whole command string, prefixing any denied command with a harmless `sed -i` allowed the whole
+    thing, and matched against a segment's text, the token needed no command of its own to appear,
+    so `echo "sed -i" $ACLI_TOKEN` disarmed the check for the segment that was the leak. Scoped
+    finally to a segment's actually-invoked command it became unreachable — no segment can lead with
+    `sed`/`perl` and with one of the printing or dumping commands `_segment_reason` denies — so it is
+    gone rather than left wired up to fail open again the day that denied set grows.
     """
     if tool != "Bash":
         return None
@@ -108,8 +104,6 @@ def decision(tool: str, args: dict) -> str | None:
     if reason:
         return f"secret guard: {reason} — {_ADVICE}"
     for segment in re.split(r"[;&|\n]+", command):
-        if _is_in_place_edit(segment):
-            continue
         reason = _segment_reason(segment.strip())
         if reason:
             return f"secret guard: {reason} — {_ADVICE}"
@@ -134,8 +128,10 @@ def main() -> None:
 def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     """The command a segment actually invokes and its remaining tokens, or None if it invokes nothing.
 
-    Leading `FOO=bar` assignments and `WRAPPERS` (`sudo somecmd`, `timeout 5 somecmd`) are stepped
-    over so the name returned is the one that runs, and it is basenamed so `/bin/echo` reads as `echo`.
+    The walk steps over leading `FOO=bar` assignments and exactly one token per recognised `WRAPPERS`
+    name (`sudo somecmd` reads as `somecmd`), and basenames what it lands on so `/bin/echo` reads as
+    `echo`. It accounts for no wrapper's own argument arity, so a wrapper that takes an argument leaves
+    the walk on that argument rather than on the command: `timeout 5 echo $VAR` returns `("5", [...])`.
     """
     tokens = [t.strip("\"'") for t in segment.split()]
     i = 0
@@ -149,19 +145,6 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     if i >= len(tokens):
         return None
     return tokens[i].lstrip("\\").rsplit("/", 1)[-1], tokens[i + 1:]
-
-
-def _is_in_place_edit(segment: str) -> bool:
-    """Whether this segment's own invoked command is an in-place edit (`sed -i`, `perl -pi`).
-
-    Decided from the leading command rather than by searching the segment's text, so the token has to
-    be the thing being run: quoted inside an `echo`'s argument, in a trailing `#` comment or in a
-    `printf` format string it names no in-place edit and exempts nothing.
-    """
-    leading = _leading_command(segment)
-    if leading is None or leading[0] not in _IN_PLACE_EDITORS:
-        return False
-    return any(_IN_PLACE_FLAG.match(arg) for arg in leading[1])
 
 
 def _segment_reason(segment: str) -> str | None:
@@ -347,19 +330,20 @@ def _self_test() -> None:
     assert not _looks_like_secret_name("PATH")
     _EXTRA_WORDS = saved_extra_words
 
-    _test_in_place_edit_exemption_is_per_segment()
-    _test_in_place_edit_exemption_needs_to_be_the_invoked_command()
+    _test_an_in_place_edit_excuses_no_segment_and_denies_none()
     _test_extra_words_from_config()
     _test_unresolvable_config_warns_rather_than_dropping_silently()
 
 
-def _test_in_place_edit_exemption_is_per_segment() -> None:
-    """The `sed -i`/`perl -pi` exemption may only excuse the segment the token appears in.
+def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:
+    """`sed -i`/`perl -pi` is review_guard's concern: this hook neither denies one nor lets one excuse.
 
-    Matched against the whole command string it was a general bypass of this hook: prefixing any
-    denied command with a harmless in-place edit allowed the whole thing, so every anti-pattern here
-    exists to stop was one `sed -i` away from becoming permanent transcript history. Pinned with the
-    built-in word list alone, for the same reason the pass/fail lists above are.
+    Both halves used to need an exemption, and the exemption was fail-open twice — matched against the
+    whole command string, prefixing a denied command with a harmless in-place edit allowed the whole
+    thing; matched against a segment's text, a quoted argument or a `#` comment carried the token and
+    disarmed the segment that was the leak. It is now gone entirely, because a segment leading with
+    `sed`/`perl` never leads with a command `_segment_reason` denies. Pinned with the built-in word list
+    alone, for the same reason the pass/fail lists above are.
     """
     global _EXTRA_WORDS
     saved = _EXTRA_WORDS
@@ -370,43 +354,23 @@ def _test_in_place_edit_exemption_is_per_segment() -> None:
             "perl -pi -e x f ; echo $ACLI_TOKEN",
             "sed -i s/x/y/ f | env",
             "sed -i s/x/y/ f && printenv GITHUB_TOKEN",
-        ):
-            assert decision("Bash", {"command": command}) is not None, (
-                f"an in-place edit must not excuse another segment: {command!r}"
-            )
-        for command in ("sed -i.bak s/a/b/ f", "perl -pi -e s/a/b/ f", "sed -i s/x/y/ f && ls"):
-            assert decision("Bash", {"command": command}) is None, (
-                f"the exemption itself must survive for the segment it applies to: {command!r}"
-            )
-    finally:
-        _EXTRA_WORDS = saved
-
-
-def _test_in_place_edit_exemption_needs_to_be_the_invoked_command() -> None:
-    """Mentioning `sed -i` inside a segment may not exempt it; only actually invoking one does.
-
-    Searched for in the segment's text, the exemption was fail-open a second way after being scoped
-    per segment: the token needs no command of its own to appear, so a quoted `echo` argument, a
-    trailing `#` comment or a `printf` format string carried it and disarmed the check for a segment
-    whose real command was the leak. Cheaper than the compound-command bypass it replaced, since it
-    needs no extra process — just three characters of text somewhere in the same segment.
-    """
-    global _EXTRA_WORDS
-    saved = _EXTRA_WORDS
-    _EXTRA_WORDS = frozenset()
-    try:
-        for command in (
             'echo "sed -i" $ACLI_TOKEN',
             "echo $ACLI_TOKEN # sed -i",
             'printf "ran sed -i %s" "$ACLI_TOKEN"',
             "echo $ACLI_TOKEN # perl -pi",
         ):
             assert decision("Bash", {"command": command}) is not None, (
-                f"a mentioned in-place edit must not exempt the segment that prints a secret: {command!r}"
+                f"an in-place edit, run or merely mentioned, must not excuse a secret-bearing segment: {command!r}"
             )
-        for command in ("sed -i.bak s/a/b/ f", "sudo sed -i s/a/b/ f", "perl -i -pe s/a/b/ f"):
+        for command in (
+            "sed -i.bak s/a/b/ f",
+            "perl -pi -e s/a/b/ f",
+            "sed -i s/x/y/ f && ls",
+            "sudo sed -i s/a/b/ f",
+            "perl -i -pe s/a/b/ f",
+        ):
             assert decision("Bash", {"command": command}) is None, (
-                f"a real in-place edit, wrapped or not, stays exempt: {command!r}"
+                f"an in-place edit carrying no secret name is not this hook's to deny: {command!r}"
             )
     finally:
         _EXTRA_WORDS = saved

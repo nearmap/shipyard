@@ -235,6 +235,11 @@ def validate() -> list[str]:
     `env_conflicts()` absorbs the same failure into an empty flat config and then reports every legacy
     `SY_*` variable as disagreeing with a key that "resolves to None" — a derived, factually wrong
     line that would otherwise bury the one real cause under it.
+
+    An unrunnable `git` now arrives as this module's own `SystemExit` from `_git_toplevel`, so it is
+    reported with its cause named and every other caller is covered by the same guard. The `OSError`
+    branch stays for what `repo_root()` can still raise directly — `Path.cwd()` on a deleted working
+    directory — which is likewise a fault to report rather than a traceback.
     """
     try:
         root = repo_root()
@@ -358,7 +363,9 @@ def repo_root() -> Path:
 
     Both paths go through the same `git rev-parse`, so a pointer at a subdirectory resolves to the
     checkout root, and a pointer naming no checkout is refused rather than silently resolving the
-    shipped defaults with no layer above them.
+    shipped defaults with no layer above them. A `git` that cannot be run is a separate refusal from
+    `_git_toplevel` itself, so it is never misreported as the pointer's fault and reaches the cwd
+    path too, which has no pointer to blame.
     """
     global _REPO_ROOT
     if _REPO_ROOT is None:
@@ -378,13 +385,30 @@ def repo_root() -> Path:
 
 
 def _git_toplevel(start: Path) -> Path | None:
-    """The resolved root of the git checkout containing `start`, or None when there is not one."""
+    """The resolved root of the git checkout containing `start`, or None when there is not one.
+
+    A `git` that cannot be *run* at all is refused here rather than folded into None, for the reasons
+    `sy_tools/config.py::_git_toplevel` gives — None means "git ran and reported no checkout", which
+    the cwd path legitimately answers with a cwd fallback. Refused *here* so that every caller gets
+    it: `validate()` guards its own `repo_root()` call, but `resolve()`, `layers()`, `fingerprint()`
+    and the `show`/`get`/`agent` subcommands do not, and each used to traceback raw on a missing
+    binary. As this module's own `SystemExit`, it arrives as one refusal line for the CLI and is
+    caught by the callers that already degrade on one — `_adapter_map()`, `validate()`, and
+    `secret_guard.py`'s word-list fallback.
+    """
     if not start.is_dir():
         return None
-    proc = subprocess.run(
-        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+    except OSError as exc:
+        raise SystemExit(
+            f"sy_config: git could not be run to resolve the repository root from {start}: {exc}. "
+            "Every configuration layer above the shipped defaults lives under <root>/.shipyard/, so "
+            "without git there is no root to read them from. Install git, or put it on PATH."
+        ) from None
     out = proc.stdout.strip()
     return Path(out).resolve() if proc.returncode == 0 and out else None
 

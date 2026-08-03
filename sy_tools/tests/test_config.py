@@ -259,11 +259,51 @@ def test_the_cli_validator_reports_a_git_it_cannot_run_rather_than_crashing(tmp_
     one function contracted to return its problems as strings — the same fail-open that took the
     secret-scanning hook down with it.
     """
-    empty_bin = tmp_path / "no-git-here"
-    empty_bin.mkdir()
-    proc = _validate_probe(tmp_path, PATH=str(empty_bin))
+    proc = _validate_probe(tmp_path, PATH=str(_empty_bin(tmp_path)))
     assert proc.returncode == 0, f"validate() crashed instead of collecting the failure: {proc.stderr}"
-    assert "could not be resolved" in proc.stdout, f"the failure must be reported: {proc.stdout!r}"
+    assert "git could not be run" in proc.stdout, f"the failure must name its cause: {proc.stdout!r}"
+
+
+@pytest.mark.parametrize("pointer", [None, "self"])
+def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, monkeypatch, pointer):
+    """A missing `git` binary must not traceback out of *any* caller, under either resolution path.
+
+    `validate()` guards its own `repo_root()` call, but it was the only thing standing between an
+    absent binary and a crash: `resolve()`, `fingerprint()` and the `show`/`get` subcommands reach
+    `repo_root()` too and used to raise `FileNotFoundError` straight through. For the server that is
+    the worse half — its resolver runs on every tool call — so the guard now lives in `_git_toplevel`
+    and both resolvers are asked here through a non-`validate()` path.
+
+    Refused rather than degraded, and refused *distinguishably*: a bogus pointer and an absent binary
+    are separate causes, so the pointer's "not a directory inside a git checkout" must not be what a
+    missing binary reports, and the no-pointer case must not take the cwd fallback silently.
+    """
+    monkeypatch.setenv("PATH", str(_empty_bin(tmp_path)))
+    monkeypatch.chdir(tmp_path)
+    if pointer:
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    else:
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+
+    with pytest.raises(config.ConfigError, match="git could not be run") as raised:
+        config.reload()
+    assert "CLAUDE_PROJECT_DIR" not in str(raised.value), "a missing binary is not the pointer's fault"
+
+    probe = subprocess.run(  # the CLI's `get` path: a caller `validate()`'s own guard never covers
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "get", "tracker"],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    )
+    assert probe.returncode == 1, f"the CLI must refuse, not crash or resolve: {probe.stderr!r}"
+    assert "Traceback" not in probe.stderr, f"raw traceback from the CLI: {probe.stderr!r}"
+    assert "git could not be run" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
+
+
+def _empty_bin(tmp_path: Path) -> Path:
+    """A directory holding no `git`, for use as the whole of `PATH`."""
+    empty = tmp_path / "no-git-here"
+    empty.mkdir(exist_ok=True)
+    return empty
 
 
 def _validate_probe(cwd: Path, preamble: str = "", **env: str) -> subprocess.CompletedProcess:

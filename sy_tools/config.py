@@ -73,7 +73,9 @@ def repo_root() -> Path:
     checkout root exactly as cwd does, and a pointer that names no checkout is a `ConfigError`
     rather than a silent fall-through: every layer above the shipped defaults lives under
     `<root>/.shipyard/`, so an unusable root resolves to the shipped defaults with no tracker, no
-    column names and nothing said about why.
+    column names and nothing said about why. A `git` that cannot be run is a third, separately named
+    `ConfigError` raised by `_git_toplevel` itself, so it reaches both paths — including the cwd
+    fallback, which has no pointer to blame — and is never reported as the pointer's fault.
     """
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if project_dir:
@@ -89,13 +91,31 @@ def repo_root() -> Path:
 
 
 def _git_toplevel(start: Path) -> Path | None:
-    """The resolved root of the git checkout containing `start`, or None when there is not one."""
+    """The resolved root of the git checkout containing `start`, or None when there is not one.
+
+    A `git` that cannot be *run* at all raises rather than returning None, and it raises from here so
+    that every caller is covered by one guard instead of each call site growing its own. None means
+    one specific thing — git ran and reported no checkout — and the callers act on it accordingly:
+    the cwd path treats it as "not in a checkout" and falls back to cwd, which is a legitimate way to
+    run the server. Collapsing a missing binary into that same None would take the fallback, resolve
+    the shipped defaults alone, and leave every tool call reporting no tracker and unset columns with
+    nothing naming the cause; under `CLAUDE_PROJECT_DIR` it would instead blame the pointer for not
+    being a checkout, which is false when the pointer is fine and the binary is absent. A missing
+    binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
+    """
     if not start.is_dir():
         return None
-    proc = subprocess.run(
-        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+    except OSError as exc:
+        raise ConfigError(
+            f"git could not be run to resolve the repository root from {start}: {exc}. Every "
+            "configuration layer above the shipped defaults lives under <root>/.shipyard/, so "
+            "without git there is no root to read them from. Install git, or put it on PATH."
+        ) from None
     out = proc.stdout.strip()
     return Path(out).resolve() if proc.returncode == 0 and out else None
 

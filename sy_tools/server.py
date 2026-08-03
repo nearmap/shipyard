@@ -456,7 +456,7 @@ async def attachment_update(
     `attach-artifact` — a second upload path that skipped them would be exactly the hole that keeping
     both passes inside one tool exists to close.
 
-    Destructive: the attachments it replaces are deleted before the new one is uploaded, and there is
+    Destructive: the attachments it replaces are removed once the new one is uploaded, and there is
     no undo. Confirm the target first.
     """
     _required(issue=issue)

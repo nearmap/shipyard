@@ -24,6 +24,20 @@ bare `pixi run` resolves only in this repo's own dev loop and fails in every rea
 interpolate `${CLAUDE_PLUGIN_ROOT}` inside the manifest's JSON strings, which is what makes the
 absolute form work; `"cwd"` is not an option, because Claude Code ignores that key silently.
 
+**Known limitation, measured not assumed:** `pixi run <declared-task>` does not inherit the caller's
+working directory — it runs the task from the manifest's own directory, where a bare
+`pixi run <command>` does inherit it. Confirmed with a discriminating control: the same probe
+reports the manifest directory when registered as a task and the call site when passed as a command.
+So the launch line above lands this process in the *plugin's* directory regardless of where Claude
+Code started it, and `config.repo_root()` — which shells `git rev-parse --show-toplevel` from the
+working directory — therefore resolves the plugin's checkout rather than the consumer project's. In
+a marketplace install that directory holds no `.shipyard/` at all, so the consumer repo's committed
+configuration is not read and only `config/defaults.json` applies. This predates the verb cutover
+and is not fixed here: the fix is a choice between mechanisms (teaching `repo_root()` a
+consumer-directory signal, or launching without a declared task) with its own trade-offs, so it is
+tracked as its own change rather than smuggled in. Until then, the MCP deployment is only known-good
+where the plugin checkout and the consumer repo are the same tree, which is this repo's own dev loop.
+
 The manifest carries no `env` block, which is deliberate and was settled empirically rather than
 from documentation: a stdio server inherits the launching process's environment, so the one real
 secret (the tracker credential) arrives without ever being named in a committed file. Verified with

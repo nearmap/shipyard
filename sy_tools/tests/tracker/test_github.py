@@ -6,12 +6,10 @@ from the worker thread the verb offloads to.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import threading
-from typing import Any
 
 import pytest
 
@@ -19,6 +17,10 @@ from sy_tools.tracker import TIMEOUT_SECONDS, TrackerError
 from sy_tools.tracker.github import adapter
 
 GIST_URL = "https://gist.github.com/octocat/abc123"
+GIST_ID = "abc123"
+OTHER_GIST_URL = "https://gist.github.com/octocat/def456"
+ARTIFACT_NAME = "AM-1-transcript.txt"
+ARTIFACT_TEXT = "already sanitised\n"
 COMMENT_URL = "https://github.com/octocat/repo/issues/7#issuecomment-1"
 REPO = "octocat/repo"
 HOST = "github.com"
@@ -272,9 +274,25 @@ def _list_row(number: int = 7, url: str = ISSUE_URL) -> dict:
 
 
 def _artifact(tmp_path: Path) -> Path:
-    path = tmp_path / "AM-1-transcript.txt"
-    path.write_text("already sanitised\n", encoding="utf-8")
+    path = tmp_path / ARTIFACT_NAME
+    path.write_text(ARTIFACT_TEXT, encoding="utf-8")
     return path
+
+
+def _artifact_comment(filename: str = ARTIFACT_NAME, gist_url: str = GIST_URL, comment_id: str = "IC_1") -> dict:
+    """One artifact comment as `gh issue view --json comments` reports it, worded literally.
+
+    Spelled out rather than formatted through `adapter.ARTIFACT_COMMENT`, because that comment is this
+    tracker's entire index of which gist holds which artifact: a reworded template the resolver's pattern
+    no longer matches has to fail here, not leave every lifecycle verb reporting an issue as having no
+    artifacts while its transcripts sit in gists nothing can find again.
+    """
+    return {
+        "id": comment_id,
+        "author": {"login": "octocat"},
+        "createdAt": "2026-07-31T00:00:00Z",
+        "body": f"Shipyard artifact `{filename}`: {gist_url}\n\nSecret gist — reachable only from this link.",
+    }
 
 
 def _happy_path(secret: bool = True) -> tuple[tuple[int, str, str], ...]:
@@ -2019,162 +2037,233 @@ async def test_no_new_verb_writes_to_stdout(monkeypatch, board, capsys):
     )
 
 
-class _Router(_FakeSubprocess):
-    """Answers by argv instead of from a queue.
+@pytest.mark.anyio
+async def test_type_convert_sets_the_board_type_on_an_existing_issue_and_reads_it_back(monkeypatch, board):
+    """Converting a type is the same board single-select write `create_issue` makes, on an older card."""
+    fake = _install(
+        monkeypatch,
+        _json({"url": ISSUE_URL}),
+        _json(PROJECT_VIEW),
+        _json(_fields()),
+        _json(_items()),
+        (0, "", ""),
+        _json(_items(issue_type="Epic")),
+    )
 
-    The reference test must feed both implementations byte-identical payloads while their call
-    sequences are what is under comparison, so a fixed queue cannot serve it.
+    converted = await adapter.GithubAdapter().type_convert("7", "epic")
+
+    assert [call[1:] for call in fake.calls] == [
+        ["issue", "view", "7", *REPO_ARGS, "--json", "url"],
+        ["project", "view", *OWNER_ARGS],
+        ["project", "field-list", *OWNER_ARGS, "--limit", "10000"],
+        ["project", "item-list", *OWNER_ARGS, "--limit", "10000"],
+        ["project", "item-edit", "--id", "ITEM_1", "--project-id", "PVT_1",
+         "--field-id", "F_type", "--single-select-option-id", "o_epic"],
+        ["project", "item-list", *OWNER_ARGS, "--limit", "10000"],
+    ], fake.calls
+    assert converted == {"id": ISSUE_URL, "type": "epic", "native": "Epic"}, converted
+
+
+@pytest.mark.anyio
+async def test_a_type_the_board_never_reads_back_is_a_failure_not_a_reported_conversion(monkeypatch, board):
+    """`gh project item-edit` exits zero whether or not the value changed, so the re-read is the evidence."""
+    monkeypatch.setattr(adapter.time, "sleep", lambda _seconds: None)
+    _install(
+        monkeypatch,
+        _json({"url": ISSUE_URL}),
+        _json(PROJECT_VIEW),
+        _json(_fields()),
+        _json(_items()),
+        (0, "", ""),
+        *([_json(_items(issue_type="Task"))] * adapter.VERIFY_ATTEMPTS),
+    )
+
+    with pytest.raises(TrackerError, match="treat the board update as failed"):
+        await adapter.GithubAdapter().type_convert("7", "epic")
+
+
+@pytest.mark.anyio
+async def test_type_convert_refuses_an_unknown_canonical_token_before_it_calls_gh(monkeypatch, board):
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="unknown canonical type"):
+        await adapter.GithubAdapter().type_convert("7", "story")
+
+    assert fake.calls == [], "an unmappable type must fail before a card is touched"
+
+
+@pytest.mark.anyio
+async def test_attachment_download_writes_the_raw_gist_the_artifact_comment_names(monkeypatch, board, tmp_path):
+    fake = _install(monkeypatch, _json({"comments": [_artifact_comment()]}), (0, ARTIFACT_TEXT, ""))
+    destination = tmp_path / "downloaded.txt"
+
+    got = await adapter.GithubAdapter().attachment_download("7", ARTIFACT_NAME, destination)
+
+    assert [call[1:] for call in fake.calls] == [
+        ["issue", "view", "7", *REPO_ARGS, "--json", "comments"],
+        ["gist", "view", GIST_ID, "--raw"],
+    ], fake.calls
+    assert destination.read_text(encoding="utf-8") == ARTIFACT_TEXT.strip(), (
+        "the artifact's content must reach disk; gh's trailing newline is trimmed by the transport"
+    )
+    assert got == {
+        "issue": "7",
+        "filename": ARTIFACT_NAME,
+        "id": GIST_ID,
+        "bytes": len(ARTIFACT_TEXT.strip()),
+        "path": str(destination),
+    }, got
+
+
+@pytest.mark.anyio
+async def test_a_gist_that_reads_back_empty_is_not_downloaded_as_an_empty_file(monkeypatch, board, tmp_path):
+    """A zero-byte file on disk reads exactly like an artifact that was never attached."""
+    _install(monkeypatch, _json({"comments": [_artifact_comment()]}), (0, "", ""))
+    destination = tmp_path / "downloaded.txt"
+
+    with pytest.raises(TrackerError, match="read back empty"):
+        await adapter.GithubAdapter().attachment_download("7", ARTIFACT_NAME, destination)
+
+    assert not destination.exists(), "a failed download must leave nothing behind that reads as an artifact"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("comments", "wanted", "count"),
+    [
+        (
+            [_artifact_comment(), _artifact_comment(gist_url=OTHER_GIST_URL, comment_id="IC_2")],
+            ARTIFACT_NAME,
+            "2 artifacts",
+        ),
+        ([_artifact_comment()], "other.txt", "0 artifacts"),
+    ],
+    ids=["two-gists-one-filename", "no-such-artifact"],
+)
+async def test_a_name_matching_other_than_exactly_one_artifact_is_refused(monkeypatch, board, comments, wanted, count):
+    """Attaching one transcript twice leaves two gists under one name; deleting either is unacceptable."""
+    fake = _install(monkeypatch, _json({"comments": comments}))
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().attachment_delete("7", wanted)
+
+    message = str(raised.value)
+    assert count in message, f"the failure must say how many matched: {message}"
+    assert ARTIFACT_NAME in message and GIST_ID in message, (
+        f"the artifacts the comments do record are the actionable part: {message}"
+    )
+    assert len(fake.calls) == 1, "an unresolved name must not lead to a gist being deleted"
+
+
+@pytest.mark.anyio
+async def test_a_gist_id_names_one_of_two_artifacts_sharing_a_filename(monkeypatch, board, tmp_path):
+    fake = _install(
+        monkeypatch,
+        _json({"comments": [_artifact_comment(), _artifact_comment(gist_url=OTHER_GIST_URL, comment_id="IC_2")]}),
+        (0, "the second artifact\n", ""),
+    )
+
+    got = await adapter.GithubAdapter().attachment_download("7", "def456", tmp_path / "downloaded.txt")
+
+    assert fake.calls[1][1:] == ["gist", "view", "def456", "--raw"], (
+        f"the id must select the artifact, not the first namesake: {fake.calls[1]}"
+    )
+    assert got["id"] == "def456", got
+
+
+@pytest.mark.anyio
+async def test_attachment_update_replaces_the_gist_file_in_place_and_reads_it_back(monkeypatch, board, tmp_path):
+    """`gh gist edit --filename <name> <source>` replaces a file, so the linked URL keeps working."""
+    path = _artifact(tmp_path)
+    fake = _install(
+        monkeypatch, _json({"comments": [_artifact_comment()]}), (0, "", ""), (0, ARTIFACT_TEXT, "")
+    )
+
+    replaced = await adapter.GithubAdapter().attachment_update("7", path)
+
+    assert [call[1:] for call in fake.calls] == [
+        ["issue", "view", "7", *REPO_ARGS, "--json", "comments"],
+        ["gist", "edit", GIST_ID, "--filename", ARTIFACT_NAME, str(path)],
+        ["gist", "view", GIST_ID, "--raw"],
+    ], fake.calls
+    assert replaced == {
+        "issue": "7",
+        "filename": ARTIFACT_NAME,
+        "id": GIST_ID,
+        "gist_url": GIST_URL,
+        "replaced": 1,
+    }, replaced
+
+
+@pytest.mark.anyio
+async def test_a_gist_still_holding_the_previous_artifact_is_not_a_completed_replacement(
+    monkeypatch, board, tmp_path
+):
+    """`gh gist edit` prints nothing and exits zero, so only the re-read says the new content landed."""
+    _install(
+        monkeypatch,
+        _json({"comments": [_artifact_comment()]}),
+        (0, "", ""),
+        (0, "the previous transcript\n", ""),
+    )
+
+    with pytest.raises(TrackerError, match="does not read back"):
+        await adapter.GithubAdapter().attachment_update("7", _artifact(tmp_path))
+
+
+@pytest.mark.anyio
+async def test_attachment_delete_deletes_the_gist_and_confirms_it_by_a_not_found_read(monkeypatch, board):
+    fake = _install(
+        monkeypatch,
+        _json({"comments": [_artifact_comment()]}),
+        (0, "", ""),
+        (1, "", "gh: Not Found (HTTP 404)"),
+    )
+
+    deleted = await adapter.GithubAdapter().attachment_delete("7", ARTIFACT_NAME)
+
+    assert [call[1:] for call in fake.calls] == [
+        ["issue", "view", "7", *REPO_ARGS, "--json", "comments"],
+        ["gist", "delete", GIST_ID, "--yes"],
+        ["api", f"gists/{GIST_ID}"],
+    ], f"the delete must be non-interactive and verified by a read: {fake.calls}"
+    assert deleted == {"issue": "7", "filename": ARTIFACT_NAME, "id": GIST_ID, "deleted": True}, deleted
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("read_back", "expected"),
+    [
+        (_json({"id": GIST_ID, "public": False}), "still reads back"),
+        ((1, "", "gh: API rate limit exceeded"), "could not confirm"),
+    ],
+    ids=["the-gist-is-still-there", "a-failure-that-is-not-a-not-found"],
+)
+async def test_only_a_not_found_read_confirms_a_deletion(monkeypatch, board, read_back, expected):
+    """The read-back is expected to fail, which is exactly why its shape has to be checked.
+
+    A revoked credential, a rate limit or a stalled network fails the same call, and calling one of those
+    a confirmed deletion reports a still-published transcript as removed.
     """
+    _install(monkeypatch, _json({"comments": [_artifact_comment()]}), (0, "", ""), read_back)
 
-    def __init__(self, reply) -> None:
-        super().__init__()
-        self._reply = reply
-
-    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        self.calls.append(list(argv))
-        self.kwargs.append(dict(kwargs))
-        self.threads.append(threading.get_ident())
-        return subprocess.CompletedProcess(argv, 0, json.dumps(self._reply(list(argv[1:]))), "")
+    with pytest.raises(TrackerError, match=expected):
+        await adapter.GithubAdapter().attachment_delete("7", ARTIFACT_NAME)
 
 
-def _reference_reply(fields: dict, items: dict):
-    """One board, answered by argv: the single fixture both implementations are driven over."""
+@pytest.mark.anyio
+async def test_the_comment_attach_artifact_writes_is_the_one_the_lifecycle_verbs_find(monkeypatch, board, tmp_path):
+    """The comment is this tracker's whole attachment index, so the write and the read must agree.
 
-    def reply(args: list[str]) -> object:
-        head = args[:2]
-        if head == ["project", "view"]:
-            return PROJECT_VIEW
-        if head == ["project", "field-list"]:
-            return fields
-        if head == ["project", "item-list"]:
-            return items
-        if head == ["project", "item-edit"]:
-            return {}
-        raise AssertionError(f"the shared fixture was asked for an unexpected gh call: {args}")
-
-    return reply
-
-
-@pytest.fixture
-def cli_helper(monkeypatch, tmp_path, board):
-    """The shipped CLI helper, stubbed the way its own `_self_test` stubs it: module globals swapped.
-
-    Loaded by path because `skills/` is not an importable package, and its disk cache is redirected
-    into tmp so the CLI deployment's real cache is neither read nor written by a test.
+    Driven end to end rather than over a fixture: the body the attach verb actually posted is fed back to
+    the resolver, so a reworded comment cannot pass by being reworded in the test too.
     """
-    path = Path(__file__).resolve().parents[3] / "skills" / "tracker" / "github" / "gh_project.py"
-    spec = importlib.util.spec_from_file_location("gh_project_reference", path)
-    assert spec and spec.loader, f"could not load the CLI helper from {path}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "CACHE_PATH", tmp_path / "cache.json")
-    monkeypatch.setattr(module, "config_get", lambda key: COLUMNS.get(key, ""))
-    return module
+    fake = _install(monkeypatch, *_happy_path())
+    path = _artifact(tmp_path)
+    await adapter.GithubAdapter().attach_artifact("1", path)
+    posted = fake.calls[2][fake.calls[2].index("--body") + 1]
 
+    _install(monkeypatch, _json({"comments": [{"id": "IC_1", "body": posted}]}), (0, ARTIFACT_TEXT, ""))
+    got = await adapter.GithubAdapter().attachment_download("1", path.name, tmp_path / "downloaded.txt")
 
-def _drive_both(monkeypatch, cli_helper, fields: dict, items: dict) -> tuple[_Router, list[list[str]]]:
-    """Point both implementations at one fixture and record the `gh` calls each one makes."""
-    reply = _reference_reply(fields, items)
-    router = _Router(reply)
-    monkeypatch.setattr(adapter, "subprocess", router)
-    theirs: list[list[str]] = []
-
-    def their_gh_json(args: list[str]) -> object:
-        theirs.append(list(args))
-        return reply(list(args))
-
-    monkeypatch.setattr(cli_helper, "_gh_json", their_gh_json)
-    return router, theirs
-
-
-def _comparable(call: list[str]) -> list[str]:
-    """One `gh` call with the adapter's deliberate `field-list --limit` divergence normalised away.
-
-    The CLI helper inherits `gh`'s 30-field default and cannot be changed here: its deployment stays
-    byte-identical. The adapter asks for the board's fields at `gh`'s maximum instead, because a board
-    wide enough to push `Status` past the thirtieth field would otherwise resolve without it. Only that
-    one flag is normalised, so every other difference in the two call sequences still fails the test.
-    """
-    if call[:2] == ["project", "field-list"] and "--limit" in call:
-        at = call.index("--limit")
-        return call[:at] + call[at + 2 :]
-    return call
-
-
-def _assert_same_calls(mine: list[list[str]], theirs: list[list[str]]) -> None:
-    """The two must issue the same `gh` calls, bar the adapter's documented extra read-back."""
-    stripped = [_comparable(call[1:]) for call in mine]
-    assert stripped[: len(theirs)] == theirs, (
-        f"the ported write diverges from the CLI helper's gh calls.\nported: {stripped}\nhelper: {theirs}"
-    )
-    assert stripped[len(theirs) :] == [call for call in theirs if call[:2] == ["project", "item-list"]], (
-        "the adapter's only extra call must be one more item-list: it re-reads the field it just wrote "
-        "(CONTRIBUTING's write discipline), which the CLI helper does not do"
-    )
-
-
-def test_the_ported_board_resolution_matches_the_cli_helper(monkeypatch, cli_helper):
-    """Same fixture through both resolvers: ids, single-select filtering and canonicalisation."""
-    router, theirs_calls = _drive_both(monkeypatch, cli_helper, _fields(), _items())
-
-    mine = adapter.GithubAdapter()._resolve("@me", "3", refresh=True)
-    theirs = cli_helper._resolve("@me", "3", refresh=True)
-
-    assert mine == theirs, f"the ported resolver disagrees with the CLI helper.\nported: {mine}\nhelper: {theirs}"
-    assert [_comparable(call[1:]) for call in router.calls] == theirs_calls, (
-        "the two resolvers issue different gh calls"
-    )
-    assert set(mine["fields"]) == {"Status", "Type"}, f"both must keep only the single-selects: {set(mine['fields'])}"
-    for option in ("In progress", "IN PROGRESS", " in progress ", "On hold"):
-        assert adapter._option_id(mine, "Status", option) == cli_helper._option_id(theirs, "Status", option), option
-    no_type: dict[str, Any] = {"type": None, "status": "Icebox", "content": {"number": 1, "url": ISSUE_URL}}
-    raw_items: tuple[dict[str, Any], dict[str, Any]] = (_items()["items"][0], no_type)
-    for raw in raw_items:
-        mapped = adapter._normalize_item(raw)
-        assert {key: value for key, value in mapped.items() if key != "kind"} == cli_helper._normalize_item(raw), (
-            f"the ported item mapping disagrees with the CLI helper's for {raw}"
-        )
-        assert mapped["kind"] == (raw.get("content") or {}).get("type"), (
-            "the adapter's one addition is the card's own content type, carried through unmapped: the CLI "
-            "helper lists board items as board items, while find_issues owes its caller issues and must be "
-            f"able to tell a pull request card from an issue card. Got {mapped['kind']!r} for {raw}"
-        )
-
-
-def test_the_ported_field_write_issues_the_same_gh_calls_as_the_cli_helper(monkeypatch, cli_helper):
-    """Status and type, written by both implementations over one fixture, compared call for call."""
-    items = _items(status="In progress", issue_type="Task")
-    router, theirs_calls = _drive_both(monkeypatch, cli_helper, _fields(), items)
-    mine = adapter.GithubAdapter()
-
-    cli_helper.set_status(PROJECT, ISSUE_URL, "in-progress")
-    mine._set_field(ISSUE_URL, adapter.STATUS_FIELD, adapter.native_status("in-progress"))
-    _assert_same_calls(router.calls, theirs_calls)
-
-    mine_seen, theirs_seen = len(router.calls), len(theirs_calls)
-    cli_helper.set_type(PROJECT, ISSUE_URL, "task")
-    mine._set_field(ISSUE_URL, adapter.TYPE_FIELD, adapter.native_type("task"))
-    _assert_same_calls(router.calls[mine_seen:], theirs_calls[theirs_seen:])
-    assert not any(call[:2] == ["project", "view"] for call in theirs_calls[theirs_seen:]), (
-        "both caches must spare the second write a re-resolve, or the sequences are not comparable"
-    )
-
-
-def test_the_ported_unmatched_option_failure_matches_the_cli_helper(monkeypatch, cli_helper):
-    router, theirs_calls = _drive_both(monkeypatch, cli_helper, _fields(status_options=("Backlog", "Done")), _items())
-
-    with pytest.raises(SystemExit) as theirs:
-        cli_helper.set_field(PROJECT, ISSUE_URL, "Status", "On hold")
-    with pytest.raises(TrackerError) as mine:
-        adapter.GithubAdapter()._set_field(ISSUE_URL, adapter.STATUS_FIELD, "On hold")
-
-    assert str(mine.value) == str(theirs.value.code), (
-        f"the two failures must say the same thing.\nported: {mine.value}\nhelper: {theirs.value.code}"
-    )
-    assert [_comparable(call[1:]) for call in router.calls] == theirs_calls, (
-        "both must re-resolve once before failing"
-    )
-    assert isinstance(theirs.value, SystemExit) and not isinstance(mine.value, SystemExit), (
-        "deliberate divergence: the CLI helper exits the process, the adapter raises TrackerError, because "
-        "this process has other tool calls to serve after a bad one"
-    )
+    assert got["id"] == GIST_ID, f"the lifecycle verbs could not find the gist attach-artifact linked: {posted!r}"

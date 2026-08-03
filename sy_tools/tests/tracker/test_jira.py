@@ -27,6 +27,8 @@ FAKE_SITE = "example.atlassian.net"
 FAKE_PROJECT = "PROJ"
 BASE = f"https://{FAKE_SITE}/rest/api/3"
 MYSELF = f"{BASE}/myself"
+ARTIFACT_NAME = "PROJ-1-ship-transcript.txt"
+ARTIFACT_BYTES = b"transcript body\n"
 
 COLUMNS = {
     "columns.backlog": "Created",
@@ -59,8 +61,8 @@ def credentials(monkeypatch) -> None:
 
 @pytest.fixture
 def artifact(tmp_path) -> Path:
-    path = tmp_path / "PROJ-1-ship-transcript.txt"
-    path.write_bytes(b"transcript body\n")
+    path = tmp_path / ARTIFACT_NAME
+    path.write_bytes(ARTIFACT_BYTES)
     return path
 
 
@@ -71,17 +73,38 @@ def _transport(monkeypatch, *responses: object) -> list[dict]:
     in order and the last one repeats, which is what the read-write-verify verbs need. A response
     given as a `(status, body)` pair sets the status too — Jira answers most writes 204 with no body,
     and a verb that asserts that status has to be able to see it.
+
+    `binary` is recorded rather than ignored: it is the one flag that changes how the transport reads a
+    response, so which call path asked for bytes is part of what a test asserts.
     """
     calls: list[dict] = []
     queue = list(responses) or [None]
 
-    async def fake_request(method, url, auth, data=None, headers=None, *, transport=None):
-        calls.append({"method": method, "url": url, "auth": auth, "data": data, "headers": headers or {}})
+    async def fake_request(method, url, auth, data=None, headers=None, *, transport=None, binary=False):
+        calls.append({
+            "method": method, "url": url, "auth": auth, "data": data, "headers": headers or {}, "binary": binary,
+        })
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
         return answer if isinstance(answer, tuple) else (200, answer)
 
     monkeypatch.setattr(adapter, "request", fake_request)
     return calls
+
+
+def _attachment(attachment_id: str = "10501", filename: str = ARTIFACT_NAME, content: str | None = None) -> dict:
+    """One attachment as Jira's `attachment` field reports it, trimmed to the keys the adapter reads."""
+    return {
+        "id": attachment_id,
+        "filename": filename,
+        "created": "2026-07-30T00:00:00.000+0000",
+        "size": len(ARTIFACT_BYTES),
+        "content": f"{BASE}/attachment/content/{attachment_id}" if content is None else content,
+    }
+
+
+def _attachments(*entries: dict) -> dict:
+    """A `GET /issue/{key}?fields=attachment` response carrying exactly `entries`."""
+    return {"fields": {"attachment": list(entries)}}
 
 
 def _sent(call: dict) -> dict:
@@ -735,6 +758,236 @@ async def test_a_comment_that_returns_no_id_is_not_reported_as_posted(credential
         await adapter.JiraAdapter().post_comment("PROJ-7", "log")
 
 
+TYPE_READ = {"fields": {"issuetype": {"name": "Epic"}}}
+CONTENT_URL = f"{BASE}/attachment/content/10501"
+
+
+@pytest.mark.anyio
+async def test_type_convert_writes_the_native_type_and_reads_it_back(credentials, monkeypatch):
+    calls = _transport(monkeypatch, (204, None), TYPE_READ)
+
+    converted = await adapter.JiraAdapter().type_convert("PROJ-7", "epic")
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("PUT", f"{BASE}/issue/PROJ-7"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=issuetype"),
+    ], calls
+    assert _sent(calls[0]) == {"fields": {"issuetype": {"name": "Epic"}}}, (
+        f"the canonical token must reach Jira as its native name: {_sent(calls[0])}"
+    )
+    assert converted == {"id": "PROJ-7", "type": "epic", "native": "Epic"}
+
+
+@pytest.mark.anyio
+async def test_type_convert_fails_naming_the_type_a_restricted_workflow_left_in_place(credentials, monkeypatch):
+    """A workflow can accept the field write and leave the type where it was; that is not a conversion."""
+    _transport(monkeypatch, (204, None), {"fields": {"issuetype": {"name": "Task"}}})
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().type_convert("PROJ-7", "epic")
+
+    assert "still reads type 'Task'" in str(failure.value), (
+        f"the failure must name the type the issue actually carries: {failure.value}"
+    )
+
+
+@pytest.mark.anyio
+async def test_type_convert_refuses_an_unknown_canonical_token_before_it_writes(credentials, monkeypatch):
+    """The seam takes canonical tokens, so an unmappable one must not reach Jira as a native name."""
+    calls = _transport(monkeypatch, (204, None))
+
+    with pytest.raises(TrackerError, match="unknown canonical type"):
+        await adapter.JiraAdapter().type_convert("PROJ-7", "story")
+
+    assert calls == [], "an unmappable type must fail before the field is written"
+
+
+@pytest.mark.anyio
+async def test_attachment_download_fetches_the_resolved_content_url_and_writes_the_bytes(
+    credentials, monkeypatch, tmp_path
+):
+    calls = _transport(monkeypatch, _attachments(_attachment()), (200, ARTIFACT_BYTES))
+    destination = tmp_path / "downloaded.txt"
+
+    got = await adapter.JiraAdapter().attachment_download("PROJ-7", ARTIFACT_NAME, destination)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("GET", CONTENT_URL),
+    ], calls
+    assert calls[1]["binary"] is True, "the content URL answers bytes behind a redirect, not JSON"
+    assert destination.read_bytes() == ARTIFACT_BYTES, "the artifact must reach disk byte for byte"
+    assert got == {
+        "issue": "PROJ-7",
+        "filename": ARTIFACT_NAME,
+        "id": "10501",
+        "bytes": len(ARTIFACT_BYTES),
+        "path": str(destination),
+    }
+
+
+@pytest.mark.anyio
+async def test_an_attachment_with_no_content_url_is_refused_rather_than_written_as_an_empty_file(
+    credentials, monkeypatch, tmp_path
+):
+    """A zero-byte file on disk reads exactly like an artifact that was never uploaded."""
+    _transport(monkeypatch, _attachments(_attachment(content="")))
+    destination = tmp_path / "downloaded.txt"
+
+    with pytest.raises(TrackerError, match="no content URL"):
+        await adapter.JiraAdapter().attachment_download("PROJ-7", ARTIFACT_NAME, destination)
+
+    assert not destination.exists(), "a failed download must leave nothing behind that reads as an artifact"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "wanted", "count"),
+    [
+        (_attachments(_attachment("10501"), _attachment("10502")), ARTIFACT_NAME, "2 attachments"),
+        (_attachments(_attachment("10501")), "other.txt", "0 attachments"),
+    ],
+    ids=["ambiguous-filename", "absent-filename"],
+)
+async def test_a_name_matching_other_than_exactly_one_attachment_is_refused(
+    credentials, monkeypatch, field, wanted, count
+):
+    """Jira lets one issue carry two files with one name, so a filename is not a key.
+
+    Picking either would delete an arbitrary one of two transcripts, so the ambiguity is reported with
+    the ids a caller can name instead — and an absent name fails the same way rather than reading as a
+    successful no-op.
+    """
+    calls = _transport(monkeypatch, field)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().attachment_delete("PROJ-7", wanted)
+
+    message = str(failure.value)
+    assert count in message, f"the failure must say how many matched: {message}"
+    assert "id=10501" in message, f"the candidates are the actionable part of the failure: {message}"
+    assert len(calls) == 1, "an unresolved name must not lead to a delete"
+
+
+@pytest.mark.anyio
+async def test_an_attachment_id_names_one_of_two_uploads_sharing_a_filename(credentials, monkeypatch, tmp_path):
+    calls = _transport(
+        monkeypatch, _attachments(_attachment("10501"), _attachment("10502")), (200, b"the second upload")
+    )
+
+    got = await adapter.JiraAdapter().attachment_download("PROJ-7", "10502", tmp_path / "downloaded.txt")
+
+    assert calls[1]["url"] == f"{BASE}/attachment/content/10502", (
+        f"the id must select the attachment, not the first namesake: {calls[1]['url']}"
+    )
+    assert got["id"] == "10502", got
+
+
+@pytest.mark.anyio
+async def test_attachment_delete_removes_the_attachment_and_proves_it_is_gone(credentials, monkeypatch):
+    calls = _transport(monkeypatch, _attachments(_attachment()), (204, None), _attachments())
+
+    deleted = await adapter.JiraAdapter().attachment_delete("PROJ-7", ARTIFACT_NAME)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("DELETE", f"{BASE}/attachment/10501"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+    ], calls
+    assert deleted == {"issue": "PROJ-7", "filename": ARTIFACT_NAME, "id": "10501", "deleted": True}
+
+
+@pytest.mark.anyio
+async def test_an_attachment_still_on_the_issue_after_a_204_is_a_failed_delete(credentials, monkeypatch):
+    """The 204 says Jira accepted the call; only the re-read says the file is off the issue."""
+    _transport(monkeypatch, _attachments(_attachment()), (204, None), _attachments(_attachment()))
+
+    with pytest.raises(TrackerError, match="still on PROJ-7"):
+        await adapter.JiraAdapter().attachment_delete("PROJ-7", ARTIFACT_NAME)
+
+
+@pytest.mark.anyio
+async def test_attachment_update_deletes_every_namesake_then_uploads_once(credentials, monkeypatch, artifact):
+    echoed = [{"id": "10999", "filename": ARTIFACT_NAME, "size": 16, "created": "2026-08-01T00:00:00.000+0000"}]
+    other = _attachment("10502", filename="unrelated.txt")
+    calls = _transport(
+        monkeypatch, _attachments(_attachment("10501"), other), (204, None), _attachments(other), echoed
+    )
+
+    replaced = await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("DELETE", f"{BASE}/attachment/10501"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("POST", f"{BASE}/issue/PROJ-7/attachments"),
+    ], f"only the namesake may be deleted, and the upload comes last: {calls}"
+    assert replaced == {
+        "issue": "PROJ-7",
+        "filename": ARTIFACT_NAME,
+        "id": "10999",
+        "size": 16,
+        "created": "2026-08-01T00:00:00.000+0000",
+        "replaced": 1,
+    }
+
+
+@pytest.mark.anyio
+async def test_attachment_update_uploads_a_first_artifact_without_deleting_anything(
+    credentials, monkeypatch, artifact
+):
+    calls = _transport(monkeypatch, _attachments(), [{"id": "10999", "filename": ARTIFACT_NAME}])
+
+    replaced = await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [c["method"] for c in calls] == ["GET", "POST"], f"nothing existed to delete: {calls}"
+    assert replaced["replaced"] == 0, "replacing nothing is a normal first upload, not a failure"
+
+
+@pytest.mark.anyio
+async def test_attachment_update_refuses_a_missing_file_before_it_deletes_the_old_one(
+    credentials, monkeypatch, tmp_path
+):
+    """Deleting first and failing to upload leaves the issue with no artifact at all."""
+    calls = _transport(monkeypatch, _attachments(_attachment()), (204, None))
+
+    with pytest.raises(TrackerError, match="attachment not found"):
+        await adapter.JiraAdapter().attachment_update("PROJ-7", tmp_path / ARTIFACT_NAME)
+
+    assert calls == [], "the source file must be checked before anything is deleted"
+
+
+@pytest.mark.anyio
+async def test_a_binary_fetch_follows_the_redirect_and_drops_the_credential_crossing_it():
+    """An attachment's content URL answers a redirect to media storage, which one call path follows.
+
+    The credential must not follow with it: the storage URL is a different origin carrying its own
+    pre-signed query, so httpx2 strips `Authorization` — asserted rather than assumed, because the flag
+    that follows the redirect is the flag that would otherwise forward the token to another host. The
+    default is pinned too: every other call must still treat a 302 as a failure.
+    """
+    signed = "https://media.example.net/file/abc/binary?token=presigned"
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if str(request.url) == signed:
+            return httpx2.Response(200, content=ARTIFACT_BYTES)
+        return httpx2.Response(302, headers={"Location": signed})
+
+    auth = "Basic " + base64.b64encode(f"{FAKE_EMAIL}:{FAKE_TOKEN}".encode()).decode()
+    answer = await adapter.request(
+        "GET", CONTENT_URL, auth, transport=httpx2.MockTransport(handler), binary=True
+    )
+
+    assert answer == (200, ARTIFACT_BYTES), f"the bytes must come back unparsed: {answer}"
+    assert [url for url, _ in seen] == [CONTENT_URL, signed], f"the redirect was not followed: {seen}"
+    assert seen[1][1] is None, "the credential must not cross to the storage host the redirect names"
+
+    with pytest.raises(TrackerError, match="HTTP 302"):
+        await adapter.request("GET", CONTENT_URL, auth, transport=httpx2.MockTransport(handler))
+
+
 VERB_CALLS = [
     ("create_issue", lambda a: a.create_issue("task", "T", "body"), [(201, {"key": "PROJ-7"})]),
     ("get_issue", lambda a: a.get_issue("PROJ-7"), [ISSUE, THREAD]),
@@ -746,8 +999,18 @@ VERB_CALLS = [
     ("add_dependency", lambda a: a.add_dependency("PROJ-7", "PROJ-5"), [(201, None), LINK_CONFIRMED]),
     ("add_label", lambda a: a.add_label("PROJ-7", "shipyard"), [LABELS_READ, (204, None)]),
     ("post_comment", lambda a: a.post_comment("PROJ-7", "log"), [(201, {"id": "20001"})]),
+    ("type_convert", lambda a: a.type_convert("PROJ-7", "epic"), [(204, None), TYPE_READ]),
+    (
+        "attachment_delete",
+        lambda a: a.attachment_delete("PROJ-7", ARTIFACT_NAME),
+        [_attachments(_attachment()), (204, None), _attachments()],
+    ),
 ]
-"""Every canonical verb with just enough canned responses to complete, for the whole-surface sweeps."""
+"""Every canonical verb that needs no path on disk, with just enough canned responses to complete.
+
+The two attachment verbs taking a `Path` are covered by their own tests above instead: this sweep is
+about the credential and stdout, and both of those verbs reach the transport through the same upload and
+download paths the entries here already drive."""
 
 
 @pytest.mark.anyio

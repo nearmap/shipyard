@@ -1,22 +1,22 @@
 """GitHub tracker adapter, spoken to only through `sy_tools.tracker.adapter()`.
 
-Ports `skills/tracker/github/gh_project.py`'s `gh` transport rather than importing it: the CLI
-deployment stays byte-identical, and this copy differs in two ways the server requires. It never
-writes to stdout (that stream carries JSON-RPC frames, so one stray line desynchronises the
-client), and a failure raises `TrackerError` instead of `SystemExit`, because this process has
-other calls to serve after a bad one.
+This is the implementation of every canonical verb of `skills/tracker/CONTRACT.md` for this tracker,
+and the `gh` transport it speaks them over. Two properties come from where it runs rather than from
+`gh`: it never writes to stdout (that stream carries JSON-RPC frames, so one stray line
+desynchronises the client), and a failure raises `TrackerError` instead of exiting, because this
+process has other calls to serve after a bad one.
 
-Issue `Type` and `Status` are Projects v2 single-select fields, so the board-resolution logic in
-`skills/tracker/github/gh_project.py` is ported here too, one behaviour at a time: resolve, look
-the option up case-insensitively, and on a miss re-resolve once before failing, so a column added
-minutes ago works without a restart. Two differences from that helper are deliberate. The disk
-cache becomes a per-instance dict, and the `item-edit` response is not parsed, because a
-human-readable success line must not turn a completed write into a failure.
+Issue `Type` and `Status` are Projects v2 single-select fields, which `gh issue` cannot touch at all,
+so the board is resolved here: resolve, look the option up case-insensitively, and on a miss
+re-resolve once before failing, so a column added minutes ago works without a restart. The resolved
+board is cached in a per-instance dict, and the `item-edit` response is deliberately not parsed —
+a human-readable success line must not turn a completed write into a failure.
 
-`attach-artifact` is the deliberate asymmetry `skills/tracker/github/ADAPTER.md` documents: this
-tracker has no CLI-scriptable file attachment, so an artifact becomes a secret gist that a
-comment on the work item links to. Privacy is verified by reading the created gist back, not
-assumed from the flags passed: a public gist would publish a transcript irrevocably.
+The attachment verbs are the deliberate asymmetry `skills/tracker/github/ADAPTER.md` documents: this
+tracker has no scriptable file attachment, so an artifact becomes a secret gist that a comment on the
+work item links to, and the lifecycle verbs act on that gist through the link the comment carries.
+Privacy is verified by reading the created gist back, not assumed from the flags passed: a public
+gist would publish a transcript irrevocably.
 
 Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token, and every message
 built from command output or from a configured value goes through `_safe`, which both scrubs the
@@ -69,6 +69,23 @@ matched against the read, so a filter that matches nothing reads every remaining
 subprocess each, bounded individually by `TIMEOUT_SECONDS` and in aggregate by nothing. Past this many
 the search fails and says how to narrow itself, because a query that spends minutes and then reports
 nothing is indistinguishable to its caller from a board that has nothing on it."""
+
+ARTIFACT_COMMENT = "Shipyard artifact `{filename}`: {url}\n\nSecret gist — reachable only from this link."
+ARTIFACT_LINK = re.compile(r"Shipyard artifact `([^`\n]+)`: (https://\S+)")
+"""The comment `attach-artifact` writes, and the pattern the lifecycle verbs read it back with.
+
+The template and the pattern are one pair on purpose. This tracker stores nothing that links an issue to
+its artifact except that comment, so the comment *is* the attachment index: `attachment-download`,
+`-update` and `-delete` each find their gist by matching it. Written at one site and matched at another,
+the two drift the first time the wording changes, and the symptom is every lifecycle verb reporting that
+an issue has no artifacts while its transcripts sit in gists nobody can find again."""
+
+NOT_FOUND = re.compile(r"HTTP 404|not found", re.I)
+"""What `gh` says about a resource that is gone, which is the only positive evidence a delete landed.
+
+Matched narrowly because the alternative is treating any failed read as proof of deletion: a revoked
+credential, a rate limit or a network stall all fail the same call, and calling one of those a confirmed
+deletion reports a still-published transcript as removed."""
 
 VERIFY_ATTEMPTS = 4
 VERIFY_BACKOFF_SECONDS = 0.75
@@ -169,6 +186,22 @@ class GithubAdapter:
         """Upload `path` as a secret gist and link it from a comment on `issue`, off the event loop."""
         return await to_thread.run_sync(self._sync_attach_artifact, issue, path)
 
+    async def type_convert(self, issue: str, issue_type: str) -> dict:
+        """Change `issue`'s board `Type` to canonical `issue_type`, verified by re-reading the card."""
+        return await to_thread.run_sync(self._sync_type_convert, issue, issue_type)
+
+    async def attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
+        """Write the artifact gist `filename_or_id` names on `issue` to `output_path`, off the event loop."""
+        return await to_thread.run_sync(self._sync_attachment_download, issue, filename_or_id, output_path)
+
+    async def attachment_update(self, issue: str, path: Path) -> dict:
+        """Replace the contents of `issue`'s artifact gist named `path.name` with `path`, off the event loop."""
+        return await to_thread.run_sync(self._sync_attachment_update, issue, path)
+
+    async def attachment_delete(self, issue: str, filename_or_id: str) -> dict:
+        """Delete the artifact gist `filename_or_id` names on `issue`, off the event loop."""
+        return await to_thread.run_sync(self._sync_attachment_delete, issue, filename_or_id)
+
     async def preflight(self) -> dict:
         """Confirm `gh` is installed and authenticated, off the event loop."""
         return await to_thread.run_sync(self._sync_preflight)
@@ -192,7 +225,7 @@ class GithubAdapter:
         """Read `issue` from `gh`, with status and type taken from the board.
 
         `gh issue view --json` exposes no project single-select value, so the board item is read
-        separately — the same source `skills/tracker/github/gh_project.py get` reads.
+        separately: `Status` and `Type` live on the card, not on the issue.
         """
         data = _view(issue, ISSUE_FIELDS)
         url = str(data.get("url") or "")
@@ -366,9 +399,10 @@ class GithubAdapter:
     def _set_field(self, issue_url: str, field_name: str, option_name: str) -> str:
         """Ensure the issue is a board item, set one single-select field, and read the value back.
 
-        Ported from `gh_project.set_field`, bar the option lookup: that is `_checked_option`, because the
-        board-filtered read has to make the very same check against the very same board fields before it
-        matches a card by one of them.
+        The option lookup is `_checked_option` rather than inline, because the board-filtered read has to
+        make the very same check against the very same board fields before it matches a card by one of
+        them. Every write of a board value — `Status`, and the `Type` both `create-issue` and
+        `type-convert` set — goes through here, so the read-back verification cannot be skipped by one.
         """
         owner, number = _project_ref()
         resolved, (field_id, option_id) = self._checked_option(owner, number, field_name, option_name)
@@ -388,14 +422,13 @@ class GithubAdapter:
     ) -> tuple[dict[str, Any], tuple[str, str]]:
         """The board and the `(field_id, option_id)` for one native option name, or a failure naming the drift.
 
-        Ported from `gh_project.set_field`, and shared by the write path with the read filter because the
-        two meet the same fault: the board's real `Status` column or `Type` option name has drifted from
-        the `columns.*` config key naming it — renamed, retyped, or never created. Only the write path used
-        to notice. `_board_page` compared canonical tokens against values `canonical_status` had passed
-        through unmapped, so the same drift filtered every card out and `find_issues` answered `count: 0,
-        is_last: true` from a board with work on it, which is the one wrong answer a caller cannot tell from
-        an empty queue. `context` is what the read path adds to say the query was refused rather than
-        answered; the write path's message stays the one the CLI helper prints, word for word.
+        Shared by the write path with the read filter because the two meet the same fault: the board's real
+        `Status` column or `Type` option name has drifted from the `columns.*` config key naming it —
+        renamed, retyped, or never created. Only the write path used to notice. `_board_page` compared
+        canonical tokens against values `canonical_status` had passed through unmapped, so the same drift
+        filtered every card out and `find_issues` answered `count: 0, is_last: true` from a board with work
+        on it, which is the one wrong answer a caller cannot tell from an empty queue. `context` is what the
+        read path adds to say the query was refused rather than answered.
 
         The refresh retry is the load-bearing part for both: an option added to the board after this board
         was resolved must work without restarting the server, so a lookup miss re-resolves once before it
@@ -589,14 +622,14 @@ class GithubAdapter:
             raise TrackerError(
                 f"gist creation returned no usable URL for {path.name}; nothing was attached to {issue}."
             )
-        gist_id = gist_url.rstrip("/").rsplit("/", 1)[-1]
+        gist_id = _gist_id(gist_url)
         if _gh_json(["api", f"gists/{gist_id}"]).get("public") is not False:
             raise TrackerError(
                 f"{gist_url} is public or its visibility could not be confirmed; refusing to link it "
                 f"from {issue}. Delete it: gh gist delete {gist_id}"
             )
 
-        body = f"Shipyard artifact `{path.name}`: {gist_url}\n\nSecret gist — reachable only from this link."
+        body = ARTIFACT_COMMENT.format(filename=path.name, url=gist_url)
         comment_url = _gh(["issue", "comment", issue, *_repo_args(), "--body", body])
         if not comment_url.startswith("https://"):
             raise TrackerError(
@@ -609,6 +642,100 @@ class GithubAdapter:
             "gist_public": False,
             "comment_url": comment_url,
         }
+
+    def _sync_type_convert(self, issue: str, issue_type: str) -> dict:
+        """Set the board `Type` on an issue that already exists, reporting both vocabularies.
+
+        The same board write `create_issue` makes, on an issue it did not just create, so it goes through
+        `_set_field` and inherits that path's bounded read-back: `gh project item-edit` reports success
+        whether or not the value changed. The type is mapped before anything is written, so an unknown
+        canonical token cannot leave a card half-converted.
+
+        The issue is resolved to a URL first because board items are keyed by their content URL: an issue
+        number identifies nothing on the board.
+        """
+        option = native_type(issue_type)
+        url = _url_of(issue)
+        self._set_field(url, TYPE_FIELD, option)
+        return {"id": url, "type": issue_type, "native": option}
+
+    def _sync_attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
+        """Write the artifact gist `filename_or_id` names on `issue` to `output_path`.
+
+        `gh gist view --raw` prints the gist's contents unrendered, which for the single-file gists
+        `attach-artifact` creates is the artifact itself. Empty output is a failure rather than a
+        zero-byte file: on disk the two are indistinguishable, and only one of them is an artifact.
+
+        The bytes written are the artifact's text, not a byte-exact copy: `_gh` trims the output it
+        returns, so a trailing newline is not preserved. That is stated rather than worked around because
+        every other verb in this file goes through `_gh` for the timeout and the credential scrubbing it
+        applies, and a transcript is read for its content.
+        """
+        issue = _checked_ref(issue)
+        gist_id, filename, _ = _resolve_gist(issue, filename_or_id)
+        content = _gh(["gist", "view", gist_id, "--raw"])
+        if not content:
+            raise TrackerError(
+                f"gist {gist_id} holding {filename!r} on {issue} read back empty, so there is nothing to "
+                f"write to {output_path}; treat the download as failed rather than writing an empty file."
+            )
+        data = content.encode("utf-8")
+        output_path.write_bytes(data)
+        return {
+            "issue": issue,
+            "filename": filename,
+            "id": gist_id,
+            "bytes": len(data),
+            "path": str(output_path),
+        }
+
+    def _sync_attachment_update(self, issue: str, path: Path) -> dict:
+        """Replace the contents of `issue`'s artifact gist named `path.name` with `path`.
+
+        `gh gist edit <id> --filename <name> <source>` replaces one file in a gist from a local file,
+        which is a real in-place replace: the gist id and therefore the URL in the comment survive, so the
+        link on the work item keeps pointing at the current artifact and no second comment is posted. That
+        is the flag semantics `gh 2.96.0` documents for itself, not an assumption — `--add` adds a *new*
+        file, and adding one under a name the gist already carries is not what replace means here.
+
+        Verified by reading the gist back and comparing what it now holds against the file that was sent,
+        because `gh gist edit` prints nothing and exits zero either way. The comparison ignores surrounding
+        whitespace only, since `_gh` trims the output it returns.
+        """
+        issue = _checked_ref(issue)
+        if not path.is_file():
+            raise TrackerError(f"artifact not found: {path}")
+        try:
+            intended = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise TrackerError(
+                f"{path.name} is not UTF-8 text, and a gist holds text: this tracker has no binary "
+                "attachment, so there is nothing to replace it with. Attach the artifact as text."
+            ) from None
+        gist_id, filename, gist_url = _resolve_gist(issue, path.name)
+        _gh(["gist", "edit", gist_id, "--filename", filename, str(path)])
+        if _gh(["gist", "view", gist_id, "--raw"]).strip() != intended.strip():
+            raise TrackerError(
+                f"gist {gist_id} does not read back as the contents of {path.name} after the edit, so the "
+                f"replacement is unconfirmed and {issue} may still link the previous artifact."
+            )
+        return {"issue": issue, "filename": filename, "id": gist_id, "gist_url": gist_url, "replaced": 1}
+
+    def _sync_attachment_delete(self, issue: str, filename_or_id: str) -> dict:
+        """Delete the artifact gist `filename_or_id` names on `issue`, verified by reading it gone.
+
+        `gh gist delete <id> --yes` deletes without prompting, which matters in a server: the interactive
+        form waits on a stdin nobody is answering until the timeout kills it.
+
+        The comment that linked the gist is deliberately left in place. Removing an artifact is not the
+        same as erasing the record that one was attached, and this seam has no verb for deleting a comment;
+        the link resolving to nothing is then the honest state of an issue whose artifact was withdrawn.
+        """
+        issue = _checked_ref(issue)
+        gist_id, filename, _ = _resolve_gist(issue, filename_or_id)
+        _gh(["gist", "delete", gist_id, "--yes"])
+        _confirm_gist_gone(gist_id)
+        return {"issue": issue, "filename": filename, "id": gist_id, "deleted": True}
 
     def _sync_preflight(self) -> dict:
         """Confirm `gh` is installed, authenticated, and able to reach the board.
@@ -691,6 +818,69 @@ def _url_of(issue: str) -> str:
     if not url:
         raise TrackerError(f"gh issue view {issue} reported no URL, so the board item cannot be identified.")
     return url
+
+
+def _gist_id(gist_url: str) -> str:
+    """The gist id in a gist URL: the last path segment, which is what every `gh gist` call takes."""
+    return gist_url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
+    """The one artifact gist `filename_or_id` names on `issue`, as `(gist_id, filename, gist_url)`.
+
+    The issue's own comments are the index: `attach-artifact` records the artifact's filename and the gist
+    URL in one, and nothing else on this tracker ties the two together. So the comments are read and
+    matched, by gist id first and then by exact filename.
+
+    Exactly one match, or a failure listing every artifact the comments record — the same rule the other
+    adapter applies to attachments sharing a filename, and for the same reason: attaching one transcript
+    twice leaves two gists under one name, and picking either would download or irrevocably delete an
+    arbitrary one of them. Two comments naming the same filename *and* the same gist are one artifact
+    recorded twice, so they collapse rather than reading as an ambiguity a caller cannot resolve.
+
+    The listing goes through `_safe`: it is built from comment bodies, which carry whatever a caller wrote.
+    """
+    links = list(
+        dict.fromkeys(
+            (match.group(1), _gist_id(match.group(2)), match.group(2))
+            for comment in _comments(_view(issue, "comments"))
+            for match in ARTIFACT_LINK.finditer(comment["body"])
+        )
+    )
+    by_id = [link for link in links if link[1] == filename_or_id]
+    matches = by_id if len(by_id) == 1 else [link for link in links if link[0] == filename_or_id]
+    if len(matches) == 1:
+        filename, gist_id, gist_url = matches[0]
+        return gist_id, filename, gist_url
+    listing = ", ".join(f"{filename} -> {gist_id}" for filename, gist_id, _ in (matches or links))
+    raise TrackerError(
+        f"{len(matches)} artifacts on {issue} match {filename_or_id!r}; expected exactly one, so pass the gist "
+        f"id to name the one you mean. The artifact comments on {issue} record: {_safe(listing) or 'none'}"
+    )
+
+
+def _confirm_gist_gone(gist_id: str) -> None:
+    """Prove a deleted gist is really gone. Only a not-found read is evidence; no other failure is.
+
+    `gh gist delete` exits zero and prints nothing, so the read-back is the whole verification — and the
+    read-back is a failure by design, which is exactly why its *shape* has to be checked. Treating any
+    failed read as proof of deletion would report a still-public transcript as removed whenever the
+    credential was revoked, the rate limit was hit, or the network stalled; a successful read is the
+    opposite evidence and fails too.
+    """
+    try:
+        _gh_json(["api", f"gists/{gist_id}"])
+    except _GhFailure as exc:
+        if NOT_FOUND.search(str(exc)):
+            return
+        raise TrackerError(
+            f"gist {gist_id} was deleted but the read-back could not confirm it is gone: {exc} Treat the "
+            "deletion as unconfirmed and check by hand — the artifact may still be published."
+        ) from None
+    raise TrackerError(
+        f"gist {gist_id} still reads back after the delete reported success, so the artifact is still "
+        "published; treat the deletion as failed."
+    )
 
 
 def _repo_slug(url: str) -> str:
@@ -1017,10 +1207,9 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     """One board item, with its `Type` and `Status` option names mapped to canonical tokens.
 
     `kind` is the card's own content type — `Issue`, `PullRequest` or `DraftIssue` — carried through
-    unmapped, and is the one key with no counterpart in `skills/tracker/github/gh_project.py`'s mapping:
-    that helper lists board items as board items, while `find_issues` here owes its caller issues and
-    has to be able to tell which cards are ones. It is deliberately not folded into `type`, which is the
-    board's own single-select and the canonical `epic`/`task`/`bug` vocabulary.
+    unmapped, because `find_issues` owes its caller issues and a board holds pull request and draft cards
+    in the same columns. It is deliberately not folded into `type`, which is the board's own single-select
+    and the canonical `epic`/`task`/`bug` vocabulary.
 
     A `content` that is anything but an object reads as no content, rather than being asked for keys it
     has no `get` for: `null` is what `gh` renders a card the credential may not view as, and any other

@@ -269,15 +269,22 @@ whether a block is a machine log is the `schema` key inside it, not the fence it
 
 
 def _outside_fences(body: str, matches: list[re.Match[str]]) -> str:
-    """Whatever is left of the body once every properly closed fenced block is cut out.
+    """Whatever is left of the body once every properly closed block's *content* is cut out.
 
-    Cut by each match's span rather than by substring replacement: two identical blocks in one body
-    would make `str.replace` remove the wrong copies and leave the count short.
+    Cut by span rather than by substring replacement: two identical blocks in one body would make
+    `str.replace` remove the wrong copies and leave the count short.
+
+    The span cut is the content group's, not the whole match's, so the fence delimiter lines stay in
+    what comes back. That matters for the opening line: `FENCE`'s content group starts after the
+    first newline, so anything sitting in the info-string position — conventionally a bare language
+    tag, but the pattern constrains it to nothing — is not content and is never parsed or validated.
+    Cutting the whole match swallowed it, which let one fence carry a second machine log there that
+    reached the tracker unread. Leaving it in makes it a stray mention like any other unfenced text.
     """
     kept, cursor = [], 0
     for match in matches:
-        kept.append(body[cursor : match.start()])
-        cursor = match.end()
+        kept.append(body[cursor : match.start(1)])
+        cursor = match.end(1)
     kept.append(body[cursor:])
     return "".join(kept)
 
@@ -326,11 +333,20 @@ def _validate_machine_log(body: str) -> None:
     caller has to resolve, and without one it is the malformed-log case the body-level arming already
     caught. The narrowness that keeps this usable is unchanged: unfenced *text* is only a candidate
     when it names this id, so quoting someone else's broken JSON beside a valid log still posts.
+
+    "Raw text" means the block's *content*, and the split between content and delimiter is where this
+    bypass surfaced last: a fence's opening line can carry text after the marker, and that text is not
+    content, so it is never parsed or validated. Tallying candidates off the whole match counted a
+    fence whose info string held a complete second machine log — while validating only the content
+    beside it, which was itself valid — so the comment posted with the info string's log inside it
+    verbatim. Both halves of the answer are one change: candidates are counted in the content group,
+    and `_outside_fences` cuts only that group, which leaves the info string to the stray-mention
+    check. A plain language tag mentions nothing and changes nothing.
     """
     if SCHEMA_ID not in body:
         return
     matches = list(FENCE.finditer(body))
-    claiming = [match for match in matches if SCHEMA_ID in match.group(0)]
+    claiming = [match for match in matches if SCHEMA_ID in match.group(1)]
     stray = SCHEMA_ID in _outside_fences(body, matches)
     if len(claiming) + stray > 1:
         raise ToolError(

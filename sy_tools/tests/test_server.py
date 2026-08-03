@@ -592,6 +592,65 @@ async def test_a_fence_invisible_block_that_never_names_the_schema_still_posts(m
 
 
 @pytest.mark.anyio
+async def test_a_record_in_the_fence_info_string_is_refused_beside_the_block_it_hides_behind(monkeypatch):
+    """A fence's opening line is not its content, so a log parked there was validated by nothing.
+
+    `FENCE`'s content group starts after the first newline: whatever sits after the marker on the
+    opening line is the info-string position, conventionally a language tag, and the pattern allows
+    anything there. Tallying candidates off the whole match saw the id in that text and counted the
+    fence once, then validated only the content — a second, correctly schema'd record — and posted the
+    comment with the info string's record inside it verbatim, unread. It renders as part of the code
+    block's first line, which is to say it lands looking exactly as authoritative as what was checked.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = (
+        f'```json {{"schema": "{SCHEMA_ID}", "task": "AM-9999", "human_review_defects": 99}}\n'
+        f'{{"schema": "{SCHEMA_ID}", "task": "AM-1236"}}\n'
+        "```\n"
+    )
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"a record in the info string was invisible to the check: {body}"
+    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
+        f"the refusal must name the schema and count the info string's record too: {_text(result)}"
+    )
+
+
+@pytest.mark.anyio
+async def test_an_info_string_naming_the_schema_over_content_that_does_not_is_refused_as_carrying_no_block(monkeypatch):
+    """The degenerate half of the same split: the only mention of the id is in a non-content position.
+
+    Nothing here is a candidate block — the content parses but is not a machine log — so this is the
+    "names the id, carries no block" case, not the ambiguity case. Pinning *which* refusal it gets is
+    the point: reading it as ambiguous would tell the caller to remove a second block that isn't there.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = f'```json {{"schema": "{SCHEMA_ID}"}}\n{{"task": "AM-1236"}}\n```\n'
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"an info-string-only mention was posted unchecked: {body}"
+    assert "carries no fenced block that parses as one" in _text(result), (
+        f"one mention in a non-content position is the no-valid-block refusal, not ambiguity: {_text(result)}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_valid_log_whose_info_string_carries_more_than_a_language_tag_still_posts(monkeypatch):
+    """Leaving the info string to the stray-mention check must stay a no-op on info strings as such.
+
+    The refusals above turn on the info string *naming this id*, not on it holding anything beyond the
+    bare language tag — a fence annotated with a title or a highlight directive is ordinary Markdown.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = _metrics_comment().replace("```json\n", '```json title="ship metrics"\n')
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, f"an annotated info string must not arm the check: {result.content}"
+    assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
+
+
+@pytest.mark.anyio
 async def test_an_unrelated_malformed_block_beside_a_valid_log_still_posts(monkeypatch):
     """The raw-text tally must stay narrow: a broken block that never names this id is not a candidate.
 

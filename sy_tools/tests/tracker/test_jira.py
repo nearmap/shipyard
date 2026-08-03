@@ -98,6 +98,29 @@ def _transport(monkeypatch, *responses: object) -> list[dict]:
     return calls
 
 
+def _routed(monkeypatch, *matched: tuple[str, object]) -> list[dict]:
+    """Like `_transport`, but answering each call by the first URL fragment that matches it, in order.
+
+    A positional queue is the right shape for a verb whose calls are fixed, and the wrong shape for a
+    test about a call the adapter should have made: skipping one hands the next its predecessor's
+    response, and the verb fails on a shape mismatch instead of on the answer it built from what it
+    did read. Matching the URL keeps that failure the assertion's own.
+    """
+    calls: list[dict] = []
+
+    async def fake_request(method, url, auth, data=None, headers=None, *, transport=None, binary=False):
+        calls.append({
+            "method": method, "url": url, "auth": auth, "data": data, "headers": headers or {}, "binary": binary,
+        })
+        for fragment, answer in matched:
+            if fragment in url:
+                return (200, answer)
+        raise AssertionError(f"no canned response for {method} {url}")
+
+    monkeypatch.setattr(adapter, "request", fake_request)
+    return calls
+
+
 def _attachment(attachment_id: str = "10501", filename: str = ARTIFACT_NAME, content: str | None = None) -> dict:
     """One attachment as Jira's `attachment` field reports it, trimmed to the keys the adapter reads."""
     return {
@@ -396,10 +419,13 @@ async def test_preflight_reads_the_account_and_the_configured_project(credential
 @pytest.mark.parametrize(
     ("answer", "expected"),
     [
-        (TrackerError("HTTP 404 from GET /project/PROJ: No project could be found with key 'PROJ'"), "could not read"),
+        (
+            adapter.JiraStatusError("HTTP 404 from GET /project/PROJ: No project could be found with key 'PROJ'", 404),
+            "could not read",
+        ),
         ({"id": "10000", "key": "OTHER", "name": "Somebody else's board"}, "came back as project 'OTHER'"),
     ],
-    ids=["unreachable", "resolved-to-another-project"],
+    ids=["not-found", "resolved-to-another-project"],
 )
 async def test_preflight_fails_naming_the_project_it_could_not_confirm(credentials, monkeypatch, answer, expected):
     """The claim `skills/tracker/jira/ADAPTER.md` makes is that preflight names which value is wrong.
@@ -416,6 +442,42 @@ async def test_preflight_fails_naming_the_project_it_could_not_confirm(credentia
     assert "tracker_config.project" in message, f"the failure must name the setting to fix: {message}"
     assert FAKE_PROJECT in message and expected in message, f"the failure must name the project key: {message}"
     assert FAKE_TOKEN not in message, "a preflight failure must not leak the credential it authenticated with"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "detail", "blamed"),
+    [
+        (adapter.JiraStatusError(f"HTTP 404 from GET {BASE}/project/PROJ: no such project", 404), "HTTP 404", True),
+        (TrackerError(f"GET {BASE}/project/PROJ timed out after {TIMEOUT_SECONDS}s"), "timed out", False),
+        (TrackerError(f"could not reach {BASE}/project/PROJ: [Errno 8] nodename not provided"), "reach", False),
+        (adapter.JiraStatusError(f"HTTP 503 from GET {BASE}/project/PROJ: gateway", 503), "HTTP 503", False),
+    ],
+    ids=["not-found", "timeout", "unreachable-host", "server-error"],
+)
+async def test_preflight_blames_the_project_key_only_when_jira_answered_not_found(
+    credentials, monkeypatch, failure, detail, blamed
+):
+    """A stall and a mistyped key both failed the project read, and both used to read as a bad key.
+
+    `request` raises one exception class for a status, a stall and an unreachable host alike, so catching
+    `TrackerError` here rewrote every one of them into "check the key against the projects this account
+    can see" — a diagnosis nothing measured, pointing at a setting that was right, while the fault that
+    actually happened disappeared from the message.
+    """
+    _transport(monkeypatch, MYSELF_BODY, failure)
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.JiraAdapter().preflight()
+
+    message = str(raised.value)
+    assert detail in message, f"the real cause must survive whatever this verb adds to it: {message}"
+    assert ("Check the key" in message) is blamed, (
+        f"only a not-found answer may be reported as a wrong project key: {message}"
+    )
+    assert (raised.value is failure) is not blamed, (
+        "a fault this verb cannot diagnose must reach the caller as itself, not as a rewritten copy"
+    )
 
 
 @pytest.mark.anyio
@@ -476,7 +538,11 @@ async def test_get_issue_reads_canonical_fields_markdown_and_only_the_blockers(c
     assert set(full) == {
         "id", "title", "body", "status", "type", "parent", "children", "children_truncated", "labels",
         "dependencies", "url", "comments", "comments_truncated",
-    }, f"the return shape is a frozen cross-adapter contract: {sorted(full)}"
+    }, (
+        "the content keys are the cross-adapter contract; the `*_truncated` flags are per-adapter, each "
+        f"naming a list that tracker's own API can silently clip — github reports `dependencies_truncated` "
+        f"and no `comments_truncated`, because its comment read has no page cap to breach: {sorted(full)}"
+    )
     assert full["comments_truncated"] is False, "a thread Jira reports as complete must not read as clipped"
     assert (full["status"], full["type"]) == ("in-review", "task"), f"natives were not canonicalised: {full}"
     assert full["parent"] == "PROJ-1", f"the parent key was not extracted: {full['parent']}"
@@ -606,6 +672,64 @@ async def test_get_issue_reads_a_non_epics_children_from_subtasks_without_a_sear
 
     assert [c["method"] for c in calls] == ["GET", "GET"], f"a Task read must not cost a search: {calls}"
     assert (full["children"], full["children_truncated"]) == (["PROJ-8", "PROJ-9"], False), full
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "issuetype",
+    [{"name": "Initiative"}, {"name": "Deliverable"}, None],
+    ids=["above-epic", "custom-level", "missing"],
+)
+async def test_get_issue_searches_for_the_children_of_any_type_that_is_not_a_known_leaf(
+    credentials, monkeypatch, issuetype
+):
+    """`canonical_type` passes an unmapped native name straight through, so "is not an Epic" is not a test.
+
+    A level above Epic, a custom hierarchy level, and an issue whose `issuetype` is missing altogether all
+    failed that test, were read from `subtasks` — empty on every one of them — and came back as
+    `children: []` with `children_truncated: False`: a decomposed parent reported as childless, with
+    nothing in the answer to suggest the emptiness was manufactured here rather than measured in Jira.
+    """
+    unplaceable = {"key": "PROJ-1", "fields": {**EPIC["fields"], "issuetype": issuetype, "subtasks": []}}
+    calls = _routed(monkeypatch, ("/comment", THREAD), ("/search/jql", EPIC_CHILDREN), ("/issue/", unplaceable))
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-1")
+
+    assert full["children"] == ["PROJ-8", "PROJ-9"], (
+        f"a type this adapter cannot place in the hierarchy must be searched, not read off the `subtasks` "
+        f"field that answers empty for every one of them: {full['children']}"
+    )
+    assert [c["method"] for c in calls] == ["GET", "POST", "GET"], f"the search is the call that finds them: {calls}"
+
+
+OTHER_PROJECT_CHILDREN = {
+    "issues": [{"key": "OTHER-8", "fields": {"summary": "A task on another board", "status": {"name": "Closed"},
+                                             "issuetype": {"name": "Task"}, "parent": {"key": "OTHER-1"},
+                                             "labels": []}}],
+}
+"""The child page for an Epic outside the configured project — the read that used to come back empty."""
+
+
+@pytest.mark.anyio
+async def test_get_issue_scopes_the_child_search_to_the_issues_own_project(credentials, monkeypatch):
+    """`get-issue` reads any key; only `find-issues` is about the configured board.
+
+    Following a `dependencies` link routinely lands on an Epic in another project. The child search was
+    scoped to `tracker_config.project` regardless, so the JQL named a project the key does not belong to,
+    matched nothing, and reported a decomposed cross-project Epic as childless — Jira answers such a
+    search with zero issues rather than an error, so nothing else could notice.
+    """
+    epic = {"key": "OTHER-1", "fields": EPIC["fields"]}
+    calls = _routed(
+        monkeypatch, ("/comment", THREAD), ("/search/jql", OTHER_PROJECT_CHILDREN), ("/issue/", epic)
+    )
+
+    full = await adapter.JiraAdapter().get_issue("OTHER-1")
+
+    assert _sent(calls[1])["jql"] == 'project = "OTHER" AND parent = "OTHER-1"', (
+        f"the search must be scoped to the read issue's own project, not {FAKE_PROJECT}: {_sent(calls[1])['jql']}"
+    )
+    assert full["children"] == ["OTHER-8"], f"a cross-project Epic's children must still be read: {full['children']}"
 
 
 @pytest.mark.anyio

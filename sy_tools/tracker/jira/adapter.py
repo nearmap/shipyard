@@ -69,6 +69,37 @@ RESULT_CEILING = 200
 """The hard cap on a search's `maxResults`, whatever a caller asks for. An unbounded search on a
 busy project is a large response assembled in memory for a caller that wanted a page."""
 
+LEAF_TYPES = ("task", "bug")
+"""The canonical types whose children Jira's `subtasks` field really does report.
+
+Membership is tested positively rather than by asking whether the type *is* an Epic, because
+`canonical_type` passes a native name it does not map through unchanged: an issue at a hierarchy
+level above Epic, at a custom level, or carrying no `issuetype` at all is not `"epic"` either, and
+excluding only `"epic"` sent every one of them to `subtasks` — empty for all of them — so a
+decomposed parent read as childless, with no error and no truncation flag to make that look wrong.
+
+Getting this wrong in the safe direction costs one search on an issue that has no children to find.
+Getting it wrong in the other direction is silent, and `children: []` is what the duplicate-work and
+decomposition checks above this seam read as "nothing has been planned here yet".
+"""
+
+NOT_FOUND = 404
+"""The one status that means a configured project key names nothing this account can read."""
+
+
+class JiraStatusError(TrackerError):
+    """A `TrackerError` for a call Jira actually answered, carrying the status it answered with.
+
+    A stall, an unreachable host and a 404 all reach a caller as a `TrackerError`, and one caller has
+    to tell them apart: the project preflight rewrites a not-found into "the configured project key is
+    wrong", which is a fabricated diagnosis when the real cause was a timeout. The status rides on the
+    exception rather than being parsed back out of its message.
+    """
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class JiraAdapter:
     """The canonical tracker verbs, implemented against the Jira Cloud REST API."""
@@ -111,8 +142,8 @@ class JiraAdapter:
         Two calls, because Jira serves comments from their own endpoint: the field read is scoped to
         `ISSUE_FIELDS`, and the comment read is bounded and newest-first.
 
-        Children take a third call on an Epic, for the reason `_children` documents; on anything else
-        they come from the field read.
+        Children take a third call on anything that is not a known leaf type, for the reasons
+        `_children` documents; on a Task or a Bug they come from the field read.
 
         `comments_truncated` reports whether that bound actually cut anything off, and
         `children_truncated` does the same for a child list read one page at a time. A silently short
@@ -167,7 +198,30 @@ class JiraAdapter:
         Every interpolated value is a quoted JQL literal, so a title containing a quote cannot break
         out of its clause and widen the search.
         """
-        project = _project()
+        return await self._search(
+            _project(), status=status, issue_type=issue_type, parent=parent, text=text, limit=limit
+        )
+
+    async def _search(
+        self,
+        project: str,
+        *,
+        status: str | None = None,
+        issue_type: str | None = None,
+        parent: str | None = None,
+        text: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """One page of `project`'s issues matching the given filters: the search both readers share.
+
+        `project` is a parameter rather than a read of config because the two callers scope differently.
+        `find-issues` is a verb about the configured board, so it passes `_project()`. `get-issue` reads
+        any issue by key whatever project it lives in, so the child search it runs passes the read
+        issue's own project: scoping that to the configured one answered `children: []` for an Epic in
+        another project — routine when following a `dependencies` link across projects — because a JQL
+        search naming a project the key does not belong to matches nothing, and Jira reports no error
+        for a search that matched nothing.
+        """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
         clauses = [f"project = {_jql(project)}"]
@@ -422,10 +476,14 @@ class JiraAdapter:
         An Epic's children therefore come from the same `parent = <key>` search `find-issues` serves,
         one page like every other search here, and the bound is reported rather than hidden:
         `children_truncated` is to a clipped child list what `comments_truncated` is to a clipped thread.
+
+        `subtasks` is trusted only for a known leaf type, per `LEAF_TYPES`, and the search is scoped to
+        the read issue's own project, per `_key_project`: an unrecognised type and a cross-project Epic
+        both used to reach the same silent `children: []`.
         """
-        if canonical_type(_field(fields.get("issuetype"), "name")) != "epic":
+        if canonical_type(_field(fields.get("issuetype"), "name")) in LEAF_TYPES:
             return _keys(fields.get("subtasks")), False
-        page = await self.find_issues(parent=issue, limit=RESULT_CEILING)
+        page = await self._search(_key_project(issue), parent=issue, limit=RESULT_CEILING)
         return [str(item["id"]) for item in page["issues"]], not page["is_last"]
 
     async def preflight(self) -> dict:
@@ -503,7 +561,9 @@ async def request(
         ) as client:
             resp = await client.request(method, url, content=data, headers=sent)
             if not resp.is_success:
-                raise TrackerError(f"HTTP {resp.status_code} from {method} {url}: {resp.text[:2000]}")
+                raise JiraStatusError(
+                    f"HTTP {resp.status_code} from {method} {url}: {resp.text[:2000]}", resp.status_code
+                )
             if binary:
                 return resp.status_code, resp.content
             return resp.status_code, json.loads(resp.content) if resp.content else None
@@ -765,6 +825,17 @@ def _field(value: object, key: str) -> str | None:
     return str(member) if member else None
 
 
+def _key_project(issue: str) -> str:
+    """The project an issue key belongs to: `PROJ-123` → `PROJ`, falling back to the configured one.
+
+    Split on the last hyphen rather than the first, because the issue number is the one part of a key
+    that cannot contain one. A value carrying no number at all is not a key this can scope, so the
+    configured project stands in — the same scope such a value got before there was a fallback to make.
+    """
+    prefix = issue.rpartition("-")[0].strip()
+    return prefix or _project()
+
+
 def _jql(value: str) -> str:
     """One JQL string literal, escaped so a value cannot terminate its own clause."""
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -805,15 +876,22 @@ async def _project_key(base: str, auth: str, project: str) -> str:
     The key that comes back is compared, not merely fetched: this endpoint resolves a project by numeric
     id as well as by key, so a response arriving under a different key is not the project the
     configuration names.
+
+    Only a `NOT_FOUND` answer is rewritten into a verdict about the configured key, and it keeps the
+    original failure as its cause. Catching every `TrackerError` here relabelled a timeout, an
+    unreachable host, a revoked credential and a 500 as "check your project key" — a diagnosis nothing
+    measured, which sends a reader to edit a setting that was right and drops the fault that happened.
     """
     try:
         _, item = await request("GET", f"{base}{API}/project/{quote(project, safe='')}", auth)
-    except TrackerError as exc:
+    except JiraStatusError as exc:
+        if exc.status != NOT_FOUND:
+            raise
         raise TrackerError(
             f"tracker_config.project is set to {project!r}, which this account could not read: {exc} "
             "Check the key against the projects this account can see; a wrong key is invisible to every "
             "search, which answers zero issues rather than failing"
-        ) from None
+        ) from exc
     key = _field(item, "key") or ""
     if key.strip() != project.strip():
         raise TrackerError(

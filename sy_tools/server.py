@@ -17,26 +17,26 @@ the stream and desynchronises the client, which is why the ported adapter code r
 printing and why every diagnostic goes to stderr.
 
 Run it with `pixi run sy-server` (which is `python -m sy_tools.server`); `.mcp.json` registers
-exactly that, and passes `--manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml` because it has to.
-Claude Code launches a plugin-provided stdio server with the *consumer project's* directory as its
-working directory, not the plugin's, and `pixi` finds its manifest by walking up from there — so a
-bare `pixi run` resolves only in this repo's own dev loop and fails in every real install. It does
-interpolate `${CLAUDE_PLUGIN_ROOT}` inside the manifest's JSON strings, which is what makes the
-absolute form work; `"cwd"` is not an option, because Claude Code ignores that key silently.
+exactly that, and passes `--manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml` because it has to —
+`${CLAUDE_PLUGIN_ROOT}` interpolates inside the manifest's JSON strings, which is what makes the
+absolute form work regardless of launch cwd; `"cwd"` is not an option, because Claude Code ignores
+that key silently.
 
-**Known limitation, measured not assumed:** `pixi run <declared-task>` does not inherit the caller's
-working directory — it runs the task from the manifest's own directory, where a bare
-`pixi run <command>` does inherit it. Confirmed with a discriminating control: the same probe
-reports the manifest directory when registered as a task and the call site when passed as a command.
-So the launch line above lands this process in the *plugin's* directory regardless of where Claude
-Code started it, and `config.repo_root()` — which shells `git rev-parse --show-toplevel` from the
-working directory — therefore resolves the plugin's checkout rather than the consumer project's. In
-a marketplace install that directory holds no `.shipyard/` at all, so the consumer repo's committed
-configuration is not read and only `config/defaults.json` applies. This predates the verb cutover
-and is not fixed here: the fix is a choice between mechanisms (teaching `repo_root()` a
-consumer-directory signal, or launching without a declared task) with its own trade-offs, so it is
-tracked as its own change rather than smuggled in. Until then, the MCP deployment is only known-good
-where the plugin checkout and the consumer repo are the same tree, which is this repo's own dev loop.
+**Measured, not assumed:** `pixi run <declared-task>` does not inherit the caller's working
+directory — it runs the task from the manifest's own directory, where a bare `pixi run <command>`
+does inherit it (confirmed with a discriminating control: the same probe reports the manifest
+directory when registered as a task, the call site when passed as a command). So this process's
+cwd is always the *plugin's* checkout, never the consumer project's — which would break
+`config.repo_root()` if it depended on cwd, since a marketplace install's plugin checkout holds no
+`.shipyard/` at all. It doesn't: `repo_root()` reads `CLAUDE_PROJECT_DIR` first, the pointer Claude
+Code sets for every MCP stdio server it launches (matching hooks), and that env var is immune to
+pixi's cwd reset — only falling back to a cwd-derived `git rev-parse --show-toplevel` for the
+invocations Claude Code doesn't launch (manual `pixi run sy-server`, `docs/smoke_mcp.py`, pytest),
+where cwd is already correct. Switching the launch line to an ad-hoc command instead of the
+declared task was the other candidate fix and was rejected: it does dodge the cwd reset, but
+`python -m sy_tools.server` then can't find the `sy_tools` package at all in a real install, since
+importability here relies on Python's implicit cwd-as-`sys.path[0]` and the consumer project has no
+reason to contain a `sy_tools/` package of its own.
 
 The manifest carries no `env` block, which is deliberate and was settled empirically rather than
 from documentation: a stdio server inherits the launching process's environment, so the one real

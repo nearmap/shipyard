@@ -49,10 +49,30 @@ def fixture_repo(tmp_path, monkeypatch):
     (tmp_path / ".shipyard" / "config.json").write_text(json.dumps(FIXTURE_LAYER), encoding="utf-8")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))  # keep the user-global layer out of the fixture
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)  # exercise the cwd-derived fallback by default
     monkeypatch.chdir(tmp_path)
     config.reload()
     yield tmp_path
     config.reload()
+
+
+def test_repo_root_prefers_claude_project_dir_over_cwd(fixture_repo, tmp_path, monkeypatch):
+    """A `pixi run <declared-task>` dispatch resets cwd to the manifest's own directory (a real,
+    measured pixi behaviour — see `sy_tools/server.py`'s module docstring), so `repo_root()` must
+    not trust cwd when Claude Code's own pointer is available; it should win even when cwd disagrees.
+    """
+    other = tmp_path.parent / "not-the-cwd"
+    other.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(other))
+    assert config.repo_root() == other
+    assert fixture_repo != other, "the fixture must actually be a different directory than cwd"
+
+
+def test_repo_root_falls_back_to_git_toplevel_without_the_env_var(fixture_repo):
+    """Every invocation Claude Code doesn't launch (manual `pixi run sy-server`, `docs/smoke_mcp.py`,
+    pytest itself) has no `CLAUDE_PROJECT_DIR` to read, so `repo_root()` must keep resolving from cwd.
+    """
+    assert config.repo_root() == fixture_repo.resolve()
 
 
 def test_resolution_matches_the_cli_resolver(fixture_repo):

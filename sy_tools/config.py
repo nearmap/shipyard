@@ -60,7 +60,18 @@ def plugin_root() -> Path:
 
 
 def repo_root() -> Path:
-    """The consuming repository's root, else the working directory when not in a checkout."""
+    """The consuming repository's root: Claude Code's own pointer when set, else derived from cwd.
+
+    `CLAUDE_PROJECT_DIR` is authoritative when present — Claude Code sets it for every MCP stdio
+    server it launches (matching the pointer it already gives hooks), and unlike cwd it survives a
+    `pixi run <declared-task>` dispatch, which resets the launched process's working directory to
+    the manifest's own directory rather than inheriting the caller's. Falling back to `git
+    rev-parse --show-toplevel` from cwd keeps every non-Claude-Code invocation working exactly as
+    before (manual `pixi run sy-server`, `docs/smoke_mcp.py`, the pytest suite).
+    """
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project_dir:
+        return Path(project_dir)
     proc = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,

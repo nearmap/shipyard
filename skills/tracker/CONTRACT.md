@@ -57,7 +57,7 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `post-comment` | Post a Markdown comment. The TL;DR-first convention applies here, in core. |
 | `post-log` | Post a **standalone** machine log comment (fenced JSON). Never combined with prose — see below. |
 | `attach-artifact` | Attach a durable file (the session transcript) to the issue — see below. |
-| `attachment-download` | Fetch an artifact already attached to an issue to a local path. |
+| `attachment-download` | Fetch an artifact already attached to an issue to a local path, named by filename or the tracker-native id (the disambiguator when two attachments share a filename). |
 | `attachment-update` | Replace the attached artifact of the same filename. Destructive; sanitised like `attach-artifact`. |
 | `link-pr` | Associate a PR with an issue. |
 
@@ -93,9 +93,10 @@ type — parent links, board membership — and converting back does not undo th
 ### Attachment lifecycle has no delete
 
 `attachment-update` replaces every attachment of the same filename, which is undoable only by
-uploading a further replacement — confirm the target first. It resolves by filename, taking
-the tracker-native id instead to disambiguate duplicates. Zero matches is a plain first upload, never
-a failure: the verb's contract is replace-by-filename with nothing to replace explicitly fine.
+uploading a further replacement — confirm the target first. It takes no id: it resolves purely by
+`path`'s filename and replaces every match, however many there are. Zero matches is a plain first
+upload, never a failure: the verb's contract is replace-by-filename with nothing to replace
+explicitly fine.
 
 There is deliberately no `attachment-delete` verb: removing an artifact from an issue's durable record
 with no undo is a real safety cost for a capability nothing in the documented plan/spec/ship/spike

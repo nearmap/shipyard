@@ -88,6 +88,9 @@ LEGACY_ENV = {
     "SY_IMAGE_MODEL": "models.agents.img-inspector.model",
     "SY_DEBATE_MODEL": "models.agents.debate.model",
 }
+# The retired name for `tracker` specifically. `migrate` reads it out of the block it is converting to
+# decide whose adapter names to migrate; derived from the map above so the two cannot drift apart.
+_TRACKER_ENV = next(name for name, path in LEGACY_ENV.items() if path == "tracker")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -384,7 +387,10 @@ def repo_root() -> Path:
     checkout root, and a pointer naming no checkout is refused rather than silently resolving the
     shipped defaults with no layer above them. A `git` that cannot be run is a separate refusal from
     `_git_toplevel` itself, so it is never misreported as the pointer's fault and reaches the cwd
-    path too, which has no pointer to blame.
+    path too, which has no pointer to blame. A working directory that can no longer be read at all —
+    deleted or made inaccessible under a hook that inherited it — is a third named refusal, mirroring
+    `sy_tools/config.py::repo_root`: `validate()` had its own guard, but `show`, `get`, `agent` and
+    `fingerprint` reach here without one and used to traceback raw out of `Path.cwd()`.
     """
     global _REPO_ROOT
     if _REPO_ROOT is None:
@@ -399,7 +405,14 @@ def repo_root() -> Path:
                 )
             _REPO_ROOT = root
         else:
-            _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+            try:
+                _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+            except OSError as exc:
+                raise SystemExit(
+                    f"sy_config: the working directory could not be read to derive the repository root: "
+                    f"{exc}. Set CLAUDE_PROJECT_DIR to the consuming repository, or run from a directory "
+                    "that still exists."
+                ) from None
     return _REPO_ROOT
 
 
@@ -489,8 +502,19 @@ def _adapter_map() -> dict:
         tracker = _flatten(resolve()[0]).get("tracker")
     except SystemExit:
         return {}
-    path = plugin_root() / "skills" / "tracker" / str(tracker) / "config-map.json"
+    path = _adapter_map_path(tracker)
     return _load_json(path) if path.is_file() else {}
+
+
+def _adapter_map_path(tracker: object) -> Path:
+    """Where one tracker's `config-map.json` lives: one spelling for the lenient and strict readers."""
+    return plugin_root() / "skills" / "tracker" / str(tracker) / "config-map.json"
+
+
+def _known_trackers() -> list[str]:
+    """Every tracker that ships a `config-map.json`, for naming the alternatives in a refusal."""
+    tracker_dir = plugin_root() / "skills" / "tracker"
+    return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []
 
 
 _SCHEMA: dict | None = None
@@ -771,36 +795,77 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
     """Convert a legacy settings.json `env` block into config JSON, leaving secrets behind.
 
     Resolution is forced up front so that a failure to resolve refuses the whole conversion. Half the
-    legacy map is the selected adapter's own `legacy_env` block, reached through `_adapter_map()`,
-    which degrades to `{}` on any resolution failure — best-effort is right for a caller that only
-    wants tracker metadata, and wrong here: an unrunnable `git` or an unreadable layer would silently
-    cost every adapter-specific variable (`tracker_config.*`) and still write a file that looks
-    complete, which a one-time, data-preserving conversion must never do.
+    legacy map is one adapter's own `legacy_env` block, and *which* adapter is the block's own answer
+    (`_migrating_tracker`), never the currently resolved one: `migrate` runs at step 1b of
+    skills/init-repo/SKILL.md, before step 2 resolves a tracker, so pre-migration the resolved value is
+    whatever the shipped default says. Reading the adapter map from that dropped every
+    `tracker_config.*` variable in a block migrating to a different tracker and still exited 0 with a
+    file that looked complete. `_adapter_map()`'s best-effort `{}` degradation is right for a caller
+    that only wants tracker metadata and wrong here for the same reason, so a tracker naming no adapter
+    is refused rather than silently costing the adapter's half of the map.
+
+    An `--out` that already exists is merged into, not overwritten. The documented flow points `--out`
+    straight at `.shipyard/config.json` and SKILL.md's own instruction for that file is to "preserve
+    every existing key rather than overwriting"; docs/configuration.md treats a config file coexisting
+    with a lingering `env` block as a real state, so truncating it destroyed exactly the keys the run
+    before it had written. Migrated values win on conflict — that is the point of running `migrate` —
+    which is the same precedence `_deep_merge` gives a higher layer, and a destination that cannot be
+    parsed is a refusal from `_load_json` rather than a file this command overwrites blind.
     """
     env = _load_json(settings_path).get("env", {})
     if not env:
         raise SystemExit(f"sy_config: {settings_path} has no env block to migrate")
     resolve()  # see the docstring: refuse loudly rather than migrate a partial map
-    mapping = _legacy_env_map()
+    tracker = _migrating_tracker(env, settings_path)
+    mapping = dict(LEGACY_ENV) | _load_json(_adapter_map_path(tracker)).get("legacy_env", {})
     config: dict = {"$schema": SCHEMA_URL}
-    skipped: list[str] = []
+    # Two different reasons a variable stays behind, reported separately: a credential belongs in the
+    # environment and is *meant* to stay, while an unmapped name is a typo or a stale setting nothing
+    # will read again. Collapsing them read as "these are fine" for both.
+    secrets: list[str] = []
+    unmapped: list[str] = []
     for name, value in sorted(env.items()):
         if _looks_like_secret(name):
-            skipped.append(name)
-            continue
-        path = mapping.get(name)
-        if not path:
-            skipped.append(name)
-            continue
-        _assign(config, path, _coerce(value))
-    out = json.dumps(config, indent=2, sort_keys=True) + "\n"
+            secrets.append(name)
+        elif path := mapping.get(name):
+            _assign(config, path, _coerce(value))
+        else:
+            unmapped.append(name)
+    summary = {
+        "tracker": tracker,
+        "migrated": sorted(k for k in _flatten(config) if k != "$schema"),
+        "secrets_left_in_env": secrets,
+        "unmapped_and_not_migrated": unmapped,
+    }
     if out_path:
+        existing = _load_json(out_path) if out_path.is_file() else {}
+        merged = _deep_merge(existing, config)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(out, encoding="utf-8")
-        print(json.dumps({"written": str(out_path), "migrated": len(_flatten(config)) - 1, "left_in_env": skipped}))
+        out_path.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        preserved = sorted(set(_flatten(existing)) - set(_flatten(config)))
+        print(json.dumps({"written": str(out_path), **summary, "preserved": preserved}))
     else:
-        sys.stdout.write(out)
+        sys.stdout.write(json.dumps(config, indent=2, sort_keys=True) + "\n")
+        # stdout carries the config alone so it stays pipeable; the summary is the same either way.
+        print(json.dumps(summary), file=sys.stderr)
     return 0
+
+
+def _migrating_tracker(env: dict, settings_path: Path) -> str:
+    """The tracker this `env` block is migrating *to*, refused unless it names a shipped adapter.
+
+    Checked against the enumerated adapter names rather than by testing a path built from the value, so
+    a name carrying path separators cannot address anything outside `skills/tracker/`.
+    """
+    tracker = str(env.get(_TRACKER_ENV) or _flatten(resolve()[0]).get("tracker") or "")
+    if tracker not in _known_trackers():
+        raise SystemExit(
+            f"sy_config: refusing to migrate {settings_path}: tracker {tracker!r} names no adapter under "
+            f"skills/tracker/, so any adapter-specific variable in this env block has no config key to "
+            f"migrate into and would be dropped silently from a file that looked complete. Correct the "
+            f"tracker name — known trackers: {', '.join(_known_trackers()) or 'none'}."
+        )
+    return tracker
 
 
 def _assign(target: dict, path: str, value: object) -> None:
@@ -1062,19 +1127,54 @@ def _self_test() -> None:
             else:
                 raise AssertionError("reading a credential-shaped key must be refused")
 
+            # The block migrates to a tracker the pre-migration config does *not* resolve — the
+            # documented order, since `migrate` runs before the tracker is ever chosen. The adapter's
+            # own names are read from its map rather than spelled: they are its vocabulary, not this
+            # script's map's.
             settings = repo / "settings.json"
+            resolved_tracker = str(_flatten(resolve()[0])["tracker"])
+            target = next(t for t in _known_trackers() if t != resolved_tracker)
+            target_legacy = _load_json(_adapter_map_path(target))["legacy_env"]
             settings.write_text(json.dumps({"env": {
-                "SY_TRACKER": "somethingelse", "SY_CI_POLL_TIMEOUT": "45",
+                _TRACKER_ENV: target, "SY_CI_POLL_TIMEOUT": "45",
                 "SY_DEBUG_EVALS": "1", "ACLI_TOKEN": "secret-value-here",
+                "SY_NOT_A_SETTING": "stale",
+                **{name: f"legacy-value-{i}" for i, name in enumerate(sorted(target_legacy))},
             }}), encoding="utf-8")
             out = repo / CONFIG_DIRNAME / "migrated.json"
-            with contextlib.redirect_stdout(io.StringIO()):
+            out.write_text(json.dumps({"columns": {"done": "Already Here"}}), encoding="utf-8")
+            summary_out = io.StringIO()
+            with contextlib.redirect_stdout(summary_out):
                 _migrate(settings, out)
             migrated = _flatten(_load_json(out))
-            assert migrated["tracker"] == "somethingelse"
+            assert migrated["tracker"] == target
             assert migrated["ci.poll_timeout"] == 45, "a numeric env string must migrate as a number"
             assert migrated["debug.evals"] is True, "a truthy env string must migrate as a boolean"
             assert not any("TOKEN" in k.upper() for k in migrated), "migration must never copy a secret into config"
+            for adapter_path in sorted(target_legacy.values()):
+                assert adapter_path in migrated, (
+                    f"{adapter_path} was dropped: the adapter half of the map must come from the tracker the "
+                    "block being migrated names, not from whatever the pre-migration config resolved"
+                )
+            assert migrated["columns.done"] == "Already Here", (
+                "migrating onto an existing config file must merge into it, never truncate it"
+            )
+            summary = json.loads(summary_out.getvalue())
+            assert summary["preserved"] == ["columns.done"]
+            assert any("TOKEN" in n.upper() for n in summary["secrets_left_in_env"]), (
+                "a credential left behind on purpose must be reported as such"
+            )
+            assert summary["unmapped_and_not_migrated"] == ["SY_NOT_A_SETTING"], (
+                "a name with no config key at all is a different report from a credential left on purpose"
+            )
+
+            settings.write_text(json.dumps({"env": {_TRACKER_ENV: "jria"}}), encoding="utf-8")
+            try:
+                _migrate(settings, out)
+            except SystemExit as exc:
+                assert "names no adapter" in str(exc)
+            else:
+                raise AssertionError("a tracker naming no adapter must refuse, not drop the adapter's own keys")
 
             assert len(fingerprint()) == 16
             before = fingerprint()

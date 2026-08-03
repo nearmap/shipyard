@@ -261,8 +261,15 @@ def validate() -> list[str]:
     cannot be read or parsed — is returned as one error rather than raised, exactly as
     `sy_config.validate()` does it: `validate_config`'s contract is to report a broken config, and an
     exception escaping here reaches the operator as a traceback string instead of a report. Resolution
-    is therefore asked before the per-layer schema pass, which can only read files the resolver
-    already read successfully.
+    is therefore asked before the per-layer schema pass.
+
+    Guarding `resolve()` alone is not enough here, and that is the difference between this deployment
+    and the CLI's. The CLI resolves once per process, so a layer the resolver just read successfully
+    reads again in the schema pass. This server resolves once per *process lifetime* and then serves
+    memory, so once the hot copy is warm the schema pass — plus `adapter_map()`, the floors and the
+    schema — are the only things still touching disk, and a layer edited into invalid JSON after that
+    point raised out of the one tool whose whole job is diagnosing exactly this fault. Everything after
+    resolution therefore reports its own read failure as an error too, on any call, warm or cold.
     """
     errors: list[str] = []
     try:
@@ -270,6 +277,16 @@ def validate() -> list[str]:
     except ConfigError as exc:
         return [str(exc)]
 
+    try:
+        errors.extend(_post_resolution_violations(values, provenance))
+    except ConfigError as exc:
+        errors.append(str(exc))
+    return errors
+
+
+def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> list[str]:
+    """Every check that re-reads a file after resolution: the layers, the adapter map, the floors."""
+    errors: list[str] = []
     for label, path in layers(resolved_root()):
         if path.is_file():
             errors.extend(f"{label} layer {path}: {message}" for message in _layer_violations(path))

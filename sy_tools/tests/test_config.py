@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from sy_tools import config
+from sy_tools import config, server
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
@@ -323,6 +323,108 @@ def test_migrate_refuses_rather_than_writing_a_config_missing_the_adapter_variab
     assert "git could not be run" in without_git.stderr, without_git.stderr
 
 
+def test_migrate_reads_the_adapter_map_from_the_tracker_the_settings_block_names(tmp_path):
+    """The adapter half of the legacy map belongs to the tracker being migrated *to*, not the resolved one.
+
+    `skills/init-repo/SKILL.md` runs `migrate` at step 1b, before step 2 resolves a tracker at all, so
+    on the documented path there is no `.shipyard/config.json` yet and the resolved value is whatever
+    the shipped default says. Deriving the adapter's `legacy_env` names from that resolved value wrote
+    a config carrying `tracker` and nothing else adapter-specific — every `tracker_config.*` variable in
+    the block silently dropped, exit 0 — on the one path that is guaranteed rather than an edge case.
+    """
+    tracker, legacy = _a_tracker_the_shipped_defaults_do_not_select()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    values = {
+        _legacy_env_name("tracker"): tracker,
+        **{name: f"legacy-value-{i}" for i, name in enumerate(sorted(legacy))},
+    }
+    (tmp_path / "settings.json").write_text(json.dumps({"env": values}), encoding="utf-8")
+
+    probe = _migrate_probe(tmp_path)
+    assert probe.returncode == 0, probe.stderr
+    migrated = json.loads(probe.stdout)
+    assert migrated["tracker"] == tracker
+    for name, key in sorted(legacy.items()):
+        node = migrated
+        for part in key.split("."):
+            assert isinstance(node, dict) and part in node, f"{key} was dropped: {probe.stdout!r}"
+            node = node[part]
+        assert node == values[name], f"{key} migrated the wrong value: {probe.stdout!r}"
+
+
+def test_migrate_refuses_a_tracker_no_shipped_adapter_implements(tmp_path):
+    """A typo'd tracker name reached the same silent drop by a different route.
+
+    The lenient adapter lookup answers `{}` for a tracker with no `config-map.json`, which is right for
+    a caller that only wants tracker metadata and wrong for a one-time conversion: it turned a
+    misspelling into a config file that looked complete and had lost every adapter-specific value.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    settings = {"env": {_legacy_env_name("tracker"): "no-such-tracker"}}
+    (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+
+    probe = _migrate_probe(tmp_path)
+    assert probe.returncode != 0, f"a tracker with no adapter must refuse: {probe.stdout!r}"
+    assert probe.stdout == "", f"a refusal must not also emit a partial config: {probe.stdout!r}"
+    assert "names no adapter" in probe.stderr, probe.stderr
+
+
+def test_migrate_merges_into_an_existing_out_file_rather_than_truncating_it(tmp_path):
+    """`--out` is pointed straight at `.shipyard/config.json` by the documented command.
+
+    `write_text` overwrote it unconditionally, so migrating a single leftover variable onto an
+    already-configured repo destroyed every key that was there — the tracker, the column names, the
+    adapter's own settings — and exited 0 with nothing said. `docs/configuration.md` treats a config
+    file coexisting with a lingering `env` block as a real state, and SKILL.md's instruction for this
+    exact file is to preserve every existing key, so the migrated values merge over what is there.
+    """
+    tracker, _ = _a_tracker_the_shipped_defaults_do_not_select()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".shipyard").mkdir()
+    out = tmp_path / ".shipyard" / "config.json"
+    existing = {"tracker": tracker, "columns": {"ready": "Ready", "done": "Done"}, "ci": {"poll_interval": 15}}
+    out.write_text(json.dumps(existing), encoding="utf-8")
+    settings = {"env": {_legacy_env_name("ci.poll_timeout"): "45"}}
+    (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+
+    probe = _migrate_probe(tmp_path, "--out", str(out))
+    assert probe.returncode == 0, probe.stderr
+    after = json.loads(out.read_text(encoding="utf-8"))
+    assert after["tracker"] == tracker, f"the destination was truncated: {after!r}"
+    assert after["columns"] == existing["columns"], f"pre-existing keys must survive: {after!r}"
+    assert after["ci"]["poll_interval"] == 15, f"a sibling of a migrated key must survive: {after!r}"
+    assert after["ci"]["poll_timeout"] == 45, f"the migrated value must still land: {after!r}"
+    assert "columns.done" in json.loads(probe.stdout)["preserved"], probe.stdout
+
+
+def _a_tracker_the_shipped_defaults_do_not_select() -> tuple[str, dict[str, str]]:
+    """A shipped adapter declaring legacy names that is *not* the tracker `defaults.json` selects.
+
+    A block naming the default tracker cannot show the bug: the resolved answer and the block's own
+    answer agree, so a resolver reading the wrong one still looks correct. Both sides are read rather
+    than spelled — the names are the adapter's own vocabulary, which `scripts/validate.py`'s config
+    seam fails any file but the resolver and the adapters for naming.
+    """
+    default = json.loads((PLUGIN_ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))["tracker"]
+    for config_map in sorted((PLUGIN_ROOT / "skills" / "tracker").glob("*/config-map.json")):
+        legacy = json.loads(config_map.read_text(encoding="utf-8")).get("legacy_env", {})
+        if legacy and config_map.parent.name != default:
+            return config_map.parent.name, legacy
+    pytest.fail("no shipped adapter declaring legacy_env differs from the default tracker")
+
+
+def _legacy_env_name(config_key: str) -> str:
+    """The retired environment variable name for one config key, read out of the resolver's own map."""
+    proc = subprocess.run(
+        [sys.executable, "-c", (
+            f"import sy_config; print(next(n for n, p in sy_config.LEGACY_ENV.items() if p == {config_key!r}))"
+        )],
+        capture_output=True, text=True, check=True,
+        env={**os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts")},
+    )
+    return proc.stdout.strip()
+
+
 def _an_adapter_declaring_legacy_env() -> tuple[str, dict[str, str]]:
     """One shipped tracker adapter that declares legacy variable names of its own, read from the adapter.
 
@@ -336,10 +438,13 @@ def _an_adapter_declaring_legacy_env() -> tuple[str, dict[str, str]]:
     pytest.fail("no shipped tracker adapter declares legacy_env")
 
 
-def _migrate_probe(cwd: Path, **env: str) -> subprocess.CompletedProcess:
-    """`sy_config.py migrate` onto stdout, where a silently partial conversion is visible in full."""
+def _migrate_probe(cwd: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
+    """`sy_config.py migrate` onto stdout by default, where a partial conversion is visible in full."""
     return subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "migrate", "--settings", "settings.json"],
+        [
+            sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"),
+            "migrate", "--settings", "settings.json", *args,
+        ],
         cwd=cwd, capture_output=True, text=True, check=False,
         env={
             **os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "CLAUDE_PROJECT_DIR": str(cwd),
@@ -367,6 +472,30 @@ def test_the_server_validator_collects_an_unreadable_layer_rather_than_raising(f
     assert any("could not be read" in e for e in errors), errors
 
 
+def test_the_server_validator_reports_a_layer_corrupted_after_the_cache_warmed(fixture_repo):
+    """The guard around `resolve()` cannot cover this one: once the hot copy is warm, it never fails again.
+
+    This deployment resolves once per *process lifetime*, so after the first successful call the only
+    things still touching disk are the per-layer schema pass and the adapter map. A layer edited into
+    invalid JSON after that point — and `reload()` is the only thing that would notice — raised straight
+    out of `validate_config`, the one tool whose entire job is diagnosing exactly this fault: the
+    operator got `Error executing tool validate_config: ...` instead of the report it promises. Reachable
+    for the whole life of a long-running server, not a race, so `validate()` reports it warm or cold.
+    """
+    assert not any("not valid JSON" in e for e in config.validate()), "the layer must parse before it is corrupted"
+    config.fingerprint()  # warms the hot copy, exactly as any earlier tool call would have
+
+    layer = fixture_repo / ".shipyard" / "config.json"
+    layer.write_text('{"columns": {"ready": "Ready",}}', encoding="utf-8")
+    try:
+        errors = config.validate()  # no reload(): the hot copy is still the good one
+        report = server.validate_config()
+    finally:
+        layer.write_text(json.dumps(FIXTURE_LAYER), encoding="utf-8")  # the fixture re-resolves on teardown
+    assert any("not valid JSON" in e for e in errors), errors
+    assert report["valid"] is False and any("not valid JSON" in e for e in report["errors"]), report
+
+
 def test_a_working_directory_that_cannot_be_read_is_refused_by_name(tmp_path, monkeypatch):
     """The cwd fallback calls `Path.cwd()`, which a deleted working directory answers with `OSError`.
 
@@ -385,6 +514,40 @@ def test_a_working_directory_that_cannot_be_read_is_refused_by_name(tmp_path, mo
         config.reload()
     assert any("working directory could not be read" in e for e in config.validate()), (
         "validate() must collect the failure rather than raise it"
+    )
+
+
+@pytest.mark.parametrize("command", [["show"], ["get", "tracker"], ["fingerprint"], ["validate"]])
+def test_a_deleted_working_directory_is_refused_by_every_cli_subcommand(tmp_path, command):
+    """The cwd guard was pushed into `sy_tools/config.py` but never mirrored into the CLI's own resolver.
+
+    `validate` has a guard of its own, so it was the only subcommand that reported a deleted working
+    directory cleanly; `show`, `get` and `fingerprint` reach `repo_root()` with nothing between them and
+    `Path.cwd()`, and each tracebacked raw — the same shape as the missing-`git` fail-open, on the same
+    call paths, and the same asymmetry (one guarded caller standing in for every unguarded one).
+    """
+    gone = tmp_path / "deleted-under-us"
+    gone.mkdir()
+    proc = _deleted_cwd_probe(gone, *command)
+    assert proc.returncode == 1, f"the CLI must refuse, not crash or resolve: {proc.stdout!r} {proc.stderr!r}"
+    assert "Traceback" not in proc.stderr, f"raw traceback from the CLI: {proc.stderr!r}"
+    assert "working directory could not be read" in proc.stderr, proc.stderr
+
+
+def _deleted_cwd_probe(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    """One `sy_config.py` subcommand, from a working directory the child process deletes under itself.
+
+    Deleted from inside rather than before the spawn: `subprocess` needs the directory to exist to start
+    the child at all, and the fault is a directory that disappears under a process already sitting in it.
+    """
+    probe = f"import os, sy_config\nos.rmdir(os.getcwd())\nraise SystemExit(sy_config.main({list(args)!r}))\n"
+    return subprocess.run(
+        [sys.executable, "-c", probe], cwd=cwd, capture_output=True, text=True, check=False,
+        env={
+            **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
+            "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
+            "HOME": str(cwd.parent / "home"),
+        },
     )
 
 

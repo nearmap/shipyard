@@ -516,6 +516,44 @@ async def test_a_second_block_claiming_the_schema_is_refused_rather_than_validat
 
 
 @pytest.mark.anyio
+async def test_a_second_block_claiming_the_schema_but_not_parsing_is_refused_not_silently_dropped(monkeypatch):
+    """The candidate tally must arm on a block's raw text, or an unparseable block is invisible twice.
+
+    Counting only blocks that *parsed* into a matching object drops a malformed one from both the
+    ambiguity count and the schema check, so the valid block beside it validates alone and the comment
+    posts carrying an unread machine log — the bypass this validation exists to close, one level down
+    from the body-level "names the id" arming that already refuses a lone unparseable block.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    unparseable = _metrics_comment().replace('"PROJ-1"\n', '"PROJ-1",\n')
+    assert SCHEMA_ID in unparseable and '"PROJ-1",' in unparseable, "the second block must claim the id and not parse"
+    body = _metrics_comment(ci_fix_rounds=1) + "\nAnd this run:\n\n" + unparseable
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"an unparseable second block claiming the schema was posted unread: {body}"
+    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
+        f"the refusal must name the schema and count the unparseable block too: {_text(result)}"
+    )
+
+
+@pytest.mark.anyio
+async def test_an_unrelated_malformed_block_beside_a_valid_log_still_posts(monkeypatch):
+    """The raw-text tally must stay narrow: a broken block that never names this id is not a candidate.
+
+    Arming on raw text is one step away from rejecting any comment that happens to quote broken JSON
+    next to a valid metrics log, which would make the check unusable for exactly the postmortem
+    comments it is meant to accompany.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = _metrics_comment() + '\nThe payload that failed:\n\n```json\n{"schema": "other.v1", "a": 1,}\n```\n'
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, f"an unrelated malformed block must not be a candidate: {result.content}"
+    assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "body"),
     [

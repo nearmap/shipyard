@@ -295,23 +295,28 @@ def _validate_machine_log(body: str) -> None:
     otherwise validate off whichever came first and post the other unread, which is the same
     unvalidated-block incident wearing a valid block as cover. Nothing is chosen for the caller —
     the comment is refused and the extra block has to go.
+
+    A block counts as claiming the schema when its *raw text* names the id, before any parse is
+    attempted — the same reason the body-level check arms on the id. Counting only blocks that parsed
+    into a matching object reopened the bypass one level down: a valid block beside a second block
+    that named this id but held a trailing comma left the malformed one invisible to both the
+    ambiguity count and the schema check, so the valid one validated alone and the comment posted
+    carrying an unread machine log. Unparseable-but-claiming is a refusal, never a block to skip.
     """
     if SCHEMA_ID not in body:
         return
-    candidates = [
-        parsed for parsed in (_as_json(block) for block in FENCE.findall(body))
-        if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID
-    ]
-    if len(candidates) > 1:
+    claiming = [block for block in FENCE.findall(body) if SCHEMA_ID in block]
+    if len(claiming) > 1:
         raise ToolError(
-            f"this comment carries {len(candidates)} fenced blocks claiming {SCHEMA_ID}, so it was not "
+            f"this comment carries {len(claiming)} fenced blocks claiming {SCHEMA_ID}, so it was not "
             "posted: which one is the machine log is ambiguous, and validating the first would post the "
             "rest unchecked. A machine log is always its own comment carrying exactly one such block — "
             "post the log on its own, and quote any earlier numbers as prose or under a schema-less block."
         )
-    if candidates:
+    parsed = _as_json(claiming[0]) if claiming else None
+    if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID:
         try:
-            ShipMetricsV1.model_validate(candidates[0])
+            ShipMetricsV1.model_validate(parsed)
         except ValidationError as exc:
             raise ToolError(
                 f"this comment carries a {SCHEMA_ID} block that does not match the schema, so it was "

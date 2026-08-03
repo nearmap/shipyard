@@ -73,9 +73,10 @@ class TrackerAdapter(Protocol):
     ambiguity is reported rather than resolved.
 
     `attachment_update` is different by design (see `../../skills/tracker/CONTRACT.md`, "Attachment
-    lifecycle has no delete"): it takes no id, and replaces every attachment already sharing `path`'s
-    filename rather than requiring a single unambiguous match — a corrective overwrite, not a
-    targeted single-attachment operation.
+    lifecycle has no delete"): it takes no id and resolves purely by `path`'s filename — a corrective
+    overwrite, not a targeted single-attachment operation. What an adapter does when more than one
+    existing attachment shares that filename is adapter-specific, documented in each adapter's own
+    `ADAPTER.md`: the two trackers offer no common primitive for "replace all of these".
     """
 
     name: str

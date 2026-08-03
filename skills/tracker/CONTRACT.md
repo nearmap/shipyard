@@ -92,11 +92,12 @@ type — parent links, board membership — and converting back does not undo th
 
 ### Attachment lifecycle has no delete
 
-`attachment-update` replaces every attachment of the same filename, which is undoable only by
+`attachment-update` replaces an attachment matching the same filename, which is undoable only by
 uploading a further replacement — confirm the target first. It takes no id: it resolves purely by
-`path`'s filename and replaces every match, however many there are. Zero matches is a plain first
-upload, never a failure: the verb's contract is replace-by-filename with nothing to replace
-explicitly fine.
+`path`'s filename. Zero matches is a plain first upload, never a failure. More than one existing
+attachment sharing that filename is adapter-specific — see each `ADAPTER.md` — because the two
+trackers offer no common primitive for "replace all of these": at least one namesake is always
+either replaced or refused, never silently left untouched.
 
 There is deliberately no `attachment-delete` verb: removing an artifact from an issue's durable record
 with no undo is a real safety cost for a capability nothing in the documented plan/spec/ship/spike

@@ -648,11 +648,12 @@ async def attachment_update(
 ) -> dict[str, Any]:
     """Replace an issue's attachment of the same filename, sanitising the replacement first.
 
-    Canonical verb `attachment-update`. Replace-by-filename: every existing attachment named like
-    `path` is removed and `path` is uploaded in its place, so calling it where nothing matches is a
-    plain upload. It runs the same gate and the same two sanitisation passes, in the same order, as
-    `attach-artifact` — a second upload path that skipped them would be exactly the hole that keeping
-    both passes inside one tool exists to close.
+    Canonical verb `attachment-update`. Replace-by-filename, taking no id: calling it where nothing
+    already matches `path`'s filename is a plain upload. Where more than one existing attachment
+    shares that filename, what happens is adapter-specific (see the tracker's own `ADAPTER.md`) — the
+    two trackers offer no common primitive for "replace all of these". It runs the same gate and the
+    same two sanitisation passes, in the same order, as `attach-artifact` — a second upload path that
+    skipped them would be exactly the hole that keeping both passes inside one tool exists to close.
 
     Destructive: the attachments it replaces are removed once the new one is uploaded, and there is
     no undo. Confirm the target first.

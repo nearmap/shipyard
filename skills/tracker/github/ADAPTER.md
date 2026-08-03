@@ -79,7 +79,9 @@ GitHub issues have no CLI-scriptable file attachment, so the artifact is uploade
 
 `attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
 
-The lifecycle verbs — `attachment-download` and `attachment-update` — act on that gist, which they locate from the link comment `attach-artifact` posted, resolving by artifact filename and taking a gist id instead to disambiguate. An ambiguous match fails rather than guessing, and so does an absent one for `attachment-download`. An absent one for `attachment-update` is a first upload instead: the same gist, privacy re-read and link comment `attach-artifact` writes, reported as `replaced: 0`. `attachment-update` replaces before it verifies — there is no undo. There is no standalone `attachment-delete` verb: this seam has no way to remove an artifact from an issue's durable record without replacing it with something.
+The lifecycle verbs — `attachment-download` and `attachment-update` — act on that gist, which they locate from the link comment `attach-artifact` posted. `attachment-download` resolves by artifact filename, taking a gist id instead to disambiguate; an ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
+
+`attachment-update` takes no id: it shares the same filename-based lookup, but with no id ever available to it, so it refuses just the same on an ambiguous match — unlike Jira, this adapter has no way to replace more than one namesake in a single call. An absent match is a first upload instead: the same gist, privacy re-read and link comment `attach-artifact` writes, reported as `replaced: 0`. `attachment-update` replaces before it verifies — there is no undo. There is no standalone `attachment-delete` verb: this seam has no way to remove an artifact from an issue's durable record without replacing it with something.
 
 Reference the returned gist URL from the `# Claude Code ship metrics` comment (`transcript_attachment: <gist-url>`). A skipped call means no gist exists — say so rather than inventing a URL.
 

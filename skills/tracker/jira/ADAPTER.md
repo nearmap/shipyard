@@ -75,9 +75,9 @@ Jira supports native work-item attachments. Render the artifact, then hand the p
 
 `attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
 
-The lifecycle verbs — `attachment-download` and `attachment-update` — resolve the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match fails rather than guessing, and so does an absent one for `attachment-download`. An absent one for `attachment-update` is a first upload instead, reported as `replaced: 0`.
+`attachment-download` resolves the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 
-`attachment-update` uploads the new file first and deletes every same-named attachment it supersedes only afterwards, each delete verified gone — confirm the target first; the deletes are real and there is no undo. That order is the safety margin: an upload that fails (a timeout, a 413, a permission change) leaves the old artifact still attached, where deleting first left the issue with no artifact at all. There is no standalone `attachment-delete` verb: this seam has no way to remove an artifact from an issue's durable record without replacing it with something.
+`attachment-update` takes no id: it resolves purely by filename, and — unlike `attachment-download` — does not refuse on multiple namesakes. It uploads the new file first, then deletes every same-named attachment it supersedes, each delete verified gone; an absent match is a first upload instead, reported as `replaced: 0`. Confirm the target first — the deletes are real and there is no undo. That upload-then-delete order is the safety margin: an upload that fails (a timeout, a 413, a permission change) leaves the old artifact(s) still attached, where deleting first would have left the issue with nothing. There is no standalone `attachment-delete` verb: this seam has no way to remove an artifact from an issue's durable record without replacing it with something.
 
 ## References
 

@@ -536,6 +536,61 @@ async def test_a_second_block_claiming_the_schema_but_not_parsing_is_refused_not
     )
 
 
+def _claiming_json_that_does_not_parse() -> str:
+    """JSON naming the schema id that `json.loads` refuses, asserted rather than assumed.
+
+    An earlier version of this fixture still parsed, which quietly turned the test using it into a
+    no-op — so the malformedness is checked here, once, where every caller inherits the check.
+    """
+    text = json.dumps({"schema": SCHEMA_ID, "task": "PROJ-1"}, indent=2).replace('"PROJ-1"\n', '"PROJ-1",\n')
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+    return text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "tail"),
+    [
+        ("a fence that is never closed", "```json\n{block}\n"),
+        ("a closing marker with text after it", "```json\n{block}\n``` end\n"),
+        ("a tilde fence that is never closed", "~~~json\n{block}\n"),
+    ],
+)
+async def test_a_fence_invisible_block_claiming_the_schema_is_refused_beside_a_valid_log(monkeypatch, case, tail):
+    """A claiming block `FENCE` cannot see at all is the bypass one level below the raw-text tally.
+
+    Counting candidates off `FENCE` matches only sees blocks whose closing marker is a bare fence on
+    its own line. An unclosed fence, or one whose closing marker carries trailing text, produces no
+    match — so it counted as neither a candidate nor an ambiguity, the valid block beside it validated
+    alone, and the comment posted with the malformed log inside it verbatim. It renders as a second
+    code block once the body goes through `markdown_to_adf`, which is to say it lands looking exactly
+    as authoritative as the block that was checked.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = _metrics_comment() + "\nAnd this run:\n\n" + tail.format(block=_claiming_json_that_does_not_parse())
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"{case} was invisible to the check and posted unread: {body}"
+    assert SCHEMA_ID in _text(result), f"the refusal for {case} must name the schema it checked: {_text(result)}"
+
+
+@pytest.mark.anyio
+async def test_a_fence_invisible_block_that_never_names_the_schema_still_posts(monkeypatch):
+    """The outside-the-fences check must arm on the id, not on unfenced text being malformed.
+
+    Broken JSON quoted without a closing fence is ordinary postmortem prose, and the narrowing that
+    keeps a properly fenced unrelated block postable has to hold for an unfenced one too.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = _metrics_comment() + '\nThe payload that failed:\n\n```json\n{"schema": "other.v1", "a": 1,}\n'
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, f"an unfenced block naming no schema must not arm the check: {result.content}"
+    assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
+
+
 @pytest.mark.anyio
 async def test_an_unrelated_malformed_block_beside_a_valid_log_still_posts(monkeypatch):
     """The raw-text tally must stay narrow: a broken block that never names this id is not a candidate.

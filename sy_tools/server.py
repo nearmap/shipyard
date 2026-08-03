@@ -250,7 +250,8 @@ async def post_comment(
     `link-pr`'s durable half is this call carrying the PR URL.
 
     A body that names `shipyard.ship_metrics.v1` must carry exactly one fenced JSON block that
-    validates against that schema — none, several, or one that does not match, and nothing is
+    validates against that schema, and must not name the id anywhere else — none, several, one that
+    does not match, or a mention loose in the body or in a fence left unclosed, and nothing is
     posted; every other body passes through unchanged.
     """
     _required(issue=issue)
@@ -265,6 +266,20 @@ The info string is not matched on: `handoff-accounting.md` shows the metrics blo
 but a caller that omits the language must not thereby skip validation — and the check that decides
 whether a block is a machine log is the `schema` key inside it, not the fence it arrived in.
 """
+
+
+def _outside_fences(body: str, matches: list[re.Match[str]]) -> str:
+    """Whatever is left of the body once every properly closed fenced block is cut out.
+
+    Cut by each match's span rather than by substring replacement: two identical blocks in one body
+    would make `str.replace` remove the wrong copies and leave the count short.
+    """
+    kept, cursor = [], 0
+    for match in matches:
+        kept.append(body[cursor : match.start()])
+        cursor = match.end()
+    kept.append(body[cursor:])
+    return "".join(kept)
 
 
 def _as_json(block: str) -> object:
@@ -302,18 +317,32 @@ def _validate_machine_log(body: str) -> None:
     that named this id but held a trailing comma left the malformed one invisible to both the
     ambiguity count and the schema check, so the valid one validated alone and the comment posted
     carrying an unread machine log. Unparseable-but-claiming is a refusal, never a block to skip.
+
+    Counting only what `FENCE` matched left that same bypass open one level further down, because the
+    pattern sees a block only once its closing marker is a bare fence on a line of its own: an unclosed
+    fence, or a closing marker with text after it, produced no match to tally at all. So the id is also
+    looked for in what is left of the body after every matched block is cut out, and a mention there is
+    a refusal on its own terms — with a valid block beside it, that mention is one more candidate the
+    caller has to resolve, and without one it is the malformed-log case the body-level arming already
+    caught. The narrowness that keeps this usable is unchanged: unfenced *text* is only a candidate
+    when it names this id, so quoting someone else's broken JSON beside a valid log still posts.
     """
     if SCHEMA_ID not in body:
         return
-    claiming = [block for block in FENCE.findall(body) if SCHEMA_ID in block]
-    if len(claiming) > 1:
+    matches = list(FENCE.finditer(body))
+    claiming = [match for match in matches if SCHEMA_ID in match.group(0)]
+    stray = SCHEMA_ID in _outside_fences(body, matches)
+    if len(claiming) + stray > 1:
         raise ToolError(
-            f"this comment carries {len(claiming)} fenced blocks claiming {SCHEMA_ID}, so it was not "
-            "posted: which one is the machine log is ambiguous, and validating the first would post the "
-            "rest unchecked. A machine log is always its own comment carrying exactly one such block — "
-            "post the log on its own, and quote any earlier numbers as prose or under a schema-less block."
+            f"this comment claims {SCHEMA_ID} in {len(claiming) + stray} places, so it was not posted: "
+            f"{len(claiming)} in a properly closed fenced block"
+            + (", and once outside any such block" if stray else "")
+            + ". Which one is the machine log is ambiguous, and validating one of them would post the "
+            "others unchecked. A machine log is always its own comment carrying exactly one such block: "
+            "post the log on its own, and when quoting earlier numbers as prose, leave the literal id "
+            "out — say `the ship metrics log` instead, because naming the id arms this check."
         )
-    parsed = _as_json(claiming[0]) if claiming else None
+    parsed = _as_json(claiming[0].group(1)) if claiming else None
     if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID:
         try:
             ShipMetricsV1.model_validate(parsed)
@@ -328,9 +357,10 @@ def _validate_machine_log(body: str) -> None:
     raise ToolError(
         f"this comment names {SCHEMA_ID} but carries no fenced block that parses as one, so it was not "
         "posted. A machine log is a fenced JSON object whose `schema` key is that id: check the JSON "
-        "parses (a trailing comma is the usual culprit), that the closing fence is on its own line with "
-        "Unix line endings, and that the block is fenced at all. If the comment is prose that merely "
-        "mentions the schema, say `the ship metrics log` instead — naming the id arms this check. The "
+        "parses (a trailing comma is the usual culprit), that the closing fence is on a line of its own "
+        "with nothing after it and Unix line endings, and that the block is fenced at all. If the comment "
+        "is prose that merely mentions the schema, say `the ship metrics log` instead — the id arms this "
+        "check. The "
         "field definitions are in skills/ship/references/handoff-accounting.md."
     )
 

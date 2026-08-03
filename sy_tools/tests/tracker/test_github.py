@@ -2234,19 +2234,21 @@ async def test_a_gist_that_reads_back_empty_is_not_downloaded_as_an_empty_file(m
     ],
     ids=["two-gists-one-filename", "no-such-artifact"],
 )
-async def test_a_name_matching_other_than_exactly_one_artifact_is_refused(monkeypatch, board, comments, wanted, count):
-    """Attaching one transcript twice leaves two gists under one name; deleting either is unacceptable."""
+async def test_a_name_matching_other_than_exactly_one_artifact_is_refused(
+    monkeypatch, board, comments, wanted, count, tmp_path
+):
+    """Attaching one transcript twice leaves two gists under one name; reading either is unacceptable."""
     fake = _install(monkeypatch, _json({"comments": comments}))
 
     with pytest.raises(TrackerError) as raised:
-        await adapter.GithubAdapter().attachment_delete("7", wanted)
+        await adapter.GithubAdapter().attachment_download("7", wanted, tmp_path / "downloaded.txt")
 
     message = str(raised.value)
     assert count in message, f"the failure must say how many matched: {message}"
     assert ARTIFACT_NAME in message and GIST_ID in message, (
         f"the artifacts the comments do record are the actionable part: {message}"
     )
-    assert len(fake.calls) == 1, "an unresolved name must not lead to a gist being deleted"
+    assert len(fake.calls) == 1, "an unresolved name must not lead to a gist being read"
 
 
 @pytest.mark.anyio
@@ -2371,46 +2373,6 @@ async def test_a_gist_still_holding_the_previous_artifact_is_not_a_completed_rep
 
     with pytest.raises(TrackerError, match="does not read back"):
         await adapter.GithubAdapter().attachment_update("7", _artifact(tmp_path))
-
-
-@pytest.mark.anyio
-async def test_attachment_delete_deletes_the_gist_and_confirms_it_by_a_not_found_read(monkeypatch, board):
-    fake = _install(
-        monkeypatch,
-        _json({"comments": [_artifact_comment()]}),
-        (0, "", ""),
-        (1, "", "gh: Not Found (HTTP 404)"),
-    )
-
-    deleted = await adapter.GithubAdapter().attachment_delete("7", ARTIFACT_NAME)
-
-    assert [call[1:] for call in fake.calls] == [
-        ["issue", "view", "7", *REPO_ARGS, "--json", "comments"],
-        ["gist", "delete", GIST_ID, "--yes"],
-        ["api", f"gists/{GIST_ID}"],
-    ], f"the delete must be non-interactive and verified by a read: {fake.calls}"
-    assert deleted == {"issue": "7", "filename": ARTIFACT_NAME, "id": GIST_ID, "deleted": True}, deleted
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("read_back", "expected"),
-    [
-        (_json({"id": GIST_ID, "public": False}), "still reads back"),
-        ((1, "", "gh: API rate limit exceeded"), "could not confirm"),
-    ],
-    ids=["the-gist-is-still-there", "a-failure-that-is-not-a-not-found"],
-)
-async def test_only_a_not_found_read_confirms_a_deletion(monkeypatch, board, read_back, expected):
-    """The read-back is expected to fail, which is exactly why its shape has to be checked.
-
-    A revoked credential, a rate limit or a stalled network fails the same call, and calling one of those
-    a confirmed deletion reports a still-published transcript as removed.
-    """
-    _install(monkeypatch, _json({"comments": [_artifact_comment()]}), (0, "", ""), read_back)
-
-    with pytest.raises(TrackerError, match=expected):
-        await adapter.GithubAdapter().attachment_delete("7", ARTIFACT_NAME)
 
 
 @pytest.mark.anyio

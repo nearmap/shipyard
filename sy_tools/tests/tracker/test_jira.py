@@ -850,23 +850,23 @@ async def test_an_attachment_with_no_content_url_is_refused_rather_than_written_
     ids=["ambiguous-filename", "absent-filename"],
 )
 async def test_a_name_matching_other_than_exactly_one_attachment_is_refused(
-    credentials, monkeypatch, field, wanted, count
+    credentials, monkeypatch, field, wanted, count, tmp_path
 ):
     """Jira lets one issue carry two files with one name, so a filename is not a key.
 
-    Picking either would delete an arbitrary one of two transcripts, so the ambiguity is reported with
-    the ids a caller can name instead — and an absent name fails the same way rather than reading as a
-    successful no-op.
+    Picking either would download an arbitrary one of two transcripts, so the ambiguity is reported
+    with the ids a caller can name instead — and an absent name fails the same way rather than
+    reading as a successful no-op.
     """
     calls = _transport(monkeypatch, field)
 
     with pytest.raises(TrackerError) as failure:
-        await adapter.JiraAdapter().attachment_delete("PROJ-7", wanted)
+        await adapter.JiraAdapter().attachment_download("PROJ-7", wanted, tmp_path / "downloaded.txt")
 
     message = str(failure.value)
     assert count in message, f"the failure must say how many matched: {message}"
     assert "id=10501" in message, f"the candidates are the actionable part of the failure: {message}"
-    assert len(calls) == 1, "an unresolved name must not lead to a delete"
+    assert len(calls) == 1, "an unresolved name must not lead to a download"
 
 
 @pytest.mark.anyio
@@ -884,26 +884,19 @@ async def test_an_attachment_id_names_one_of_two_uploads_sharing_a_filename(cred
 
 
 @pytest.mark.anyio
-async def test_attachment_delete_removes_the_attachment_and_proves_it_is_gone(credentials, monkeypatch):
-    calls = _transport(monkeypatch, _attachments(_attachment()), (204, None), _attachments())
+async def test_an_attachment_still_on_the_issue_after_a_204_is_a_failed_replace(
+    credentials, monkeypatch, artifact
+):
+    """The 204 says Jira accepted the delete; only the re-read says the old file is off the issue.
 
-    deleted = await adapter.JiraAdapter().attachment_delete("PROJ-7", ARTIFACT_NAME)
-
-    assert [(c["method"], c["url"]) for c in calls] == [
-        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
-        ("DELETE", f"{BASE}/attachment/10501"),
-        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
-    ], calls
-    assert deleted == {"issue": "PROJ-7", "filename": ARTIFACT_NAME, "id": "10501", "deleted": True}
-
-
-@pytest.mark.anyio
-async def test_an_attachment_still_on_the_issue_after_a_204_is_a_failed_delete(credentials, monkeypatch):
-    """The 204 says Jira accepted the call; only the re-read says the file is off the issue."""
+    Exercised through `attachment_update`, which deletes every same-named attachment before it
+    uploads: the shared `_delete_attachment` verification this pins has no other public caller now
+    that there is no standalone `attachment-delete` verb.
+    """
     _transport(monkeypatch, _attachments(_attachment()), (204, None), _attachments(_attachment()))
 
     with pytest.raises(TrackerError, match="still on PROJ-7"):
-        await adapter.JiraAdapter().attachment_delete("PROJ-7", ARTIFACT_NAME)
+        await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
 
 
 @pytest.mark.anyio
@@ -1000,11 +993,6 @@ VERB_CALLS = [
     ("add_label", lambda a: a.add_label("PROJ-7", "shipyard"), [LABELS_READ, (204, None)]),
     ("post_comment", lambda a: a.post_comment("PROJ-7", "log"), [(201, {"id": "20001"})]),
     ("type_convert", lambda a: a.type_convert("PROJ-7", "epic"), [(204, None), TYPE_READ]),
-    (
-        "attachment_delete",
-        lambda a: a.attachment_delete("PROJ-7", ARTIFACT_NAME),
-        [_attachments(_attachment()), (204, None), _attachments()],
-    ),
 ]
 """Every canonical verb that needs no path on disk, with just enough canned responses to complete.
 

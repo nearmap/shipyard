@@ -70,7 +70,7 @@ def test_every_adapter_implements_the_whole_protocol():
     adapters, and `test_tracker_seam.py` exempts only this directory for exactly that reason.
 
     The set is pinned exactly, not counted: a lower bound let four verbs be dropped from the Protocol
-    without failing. Sixteen methods serve the contract's nineteen verbs because `create-child`,
+    without failing. Fifteen methods serve the contract's eighteen verbs because `create-child`,
     `post-log` and `link-pr` are the `create_issue` and `post_comment` writes under another name.
     """
     from sy_tools.tracker.github.adapter import GithubAdapter
@@ -80,7 +80,7 @@ def test_every_adapter_implements_the_whole_protocol():
     assert verbs == {
         "create_issue", "get_issue", "update_issue", "find_issues", "set_status", "assign",
         "link_parent", "add_dependency", "add_label", "post_comment", "attach_artifact", "preflight",
-        "type_convert", "attachment_download", "attachment_update", "attachment_delete",
+        "type_convert", "attachment_download", "attachment_update",
     }, f"the Protocol's verb set moved: {sorted(verbs)}"
     for adapter in (GithubAdapter(), JiraAdapter()):
         assert isinstance(adapter, tracker.TrackerAdapter), f"{type(adapter).__name__} is missing a canonical verb"

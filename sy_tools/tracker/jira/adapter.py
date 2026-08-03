@@ -392,19 +392,6 @@ class JiraAdapter:
             await _delete_attachment(base, auth, issue, attachment_id)
         return {**await _upload(base, auth, issue, path), "replaced": len(existing)}
 
-    async def attachment_delete(self, issue: str, filename_or_id: str) -> dict:
-        """Delete the one attachment on `issue` matching `filename_or_id`, verified by a re-read."""
-        base, auth = _credentials()
-        found = _resolve_attachment(await _get_attachments(base, auth, issue), filename_or_id, issue)
-        attachment_id = _field(found, "id")
-        if not attachment_id:
-            raise TrackerError(
-                f"the attachment matching {filename_or_id!r} on {issue} carries no id, so there is nothing to "
-                "address a delete to; treat it as undeletable through this seam"
-            )
-        await _delete_attachment(base, auth, issue, attachment_id)
-        return {"issue": issue, "filename": _field(found, "filename"), "id": attachment_id, "deleted": True}
-
     async def preflight(self) -> dict:
         """Prove the configured account and its credential authenticate, reporting no secret value.
 

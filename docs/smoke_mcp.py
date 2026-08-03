@@ -21,7 +21,7 @@ stdio client otherwise passes on only a fixed handful of variables.
 
 Verbs exercised: preflight, create-issue, create-child, get-issue, update-issue, find-issues,
   set-status, assign, link-parent, add-dependency, add-label, post-comment, post-log, link-pr,
-  attach-artifact, type-convert, attachment-download, attachment-update, attachment-delete.
+  attach-artifact, type-convert, attachment-download, attachment-update.
 
 Cleanup: created issues are left in place by default. Set SMOKE_CLEANUP=1 to move them to `done`,
 which is as far as the canonical verb surface goes — it has no delete verb, so removing them is a
@@ -77,7 +77,6 @@ VERB_TOOLS: dict[str, str] = {
     "type-convert": "type-convert",
     "attachment-download": "attachment-download",
     "attachment-update": "attachment-update",
-    "attachment-delete": "attachment-delete",
 }
 """Canonical verb -> the tool that serves it. Three verbs share a tool with another by contract."""
 
@@ -287,19 +286,12 @@ class Smoke:
                 f"the replacement did not land: sent {revised.strip()!r}, the issue holds {replaced!r} ({updated})",
             )
 
-        if await self.call("attachment-delete", {"issue": issue, "filename_or_id": artifact.name}) is not None:
-            self.check(
-                "attachment-delete",
-                await self._read_back(issue, artifact.name, tmp / "after-delete.txt") is None,
-                f"{artifact.name} still downloads from {issue} after the delete reported success",
-            )
-
     async def _read_back(self, issue: str, filename: str, destination: Path) -> str | None:
         """Download `filename` off `issue` without tallying a verb: None when the tracker refuses.
 
-        Untallied deliberately. These are `attachment-update`'s and `attachment-delete`'s own evidence,
-        and one of the two *expects* the refusal — routing it through `call` would score the missing
-        artifact that proves the delete worked as a failing `attachment-download`.
+        Untallied deliberately: this is `attachment-update`'s own evidence that the replacement landed,
+        not a second, independently-scored `attachment-download` — routing it through `call` would
+        double-count one download as two verbs exercised.
         """
         result = await self.client.call_tool(VERB_TOOLS["attachment-download"], {
             "issue": issue, "filename_or_id": filename, "output_path": str(destination),
@@ -377,12 +369,12 @@ def _self_test() -> None:
         f"{sorted(REQUIRED_TOOLS - registered)}; only the server registers: "
         f"{sorted(registered - REQUIRED_TOOLS - UNEXERCISED_TOOLS)}"
     )
-    assert len(REQUIRED_TOOLS) == 17, sorted(REQUIRED_TOOLS)
+    assert len(REQUIRED_TOOLS) == 16, sorted(REQUIRED_TOOLS)
     assert all(tool and tool == tool.strip() for tool in REQUIRED_TOOLS), sorted(REQUIRED_TOOLS)
     assert VERB_TOOLS["create-child"] == VERB_TOOLS["create-issue"], "a child is the create-issue write"
     assert VERB_TOOLS["post-log"] == VERB_TOOLS["post-comment"], "a machine log is a comment"
     assert VERB_TOOLS["link-pr"] == VERB_TOOLS["post-comment"], "a PR link's durable half is a comment"
-    for verb in ("type-convert", "attachment-download", "attachment-update", "attachment-delete"):
+    for verb in ("type-convert", "attachment-download", "attachment-update"):
         assert VERB_TOOLS[verb] == verb, f"{verb} has a tool of its own"
 
 

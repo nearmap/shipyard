@@ -75,17 +75,10 @@ ARTIFACT_LINK = re.compile(r"Shipyard artifact `([^`\n]+)`: (https://\S+)")
 """The comment `attach-artifact` writes, and the pattern the lifecycle verbs read it back with.
 
 The template and the pattern are one pair on purpose. This tracker stores nothing that links an issue to
-its artifact except that comment, so the comment *is* the attachment index: `attachment-download`,
-`-update` and `-delete` each find their gist by matching it. Written at one site and matched at another,
-the two drift the first time the wording changes, and the symptom is every lifecycle verb reporting that
-an issue has no artifacts while its transcripts sit in gists nobody can find again."""
-
-NOT_FOUND = re.compile(r"HTTP 404|not found", re.I)
-"""What `gh` says about a resource that is gone, which is the only positive evidence a delete landed.
-
-Matched narrowly because the alternative is treating any failed read as proof of deletion: a revoked
-credential, a rate limit or a network stall all fail the same call, and calling one of those a confirmed
-deletion reports a still-published transcript as removed."""
+its artifact except that comment, so the comment *is* the attachment index: `attachment-download` and
+`-update` each find their gist by matching it. Written at one site and matched at another, the two drift
+the first time the wording changes, and the symptom is every lifecycle verb reporting that an issue has
+no artifacts while its transcripts sit in gists nobody can find again."""
 
 VERIFY_ATTEMPTS = 4
 VERIFY_BACKOFF_SECONDS = 0.75
@@ -197,10 +190,6 @@ class GithubAdapter:
     async def attachment_update(self, issue: str, path: Path) -> dict:
         """Replace the contents of `issue`'s artifact gist named `path.name` with `path`, off the event loop."""
         return await to_thread.run_sync(self._sync_attachment_update, issue, path)
-
-    async def attachment_delete(self, issue: str, filename_or_id: str) -> dict:
-        """Delete the artifact gist `filename_or_id` names on `issue`, off the event loop."""
-        return await to_thread.run_sync(self._sync_attachment_delete, issue, filename_or_id)
 
     async def preflight(self) -> dict:
         """Confirm `gh` is installed and authenticated, off the event loop."""
@@ -748,22 +737,6 @@ class GithubAdapter:
             )
         return {"issue": issue, "filename": filename, "id": gist_id, "gist_url": gist_url, "replaced": 1}
 
-    def _sync_attachment_delete(self, issue: str, filename_or_id: str) -> dict:
-        """Delete the artifact gist `filename_or_id` names on `issue`, verified by reading it gone.
-
-        `gh gist delete <id> --yes` deletes without prompting, which matters in a server: the interactive
-        form waits on a stdin nobody is answering until the timeout kills it.
-
-        The comment that linked the gist is deliberately left in place. Removing an artifact is not the
-        same as erasing the record that one was attached, and this seam has no verb for deleting a comment;
-        the link resolving to nothing is then the honest state of an issue whose artifact was withdrawn.
-        """
-        issue = _checked_ref(issue)
-        gist_id, filename, _ = _resolve_gist(issue, filename_or_id)
-        _gh(["gist", "delete", gist_id, "--yes"])
-        _confirm_gist_gone(gist_id)
-        return {"issue": issue, "filename": filename, "id": gist_id, "deleted": True}
-
     def _sync_preflight(self) -> dict:
         """Confirm `gh` is installed, authenticated, and able to reach the board.
 
@@ -923,30 +896,6 @@ def _find_gist(issue: str, filename_or_id: str) -> tuple[str, str, str] | None:
         raise _not_one_artifact(issue, filename_or_id, matches, links)
     filename, gist_id, gist_url = matches[0]
     return gist_id, filename, gist_url
-
-
-def _confirm_gist_gone(gist_id: str) -> None:
-    """Prove a deleted gist is really gone. Only a not-found read is evidence; no other failure is.
-
-    `gh gist delete` exits zero and prints nothing, so the read-back is the whole verification — and the
-    read-back is a failure by design, which is exactly why its *shape* has to be checked. Treating any
-    failed read as proof of deletion would report a still-public transcript as removed whenever the
-    credential was revoked, the rate limit was hit, or the network stalled; a successful read is the
-    opposite evidence and fails too.
-    """
-    try:
-        _gh_json(["api", f"gists/{gist_id}"])
-    except _GhFailure as exc:
-        if NOT_FOUND.search(str(exc)):
-            return
-        raise TrackerError(
-            f"gist {gist_id} was deleted but the read-back could not confirm it is gone: {exc} Treat the "
-            "deletion as unconfirmed and check by hand — the artifact may still be published."
-        ) from None
-    raise TrackerError(
-        f"gist {gist_id} still reads back after the delete reported success, so the artifact is still "
-        "published; treat the deletion as failed."
-    )
 
 
 def _repo_slug(url: str) -> str:

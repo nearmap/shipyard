@@ -153,10 +153,6 @@ class TrackerAdapter(Protocol):
         """
         ...
 
-    async def attachment_delete(self, issue: str, filename_or_id: str) -> dict:
-        """Remove the one attachment on `issue` matching `filename_or_id`, verified by reading it gone."""
-        ...
-
     async def preflight(self) -> dict:
         """Confirm credentials and account identifiers are usable, naming nothing secret."""
         ...

@@ -476,24 +476,6 @@ async def attachment_update(
     return {"updated": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
 
 
-@mcp.tool(name="attachment-delete")
-async def attachment_delete(
-    issue: IssueId,
-    filename_or_id: Annotated[
-        str,
-        Field(description="The attachment's filename, or its tracker-native id when duplicate names exist."),
-    ],
-) -> dict[str, Any]:
-    """Delete one artifact from an issue, verified by reading the issue back without it.
-
-    Canonical verb `attachment-delete`. Resolves by filename under the same exactly-one-match rule as
-    `attachment-download`, and confirms the removal rather than trusting the delete's own status.
-    Destructive and not undoable: an artifact deleted here is gone from the issue's durable record.
-    """
-    _required(issue=issue, filename_or_id=filename_or_id)
-    return await tracker.adapter().attachment_delete(issue, filename_or_id)
-
-
 @mcp.tool(name="reload_config")
 def reload_config() -> dict[str, Any]:
     """Re-read the Shipyard configuration layer chain from disk and replace the server's hot copy.

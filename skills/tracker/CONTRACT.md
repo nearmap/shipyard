@@ -59,7 +59,6 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `attach-artifact` | Attach a durable file (the session transcript) to the issue — see below. |
 | `attachment-download` | Fetch an artifact already attached to an issue to a local path. |
 | `attachment-update` | Replace the attached artifact of the same filename. Destructive; sanitised like `attach-artifact`. |
-| `attachment-delete` | Remove one attached artifact from an issue. Destructive. |
 | `link-pr` | Associate a PR with an issue. |
 
 ### Every verb is one MCP tool call
@@ -91,14 +90,17 @@ change (a workflow rule, a required field, a hierarchy constraint) fails loudly 
 issue still has. Fall back to create-new + link + close-old when it refuses. Side effects follow the
 type — parent links, board membership — and converting back does not undo them.
 
-### Attachment lifecycle is destructive
+### Attachment lifecycle has no delete
 
-`attachment-update` deletes every attachment of the same filename before uploading, and
-`attachment-delete` removes an artifact from the issue's durable record. Neither is undoable; confirm
-the target first. Both resolve by filename, taking the tracker-native id instead to disambiguate
-duplicates — an ambiguous match fails rather than picking one. Zero matches is where the two part:
-`attachment-delete` has nothing to remove and fails, while `attachment-update` is a plain first
-upload that reports having replaced nothing.
+`attachment-update` deletes every attachment of the same filename before uploading, which is undoable
+only by uploading a further replacement — confirm the target first. It resolves by filename, taking
+the tracker-native id instead to disambiguate duplicates. Zero matches is a plain first upload, never
+a failure: the verb's contract is replace-by-filename with nothing to replace explicitly fine.
+
+There is deliberately no `attachment-delete` verb: removing an artifact from an issue's durable record
+with no undo is a real safety cost for a capability nothing in the documented plan/spec/ship/spike
+loop ever calls. `attachment-update` already covers the corrective case — replacing a bad or stale
+artifact — without exposing standalone deletion.
 
 ### Machine logs are standalone (`post-log`)
 

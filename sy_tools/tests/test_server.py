@@ -28,7 +28,6 @@ TOOL_NAMES = {
     "add-label",
     "assign",
     "attach-artifact",
-    "attachment-delete",
     "attachment-download",
     "attachment-update",
     "create-issue",
@@ -64,8 +63,6 @@ WIRING = [
     ("type-convert", {"issue": "PROJ-13", "issue_type": "epic"}, "type_convert", ("PROJ-13", "epic"), {}),
     ("attachment-download", {"issue": "PROJ-14", "filename_or_id": "log.txt", "output_path": "/tmp/log.txt"},
      "attachment_download", ("PROJ-14", "log.txt", Path("/tmp/log.txt")), {}),
-    ("attachment-delete", {"issue": "PROJ-15", "filename_or_id": "9001"},
-     "attachment_delete", ("PROJ-15", "9001"), {}),
 ]
 """Every canonical-verb tool, the adapter method it must reach, and the arguments it must pass.
 

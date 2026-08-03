@@ -29,7 +29,7 @@ CANONICAL_VERBS = {
     "preflight", "create-issue", "create-child", "get-issue", "update-issue", "find-issues",
     "set-status", "assign", "link-parent", "add-dependency", "add-label", "type-convert",
     "post-comment", "post-log", "attach-artifact", "attachment-download", "attachment-update",
-    "attachment-delete", "link-pr",
+    "link-pr",
 }
 CANONICAL_STATUSES = {"backlog", "ready", "in-progress", "in-review", "done"}
 COLUMN_KEYS = {

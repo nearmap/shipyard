@@ -249,8 +249,8 @@ async def post_comment(
     log is always its own comment, never appended to prose, and honouring that is yours to do.
     `link-pr`'s durable half is this call carrying the PR URL.
 
-    A body that claims `shipyard.ship_metrics.v1` — by naming it, or by carrying a block that parses
-    as it however the JSON escaped the id — must carry exactly one fenced JSON block that validates
+    A body that claims `shipyard.ship_metrics.v1` — by naming it, literally or as a `\\uXXXX` escape, or
+    by carrying a block that parses as it — must carry exactly one fenced JSON block that validates
     against that schema, and must not name the id anywhere else: none, several, one that does not
     match, or a mention loose in the body or in a fence left unclosed, and nothing is posted. Every
     other body passes through unchanged.
@@ -328,11 +328,38 @@ def _outside_fences(body: str, spans: list[tuple[int, int]]) -> str:
 
 
 def _as_json(block: str) -> object:
-    """One fenced block's parsed JSON, or None when it is not JSON at all (a shell sample, prose)."""
+    """One fenced block's parsed JSON, or None when it is not JSON at all (a shell sample, prose).
+
+    `json.loads` fails in three ways and only one is a `JSONDecodeError`: an integer literal past
+    `sys.int_info.str_digits_check_threshold` raises a bare `ValueError` from the digit-conversion
+    guard, and nesting deeper than the decoder's recursive descent raises `RecursionError`. All three
+    mean the same thing here — this content does not parse, so fall back to reading its text — and
+    catching only the decode error let a body pick which uncaught exception escaped the tool instead.
+    """
     try:
         return json.loads(block)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # JSONDecodeError is a ValueError.
         return None
+
+
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+"""A JSON `\\uXXXX` escape. Fixed width, so matching it cannot backtrack and the scan stays linear."""
+
+
+def _json_unescaped(text: str) -> str:
+    """`text` with every `\\uXXXX` JSON escape decoded to the character it names.
+
+    Not a JSON string decode — a backslash here is only ever itself — just enough that a literal search
+    for `SCHEMA_ID` cannot be evaded by spelling one of its ASCII characters as an escape instead. That
+    is what the parse-based identity in `_record` settles for content that parses; this is the same
+    question answered for the text that no parse can speak to, so both spellings get one answer.
+
+    One replacement per match is exact for this purpose: `SCHEMA_ID` is pure ASCII, so no surrogate
+    pair has to be rejoined (that matters only for a non-BMP character, and it has none). Decoding
+    cannot hide a literal occurrence either — a match starts `\\u` and `SCHEMA_ID` holds neither
+    character, and it is too long and too non-hex to sit inside one match's four digits.
+    """
+    return _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
 
 
 def _record(parsed: object) -> dict[Any, Any] | None:
@@ -433,13 +460,22 @@ def _validate_machine_log(body: str) -> None:
     text while the top-level parse alone would let the escaped spelling of that same block through —
     the gap this closes, reopened one level down. Such a claim is counted but never validated: what a
     machine log *is* stays the top-level object, so a buried one is refused as no block at all.
+
+    And one rule in every *shape*, because settling identity on a parse only answers the shapes where a
+    parse happens — a properly closed fence holding clean JSON. Everywhere else this reads text and
+    nothing else: arming, an unparseable block's claim, a mention outside the fences. Each of those was
+    a plain substring search, so the escaped spelling walked through every shape that produces no block
+    to parse — an unclosed fence, a closing marker with trailing text, a CRLF body, unfenced prose — and
+    through one that produces a block `json.loads` refuses, a leading BOM being enough. So every one of
+    those searches asks `_json_unescaped` first: the fallback answers the escaped spelling exactly as it
+    answers the literal one, which is the whole of the rule the parse settles for content it can read.
     """
-    named = SCHEMA_ID in body
     # A JSON string decodes to this id either by naming it outright or by escaping part of it, and every
     # JSON escape is a backslash — so a body with neither cannot hold a claim in any spelling, and is
-    # answered without scanning it for fences at all. Almost every body is this one.
-    if not named and "\\" not in body:
+    # answered without scanning or unescaping it at all. Almost every body is this one.
+    if SCHEMA_ID not in body and "\\" not in body:
         return
+    named = SCHEMA_ID in _json_unescaped(body)
     spans = _fenced_contents(body)
     records: list[dict[Any, Any]] = []
     unread = 0
@@ -449,13 +485,13 @@ def _validate_machine_log(body: str) -> None:
         record = _record(parsed)
         if record is not None:
             records.append(record)
-        elif SCHEMA_ID in content or _claims_within(parsed):
+        elif SCHEMA_ID in _json_unescaped(content) or _claims_within(parsed):
             unread += 1
     # The other half of arming: a body that never names the id in plain text is still this check's
     # business the moment a block claims this schema, which is the escaped-record case.
     if not named and not records and not unread:
         return
-    stray = SCHEMA_ID in _outside_fences(body, spans)
+    stray = SCHEMA_ID in _json_unescaped(_outside_fences(body, spans))
     blocks = len(records) + unread
     if blocks + stray > 1:
         raise ToolError(

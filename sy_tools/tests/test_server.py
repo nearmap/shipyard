@@ -779,6 +779,92 @@ async def test_an_escaped_record_one_level_down_is_still_a_claim(monkeypatch, ca
     )
 
 
+def _claiming_record(spelling: str) -> str:
+    """The counterexample record — blank task, a negative count, a misspelled field — with `spelling`
+    as its `schema` value, hand-built so an escaped spelling survives into the body verbatim."""
+    return '{"schema": "' + spelling + '", "task": "   ", "ci_fix_rounds": -7, "ci_fix_round": 2}'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "shape"),
+    [
+        ("a fence that is never closed", "```json\n{record}\n"),
+        ("a closing marker with text after it", "```json\n{record}\n``` end\n"),
+        ("CRLF line endings, so nothing closes the fence", "```json\r\n{record}\r\n```\r\n"),
+        ("a BOM before the JSON the fence does close around", "```json\n﻿{record}\n```\n"),
+        ("no fence at all, the record pasted as prose", "The log:\n\n{record}\n"),
+        ("a closed fence whose content parses cleanly", "```json\n{record}\n```\n"),
+    ],
+)
+async def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_shape(monkeypatch, case, shape):
+    """One identity rule means the *same* answer for both spellings of the id, in every body shape.
+
+    Deciding identity on the parsed value fixed only the shapes where a parse happens: a properly closed
+    fence holding clean JSON. Every other shape falls back to a literal substring search for the id —
+    arming, an unparseable block's claim, a mention outside the fences — and an escaped spelling matches
+    none of them, so each of these bodies posted whole while its literal twin was refused: unclosed and
+    trailing-text fences and a CRLF body produce no block to parse, a BOM makes `json.loads` refuse
+    content the fence does close around, and unfenced prose was never a block at all.
+
+    Pinned as literal-versus-escaped pairs rather than as expected messages, because what went wrong
+    five times running was the two spellings diverging, not the wording of either answer.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    literal = shape.format(record=_claiming_record(SCHEMA_ID))
+    escaped = shape.format(record=_claiming_record(_escaped_id()))
+    assert SCHEMA_ID not in escaped, f"the escaped body must not arm a literal-text check: {escaped}"
+    async with mcp.Client(server.mcp) as client:
+        results = [await client.call_tool("post-comment", {"issue": "PROJ-1", "body": b}) for b in (literal, escaped)]
+    assert [r.is_error for r in results] == [True, True], f"{case} was accepted for one spelling: {results}"
+    assert _text(results[0]) == _text(results[1]), (
+        f"{case} answers the two spellings differently: {_text(results[0])!r} vs {_text(results[1])!r}"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "payload"),
+    [
+        ("an integer past the digit limit", "1" * 5_000),
+        ("brackets nested past the decoder's stack", "[" * 100_000),
+    ],
+)
+async def test_content_json_cannot_parse_at_all_is_a_refusal_not_a_crash(monkeypatch, case, payload):
+    """`json.loads` fails in three ways, and only one of them is a `JSONDecodeError`.
+
+    A digit string past `sys.int_info.str_digits_check_threshold` raises a bare `ValueError`, and
+    nesting past the decoder's recursive descent raises `RecursionError`. Catching only the decode error
+    let a body choose which uncaught exception escaped the tool instead of being answered as content
+    that does not parse — which is the fallback path, and a refusal.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = f"```json\n{{\"schema\": \"{SCHEMA_ID}\", \"n\": {payload}\n```\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"{case} was posted unread: {result.content}"
+    assert "carries no fenced block that parses as one" in _text(result), (
+        f"{case} must be answered as unparseable content, not as an uncaught exception: {_text(result)}"
+    )
+
+
+def test_unescaping_stays_linear_on_a_large_body():
+    """Undoing escapes must not reintroduce the cost the linear fence scan removed.
+
+    The substitution is a fixed-width match with nothing to backtrack into, so both a body that is
+    almost entirely escapes and one holding none at all cost a single pass. Same loose bound as the
+    fence scan's, and for the same reason: these measure in milliseconds.
+    """
+    for case, body in [
+        ("all escapes", f"The {SCHEMA_ID} log:\n" + "\\u0041" * 100_000),
+        ("no escapes", f"The {SCHEMA_ID} log:\n" + "a" * 600_000),
+    ]:
+        start = time.perf_counter()
+        with pytest.raises(server.ToolError, match="carries no fenced block"):
+            server._validate_machine_log(body)
+        assert time.perf_counter() - start < 2.0, f"unescaping {case} is not a single linear pass"
+
+
 def test_fence_detection_stays_linear_on_a_body_of_unclosed_openers():
     """The scan is linear, and this is the body that proves it: 40,000 openers that never close.
 

@@ -16,13 +16,19 @@ ruff = "*"
 ty = "*"
 pytest = "*"
 
-# `mcp` pulls both of these in already, but this package imports them directly — the Jira adapter
+# `mcp` pulls the first two in already, but this package imports them directly — the Jira adapter
 # speaks httpx2 and the GitHub adapter offloads its blocking `gh` calls with anyio — so they are
-# declared rather than inherited from a transitive edge that is free to move.
+# declared rather than inherited from a transitive edge that is free to move. `marklas` is the
+# Markdown/rich-text converter the Jira adapter calls in process, replacing the CLI deployment's
+# subprocess-into-an-isolated-venv hop. Its floor is `>=0.8.2` — the version the CLI deployment's
+# `skills/tracker/jira/adf-requirements.lock` pins — because marklas is pre-1.0 and has already
+# removed public API in a minor bump (0.7.0 dropped `walk`/`transform`), so an unbounded constraint
+# would let a resolver pick a release whose converter API this adapter does not speak.
 [tool.pixi.pypi-dependencies]
 mcp = ">=2.0.0"
 httpx2 = "*"
 anyio = "*"
+marklas = ">=0.8.2"
 
 [tool.pixi.tasks]
 sy-server = "python -m sy_tools.server"

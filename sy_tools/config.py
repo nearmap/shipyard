@@ -151,6 +151,41 @@ def agent_binding(name: str) -> dict:
     }
 
 
+def scratch_dir(identifier: str) -> Path:
+    """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
+
+    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
+
+    Containment is checked against the resolved candidate rather than inferred from the string. An
+    identifier of `"."` or `""` has no path parts at all, so every string-shaped guard passes it and
+    the root itself would be returned: two identifiers would collide there, and a caller that
+    cleans up what it was handed would delete every other identifier's data. Resolving also catches
+    a `..` hidden mid-path and a symlink already inside the root that `mkdir(parents=True)` would
+    otherwise follow straight out of it.
+    """
+    root = Path(str(get("scratch.dir")))
+    refusal = ConfigError(
+        f"refusing to create a scratch directory for {identifier!r}: an identifier must be a "
+        "relative name that stays inside the resolved scratch root."
+    )
+    try:
+        relative = Path(identifier)
+        candidate = root / relative
+        contained = (
+            bool(relative.parts)
+            and bool(identifier.strip())
+            and not relative.is_absolute()
+            and ".." not in relative.parts
+            and candidate.resolve().is_relative_to(root.resolve())
+        )
+    except (ValueError, OSError):
+        raise refusal from None
+    if not contained:
+        raise refusal
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
 def fingerprint() -> str:
     """Digest of every resolved value, for cache invalidation and reload reporting."""
     values, _ = resolve()
@@ -237,6 +272,9 @@ def _apply_derived_defaults(values: dict, provenance: dict[str, str], root: Path
     if values.get("memory", {}).get("dir") in (None, ""):
         values.setdefault("memory", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "memory")
         provenance["memory.dir"] = "derived-default"
+    if values.get("scratch", {}).get("dir") in (None, ""):
+        values.setdefault("scratch", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "scratch")
+        provenance["scratch.dir"] = "derived-default"
 
 
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:

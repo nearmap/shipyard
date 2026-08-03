@@ -21,7 +21,67 @@ import pytest
 
 from sy_tools import SERVER_NAME, server
 
-TOOL_NAMES = {"attach-artifact", "reload_config", "validate_config"}
+TOOL_NAMES = {
+    "add-dependency",
+    "add-label",
+    "assign",
+    "attach-artifact",
+    "create-issue",
+    "find-issues",
+    "get-issue",
+    "link-parent",
+    "post-comment",
+    "preflight",
+    "reload_config",
+    "set-status",
+    "update-issue",
+    "validate_config",
+}
+
+WIRING = [
+    ("create-issue", {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"},
+     "create_issue", (), {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"}),
+    ("get-issue", {"issue": "PROJ-2"}, "get_issue", ("PROJ-2",), {}),
+    ("update-issue", {"issue": "PROJ-3", "body": "replacement"}, "update_issue", ("PROJ-3", "replacement"), {}),
+    ("find-issues", {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5},
+     "find_issues", (), {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5}),
+    ("find-issues", {}, "find_issues", (),
+     {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50}),
+    ("set-status", {"issue": "PROJ-5", "status": "in-review"}, "set_status", ("PROJ-5", "in-review"), {}),
+    ("assign", {"issue": "PROJ-6"}, "assign", ("PROJ-6", "@me"), {}),
+    ("link-parent", {"issue": "PROJ-7", "parent": "PROJ-8"}, "link_parent", ("PROJ-7", "PROJ-8"), {}),
+    ("add-dependency", {"issue": "PROJ-9", "blocked_by": "PROJ-10"},
+     "add_dependency", ("PROJ-9", "PROJ-10"), {}),
+    ("add-label", {"issue": "PROJ-11", "label": "needs-spec"}, "add_label", ("PROJ-11", "needs-spec"), {}),
+    ("post-comment", {"issue": "PROJ-12", "body": "TL;DR: done"}, "post_comment", ("PROJ-12", "TL;DR: done"), {}),
+    ("preflight", {}, "preflight", (), {}),
+]
+"""Every canonical-verb tool, the adapter method it must reach, and the arguments it must pass.
+
+The whole slice is wiring, so wiring is what gets pinned: positional-versus-keyword is part of the
+expectation because a verb reached with its arguments transposed would otherwise still look green.
+"""
+
+
+class _Recorder:
+    """An adapter that records which verb was asked for instead of performing it.
+
+    `__getattr__` rather than eleven stubs: the cost is that a tool wired to a verb no real adapter
+    has would still pass here, so `test_every_adapter_implements_the_whole_protocol` in
+    `sy_tools/tests/tracker/test_canonical.py` is what closes that gap.
+    """
+
+    name = "recorder"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def __getattr__(self, verb: str):
+        async def record(*args: Any, **kwargs: Any) -> dict:
+            self.calls.append((verb, args, kwargs))
+            return {"verb": verb}
+
+        return record
 
 
 @pytest.fixture
@@ -32,6 +92,11 @@ def anyio_backend() -> str:
 def _payload(result: Any) -> dict:
     """The tool's own JSON result, parsed out of the text content block the SDK wraps it in."""
     return json.loads(result.content[0].text)
+
+
+def _text(result: Any) -> str:
+    """The result's text content, for a failure whose message is prose rather than JSON."""
+    return str(result.content[0].text)
 
 
 @pytest.mark.anyio
@@ -53,9 +118,83 @@ async def test_initialize_list_and_call_roundtrip():
         assert attach.input_schema["properties"]["kind"]["default"] == "transcript"
         assert attach.input_schema["properties"]["process_tier"]["anyOf"][0]["enum"] == ["full", "light"]
 
+        schemas = {t.name: t.input_schema for t in listed.tools}
+        assert set(schemas["create-issue"]["required"]) == {"issue_type", "title"}, schemas["create-issue"]
+        assert "required" not in schemas["find-issues"] or not schemas["find-issues"]["required"], (
+            "every find-issues filter is optional; a required one makes the tool uncallable as a plain list"
+        )
+        assert set(schemas["find-issues"]["properties"]) == {"status", "issue_type", "parent", "text", "limit"}
+
         result = await client.call_tool("validate_config", {})
         assert result.is_error is False
         assert set(_payload(result)) == {"valid", "errors", "tracker", "fingerprint"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "args", "verb", "expected_args", "expected_kwargs"), WIRING)
+async def test_each_canonical_tool_reaches_its_verb_with_the_arguments_it_was_given(
+    monkeypatch, tool, args, verb, expected_args, expected_kwargs
+):
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, args)
+    assert result.is_error is False, result.content
+    assert recorder.calls == [(verb, expected_args, expected_kwargs)], (
+        f"{tool} is mis-wired: it called {recorder.calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_the_three_folded_verbs_have_no_tool_of_their_own(monkeypatch):
+    """`create-child`, `post-log` and `link-pr` are content, not tools — pin that they are absent.
+
+    A caller migrating from the shell verbs will look for all three by name, so their absence is
+    part of the surface's contract rather than an omission to rediscover. `create-child` is what is
+    checked positively here, because it is the only one with a distinguishable argument.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        names = {t.name for t in (await client.list_tools()).tools}
+        assert names.isdisjoint({"create-child", "post-log", "link-pr"}), names
+
+        child = await client.call_tool("create-issue", {"issue_type": "task", "title": "T", "parent": "PROJ-1"})
+        assert child.is_error is False, child.content
+        assert recorder.calls[0][2]["parent"] == "PROJ-1", "create-issue with a parent is what serves create-child"
+
+
+@pytest.mark.anyio
+async def test_a_tracker_failure_comes_back_as_a_tool_result(monkeypatch):
+    """No per-tool try/except: the SDK already turns a raising tool into an `isError` result.
+
+    Asserted once because the mechanism is shared by all eleven, and asserted at all because a
+    swallowed TrackerError would look like a successful no-op to the model.
+    """
+    class _Refusing:
+        async def get_issue(self, issue: str) -> dict:
+            raise server.tracker.TrackerError(f"no such issue {issue}")
+
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Refusing())
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("get-issue", {"issue": "PROJ-404"})
+    assert result.is_error is True
+    assert "PROJ-404" in _text(result)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("blank", ["", " ", "\n", "\t"])
+async def test_a_blank_issue_id_is_refused_before_the_tracker_is_touched(monkeypatch, blank):
+    """A blank string passes schema validation, so the guard has to be in the tool.
+
+    Whitespace-only is included because it is indistinguishable from empty to a reader of the
+    result: `create-issue title="\\n"` would create an issue with no findable title at all.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("get-issue", {"issue": blank})
+    assert result.is_error is True
+    assert "'issue' is required" in _text(result)
 
 
 def test_validate_config_reports_an_unresolvable_config_rather_than_crashing(monkeypatch):

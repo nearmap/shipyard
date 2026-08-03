@@ -1,11 +1,16 @@
-"""The tracker seam, at the MCP package's location.
+"""The tracker seam, at the MCP package's location: only `sy_tools/tracker/` names a real tracker.
 
 CONTRIBUTING.md's rule is that exactly one place knows how to talk to a specific tracker.
 `scripts/validate.py`'s `check_seam` enforces that for `skills/tracker/`; this enforces the same
 rule for `sy_tools/`, where the legal zone is `sy_tools/tracker/`. It is a pytest check rather than a new
 entry in `check_seam`'s scan list so `scripts/validate.py` stays untouched by this change.
 
-This file is the one exemption, for the same reason `check_seam` exempts `validate.py`
+Adapter *tests* are the second legal zone: a test that exercises one concrete adapter has to name
+it. That exemption is deliberately narrow — only `test_*.py` directly under
+`sy_tools/tests/tracker/`. A non-test module dropped there is still core code and is still scanned,
+so the seam cannot be evaded by choosing a directory.
+
+This file is the third exemption, for the same reason `check_seam` exempts `validate.py`
 (`scripts/validate.py:631`): the scanner has to spell out the tokens it looks for.
 """
 from __future__ import annotations
@@ -15,6 +20,7 @@ import re
 
 MCP_ROOT = Path(__file__).resolve().parents[1]
 LEGAL_ZONE = MCP_ROOT / "tracker"
+ADAPTER_TESTS = MCP_ROOT / "tests" / "tracker"
 
 TRACKER_TOKENS = [
     re.compile(p, f) for p, f in [
@@ -26,12 +32,18 @@ TRACKER_TOKENS = [
 ]
 
 
+def _exempt(path: Path) -> bool:
+    """Whether `path` is allowed to name a concrete tracker: the adapters, their tests, or this file."""
+    if LEGAL_ZONE in path.parents:
+        return True
+    if path.parent == ADAPTER_TESTS and path.name.startswith("test_"):
+        return True
+    return path.resolve() == Path(__file__).resolve()
+
+
 def _scanned_files() -> list[Path]:
-    """Every Python file in the package outside the legal zone, minus this scanner itself."""
-    return sorted(
-        p for p in MCP_ROOT.rglob("*.py")
-        if LEGAL_ZONE not in p.parents and p.resolve() != Path(__file__).resolve()
-    )
+    """Every Python file in the package that is not exempt from the seam rule."""
+    return sorted(p for p in MCP_ROOT.rglob("*.py") if not _exempt(p))
 
 
 def test_only_the_tracker_package_names_a_concrete_tracker():

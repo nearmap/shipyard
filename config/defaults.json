@@ -6,6 +6,9 @@
   "memory": {
     "dir": null
   },
+  "scratch": {
+    "dir": null
+  },
   "debug": {
     "evals": false
   },

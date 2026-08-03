@@ -32,6 +32,16 @@
         }
       }
     },
+    "scratch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": ["string", "null"],
+          "description": "Root for per-identifier ephemeral working directories. Null means ~/.claude/shipyard/scratch."
+        }
+      }
+    },
     "debug": {
       "type": "object",
       "additionalProperties": false,

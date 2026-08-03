@@ -61,16 +61,25 @@ _ADVICE = (
 )
 
 
-def deny(reason: str) -> None:
-    # reason names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value
-    # is ever read from the environment or printed here.
-    print(json.dumps({
-        "hookSpecificOutput": {
+def emit(reason: str | None, warning: str | None) -> None:
+    """The hook's one JSON object on stdout: the deny decision, the degraded-config warning, or both.
+
+    `reason` names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value is
+    ever read from the environment or printed here. `warning` goes in the top-level `systemMessage`
+    field, which Claude Code surfaces to the user on an allow decision too — unlike stderr, which on
+    this hook's exit-0 path is written only to an opt-in `--debug` log.
+    """
+    payload: dict = {}
+    if reason is not None:
+        payload["hookSpecificOutput"] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }
-    }))
+    if warning is not None:
+        payload["systemMessage"] = warning
+    if payload:
+        print(json.dumps(payload))
 
 
 def decision(tool: str, args: dict) -> str | None:
@@ -102,8 +111,7 @@ def main() -> None:
     if not isinstance(event, dict):
         return
     reason = decision(event.get("tool_name", ""), event.get("tool_input") or {})
-    if reason:
-        deny(reason)
+    emit(reason, _CONFIG_WARNING)
 
 
 def _segment_reason(segment: str) -> str | None:
@@ -200,6 +208,7 @@ def _interpreter_reason(command: str) -> str | None:
 
 
 _EXTRA_WORDS: frozenset[str] | None = None
+_CONFIG_WARNING: str | None = None
 
 
 def _extra_words() -> frozenset[str]:
@@ -210,22 +219,30 @@ def _extra_words() -> frozenset[str]:
     must not turn every command into a hard failure: fall back to the built-in word list alone,
     exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
 
-    The fallback warns on stderr rather than degrading silently. What it drops is a security control
-    the repo asked for, and the reasons config resolution can now refuse include a stale
-    `CLAUDE_PROJECT_DIR` — an environment fault, not a missing file, and one that leaves the guard
-    quietly narrower than the repo configured it to be for the whole session. Non-fatal by design:
-    the built-in word list still applies and the command still runs.
+    Every resolution failure degrades, including an `OSError`. `SystemExit` alone was not enough: the
+    resolver shells out to `git rev-parse`, so a `git` missing from `PATH` raised `FileNotFoundError`
+    straight through this catch and crashed the hook process — and a crashed `PreToolUse` hook is
+    fail-open, so the *whole* gate went quiet, not just the configured extra words. That is the
+    opposite of what this fallback is for.
+
+    The fallback reports through the hook's `systemMessage` output rather than degrading silently.
+    What it drops is a security control the repo asked for, and the reasons resolution can refuse
+    include a stale `CLAUDE_PROJECT_DIR` or an unusable `git` — environment faults, not missing files,
+    that leave the guard quietly narrower than the repo configured it for the whole session. Non-fatal
+    by design: the built-in word list still applies and the command still runs. The hook is a fresh
+    process per call and holds no session state, so the warning repeats on every command that consults
+    the word list until the fault is fixed; that is accepted over inventing cross-process session
+    plumbing here, and the trigger is narrow (only commands naming a candidate variable at all).
     """
-    global _EXTRA_WORDS
+    global _EXTRA_WORDS, _CONFIG_WARNING
     if _EXTRA_WORDS is None:
         try:
             from sy_config import get as _config_get
             words = _config_get("redaction.extra_words", default=[])
-        except SystemExit as exc:
-            print(
+        except (SystemExit, OSError) as exc:
+            _CONFIG_WARNING = (
                 f"secret_guard: redaction.extra_words could not be resolved, so only the built-in secret "
-                f"word list applies for this command: {exc}",
-                file=sys.stderr,
+                f"word list applies for this command: {exc}"
             )
             words = []
         _EXTRA_WORDS = frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
@@ -330,11 +347,13 @@ def _test_extra_words_from_config() -> None:
 
 
 def _test_unresolvable_config_warns_rather_than_dropping_silently() -> None:
-    """A stale `CLAUDE_PROJECT_DIR` narrows this gate for the whole session and must say so once.
+    """A stale `CLAUDE_PROJECT_DIR` narrows this gate for the whole session and must say so.
 
     The fallback stays non-fatal — the built-in word list still applies and the command still runs —
     but dropping a configured security control with no signal at all is the failure this pins: the
     pointer is an environment fault nobody edits a file to cause, so nothing else would report it.
+    The signal has to ride the hook's own JSON output, which is why `emit()` is asserted here too:
+    an exit-0 `PreToolUse` hook's stderr reaches no human.
     """
     import contextlib
     import io
@@ -343,27 +362,38 @@ def _test_unresolvable_config_warns_rather_than_dropping_silently() -> None:
 
     import sy_config
 
-    global _EXTRA_WORDS
-    saved, saved_pointer = _EXTRA_WORDS, os.environ.get("CLAUDE_PROJECT_DIR")
+    global _EXTRA_WORDS, _CONFIG_WARNING
+    saved, saved_warning = _EXTRA_WORDS, _CONFIG_WARNING
+    saved_pointer = os.environ.get("CLAUDE_PROJECT_DIR")
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["CLAUDE_PROJECT_DIR"] = str(Path(tmp) / "not-a-checkout")
         sy_config.reset_cache()
-        _EXTRA_WORDS = None
-        stderr = io.StringIO()
+        _EXTRA_WORDS, _CONFIG_WARNING = None, None
         try:
-            with contextlib.redirect_stderr(stderr):
-                assert _extra_words() == frozenset(), "an unresolvable config must not be fatal here"
-            warning = stderr.getvalue()
-            assert "redaction.extra_words" in warning, f"the drop must be visible on stderr: {warning!r}"
+            assert _extra_words() == frozenset(), "an unresolvable config must not be fatal here"
+            warning = _CONFIG_WARNING or ""
+            assert "redaction.extra_words" in warning, f"the drop must be reported: {warning!r}"
             assert "CLAUDE_PROJECT_DIR" in warning, f"the warning must name the cause: {warning!r}"
             assert decision("Bash", {"command": "git status"}) is None, "the guard must keep working"
+            assert decision("Bash", {"command": "echo $ACLI_TOKEN"}) is not None, "built-ins still deny"
         finally:
             if saved_pointer is None:
                 os.environ.pop("CLAUDE_PROJECT_DIR", None)
             else:
                 os.environ["CLAUDE_PROJECT_DIR"] = saved_pointer
             sy_config.reset_cache()
-            _EXTRA_WORDS = saved
+            _EXTRA_WORDS, _CONFIG_WARNING = saved, saved_warning
+
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        emit("denied", "degraded")
+    payload = json.loads(captured.getvalue())
+    assert payload["systemMessage"] == "degraded", f"the warning must reach the user: {payload!r}"
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", payload
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        emit(None, None)
+    assert captured.getvalue() == "", "a clean allow must stay silent"
 
 
 if __name__ == "__main__":

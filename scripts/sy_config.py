@@ -227,17 +227,22 @@ def layers() -> list[tuple[str, Path]]:
 def validate() -> list[str]:
     """Every reason the resolved configuration must be rejected, each naming its key and source.
 
-    A repo root that cannot be derived at all — a `CLAUDE_PROJECT_DIR` naming no git checkout — is
-    collected as one error and returned, not raised: this function exists to report every problem it
-    can see, and `repo_root()` is reached from `layers()` as well as from `resolve()`, so it is asked
-    once up front rather than allowed to exit the process from whichever call site got there first.
+    A repo root that cannot be derived at all — a `CLAUDE_PROJECT_DIR` naming no git checkout, or a
+    `git` that cannot be run — is collected as one error and returned, not raised: this function
+    exists to report every problem it can see, and `repo_root()` is reached from `layers()` as well as
+    from `resolve()`, so it is asked once up front rather than allowed to exit the process from
+    whichever call site got there first. It is asked *first*, before `env_conflicts()`, because
+    `env_conflicts()` absorbs the same failure into an empty flat config and then reports every legacy
+    `SY_*` variable as disagreeing with a key that "resolves to None" — a derived, factually wrong
+    line that would otherwise bury the one real cause under it.
     """
-    errors: list[str] = []
-    errors.extend(env_conflicts())
     try:
         root = repo_root()
     except SystemExit as exc:
-        return [*errors, str(exc)]
+        return [str(exc)]
+    except OSError as exc:
+        return [f"sy_config: the repository root could not be resolved: {exc}"]
+    errors: list[str] = list(env_conflicts())
     for label, path in layers():
         if path.is_file():
             errors.extend(_layer_violations(path, label))
@@ -652,6 +657,10 @@ def _load_json(path: Path) -> dict:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise SystemExit(f"sy_config: missing required file {path}") from None
+    except OSError as exc:
+        # An unreadable layer (a bad mode, a dead symlink target) is a configuration fault like any
+        # other and must arrive as this module's own refusal, not as a raw traceback in a hook.
+        raise SystemExit(f"sy_config: {path} could not be read: {exc}") from None
     except json.JSONDecodeError as exc:
         raise SystemExit(f"sy_config: {path} is not valid JSON: {exc}") from None
     if not isinstance(loaded, dict):

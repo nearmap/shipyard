@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -11,6 +13,7 @@ from sy_tools import secrets
 
 FAKE_TOKEN = "ATATT3xFfGF0-fake-shipyard-fixture-4c8a91e2b7d05f6a1e"
 FAKE_VAR = "SY_TEST_FIXTURE_TOKEN"
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -98,3 +101,30 @@ def test_a_required_credential_absent_from_the_environment_fails_loudly(planted,
 def test_missing_artifact_is_refused(tmp_path):
     with pytest.raises(secrets.SanitizeError, match="artifact not found"):
         secrets.sanitize(tmp_path / "absent.txt")
+
+
+def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
+    """`secret_guard.py` reads `redaction.extra_words`, and that resolution shells out to `git`.
+
+    With no `git` on `PATH` the resolver raised `FileNotFoundError`, which crashed the whole hook
+    process: a `PreToolUse` hook that dies emits no decision and Claude Code continues, so a missing
+    binary silently disabled every built-in denial too, not merely the configured extra words. Run as
+    a subprocess because the failure was a process-level crash, which an in-process call cannot see.
+    """
+    empty_bin = tmp_path / "no-git-here"
+    empty_bin.mkdir()
+    env = {
+        **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
+        "PATH": str(empty_bin), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
+    }
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "secret_guard.py")],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo $ACLI_TOKEN"}}),
+        cwd=tmp_path, capture_output=True, text=True, check=False, env=env,
+    )
+    assert proc.returncode == 0, f"the hook crashed instead of degrading: {proc.stderr}"
+    payload = json.loads(proc.stdout)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", payload
+    assert "redaction.extra_words" in payload.get("systemMessage", ""), (
+        f"the narrowed gate must be reported to the user, not only on unread stderr: {payload!r}"
+    )

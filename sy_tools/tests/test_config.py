@@ -233,22 +233,56 @@ def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(
     list, and the pointer's error surfaced as a crash rather than as one collected line. Asserted
     through a subprocess because the escape is a process exit, which an in-process call cannot
     distinguish from the collected result once it has already happened.
+
+    Also pinned here: the pointer's own error comes *first*. `env_conflicts()` absorbs the same
+    resolution failure into an empty flat config, so with any legacy `SY_*` variable also set it used
+    to lead with "disagrees with <key>, which resolves to None" — wrong on its face, since the shipped
+    defaults give that key a value — and left the real cause underneath it.
     """
+    proc = _validate_probe(
+        tmp_path,
+        # Set through the resolver's own map: spelling a retired variable's name in this file would
+        # trip the config seam that `scripts/validate.py` enforces over every file but the resolver.
+        preamble="os.environ[next(n for n, p in sy_config.LEGACY_ENV.items() if p == 'ci.poll_timeout')] = '60'\n",
+        CLAUDE_PROJECT_DIR=str(tmp_path / "definitely-not-a-repo"),
+    )
+    assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
+    first = proc.stdout.strip().splitlines()[0]
+    assert "CLAUDE_PROJECT_DIR" in first, f"the real cause must be the first line: {proc.stdout!r}"
+    assert "resolves to None" not in proc.stdout, f"no derived follow-on error: {proc.stdout!r}"
+
+
+def test_the_cli_validator_reports_a_git_it_cannot_run_rather_than_crashing(tmp_path):
+    """`repo_root()` shells out to `git`, so a `git` missing from `PATH` raises a plain `OSError`.
+
+    The guard caught only `SystemExit`, so that escaped as an uncaught `FileNotFoundError` from the
+    one function contracted to return its problems as strings — the same fail-open that took the
+    secret-scanning hook down with it.
+    """
+    empty_bin = tmp_path / "no-git-here"
+    empty_bin.mkdir()
+    proc = _validate_probe(tmp_path, PATH=str(empty_bin))
+    assert proc.returncode == 0, f"validate() crashed instead of collecting the failure: {proc.stderr}"
+    assert "could not be resolved" in proc.stdout, f"the failure must be reported: {proc.stdout!r}"
+
+
+def _validate_probe(cwd: Path, preamble: str = "", **env: str) -> subprocess.CompletedProcess:
+    """`sy_config.validate()` in a subprocess: the escape under test is a process exit or a crash."""
     probe = (
-        "import sy_config\n"
+        "import os, sy_config\n"
+        f"{preamble}"
         "errors = sy_config.validate()\n"
         "assert all(isinstance(e, str) for e in errors), errors\n"
         "print('\\n'.join(errors))\n"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", probe], cwd=tmp_path, capture_output=True, text=True, check=False,
-        env={
-            **os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
-            "CLAUDE_PROJECT_DIR": str(tmp_path / "definitely-not-a-repo"),
-        },
+    base = {
+        **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
+        "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
+    }
+    return subprocess.run(
+        [sys.executable, "-c", probe], cwd=cwd, capture_output=True, text=True, check=False,
+        env={**base, **env},
     )
-    assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
-    assert "CLAUDE_PROJECT_DIR" in proc.stdout, f"the collected errors must name the pointer: {proc.stdout!r}"
 
 
 def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):

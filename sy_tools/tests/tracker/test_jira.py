@@ -875,17 +875,28 @@ async def test_find_issues_bounds_the_page_size(credentials, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_a_search_with_no_project_and_no_filter_refuses_rather_than_reading_the_site(credentials, monkeypatch):
+async def test_a_search_with_no_project_and_no_parent_refuses_rather_than_reading_unbounded(credentials, monkeypatch):
     """The project scope is optional so the child search can drop it; an empty JQL is not the fallback.
 
-    `" AND ".join([])` is the empty string, which `/search/jql` reads as "every issue this account can
-    see" — a whole-site read where a caller meant one narrow question. Fails closed instead.
+    Neither `project` nor `parent` bounds the query to one board or one issue's children, so the
+    search refuses before it is sent rather than let an unbounded query reach Jira's API.
     """
     calls = _transport(monkeypatch, {"issues": [], "isLast": True})
 
-    with pytest.raises(TrackerError, match="whole site"):
+    with pytest.raises(TrackerError, match="neither project nor parent"):
         await adapter.JiraAdapter()._search()
     assert calls == [], "an unscoped search must fail before it is sent"
+
+
+@pytest.mark.anyio
+async def test_a_status_or_text_filter_alone_does_not_bound_a_search(credentials, monkeypatch):
+    """A filter that is neither `project` nor `parent` still leaves the query unbounded to one board
+    or one issue's children, so it must refuse just like the no-filter-at-all case."""
+    calls = _transport(monkeypatch, {"issues": [], "isLast": True})
+
+    with pytest.raises(TrackerError, match="neither project nor parent"):
+        await adapter.JiraAdapter()._search(status="ready", text="incident")
+    assert calls == [], "a status/text-only search must fail before it is sent"
 
 
 @pytest.mark.anyio

@@ -234,8 +234,12 @@ class JiraAdapter:
             clauses.append(f"parent = {_jql(parent)}")
         if text:
             clauses.append(f"text ~ {_jql(text)}")
-        if not clauses:
-            raise TrackerError("a search with no project and no filters would return the whole site; refusing")
+        if not (project or parent):
+            raise TrackerError(
+                "a search scoped by neither project nor parent is not bounded to a single issue or "
+                "board; Jira's search API rejects an unbounded query outright, and a status/type/text "
+                "filter alone does not bound it either — refusing before the request"
+            )
         base, auth = _credentials()
         payload = {
             "jql": " AND ".join(clauses),

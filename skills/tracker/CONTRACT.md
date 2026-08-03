@@ -92,8 +92,8 @@ type — parent links, board membership — and converting back does not undo th
 
 ### Attachment lifecycle has no delete
 
-`attachment-update` deletes every attachment of the same filename before uploading, which is undoable
-only by uploading a further replacement — confirm the target first. It resolves by filename, taking
+`attachment-update` replaces every attachment of the same filename, which is undoable only by
+uploading a further replacement — confirm the target first. It resolves by filename, taking
 the tracker-native id instead to disambiguate duplicates. Zero matches is a plain first upload, never
 a failure: the verb's contract is replace-by-filename with nothing to replace explicitly fine.
 

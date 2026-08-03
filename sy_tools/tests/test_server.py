@@ -496,6 +496,29 @@ async def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_poste
 
 
 @pytest.mark.anyio
+async def test_a_second_block_claiming_the_schema_is_refused_rather_than_validated_off_the_first(monkeypatch):
+    """Two candidate blocks are ambiguous, and a first-match check posts the one it never looked at.
+
+    The body quotes a prior valid metrics block for comparison and then carries the log it actually
+    means to post, which is malformed. Validating the first match accepts the comment and lands the
+    second block unchecked — the same unvalidated-log incident, wearing a valid block as cover.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = (
+        "TL;DR: compare against last time's numbers.\n\n"
+        + _metrics_comment(ci_fix_rounds=1)
+        + "\nAnd this run:\n\n"
+        + _metrics_comment(ci_fix_rounds=-1)
+    )
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"the first matching block validated and the second posted unread: {body}"
+    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
+        f"the refusal must name the schema and how many candidate blocks it found: {_text(result)}"
+    )
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "body"),
     [

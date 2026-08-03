@@ -1459,13 +1459,27 @@ def _gh(args: list[str]) -> str:
     Shipyard's repository rather than the consumer's and report success for it. Pinning `cwd` to the
     resolved root makes the two agree by construction, config-configured repo or not.
 
+    That `cwd` is checked before `gh` is invoked rather than left to `subprocess.run`, which reports a
+    `cwd` that does not exist as `FileNotFoundError` — the same class a missing `gh` binary raises, so
+    a resolved root pointing at nothing would be reported as "install the GitHub CLI" and send whoever
+    read it after the wrong fix — and a `cwd` that exists but is not a directory as `NotADirectoryError`,
+    an `OSError` this adapter never contracted to let escape. Checked here, `FileNotFoundError` below
+    can only mean the binary.
+
     The timeout bounds a `gh` that never returns — a network stall, or a credential helper
     prompting on a stdin no one is answering — because this process has other calls to serve.
     """
+    root = config.resolved_root()
+    if not root.is_dir():
+        raise TrackerError(
+            f"the repository the configuration resolved against, {root}, is not an existing directory, "
+            "so there is nowhere to run gh. This is a configuration fault, not a gh or credential one: "
+            "check CLAUDE_PROJECT_DIR and the .shipyard/ layers it points at."
+        )
     try:
         proc = subprocess.run(
             ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS,
-            cwd=config.resolved_root(),
+            cwd=root,
         )
     except FileNotFoundError:
         raise TrackerError("gh is not installed or not on PATH; install the GitHub CLI.") from None

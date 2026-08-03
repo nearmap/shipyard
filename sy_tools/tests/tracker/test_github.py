@@ -510,6 +510,32 @@ async def test_missing_gh_is_an_actionable_preflight_failure(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("case", ["a root that does not exist", "a root that is not a directory"])
+async def test_an_unusable_resolved_root_is_not_reported_as_a_missing_gh(monkeypatch, tmp_path, case):
+    """`subprocess.run` blames a `cwd` that does not exist with `FileNotFoundError` — the missing-binary
+    class the test above pins — so a resolved root pointing at nothing was reported as "install the
+    GitHub CLI", sending whoever read it after a tool that is already installed. A root that exists but
+    is not a directory raises `NotADirectoryError`, which nothing here caught, escaping the adapter as a
+    raw `OSError` against its contract that every failure is a `TrackerError`. Both are configuration
+    faults and must name the root instead.
+    """
+    unusable = tmp_path / "no-such-checkout"
+    if case == "a root that is not a directory":
+        unusable.write_text("", encoding="utf-8")
+    monkeypatch.setattr(adapter.config, "resolved_root", lambda: unusable)
+    # The real `subprocess`, deliberately: what is under test is which exception Python itself raises
+    # for this `cwd`, which a fake would decide rather than reveal. Nothing is executed — the check
+    # fires first, and even without it the child never reaches `exec`.
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.GithubAdapter().preflight()
+
+    message = str(raised.value)
+    assert str(unusable) in message, f"the failure must name the root it could not run in: {message}"
+    assert "not installed" not in message, f"a bad resolved root was blamed on gh: {message}"
+
+
+@pytest.mark.anyio
 async def test_set_status_resolves_the_board_case_insensitively_and_reads_the_move_back(monkeypatch, board):
     """The board spells the column `In progress`; this repo's config spells it `In Progress`.
 

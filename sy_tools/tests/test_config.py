@@ -224,6 +224,33 @@ def test_validate_reports_a_missing_required_key(fixture_repo, monkeypatch):
     assert any("columns.ready is required" in e for e in config.validate())
 
 
+def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(tmp_path):
+    """`sy_config.validate()` reaches `repo_root()` through `layers()`, before it calls `resolve()`.
+
+    Only the `resolve()` call was guarded, so a `CLAUDE_PROJECT_DIR` naming no checkout exited the
+    process from inside the one function whose contract is to *return* every problem it found as a
+    string. Any in-process caller — a hook, another script — got a `SystemExit` where it expected a
+    list, and the pointer's error surfaced as a crash rather than as one collected line. Asserted
+    through a subprocess because the escape is a process exit, which an in-process call cannot
+    distinguish from the collected result once it has already happened.
+    """
+    probe = (
+        "import sy_config\n"
+        "errors = sy_config.validate()\n"
+        "assert all(isinstance(e, str) for e in errors), errors\n"
+        "print('\\n'.join(errors))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], cwd=tmp_path, capture_output=True, text=True, check=False,
+        env={
+            **os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
+            "CLAUDE_PROJECT_DIR": str(tmp_path / "definitely-not-a-repo"),
+        },
+    )
+    assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
+    assert "CLAUDE_PROJECT_DIR" in proc.stdout, f"the collected errors must name the pointer: {proc.stdout!r}"
+
+
 def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):
     before = config.fingerprint()
     changed = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "done": "Shipped"}}

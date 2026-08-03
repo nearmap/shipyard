@@ -225,16 +225,26 @@ def layers() -> list[tuple[str, Path]]:
 
 
 def validate() -> list[str]:
-    """Every reason the resolved configuration must be rejected, each naming its key and source."""
+    """Every reason the resolved configuration must be rejected, each naming its key and source.
+
+    A repo root that cannot be derived at all — a `CLAUDE_PROJECT_DIR` naming no git checkout — is
+    collected as one error and returned, not raised: this function exists to report every problem it
+    can see, and `repo_root()` is reached from `layers()` as well as from `resolve()`, so it is asked
+    once up front rather than allowed to exit the process from whichever call site got there first.
+    """
     errors: list[str] = []
     errors.extend(env_conflicts())
+    try:
+        root = repo_root()
+    except SystemExit as exc:
+        return [*errors, str(exc)]
     for label, path in layers():
         if path.is_file():
             errors.extend(_layer_violations(path, label))
     try:
         values, provenance = resolve()
     except SystemExit as exc:
-        return errors + [str(exc)]
+        return [*errors, str(exc)]
 
     flat = _flatten(values)
     tracker = flat.get("tracker")
@@ -244,7 +254,7 @@ def validate() -> list[str]:
     for path in required:
         if flat.get(path) in (None, ""):
             errors.append(
-                f"{path} is required and unset. Set it in {repo_root() / CONFIG_DIRNAME / CONFIG_FILENAME}."
+                f"{path} is required and unset. Set it in {root / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
     # A presence check only: the env var's name is reported, its value never read into a variable
     # or a message. `os.environ.get(name)` here is used solely for its truthiness.

@@ -249,8 +249,9 @@ async def post_comment(
     log is always its own comment, never appended to prose, and honouring that is yours to do.
     `link-pr`'s durable half is this call carrying the PR URL.
 
-    A body that names `shipyard.ship_metrics.v1` must carry a fenced JSON block that validates
-    against that schema, or nothing is posted; every other body passes through unchanged.
+    A body that names `shipyard.ship_metrics.v1` must carry exactly one fenced JSON block that
+    validates against that schema — none, several, or one that does not match, and nothing is
+    posted; every other body passes through unchanged.
     """
     _required(issue=issue)
     _validate_machine_log(body)
@@ -264,6 +265,14 @@ The info string is not matched on: `handoff-accounting.md` shows the metrics blo
 but a caller that omits the language must not thereby skip validation — and the check that decides
 whether a block is a machine log is the `schema` key inside it, not the fence it arrived in.
 """
+
+
+def _as_json(block: str) -> object:
+    """One fenced block's parsed JSON, or None when it is not JSON at all (a shell sample, prose)."""
+    try:
+        return json.loads(block)
+    except json.JSONDecodeError:
+        return None
 
 
 def _validate_machine_log(body: str) -> None:
@@ -280,18 +289,29 @@ def _validate_machine_log(body: str) -> None:
     The cost is that a prose comment quoting the schema id must now carry a valid block or be reworded;
     the incident this closes off is a metrics comment that landed with a field name nobody noticed was
     wrong and was read as authoritative afterwards, and an unparseable one is that same incident.
+
+    *Exactly* one, because two candidate blocks are ambiguous rather than one to validate and one to
+    ignore: a body quoting an earlier valid metrics block above the new one it means to post would
+    otherwise validate off whichever came first and post the other unread, which is the same
+    unvalidated-block incident wearing a valid block as cover. Nothing is chosen for the caller —
+    the comment is refused and the extra block has to go.
     """
     if SCHEMA_ID not in body:
         return
-    for block in FENCE.findall(body):
+    candidates = [
+        parsed for parsed in (_as_json(block) for block in FENCE.findall(body))
+        if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID
+    ]
+    if len(candidates) > 1:
+        raise ToolError(
+            f"this comment carries {len(candidates)} fenced blocks claiming {SCHEMA_ID}, so it was not "
+            "posted: which one is the machine log is ambiguous, and validating the first would post the "
+            "rest unchecked. A machine log is always its own comment carrying exactly one such block — "
+            "post the log on its own, and quote any earlier numbers as prose or under a schema-less block."
+        )
+    if candidates:
         try:
-            parsed = json.loads(block)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(parsed, dict) or parsed.get("schema") != SCHEMA_ID:
-            continue
-        try:
-            ShipMetricsV1.model_validate(parsed)
+            ShipMetricsV1.model_validate(candidates[0])
         except ValidationError as exc:
             raise ToolError(
                 f"this comment carries a {SCHEMA_ID} block that does not match the schema, so it was "

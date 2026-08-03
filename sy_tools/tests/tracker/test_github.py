@@ -64,6 +64,7 @@ class _FakeSubprocess:
         self.kwargs: list[dict[str, object]] = []
         self.threads: list[int] = []
         self.PIPE = subprocess.PIPE
+        self.DEVNULL = subprocess.DEVNULL
         self.TimeoutExpired = subprocess.TimeoutExpired
 
     def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -372,6 +373,30 @@ async def test_a_failed_gist_call_is_never_a_silent_success(tmp_path, monkeypatc
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("name", ["back`tick.txt", "new\nline.txt"], ids=["backtick", "newline"])
+@pytest.mark.parametrize("verb", ["attach_artifact", "attachment_update"])
+async def test_a_filename_the_artifact_index_cannot_hold_is_refused_before_the_upload(
+    tmp_path, monkeypatch, board, name, verb
+):
+    """The linking comment is this tracker's whole artifact index, and it has no escaping to spend.
+
+    `ARTIFACT_LINK` reads the filename back from between backticks on one line, so either character
+    breaks the round-trip silently: the upload reported success, and the next `attachment-update` then
+    matched nothing and uploaded a second gist beside the first while `attachment-download` reported the
+    issue had no artifacts at all. Both are legal in a POSIX filename, so this is a refusal, not a
+    theoretical one — and it must land before a gist exists to be orphaned.
+    """
+    hostile = tmp_path / name
+    hostile.write_text(ARTIFACT_TEXT, encoding="utf-8")
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="backtick or a newline"):
+        await getattr(adapter.GithubAdapter(), verb)("7", hostile)
+
+    assert fake.calls == [], f"the name must be refused before anything is uploaded or commented: {fake.calls}"
+
+
+@pytest.mark.anyio
 async def test_a_credential_in_command_output_never_reaches_the_error_message(tmp_path, monkeypatch):
     monkeypatch.setenv("SHIPYARD_TEST_TOKEN", "s3cr3t-value-not-for-logs")
     _install(monkeypatch, (1, "", "bad credentials: s3cr3t-value-not-for-logs"))
@@ -408,17 +433,67 @@ async def test_extra_redaction_words_apply_to_error_messages(tmp_path, monkeypat
 
 
 @pytest.mark.anyio
-async def test_preflight_reports_facts_without_the_token(monkeypatch):
+async def test_preflight_reports_facts_without_the_token(monkeypatch, board):
     status = (
         "github.com\n  ✓ Logged in to github.com account octocat (keyring)\n"
         "  - Token: gho_exampletokenvalue\n  - Token scopes: 'gist', 'project', 'repo'\n"
     )
-    _install(monkeypatch, (0, "gh version 2.94.0 (2025-01-01)\n", ""), (0, status, ""))
+    fake = _install(
+        monkeypatch, (0, "gh version 2.94.0 (2025-01-01)\n", ""), (0, status, ""), _json(_items())
+    )
 
     facts = await adapter.GithubAdapter().preflight()
 
     assert facts["account"] == "octocat" and facts["scopes"] == ["gist", "project", "repo"], facts
     assert "gho_exampletokenvalue" not in json.dumps(facts), "preflight must never return a token"
+    assert fake.calls[-1][1:3] == ["project", "item-list"], (
+        f"a green preflight has to have read the board it says is reachable: {fake.calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_preflight_fails_a_scoped_token_whose_board_is_not_reachable(monkeypatch, board):
+    """A scope is a property of the credential; reachability is a property of the board.
+
+    A token that reports `project` still fails every board write if `tracker_config.project` names a
+    board that has been deleted, renamed, or made invisible to it — and checking only the scope string
+    passed that token, deferring the failure to the first real `set-status`, which is the half-finished
+    workflow this verb exists to prevent. So the board is read on this path too.
+    """
+    fake = _install(
+        monkeypatch,
+        (0, "gh version 2.96.0 (2025-01-01)\n", ""),
+        (0, _auth_status("  - Token scopes: 'gist', 'project', 'repo'\n"), ""),
+        (1, "", "Could not resolve to a ProjectV2 with the number 3."),
+    )
+
+    with pytest.raises(TrackerError, match="unconfirmed") as raised:
+        await adapter.GithubAdapter().preflight()
+
+    message = str(raised.value)
+    assert PROJECT in message, f"the failure must name the board that could not be read: {message}"
+    assert "tracker_config.project" in message, (
+        f"a token that already holds 'project' must be sent to the board, not back to gh auth: {message}"
+    )
+    assert fake.calls[-1][1:3] == ["project", "item-list"], fake.calls
+
+
+@pytest.mark.anyio
+async def test_no_gh_call_inherits_the_servers_stdin(monkeypatch, board):
+    """This process's stdin carries JSON-RPC frames, and a child inherits it by default.
+
+    A `gh` credential helper prompting for input — or anything else `gh` reads a line from — would
+    consume a frame the server needed, desynchronising the session exactly as a stray stdout line does.
+    """
+    fake = _install(
+        monkeypatch, (0, "gh version 2.96.0 (2025-01-01)\n", ""), (0, _auth_status(), ""), _json(_items())
+    )
+
+    await adapter.GithubAdapter().preflight()
+
+    assert fake.kwargs and all(call.get("stdin") == subprocess.DEVNULL for call in fake.kwargs), (
+        f"a gh call was handed the server's own stdin: {fake.kwargs}"
+    )
 
 
 def _auth_status(scopes_line: str = "") -> str:
@@ -499,6 +574,7 @@ async def test_a_hung_gh_is_bounded_and_becomes_an_actionable_failure(tmp_path, 
 async def test_missing_gh_is_an_actionable_preflight_failure(monkeypatch):
     class _Missing:
         PIPE = subprocess.PIPE
+        DEVNULL = subprocess.DEVNULL
 
         def run(self, argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             raise FileNotFoundError(argv[0])
@@ -732,6 +808,9 @@ async def test_get_issue_reports_board_values_relations_labels_and_comments(monk
     assert (issue["status"], issue["type"]) == ("in-review", "epic"), "board values must arrive canonicalised"
     assert (issue["parent"], issue["children"]) == (PARENT_URL, [CHILD_URL]), issue
     assert issue["dependencies"] == [BLOCKER_URL], "blocked-by is the inbound dependency relation"
+    assert (issue["children_truncated"], issue["dependencies_truncated"]) == (False, False), (
+        f"a relation gh returned in full must not read as clipped: {issue}"
+    )
     assert issue["labels"] == ["shipyard", "bug"], issue["labels"]
     assert issue["comments"] == [
         {"id": "IC_1", "author": "octocat", "created": "2026-07-31T00:00:00Z", "body": "a note"}
@@ -776,6 +855,34 @@ async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencie
     _install(monkeypatch, _json(absent), _json(_items()))
     assert (await adapter.GithubAdapter().get_issue("7"))["dependencies"] == [], (
         "an issue gh reports no blockedBy for really has no dependencies"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_relation_gh_paged_reports_itself_clipped_rather_than_short(monkeypatch, board):
+    """`gh` caps these relations at one page — 50 blocked-by — and reports `totalCount` beside the nodes.
+
+    Reading only `nodes`, an issue with sixty blockers came back as exactly fifty, which is
+    indistinguishable from an issue that really has fifty and is read by a caller deciding whether the
+    issue is blocked at all. The count is the only signal that says the list is short.
+    """
+    blockers = [
+        {"number": number, "url": f"https://github.com/octocat/repo/issues/{number}"} for number in range(100, 150)
+    ]
+    clipped = {**_issue_view(), "blockedBy": {"nodes": blockers, "totalCount": 60}}
+    _install(monkeypatch, _json(clipped), _json(_items()))
+
+    issue = await adapter.GithubAdapter().get_issue("7")
+
+    assert len(issue["dependencies"]) == 50, "every blocker gh did return must still come back"
+    assert issue["dependencies_truncated"] is True, (
+        f"60 blockers reported as 50 with no truncation signal reads as a fully-known relation: {issue}"
+    )
+    assert issue["children_truncated"] is False, "the untruncated relation on the same read must not be tainted"
+
+    _install(monkeypatch, _json({**_issue_view(), "blockedBy": {"nodes": blockers, "totalCount": 50}}), _json(_items()))
+    assert (await adapter.GithubAdapter().get_issue("7"))["dependencies_truncated"] is False, (
+        "a relation whose count matches what came back is complete"
     )
 
 

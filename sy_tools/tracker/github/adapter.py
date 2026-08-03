@@ -80,6 +80,15 @@ its artifact except that comment, so the comment *is* the attachment index: `att
 the first time the wording changes, and the symptom is every lifecycle verb reporting that an issue has
 no artifacts while its transcripts sit in gists nobody can find again."""
 
+FORBIDDEN_IN_FILENAME = ("`", "\n")
+"""Characters an artifact's filename may not carry, because that index is prose with no escaping in it.
+
+`ARTIFACT_LINK` reads the filename back from between backticks on one line, so a name holding either
+character writes an entry no read can match: the upload reports success, and the next
+`attachment-update` then finds no artifact of that name and uploads a second gist beside the first,
+while `attachment-download` reports the issue has none. Both are legal in a POSIX filename, and both are
+refused rather than escaped — there is nowhere in a comment body to escape them to."""
+
 VERIFY_ATTEMPTS = 4
 VERIFY_BACKOFF_SECONDS = 0.75
 """How hard a board write is re-read before it is called a failure.
@@ -215,17 +224,26 @@ class GithubAdapter:
 
         `gh issue view --json` exposes no project single-select value, so the board item is read
         separately: `Status` and `Type` live on the card, not on the issue.
+
+        `children_truncated` and `dependencies_truncated` say whether `gh`'s own per-page cap on those
+        two relations cut anything off, for the reason `_relation` documents. They are the same signal
+        the other adapter reports as `comments_truncated`: a clipped list reads exactly like a complete
+        short one, and only one of them means what a caller acts on.
         """
         data = _view(issue, ISSUE_FIELDS)
         url = str(data.get("url") or "")
         if not url:
             raise TrackerError(f"gh issue view {issue} returned no issue; treat the read as failed.")
         owner, number = _project_ref()
+        children, children_truncated = _relation(data.get("subIssues"))
+        dependencies, dependencies_truncated = _relation(data.get("blockedBy"))
         return {
             **_summary(data, _item_index(owner, number).get(url, {})),
             "body": str(data.get("body") or ""),
-            "children": _refs(data.get("subIssues")),
-            "dependencies": _refs(data.get("blockedBy")),
+            "children": children,
+            "children_truncated": children_truncated,
+            "dependencies": dependencies,
+            "dependencies_truncated": dependencies_truncated,
             "comments": _comments(data),
         }
 
@@ -603,8 +621,7 @@ class GithubAdapter:
         that produces no output, or exits non-zero, is a failure rather than a warning.
         """
         issue = _checked_ref(issue)
-        if not path.is_file():
-            raise TrackerError(f"artifact not found: {path}")
+        _checked_artifact(path)
 
         gist_url = _gh(["gist", "create", "--desc", f"shipyard artifact {issue}", str(path)])
         if not gist_url.startswith("https://"):
@@ -708,8 +725,7 @@ class GithubAdapter:
         comment — and reports `replaced: 0`, which is how a caller tells a supersede from an upload.
         """
         issue = _checked_ref(issue)
-        if not path.is_file():
-            raise TrackerError(f"artifact not found: {path}")
+        _checked_artifact(path)
         try:
             intended = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -738,18 +754,22 @@ class GithubAdapter:
         return {"issue": issue, "filename": filename, "id": gist_id, "gist_url": gist_url, "replaced": 1}
 
     def _sync_preflight(self) -> dict:
-        """Confirm `gh` is installed, authenticated, and able to reach the board.
+        """Confirm `gh` is installed, authenticated, and able to reach the configured board.
 
-        The `project` scope is checked, not just named in the failure text: every `set_status` and
-        every `Type` write goes through Projects v2, so a `repo`-only token passes an authentication
-        check and then dies on the first board write — the half-finished workflow this call exists to
-        prevent.
+        The board is read on every path, because that is the only thing that confirms the board this
+        repository is configured against is actually reachable — the claim
+        `skills/tracker/github/ADAPTER.md` makes for this verb. A scope is a property of the credential,
+        not of the board: a token that reports `project` still fails every `set_status` and every `Type`
+        write if the configured board has since been deleted, renamed, or made invisible to it, and
+        checking only the scope deferred that to the first board write, which is the half-finished
+        workflow this call exists to prevent.
 
-        Only a classic or OAuth token has scopes to check, though: `gh auth status` prints no
-        `Token scopes:` line at all for a fine-grained PAT or an App token, which is the token type
-        GitHub now recommends. An absent line therefore cannot mean "unscoped" — that would fail a
-        working configuration — so capability is confirmed positively instead, by reading the board,
-        and `scopes` comes back as None rather than as an empty or invented list.
+        The scope check stays, ahead of the read, as the cheap pre-check it is: it names the exact fix
+        for the one failure a credential can be diagnosed for without touching the board, and only a
+        classic or OAuth token has scopes to check at all. `gh auth status` prints no `Token scopes:`
+        line for a fine-grained PAT or an App token — the type GitHub now recommends — so an absent line
+        cannot mean "unscoped" without failing a working configuration, and `scopes` comes back as None
+        rather than as an empty or invented list to say which check was available.
         """
         version = _gh(["--version"]).splitlines()
         try:
@@ -766,8 +786,7 @@ class GithubAdapter:
                     f"the gh token is missing the 'project' scope, so every board write would fail; it has "
                     f"{scopes or 'no scopes'}. Grant it with `gh auth refresh -s project,read:project`."
                 )
-        else:
-            _confirm_board_access()
+        _confirm_board_access(scopes)
         return {
             "tool": "gh",
             "version": version[0] if version else "unknown",
@@ -792,6 +811,30 @@ def _checked_ref(issue: str) -> str:
             "or its https:// URL. Anything else is refused rather than handed to gh as an argument."
         )
     return ref
+
+
+def _checked_artifact(path: Path) -> str:
+    """`path.name`, refusing before any upload the two faults an artifact's own name cannot recover from.
+
+    The name is checked, not escaped: it is written into the comment that is this tracker's entire index
+    of which gist holds which artifact, and `ARTIFACT_LINK` reads it back from between backticks on one
+    line. A backtick or a newline in it therefore corrupts the index silently — the upload reports success
+    and every later lookup of that artifact misses, producing a duplicate gist or "0 artifacts match"
+    instead of a failure naming the problem. See `FORBIDDEN_IN_FILENAME`.
+
+    Both checks are shared by the two uploading verbs rather than repeated, because on this tracker a
+    first `attachment-update` *is* an upload: a check only one of them made would be a check the other
+    could write past.
+    """
+    if any(character in path.name for character in FORBIDDEN_IN_FILENAME):
+        raise TrackerError(
+            f"an artifact filename may not contain a backtick or a newline, and {path.name!r} does: it is "
+            "written into the comment that is this tracker's only record of which gist holds which "
+            "artifact, and no later read of that comment could match it. Rename the file and retry."
+        )
+    if not path.is_file():
+        raise TrackerError(f"artifact not found: {path}")
+    return path.name
 
 
 def _edit(issue: str, flag: str, value: str) -> str:
@@ -1101,6 +1144,31 @@ def _refs(payload: object) -> list[str]:
     return [ref for ref in (_ref(node) for node in nodes) if ref]
 
 
+def _relation(payload: object) -> tuple[list[str], bool]:
+    """A relation's related issues, plus whether `gh` returned fewer of them than the relation holds.
+
+    `gh` asks for one page of each of these relations and has no loop behind it — 100 sub-issues, 50
+    blocked-by — but it returns `totalCount` beside the nodes, so the two disagreeing is the one signal
+    that says the list is short. Reading only `nodes` meant an issue with sixty blockers came back as
+    exactly fifty, indistinguishable from an issue that really has fifty: the same failure `_refs` refuses
+    for an unparseable relation, one step quieter, and the same one the other adapter reports as
+    `comments_truncated` for a clipped comment thread.
+
+    An absent `totalCount` reports complete: `gh` prints it for every relation object, and the bare-list
+    shape `_refs` also tolerates carries no count to compare against. Every other unreadable count reports
+    truncated instead — a `totalCount` of `"60"` must not skip the check the way a clean `int` comparison
+    silently would, which is how false completeness has been reintroduced one type away before.
+
+    The comparison is against the refs, not the nodes, so a node `_refs` could not address — no URL and no
+    number — reports truncated too: a related issue that cannot be named is one this read did not return.
+    """
+    found = _refs(payload)
+    total = payload.get("totalCount") if isinstance(payload, dict) else None
+    if total is None:
+        return found, False
+    return found, not isinstance(total, int) or isinstance(total, bool) or total > len(found)
+
+
 def _same_ref(ref: str | None, other: str | None) -> bool:
     """Whether two issue references name the same issue, comparing `7`, `#7` and a URL alike.
 
@@ -1134,28 +1202,42 @@ def _project_ref() -> tuple[str, str]:
     return owner, number
 
 
-def _confirm_board_access() -> None:
-    """Prove the credential reaches Projects v2 by reading the board, for a token that reports no scopes.
+def _confirm_board_access(scopes: list[str] | None = None) -> None:
+    """Prove the configured board is reachable with this credential, by reading it.
 
-    Stands in for the scope check preflight cannot make on a fine-grained or App token: the failure it
-    exists to catch is a `repo`-only credential, and such a credential cannot read Projects v2 at all,
-    so one successful board read is positive evidence rather than an assumption. A grant that can read
-    the board but not write it is indistinguishable from here without performing a write, which a
-    preflight must not do; that residual case fails later, at the write, with its own message.
+    Run for every token, whatever its scopes say. On a fine-grained or App token it stands in for the
+    scope check preflight cannot make: the failure it exists to catch is a `repo`-only credential, which
+    cannot read Projects v2 at all, so one successful board read is positive evidence rather than an
+    assumption. On a token that does report `project` it checks the other half, which the scope cannot:
+    a scope is a property of the credential, and the board it is pointed at can still be deleted,
+    renamed, or invisible to it — which used to surface only at the first real board write.
 
-    Only `gh` refusing the read is relabelled as the scope problem, because only that shape can be one.
-    Everything else `_raw_items` can raise — a board larger than one read, a payload it will not parse as
-    a board, a `gh` that is missing or hung — keeps its own message: telling an operator to grant the
-    `project` scope over a board too large to read sends them to fix a credential that is already correct.
+    A grant that can read the board but not write it is indistinguishable from here without performing a
+    write, which a preflight must not do; that residual case fails later, at the write, with its own
+    message.
+
+    Only `gh` refusing the read is relabelled as a credential problem, because only that shape can be
+    one, and `scopes` decides how it is named: recommending `gh auth refresh` to a token that already
+    holds `project` sends its operator to re-grant a scope that is already there instead of at the board
+    the read could not reach. Everything else `_raw_items` can raise — a board larger than one read, a
+    payload it will not parse as a board, a `gh` that is missing or hung — keeps its own message for the
+    same reason.
     """
     owner, number = _project_ref()
     try:
         _raw_items(owner, number)
     except _GhFailure as exc:
+        fix = (
+            f"The token already reports the 'project' scope ({scopes}), so check tracker_config.project "
+            "against `gh project list`: a board that has been deleted, renamed or made invisible to this "
+            "credential fails every board write the same way."
+            if scopes is not None
+            else "Grant it with `gh auth refresh -s project,read:project`, or give a fine-grained token "
+            "read and write access to the board."
+        )
         raise TrackerError(
-            f"the gh token reports no scopes and project {owner}/{number} could not be read with it, so the "
-            f"Projects v2 access every board write needs is unconfirmed: {exc} Grant it with `gh auth refresh "
-            "-s project,read:project`, or give a fine-grained token read and write access to the board."
+            f"project {owner}/{number} could not be read with the gh token, so the Projects v2 access every "
+            f"board write needs is unconfirmed: {exc} {fix}"
         ) from None
 
 
@@ -1417,6 +1499,12 @@ def _gh(args: list[str]) -> str:
 
     The timeout bounds a `gh` that never returns — a network stall, or a credential helper
     prompting on a stdin no one is answering — because this process has other calls to serve.
+
+    That stdin is closed rather than inherited. This process's own stdin carries the JSON-RPC frames the
+    MCP client sends, and a child inherits it by default: a credential helper prompting for a password, or
+    anything else `gh` reads a line from, would consume a frame the server needed and desynchronise the
+    session — the same failure a stray write to stdout causes, in the other direction. `DEVNULL` turns any
+    such read into an immediate EOF, so `gh` fails fast with its own message instead.
     """
     root = config.resolved_root()
     if not root.is_dir():
@@ -1428,7 +1516,7 @@ def _gh(args: list[str]) -> str:
     try:
         proc = subprocess.run(
             ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS,
-            cwd=root,
+            cwd=root, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise TrackerError("gh is not installed or not on PATH; install the GitHub CLI.") from None

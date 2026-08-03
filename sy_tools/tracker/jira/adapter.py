@@ -23,6 +23,7 @@ import mimetypes
 import os
 from pathlib import Path
 import secrets
+from urllib.parse import quote
 
 import httpx2
 
@@ -110,12 +111,17 @@ class JiraAdapter:
         Two calls, because Jira serves comments from their own endpoint: the field read is scoped to
         `ISSUE_FIELDS`, and the comment read is bounded and newest-first.
 
-        `comments_truncated` reports whether that bound actually cut anything off. A silently short
+        Children take a third call on an Epic, for the reason `_children` documents; on anything else
+        they come from the field read.
+
+        `comments_truncated` reports whether that bound actually cut anything off, and
+        `children_truncated` does the same for a child list read one page at a time. A silently short
         thread reads as a complete ship log, so a caller deciding on the strength of "no one raised
         this" has to be able to tell a quiet issue from a clipped page.
         """
         base, auth = _credentials()
         fields = await _read_fields(base, auth, issue, ISSUE_FIELDS)
+        children, children_truncated = await self._children(issue, fields)
         _, thread = await request(
             "GET", f"{base}{API}/issue/{issue}/comment?maxResults={COMMENT_PAGE}&orderBy=-created", auth
         )
@@ -123,7 +129,8 @@ class JiraAdapter:
         return {
             **_summary(base, issue, fields),
             "body": adf.adf_to_markdown(fields.get("description")),
-            "children": _keys(fields.get("subtasks")),
+            "children": children,
+            "children_truncated": children_truncated,
             "dependencies": _linked(fields.get("issuelinks"), BLOCKER_SIDE),
             "comments": comments,
             "comments_truncated": truncated,
@@ -373,15 +380,22 @@ class JiraAdapter:
 
         Jira has no attachment replace: an upload of a name that is already there adds a second
         attachment beside it, and the two are then told apart only by an id nobody above this seam
-        holds. So this deletes by name first — each delete verified gone — and uploads once.
+        holds. So the namesakes are resolved to their ids, the new file is uploaded, and only then is
+        each old one deleted — each delete verified gone.
 
-        Both refusals the upload makes are made *before* the first delete. Discovering that the new
-        file is missing or unnameable after the old one has gone leaves the issue with no artifact at
-        all, which is strictly worse than the stale one it started with.
+        The order is the whole point of this verb's safety. Deleting first left a window in which the
+        upload could fail — a timeout, a 413, a permission change — with the old artifact already gone
+        and no new one in its place: total loss, strictly worse than the stale artifact it started with.
+        Uploading first inverts that: a failed delete leaves both files on the issue, which is visible,
+        recoverable, and reported as a failure rather than silently losing the record.
+
+        Every refusal is still made before the upload, for the same reason: a missing or unnameable
+        source file, or a namesake carrying no id to delete it by, is discovered before anything changes.
         """
         base, auth = _credentials()
         _checked_source(path)
         existing = [a for a in await _get_attachments(base, auth, issue) if a.get("filename") == path.name]
+        superseded = []
         for found in existing:
             attachment_id = _field(found, "id")
             if not attachment_id:
@@ -389,17 +403,44 @@ class JiraAdapter:
                     f"an attachment named {path.name!r} on {issue} carries no id, so it cannot be deleted and "
                     "the upload would sit beside it; refusing rather than leaving two files with one name"
                 )
+            superseded.append(attachment_id)
+        uploaded = await _upload(base, auth, issue, path)
+        for attachment_id in superseded:
             await _delete_attachment(base, auth, issue, attachment_id)
-        return {**await _upload(base, auth, issue, path), "replaced": len(existing)}
+        return {**uploaded, "replaced": len(superseded)}
+
+    async def _children(self, issue: str, fields: dict) -> tuple[list[str], bool]:
+        """`issue`'s children, and whether that list is one page short of all of them.
+
+        Jira's `subtasks` field carries sub-task-level children only: it comes back empty on every Epic,
+        whatever is parented beneath it. This adapter's execution model is flat — one tracking Epic with
+        every executable Task and Bug directly under it, per `skills/tracker/jira/ADAPTER.md` — so an
+        Epic's children are exactly the ones that field cannot report, and reading them from it answered
+        "no children" for a fully decomposed Epic. That is the answer the duplicate-work and
+        decomposition checks above this seam read as work nobody has planned yet.
+
+        An Epic's children therefore come from the same `parent = <key>` search `find-issues` serves,
+        one page like every other search here, and the bound is reported rather than hidden:
+        `children_truncated` is to a clipped child list what `comments_truncated` is to a clipped thread.
+        """
+        if canonical_type(_field(fields.get("issuetype"), "name")) != "epic":
+            return _keys(fields.get("subtasks")), False
+        page = await self.find_issues(parent=issue, limit=RESULT_CEILING)
+        return [str(item["id"]) for item in page["issues"]], not page["is_last"]
 
     async def preflight(self) -> dict:
-        """Prove the configured account and its credential authenticate, reporting no secret value.
+        """Prove the configured account, credential and project are all usable, reporting no secret value.
 
-        A credential can be present and still be dead, so this is a real authenticated read
-        rather than a presence check. `myself` is the cheapest one Jira offers.
+        Each of the three can be present and still be wrong, so each is read rather than checked for
+        presence: a credential can be revoked, and a project key can name a board this account cannot
+        see. `myself` is the cheapest authenticated read Jira offers; `_project_key` is what makes the
+        project half of `skills/tracker/jira/ADAPTER.md`'s preflight contract true.
         """
         base, auth = _credentials()
-        return {"ok": True, "site": base, "account_id": await self._account(base, auth)}
+        project = _project()
+        account_id = await self._account(base, auth)
+        key = await _project_key(base, auth, project)
+        return {"ok": True, "site": base, "account_id": account_id, "project": key}
 
     async def _account(self, base: str, auth: str) -> str:
         """The authenticated account's id, read from `myself` once per adapter instance.
@@ -749,6 +790,37 @@ def _project() -> str:
             "tracker_config.project is unset; set it in .shipyard/config.json, e.g. the board's key"
         )
     return project
+
+
+async def _project_key(base: str, auth: str, project: str) -> str:
+    """The configured project's own key, read back from Jira, or a failure naming the configured value.
+
+    Nothing else here notices a wrong project key. Jira answers a JQL search naming a project that does
+    not exist, or that this account cannot see, with zero issues rather than an error, so a mistyped key
+    reads as an empty board from `find-issues` — "nothing to pick up" from a board with work on it — and
+    only surfaces much later, as a 400 inside a create. Reading the project 404s loudly instead, which is
+    what makes the preflight contract in `skills/tracker/jira/ADAPTER.md` — one failure naming which
+    configured value is wrong — true of the project as well as of the credential.
+
+    The key that comes back is compared, not merely fetched: this endpoint resolves a project by numeric
+    id as well as by key, so a response arriving under a different key is not the project the
+    configuration names.
+    """
+    try:
+        _, item = await request("GET", f"{base}{API}/project/{quote(project, safe='')}", auth)
+    except TrackerError as exc:
+        raise TrackerError(
+            f"tracker_config.project is set to {project!r}, which this account could not read: {exc} "
+            "Check the key against the projects this account can see; a wrong key is invisible to every "
+            "search, which answers zero issues rather than failing"
+        ) from None
+    key = _field(item, "key") or ""
+    if key.strip() != project.strip():
+        raise TrackerError(
+            f"reading tracker_config.project {project!r} came back as project {key or 'nothing'!r}, so the "
+            "configured value does not name that project's key; treat the configuration as wrong"
+        )
+    return key
 
 
 def _credentials() -> tuple[str, str]:

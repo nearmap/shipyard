@@ -65,12 +65,17 @@ class TrackerAdapter(Protocol):
     transport is only available synchronously (`gh`) still presents an `async` verb and offloads
     the blocking work to a worker thread, so the seam stays uniform above this module.
 
-    The three attachment-lifecycle verbs name an existing attachment by `filename_or_id`, and every
-    adapter resolves it the same way: exactly one attachment on that issue must match, by filename
-    or by the adapter's own attachment id, and anything else — none, or several sharing a filename —
-    is a `TrackerError` naming the candidates it found. Guessing which of two same-named uploads a
-    caller meant is how the wrong transcript gets deleted, so the id is the disambiguator and the
+    `attachment_download` names an existing attachment by `filename_or_id`, and every adapter
+    resolves it the same way: exactly one attachment on that issue must match, by filename or by
+    the adapter's own attachment id, and anything else — none, or several sharing a filename — is a
+    `TrackerError` naming the candidates it found. Guessing which of two same-named uploads a caller
+    meant is how the wrong transcript gets downloaded, so the id is the disambiguator and the
     ambiguity is reported rather than resolved.
+
+    `attachment_update` is different by design (see `../../skills/tracker/CONTRACT.md`, "Attachment
+    lifecycle has no delete"): it takes no id, and replaces every attachment already sharing `path`'s
+    filename rather than requiring a single unambiguous match — a corrective overwrite, not a
+    targeted single-attachment operation.
     """
 
     name: str

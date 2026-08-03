@@ -58,7 +58,7 @@ A failure at any step — presence or liveness — stops here with the single na
 
 ## What core may ask for
 
-Core speaks only the contract: canonical verbs (`create-issue`, `create-child`, `get-issue`, `update-issue`, `find-issues`, `set-status`, `assign`, `link-parent`, `add-dependency`, `add-label`, `post-comment`, `post-log`, `attach-artifact`, `link-pr`), canonical statuses (`backlog`, `ready`, `in-progress`, `in-review`, `done`), and canonical types (`epic`, `task`, `bug`). Issue IDs are opaque; bodies and comments are Markdown. The adapter maps all of it.
+Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `create-child`, `get-issue`, `update-issue`, `find-issues`, `set-status`, `assign`, `link-parent`, `add-dependency`, `add-label`, `type-convert`, `post-comment`, `post-log`, `attach-artifact`, `attachment-download`, `attachment-update`, `link-pr`), canonical statuses (`backlog`, `ready`, `in-progress`, `in-review`, `done`), and canonical types (`epic`, `task`, `bug`). Issue IDs are opaque; bodies and comments are Markdown. The adapter maps all of it.
 
 ## Conventions that live here, not in an adapter
 

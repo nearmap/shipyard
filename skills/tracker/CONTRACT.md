@@ -45,7 +45,7 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `preflight` | Confirm the tracker's credential and account are usable, naming nothing secret. Run once, first. |
 | `create-issue` | Create an issue with `type`, `title`, Markdown `body`. Returns an opaque issue ID. |
 | `create-child` | Create an issue of `type` parented to a given issue. Returns an opaque ID. |
-| `get-issue` | Fetch title, body, canonical status, type, parent, children, labels, dependencies, linked PRs. |
+| `get-issue` | Fetch title, body, canonical status, type, parent, children, labels, dependencies, comments. |
 | `update-issue` | Replace an issue's Markdown body. |
 | `find-issues` | Query by status / type / parent / free text within the configured project. |
 | `set-status` | Move an issue to a canonical status. |

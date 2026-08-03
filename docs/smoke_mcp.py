@@ -246,7 +246,7 @@ class Smoke:
         await self.call("link-pr", {"issue": epic, "body": f"Delivery PR for {run_tag}: {PR_PLACEHOLDER}\n"})
 
     async def _attachments(self, run_tag: str, tmp: Path, issue: str) -> None:
-        """Attach a scrubbed artifact, then round-trip it through download, update and delete."""
+        """Attach a scrubbed artifact, then round-trip it through download and update."""
         artifact = tmp / f"{run_tag}-transcript.txt"
         artifact.write_text(f"shipyard smoke transcript for {run_tag}\nno secrets here.\n", encoding="utf-8")
         attached = await self.call("attach-artifact", {

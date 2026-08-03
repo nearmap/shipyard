@@ -1,6 +1,8 @@
 # GitHub adapter
 
-Implements the tracker contract (`../CONTRACT.md`) against GitHub Issues + Projects v2 via the `gh` CLI. Select with `tracker: "github"`. Deterministic and already authenticated; no MCP server.
+Implements the tracker contract (`../CONTRACT.md`) against GitHub Issues + Projects v2. Select with `tracker: "github"`.
+
+Every canonical verb is one call to the `sy` MCP server's tool of the same name; the server dispatches to this adapter's implementation in `sy_tools/tracker/github/adapter.py`, which drives `gh` under the hood and offloads each blocking call to a worker thread. This file documents what GitHub does with each verb and where its behaviour is GitHub-specific — it is not a list of commands to run instead. There is no maintained `gh` recipe for any verb, by design: see `../CONTRACT.md`, "Every verb is one MCP tool call", for the tool-name resolution rule and why the second path is gone. Credentials stay `gh`'s own business; nothing reads, passes, or echoes a token.
 
 **Works the same on a personal (user-owned) project and an org project — no organization required.** Issue **Type** and **Status** are both driven as **Projects v2 single-select fields**, not native `issue_type` (which is org-only) and not labels. Sub-issues, dependencies, comments, and the board all work on GitHub Free for a personal private repo. Shipyard is opinionated about the two fields the project must carry (below).
 
@@ -19,25 +21,23 @@ Implements the tracker contract (`../CONTRACT.md`) against GitHub Issues + Proje
    - **`Status`** with an option for each of the five columns above (names matched case-insensitively).
    - **`Type`** with options `Epic`, `Task`, `Bug`.
 
-**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** `gh_project.py check` is the real, live read that proves steps 2 and 5 together — the board resolves and every canonical value has a matching option — not just that config is present; it prints the board's actual options and fails loudly on a gap. Gate it behind the shared cache so it does not repeat on every invocation:
+**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** The canonical `preflight` verb is the real, live check: it confirms `gh` is installed and authenticated, and confirms Projects v2 is actually reachable rather than merely named — every `set-status` and every `Type` write goes through the board, so a `repo`-only credential passes an authentication check and then dies on the first board write. It checks the `project` scope where the token has scopes to check, and where it does not (a fine-grained PAT or an App token prints no `Token scopes:` line at all, which cannot be read as "unscoped" without failing a working setup) it confirms capability positively by reading the board, reporting `scopes` as null rather than as an invented list. Gate it behind the shared cache so it does not repeat on every invocation:
 
 ```bash
 python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker github
-# exit 0 → cached fresh, skip the read below. (No --vars: this adapter holds no secret in the
+# exit 0 → cached fresh, nothing to do. (No --vars: this adapter holds no secret in the
 # environment, and the config fingerprint already covers the board and repo.)
-# exit 2 → run it now:
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/github/gh_project.py" check --project "$PROJECT"
-# succeeds →
+# exit 2 → call the `preflight` tool now; on success:
 python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker github
 ```
 
-Unlike Jira's split credential, `gh auth` is the single mechanism both this board read and `/sy:pr`'s code-host operations share, so a working `gh auth status` (step 2) is rarely a fresh gap by the time someone reaches this adapter — the board-field check above is the part actually specific to Shipyard's config and worth caching.
+Unlike Jira, `gh auth` is the single mechanism both this board read and `/sy:pr`'s code-host operations share, so a working `gh auth status` (step 2) is rarely a fresh gap by the time someone reaches this adapter — the board reachability check is the part actually specific to Shipyard's config and worth caching.
 
-Do all board field/node-id work only through `${CLAUDE_PLUGIN_ROOT}/skills/tracker/github/gh_project.py`; never touch raw project/field/option IDs.
+A drifted board option — the real `Status` column or `Type` option name no longer matching the `columns.*` config key naming it — fails loudly against the board's own field options, on the read path as well as the write path, listing what the board does offer. It is never answered with an empty page: `count: 0, is_last: true` from a board that has work on it is the one wrong answer a caller cannot tell from an empty queue. Raw project, field and option node IDs are the adapter's business and appear nowhere above it.
 
 ## Type and status mapping (both are Projects v2 single-select fields)
 
-`Type` options are fixed (`Epic`/`Task`/`Bug`, case-insensitive). `Status` options are the five per-repo column names — the helper reads them from the env vars, so the table shows the env source:
+`Type` options are fixed (`Epic`/`Task`/`Bug`, case-insensitive). `Status` options are the five per-repo column names, read from config, so the table shows the config source:
 
 | Canonical type | `Type` option | | Canonical status | `Status` option (from config) |
 |---|---|---|---|---|
@@ -47,73 +47,41 @@ Do all board field/node-id work only through `${CLAUDE_PLUGIN_ROOT}/skills/track
 | | | | `in-review` | `columns.in_review` |
 | | | | `done` | `columns.done` |
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/github/gh_project.py" set-type   --project "$PROJECT" --issue "<url>" --type task
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/github/gh_project.py" set-status --project "$PROJECT" --issue "<url>" --status in-review
-```
+A field/option value only exists on an issue **once it is a project item**, so any verb that writes one adds the issue to the board first if it is not already on it: `create-issue` sets `Type` on creation, `set-status` sets `Status`, and `type-convert` rewrites `Type` on an issue that already exists.
 
-Each helper call adds the issue to the board if it is not yet an item, resolves and caches the node IDs, and sets the field. A field/option value only exists on an issue **once it is a project item** — so `set-type`/`set-status` are what put an issue on the board and give it a type. `done` is also set automatically by native automation on issue close / PR merge; still call `set-status ... done` for parity and for boards without automation.
+Both writes are verified by re-reading the board, because `gh project item-edit` reports success whether or not the value changed and a card that did not move is exactly the failure a caller cannot see. The re-read is retried with backoff: the board's item list is eventually consistent, and a card added and edited moments earlier can be entirely absent from the very next read, then present with the right value a second later. It stays bounded — a genuinely unset field still fails.
+
+`done` is also set automatically by native automation on issue close / PR merge; still call `set-status ... done` for parity and for boards without automation.
 
 ## Rich text
 
 Markdown passthrough — GitHub renders Markdown natively. No conversion step.
 
-## Verb implementations
+## Verb behaviour on GitHub
 
-`gh` uses the current repo unless `-R "$REPO"` is given; include it when `REPO` is non-empty. `GHP` below is `python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/github/gh_project.py"`.
+Everything below is GitHub-specific behaviour a caller can rely on. Where a verb is unremarkable — `update-issue` replaces the body, `assign` self-assigns and reports the resolved login — it is not listed.
 
-```bash
-# Staging files are namespaced by the issue they target (a slug before the issue exists,
-# the parent number for children), matching .scratch/<ID>-ship-transcript.txt: parallel
-# sessions and successive writes must never clobber each other's staged bodies.
+An issue's opaque id is its **URL** in everything this adapter returns. `gh` accepts a URL wherever it accepts a number, and adding a card to the board accepts nothing else, so the URL is the one reference every call works with; a number or `#number` is accepted from a caller and resolved. The GraphQL node id is deliberately never used as an id — no issue command accepts one. Writes are scoped to `tracker_config.repo` when set, otherwise to the repository resolved from the working directory, in either case resolved by `gh` itself so any spelling it accepts names the same repository.
 
-# create-issue  (epic): create the issue, then put it on the board with a Type (and initial Status)
-url="$(gh issue create --title "<title>" --body-file .scratch/<slug>-body.md)"   # prints the URL (opaque ID)
-$GHP set-type   --project "$PROJECT" --issue "$url" --type epic
-$GHP set-status --project "$PROJECT" --issue "$url" --status backlog
+- **`create-issue`** creates the issue and then puts it on the board with its `Type` set. The type is mapped before the write, so an unknown canonical token cannot leave an issue created with no type on it. Passing `parent` is the canonical verb **`create-child`**, using GitHub's native sub-issue relation — which works on GitHub Free for a personal private repo.
+- **`get-issue`** reads the issue's native fields and takes `Type`/`Status` from its board item, because the issue read exposes no project single-select value. Relations (`children`, `dependencies`) come back as reference lists; a relation present but unreadable fails rather than coming back as "nothing is blocking it", which reads identically to a genuinely unblocked issue.
+- **`find-issues`** has no cursor, so `next_page_token` is always null rather than one that cannot be resumed. With no status or type filter it is one repository page. **With a status or type filter the board is the candidate set**, enumerated board-first, and `text` is matched here — case-insensitively, as a substring of title or body — rather than through GitHub's search. That is a deliberate divergence from server-side search ranking and syntax, in exchange for a result set complete for the board instead of silently capped at the Search API's thousandth row. Three properties are the caller's to rely on: only issues come back, never a pull request or draft card sharing the column; the page is scoped to one concrete repository, never the board at large; and the per-candidate reads are bounded, past which the call fails saying what to narrow rather than returning a page it cannot honestly call complete.
+- **`add-dependency`** uses GitHub's native blocked-by relation and re-reads it to prove it took.
+- **`add-label`** returns every label the re-read reports, so nothing looks dropped. A label that does not exist on the repository is rejected rather than created.
+- **`link-parent`** re-parents through the native sub-issue relation.
+- **`post-comment`** takes the comment's id from the URL the write printed. `post-log` is this same verb carrying only a fenced JSON block, and `link-pr`'s durable half is it carrying the PR URL. A `shipyard.ship_metrics.v1` block is schema-validated before anything is posted; see `../CONTRACT.md`.
+- **`link-pr`**: reference the issue from the PR body as a plain `#<NUMBER>`, **not** a closing keyword — the done transition is owned by native project automation on merge, not by the PR text.
+- **`type-convert`** rewrites the board `Type` field on an existing issue, verified by the same bounded re-read every board write uses.
 
-# create-child  (task/bug under a parent issue number) — native sub-issue via --parent
-url="$(gh issue create --title "<title>" --body-file .scratch/<PARENT_NUMBER>-body.md --parent <PARENT_NUMBER>)"
-$GHP set-type --project "$PROJECT" --issue "$url" --type task
+### `attach-artifact` and the attachment lifecycle — gist + link (deliberate asymmetry)
 
-# get-issue: native fields from the issue + Type/Status from the board item
-gh issue view <NUMBER> --json number,title,body,state,parent,subIssues,blockedBy,blocking,assignees,url
-$GHP get --project "$PROJECT" --issue "<url>"        # -> {number,title,url,type,status}
+GitHub issues have no CLI-scriptable file attachment, so the artifact is uploaded as a **secret** (private) gist and linked from a comment on the issue. Hand the rendered path to the `attach-artifact` tool: it checks the gate and runs both sanitisation passes — the same ones, in the same order, as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter. Privacy is verified by reading the created gist back rather than assumed from the flags passed: a public gist would publish a transcript irrevocably.
 
-# find-issues: by type/status through the board; by text via gh; children via get-issue subIssues
-$GHP list --project "$PROJECT" --type epic           # all epics
-$GHP list --project "$PROJECT" --status in-progress  # active leaves
-gh issue list --search "<query>" --json number,title,state,parent,url
+`attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
 
-# update-issue  (replace body)
-gh issue edit <NUMBER> --body-file .scratch/<NUMBER>-body.md
+The lifecycle verbs — `attachment-download`, `attachment-update`, `attachment-delete` — act on that gist, which they locate from the link comment `attach-artifact` posted, resolving by artifact filename under an exactly-one-match rule and taking a gist id instead to disambiguate. An ambiguous or absent match fails rather than guessing. `attachment-delete` is destructive and `attachment-update` replaces before it verifies — there is no undo.
 
-# assign  (self)
-gh issue edit <NUMBER> --add-assignee @me
-
-# link-parent  (re-parent — native sub-issue)
-gh issue edit <NUMBER> --parent <PARENT_NUMBER>     # --remove-parent to detach
-
-# add-dependency  (X blocked by Y — native, works on personal repos too)
-gh issue edit <X_NUMBER> --add-blocked-by <Y_NUMBER>
-
-# add-label  (preserves existing labels)
-gh issue edit <NUMBER> --add-label decomposed
-
-# post-comment / post-log  (post-log body is only fenced JSON)
-gh issue comment <NUMBER> --body-file .scratch/<NUMBER>-comment.md
-
-# link-pr  -> reference the issue from the PR body as a plain "#<NUMBER>" (NOT a closing keyword);
-#            the done-transition is owned by native project automation on merge, not by the PR text.
-```
-
-Verify every write by reading it back (`gh issue view ... --json ...` / `$GHP get`); treat empty results, HTTP errors, or a mismatch as failure. Issue IDs stay opaque — pass the URL or `#<number>`.
-
-### `attach-artifact` — gist + link (deliberate asymmetry)
-
-GitHub issues have no CLI-scriptable file attachment, so the transcript is uploaded as a **secret** (private) gist and linked from the log comment. Hand the rendered path to the `sy` MCP server's `attach-artifact` tool: it checks the gate and runs both sanitisation passes — the same ones, in the same order, as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter.
-
-Reference the returned gist URL from the `# Claude Code ship metrics` comment (`transcript_attachment: <gist-url>`). A skipped call means no gist exists — say so rather than inventing a URL. `gh gist create --desc "shipyard transcript <ID>" <FILE>` still works as a recovery path, but it uploads exactly what it is given: scan first yourself, and if safe redaction is uncertain, stop rather than publishing.
+Reference the returned gist URL from the `# Claude Code ship metrics` comment (`transcript_attachment: <gist-url>`). A skipped call means no gist exists — say so rather than inventing a URL.
 
 ## Deliberate asymmetries vs Jira
 

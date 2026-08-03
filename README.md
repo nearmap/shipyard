@@ -117,10 +117,10 @@ shipyard/
     plan/ spec/ ship/ spike/ pr/ ci/ standards/ explain/ help/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
-      jira/    ADAPTER.md + md_to_adf.py jira_rest.py references/
-      github/  ADAPTER.md + gh_project.py
+      jira/    ADAPTER.md + references/
+      github/  ADAPTER.md
   docs/
-    installation.md configuration.md usage.md github-setup.md smoke_github.sh img/
+    installation.md configuration.md usage.md github-setup.md smoke_mcp.py img/
 ```
 
 ## Contributing

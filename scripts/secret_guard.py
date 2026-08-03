@@ -8,11 +8,11 @@ cleans this up after the fact, right before a rendered transcript is scanned and
 hook exists to stop the value from ever reaching a tool-call result in the first place.
 
 It denies exactly the two anti-patterns this repo's own docs already warn against
-(docs/configuration.md, skills/tracker/jira/references/attachments.md): dumping the environment
-(`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly
-(`echo $ACLI_TOKEN`). The denial message points at the safe alternative that already exists for
-Jira specifically — `sy_preflight.py check` / `jira_rest.py preflight`, or a bare presence check
-(`[ -n "$VAR" ]`) for anything else.
+(docs/configuration.md, the tracker adapters' attachment references): dumping the environment
+(`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly.
+The denial message points at the safe alternatives that already exist — `sy_preflight.py check`
+and the tracker's own `preflight` verb, which name what is missing without printing a value, or a
+bare presence check (`[ -n "$VAR" ]`) for anything else.
 
 Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this hook never reads
 the actual environment, only the command string, so it fires the same way whether or not a secret

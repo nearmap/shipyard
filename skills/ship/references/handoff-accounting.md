@@ -70,11 +70,14 @@ Post a second small comment containing only a JSON object under `# Claude Code s
   "task": "TASK-123",
   "pr_url": "...",
   "plan_divergence_count": 0,
+  "deviations_declined": 0,
   "ci_fix_rounds": 0,
+  "review_fix_rounds": 0,
   "review_findings_accepted": 0,
   "review_findings_rejected": 0,
   "human_review_defects": 0,
   "gate_false_pass": null,
+  "gate_false_pass_reason": null,
   "post_merge_defect": null,
   "rollback": null,
   "lead_time_seconds": null,
@@ -82,9 +85,23 @@ Post a second small comment containing only a JSON object under `# Claude Code s
 }
 ```
 
-Use `null` for unknown values. Never infer metrics.
+Use `null` for unknown values. Never infer metrics. This section is the **only** definition of the shape; `sy_tools/ship_metrics.py` is the same definition as code, and the `post-comment` verb refuses a block claiming this schema that does not match it — so a field name that drifts from the list below is a failed write, not a comment nobody notices is wrong.
 
-`gate_false_pass` is unknowable at ship time: always post it as `null`, then set it post-hoc — correcting the same comment per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md` — when a human or CI later finds a defect the gate passed. It is the shadow-run signal for whether the gate can be trusted without its human backstop; the backstop is retained until that record says otherwise.
+### What each field counts
+
+These are settled definitions, not restatements: several of them were being counted differently run to run, which made cross-run comparison worthless.
+
+- `plan_divergence_count` — `len(accepted_deviations) + count(plan_supersede_events)`, computed mechanically from the state file at handoff, never hand-incremented as the run goes. A deviation that was *considered and declined* is not a divergence; it belongs in `deviations_declined` so the two stop being conflated.
+- `deviations_declined` — proposed deviations rejected rather than applied. Kept separate precisely so `plan_divergence_count` measures what the branch actually did.
+- `ci_fix_rounds` — CI-red states resolved by a landed code change, and only those. A gate or review round-trip is not a CI fix round even when CI reran, and a no-diff rerun (a flake, a retry, a re-request) is not one either.
+- `review_fix_rounds` — gate/review rounds with at least one accepted finding folded into a following commit. A round that produced only rejected or non-actionable findings does not count.
+- `review_findings_accepted` / `review_findings_rejected` — individual findings, not rounds. A round can contribute to both.
+- `human_review_defects` — defaults to `0` and is **never** `null`: "no human found anything" is a real observation available at ship time, where `null` would make a clean run indistinguishable from an unfinished record. It is the one field the all-nullable rule does not cover, and it counts more than defects — a human-directed scope or behaviour reversal after observing a run belongs here too, because the signal being tracked is "a human had to intervene on substance", not "a human found a bug".
+- `gate_false_pass` — unknowable at ship time: always post it as `null`, then set it post-hoc, correcting the same comment per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`, when a human or CI later finds a defect the gate passed. It is the shadow-run signal for whether the gate can be trusted without its human backstop; the backstop is retained until that record says otherwise.
+- `gate_false_pass_reason` — required whenever `gate_false_pass` is not `null`, and rejected as missing otherwise. A bare `true` records that the gate was wrong without recording what it missed, which is the half of the signal that could actually change the gate.
+- `post_merge_defect` / `rollback` — also post-hoc, `null` at ship time, corrected the same way.
+- `lead_time_seconds` — merge timestamp (`gh pr view --json mergedAt`) minus `ship_session_started_at` from the state file. Wall-clock delivery time, deliberately **not** a transcript span or a sum of session durations: a run paused overnight took overnight.
+- `transcript_attachment` — the artifact's filename or URL, or `null`. `null` on the `light` tier and whenever `transcript.attach` is false; a skipped call means no artifact exists, so say so rather than inventing a reference.
 
 ## 4. Transcript attachment (full tier only, and only when enabled)
 

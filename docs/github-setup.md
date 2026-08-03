@@ -1,6 +1,6 @@
 # GitHub tracker setup
 
-One-time setup for the GitHub tracker adapter (`"tracker": "github"`). After it, `/sy:plan`, `/sy:spec`, and `/sy:ship` drive the board through the adapter and the `gh_project.py` helper — you never touch GraphQL or node IDs by hand.
+One-time setup for the GitHub tracker adapter (`"tracker": "github"`). After it, `/sy:plan`, `/sy:spec`, and `/sy:ship` drive the board through the `sy` MCP server's canonical verbs — you never touch GraphQL or node IDs by hand.
 
 **No organization is required.** Shipyard drives issue **Type** and **Status** as Projects v2 single-select fields, which work identically on a personal (user-owned) project and an org project. It does not use GitHub's native `issue_type` (org-only) or labels. Sub-issues, dependencies, comments, and the board all work on GitHub Free for a personal private repo. This is the same setup whether the board is owned by `@me` (a user) or an org — only the `--owner` value differs.
 
@@ -31,7 +31,7 @@ gh project field-create <number> --owner OWNER \
   --name "Type" --data-type SINGLE_SELECT --single-select-options "Epic,Task,Bug"
 ```
 
-(Or add it in the UI: board → **+** field → **Single select**, named exactly `Type`, options `Epic`/`Task`/`Bug`.) `gh_project.py` resolves the field and options by these exact names and fails loudly with the available list on a mismatch.
+(Or add it in the UI: board → **+** field → **Single select**, named exactly `Type`, options `Epic`/`Task`/`Bug`.) The adapter resolves the field and options by these exact names, case-insensitively, and fails loudly with the available list on a mismatch.
 
 ## 4. Enable the built-in "→ Done" automations
 
@@ -72,14 +72,13 @@ Put this in the repo's `.claude/settings.json` `env` block — it is per-repo, s
 
 ## 6. Verify, then smoke-test
 
-Confirm every canonical value resolves to a real option (read-only):
+Confirm the configuration resolves and the credential reaches the board (read-only):
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT:-.}/skills/tracker/github/gh_project.py" check \
-  --project "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker_config.project)"
+python "${CLAUDE_PLUGIN_ROOT:-.}/scripts/sy_config.py" validate
 ```
 
-`ok: true` means you are ready. Then `docs/smoke_github.sh` exercises every verb end to end (it creates real issues; set `SMOKE_CLEANUP=1` to self-clean). See the script header.
+Then call the `preflight` verb, which is the live half: it proves `gh` is authenticated and that Projects v2 is actually reachable with this credential, not just that config is present. Once it succeeds, `docs/smoke_mcp.py` exercises every canonical verb end to end (it creates real issues; see the script header for the opt-in and the cleanup switch).
 
 ---
 

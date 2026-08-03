@@ -209,7 +209,7 @@ The mapping:
 
 Silent precedence is exactly what made the old boundary illegible: `ACLI_TOKEN` and `SY_READY_COLNAME` sat in one mechanism with nothing but prose separating them. A loud rejection naming both values is what makes the new boundary obvious. A variable that merely *agrees* with config is still an error, because two live resolution paths for one key is the thing being removed.
 
-There is no escape hatch, including for CI and for scripts run outside a session: `install.sh` and `docs/smoke_github.sh` read through the resolver like everything else.
+There is no escape hatch, including for CI and for scripts run outside a session: `install.sh` and `docs/smoke_mcp.py` read through the resolver like everything else.
 
 `CLAUDE_CODE_SUBAGENT_MODEL` is also a hard failure. It outranks the per-invocation model parameter, so setting it silently reroutes every agent off whatever the resolver decided — including the independent reviewer.
 

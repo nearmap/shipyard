@@ -60,9 +60,9 @@ The parent advances on `done`; resolves `needs-decision` from plan/standards/cod
 Preflight (above) runs once, first, ahead of this classification — including on resume, since a checkpoint can route straight to BUILD or GATE without ever passing through START. Classify first, then load only the needed procedure:
 
 ```text
-START     initialize/resume ownership       → ship-start worker · references/start-resume.md
-BUILD     implement/integrate plan          → ship-build worker · references/implementation.md
-GATE      draft PR, CI, immutable review     → ship-gate  worker · references/immutable-gate.md
+START     initialize/resume ownership        → ship-start worker · references/start-resume.md
+BUILD     implement/integrate plan, draft PR → ship-build worker · references/implementation.md
+GATE      CI, immutable review, promote      → ship-gate  worker · references/immutable-gate.md
 HANDOFF   retro, usage, transcript, metrics  → parent · references/handoff-accounting.md (scan delegated)
 MERGE     direct user merge authorization    → parent · references/merge-accounting.md
 ```

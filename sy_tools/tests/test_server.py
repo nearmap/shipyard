@@ -13,6 +13,7 @@ direct call keeps a gate assertion about *not doing work* readable.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -20,12 +21,16 @@ import mcp
 import pytest
 
 from sy_tools import SERVER_NAME, server
+from sy_tools.ship_metrics import SCHEMA_ID
 
 TOOL_NAMES = {
     "add-dependency",
     "add-label",
     "assign",
     "attach-artifact",
+    "attachment-delete",
+    "attachment-download",
+    "attachment-update",
     "create-issue",
     "find-issues",
     "get-issue",
@@ -34,6 +39,7 @@ TOOL_NAMES = {
     "preflight",
     "reload_config",
     "set-status",
+    "type-convert",
     "update-issue",
     "validate_config",
 }
@@ -55,6 +61,11 @@ WIRING = [
     ("add-label", {"issue": "PROJ-11", "label": "needs-spec"}, "add_label", ("PROJ-11", "needs-spec"), {}),
     ("post-comment", {"issue": "PROJ-12", "body": "TL;DR: done"}, "post_comment", ("PROJ-12", "TL;DR: done"), {}),
     ("preflight", {}, "preflight", (), {}),
+    ("type-convert", {"issue": "PROJ-13", "issue_type": "epic"}, "type_convert", ("PROJ-13", "epic"), {}),
+    ("attachment-download", {"issue": "PROJ-14", "filename_or_id": "log.txt", "output_path": "/tmp/log.txt"},
+     "attachment_download", ("PROJ-14", "log.txt", Path("/tmp/log.txt")), {}),
+    ("attachment-delete", {"issue": "PROJ-15", "filename_or_id": "9001"},
+     "attachment_delete", ("PROJ-15", "9001"), {}),
 ]
 """Every canonical-verb tool, the adapter method it must reach, and the arguments it must pass.
 
@@ -66,7 +77,7 @@ expectation because a verb reached with its arguments transposed would otherwise
 class _Recorder:
     """An adapter that records which verb was asked for instead of performing it.
 
-    `__getattr__` rather than eleven stubs: the cost is that a tool wired to a verb no real adapter
+    `__getattr__` rather than a stub per verb: the cost is that a tool wired to a verb no real adapter
     has would still pass here, so `test_every_adapter_implements_the_whole_protocol` in
     `sy_tools/tests/tracker/test_canonical.py` is what closes that gap.
     """
@@ -168,7 +179,7 @@ async def test_the_three_folded_verbs_have_no_tool_of_their_own(monkeypatch):
 async def test_a_tracker_failure_comes_back_as_a_tool_result(monkeypatch):
     """No per-tool try/except: the SDK already turns a raising tool into an `isError` result.
 
-    Asserted once because the mechanism is shared by all eleven, and asserted at all because a
+    Asserted once because the mechanism is shared by every tool, and asserted at all because a
     swallowed TrackerError would look like a successful no-op to the model.
     """
     class _Refusing:
@@ -359,6 +370,42 @@ async def test_sanitize_runs_strictly_before_upload(monkeypatch, tmp_path):
     assert calls == ["sanitize"], "a failed scrub must not be followed by an upload"
 
 
+@pytest.mark.anyio
+async def test_replacing_an_attachment_scrubs_before_it_uploads_and_honours_the_same_gate(monkeypatch, tmp_path):
+    """`attachment-update` is an upload, so it owes the same two passes and the same gate as `attach-artifact`.
+
+    A second upload path that skipped either would be exactly the hole that putting gate, scrub and
+    upload inside one tool exists to close — and it would be invisible, because the replacement lands
+    looking identical to a sanitised one.
+    """
+    path = tmp_path / "PROJ-1-ship-transcript.txt"
+    path.write_text("already sanitised\n", encoding="utf-8")
+    calls: list[str] = []
+
+    class _Backend:
+        async def attachment_update(self, issue: str, artifact) -> dict:
+            calls.append("upload")
+            return {"issue": issue, "filename": artifact.name, "replaced": 1}
+
+    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    monkeypatch.setattr(server.config, "extra_secret_words", lambda: ())
+    monkeypatch.setattr(server.secrets, "sanitize", lambda *_a, **_k: calls.append("sanitize") or {"redactions": 0})
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Backend())
+
+    result = await server.attachment_update(issue="PROJ-1", path=str(path), caller="ship", process_tier="full")
+    assert result["updated"] is True
+    assert calls == ["sanitize", "upload"], "the replacement must not be uploaded before it is scrubbed"
+
+    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: False)
+    monkeypatch.setattr(server.secrets, "sanitize", pytest.fail)
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    skipped = await server.attachment_update(issue="PROJ-1", path=str(path))
+    assert skipped == {
+        "updated": False, "skipped": True, "reason": "transcript.attach is false", "issue": "PROJ-1"
+    }
+
+
 @pytest.mark.parametrize(
     ("kind", "caller", "tier", "expected_skip"),
     [
@@ -371,3 +418,89 @@ async def test_sanitize_runs_strictly_before_upload(monkeypatch, tmp_path):
 def test_gate_matrix(monkeypatch, kind, caller, tier, expected_skip):
     monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
     assert (server._gate_skip_reason(kind, caller, tier) is not None) is expected_skip
+
+
+def _metrics_comment(**fields: Any) -> str:
+    """A `# Claude Code ship metrics` comment body, shaped exactly as handoff-accounting.md posts one."""
+    body = {"schema": SCHEMA_ID, "task": "PROJ-1", **fields}
+    return "# Claude Code ship metrics\n\n```json\n" + json.dumps(body, indent=2) + "\n```\n"
+
+
+ALL_NULLS = {
+    "pr_url": None,
+    "plan_divergence_count": None,
+    "deviations_declined": None,
+    "ci_fix_rounds": None,
+    "review_fix_rounds": None,
+    "review_findings_accepted": None,
+    "review_findings_rejected": None,
+    "gate_false_pass": None,
+    "gate_false_pass_reason": None,
+    "post_merge_defect": None,
+    "rollback": None,
+    "lead_time_seconds": None,
+    "transcript_attachment": None,
+}
+"""Every optional field explicitly null — the shape a `light`-tier run with nothing yet known posts.
+
+Pinned as a whole rather than field by field because the design invariant is about the set: a field
+that stopped accepting `null` would make an honest unknown unrecordable, and the workflow's documented
+answer to "we do not know yet" is exactly this body.
+"""
+
+
+@pytest.mark.anyio
+async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
+    """`null` means unknown and must stay postable: converting one to zero is the failure mode."""
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": _metrics_comment(**ALL_NULLS)})
+    assert result.is_error is False, result.content
+    assert recorder.calls[0][0] == "post_comment", recorder.calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "body"),
+    [
+        ("no task at all", "# Claude Code ship metrics\n\n```json\n{\"schema\": \"" + SCHEMA_ID + "\"}\n```\n"),
+        ("misspelled field", _metrics_comment(ci_fix_round=2)),
+        ("null where the field is never null", _metrics_comment(human_review_defects=None)),
+        ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
+        ("a corrected gate verdict with no reason", _metrics_comment(gate_false_pass=True)),
+        ("a string where a count belongs", _metrics_comment(review_fix_rounds="two")),
+    ],
+)
+async def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_posted(monkeypatch, case, body):
+    """The tool boundary is where this is enforced, so nothing reaches the adapter on a bad shape.
+
+    `pytest.fail` as the adapter factory is the assertion that matters: a validation that ran *after*
+    the write would still report an error while having already posted the malformed comment, which is
+    the incident this closes off.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"{case} was accepted: {result.content}"
+    assert SCHEMA_ID in _text(result), f"the refusal for {case} must name the schema it checked"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "body"),
+    [
+        ("plain prose", "TL;DR: the gate passed."),
+        ("a different machine log", "# Claude Code usage\n\n```json\n{\"schema\": \"shipyard.claude_usage.v1\"}\n```"),
+        ("the schema id mentioned in prose only", f"The metrics comment uses {SCHEMA_ID} and nothing else."),
+        ("a fenced block that is not JSON", "```bash\nsy_config.py get tracker\n```"),
+    ],
+)
+async def test_a_body_that_is_not_a_ship_metrics_log_passes_through_unvalidated(monkeypatch, case, body):
+    """Only a block whose own `schema` key claims this schema is this validation's business."""
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, f"{case} must post unchanged: {result.content}"
+    assert recorder.calls[0][1] == ("PROJ-1", body), f"{case} must reach the adapter byte-for-byte"

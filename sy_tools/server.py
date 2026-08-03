@@ -32,13 +32,16 @@ is exported and missing when it is not.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import re
 from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from . import SERVER_NAME, SERVER_VERSION, config, secrets, tracker
+from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 
 mcp = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
 
@@ -231,9 +234,54 @@ async def post_comment(
     their own. `post-log` is this call carrying a fenced JSON block and nothing else — a machine
     log is always its own comment, never appended to prose, and honouring that is yours to do.
     `link-pr`'s durable half is this call carrying the PR URL.
+
+    A body carrying a `shipyard.ship_metrics.v1` block is validated against that schema before
+    anything is posted; every other body passes through unchanged.
     """
     _required(issue=issue)
+    _validate_machine_log(body)
     return await tracker.adapter().post_comment(issue, body)
+
+
+FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})[^\n]*\n(.*?)^[ \t]*(?:`{3,}|~{3,})[ \t]*$", re.M | re.S)
+"""Each fenced block's inner text, from a body whose fences may be backticks or tildes.
+
+The info string is not matched on: `handoff-accounting.md` shows the metrics block as ```` ```json ````,
+but a caller that omits the language must not thereby skip validation — and the check that decides
+whether a block is a machine log is the `schema` key inside it, not the fence it arrived in.
+"""
+
+
+def _validate_machine_log(body: str) -> None:
+    """Reject a malformed `shipyard.ship_metrics.v1` block before the comment is posted.
+
+    The trigger is the parsed block's own `schema` key, not the `# Claude Code ship metrics` heading
+    above it: the heading is prose a caller can vary, while the schema id is the thing every later
+    reader keys off. A block that is not JSON, or whose JSON is not an object, or whose `schema` says
+    something else, is left entirely alone — this tool posts prose comments too, and a comment
+    quoting a code sample must not have to satisfy a metrics schema.
+
+    A `ToolError` rather than a silent pass because the incident this closes off is a metrics comment
+    that landed with a field name nobody noticed was wrong and was read as authoritative afterwards.
+    """
+    if SCHEMA_ID not in body:
+        return
+    for block in FENCE.findall(body):
+        try:
+            parsed = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict) or parsed.get("schema") != SCHEMA_ID:
+            continue
+        try:
+            ShipMetricsV1.model_validate(parsed)
+        except ValidationError as exc:
+            raise ToolError(
+                f"this comment carries a {SCHEMA_ID} block that does not match the schema, so it was "
+                f"not posted: {exc.error_count()} problem(s): "
+                + "; ".join(f"{'.'.join(str(p) for p in e['loc']) or '<root>'}: {e['msg']}" for e in exc.errors())
+                + ". The field definitions are in skills/ship/references/handoff-accounting.md."
+            ) from None
 
 
 @mcp.tool(name="preflight")
@@ -299,6 +347,105 @@ def _gate_skip_reason(kind: str, caller: str, tier: object) -> str | None:
     if caller == "ship" and tier != "full":
         return f"ship requires the full process tier; got {tier!r}"
     return None
+
+
+@mcp.tool(name="type-convert")
+async def type_convert(
+    issue: IssueId,
+    issue_type: Annotated[str, Field(description="Kind to convert the issue to: `epic`, `task` or `bug`.")],
+) -> dict[str, Any]:
+    """Change an existing issue's kind in place, verified by reading the new kind back.
+
+    Canonical verb `type-convert`. Best-effort by nature: a tracker may refuse the change outright
+    (a workflow rule, a required field, a hierarchy constraint), and this fails loudly naming the
+    kind the issue still has rather than reporting a conversion that did not happen. Side effects
+    follow the kind — parent links and board membership among them — and are not reversible by
+    converting back, so confirm the target before calling. When a tracker refuses, create the new
+    issue, link it, and close the old one instead.
+    """
+    _required(issue=issue, issue_type=issue_type)
+    return await tracker.adapter().type_convert(issue, issue_type)
+
+
+@mcp.tool(name="attachment-download")
+async def attachment_download(
+    issue: IssueId,
+    filename_or_id: Annotated[
+        str,
+        Field(description="The attachment's filename, or its tracker-native id when duplicate names exist."),
+    ],
+    output_path: Annotated[str, Field(description="Local path to write the downloaded bytes to.")],
+) -> dict[str, Any]:
+    """Download one artifact already attached to an issue, to a local path.
+
+    Canonical verb `attachment-download`. Resolution is by filename with an exactly-one-match rule;
+    pass the tracker-native id instead when an issue carries several attachments of the same name. An
+    ambiguous or absent match fails rather than picking one, because the wrong artifact downloaded
+    under the right name is indistinguishable from the right one afterwards.
+    """
+    _required(issue=issue, filename_or_id=filename_or_id, output_path=output_path)
+    return await tracker.adapter().attachment_download(issue, filename_or_id, Path(output_path))
+
+
+@mcp.tool(name="attachment-update")
+async def attachment_update(
+    issue: IssueId,
+    path: Annotated[str, Field(description="Path to the replacement artifact. Its filename picks the target.")],
+    kind: Annotated[
+        str, Field(description="Artifact kind. `transcript` is gated; anything else is ungated.")
+    ] = "transcript",
+    process_tier: Annotated[
+        Literal["full", "light"] | None,
+        Field(description="The calling workflow's process tier. `ship` requires `full`."),
+    ] = None,
+    caller: Annotated[
+        str, Field(description="Workflow asking for the replacement, e.g. ship, spec, plan.")
+    ] = "",
+) -> dict[str, Any]:
+    """Replace an issue's attachment of the same filename, sanitising the replacement first.
+
+    Canonical verb `attachment-update`. Replace-by-filename: every existing attachment named like
+    `path` is removed and `path` is uploaded in its place, so calling it where nothing matches is a
+    plain upload. It runs the same gate and the same two sanitisation passes, in the same order, as
+    `attach-artifact` — a second upload path that skipped them would be exactly the hole that keeping
+    both passes inside one tool exists to close.
+
+    Destructive: the attachments it replaces are deleted before the new one is uploaded, and there is
+    no undo. Confirm the target first.
+    """
+    _required(issue=issue)
+
+    skip = _gate_skip_reason(kind, caller, process_tier)
+    if skip is not None:
+        return {"updated": False, "skipped": True, "reason": skip, "issue": issue}
+
+    _required(path=path)
+    artifact = Path(path)
+    if not artifact.is_file():
+        raise ToolError(f"artifact not found: {artifact}")
+    backend = tracker.adapter()
+    required = tuple(config.adapter_map().get("secret_env", []))
+    report = secrets.sanitize(artifact, require=required, extra_words=config.extra_secret_words())
+    evidence = await backend.attachment_update(issue, artifact)
+    return {"updated": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
+
+
+@mcp.tool(name="attachment-delete")
+async def attachment_delete(
+    issue: IssueId,
+    filename_or_id: Annotated[
+        str,
+        Field(description="The attachment's filename, or its tracker-native id when duplicate names exist."),
+    ],
+) -> dict[str, Any]:
+    """Delete one artifact from an issue, verified by reading the issue back without it.
+
+    Canonical verb `attachment-delete`. Resolves by filename under the same exactly-one-match rule as
+    `attachment-download`, and confirms the removal rather than trusting the delete's own status.
+    Destructive and not undoable: an artifact deleted here is gone from the issue's durable record.
+    """
+    _required(issue=issue, filename_or_id=filename_or_id)
+    return await tracker.adapter().attachment_delete(issue, filename_or_id)
 
 
 @mcp.tool(name="reload_config")

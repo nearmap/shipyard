@@ -192,8 +192,10 @@ class Smoke:
         await self._attachments(run_tag, tmp, first)
 
         await self.call("post-comment", {"issue": first, "body": f"TL;DR: smoke run {run_tag} drove the verb set.\n"})
-        log = json.dumps({"schema": "shipyard.ship_metrics.v1", "task": first, "smoke": True})
-        await self.call("post-log", {"issue": first, "body": f"```json\n{log}\n```\n"})
+        # A real `shipyard.ship_metrics.v1` body, not a stand-in: `post-comment` schema-validates any
+        # block claiming that id, so an approximate one exercises the rejection path rather than the verb.
+        log = json.dumps({"schema": "shipyard.ship_metrics.v1", "task": first, "pr_url": PR_PLACEHOLDER}, indent=2)
+        await self.call("post-log", {"issue": first, "body": f"# Claude Code ship metrics\n\n```json\n{log}\n```\n"})
         await self.call("link-pr", {"issue": epic, "body": f"Delivery PR for {run_tag}: {PR_PLACEHOLDER}\n"})
 
     async def _attachments(self, run_tag: str, tmp: Path, issue: str) -> None:

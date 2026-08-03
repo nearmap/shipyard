@@ -1,15 +1,13 @@
 """Markdown in, Jira rich text out — converted in this process.
 
-`skills/tracker/jira/md_to_adf.py` does the same conversion for the CLI deployment, but it gets
-there by re-executing itself inside a hash-locked virtual environment under `~/.claude`, because a
-skill script cannot assume the converter is importable. The MCP server can: `marklas` is a declared
-dependency of this package and is locked in `pixi.lock`, so the subprocess hop buys nothing here
-and costs an interpreter start on every comment. This module is that same conversion as two
-function calls.
+The conversion is two function calls in the server's own process, with no staging file and no
+converter to provision: `marklas` is a declared dependency of this package and is locked in
+`pixi.lock`. It replaced a shipped CLI helper that re-executed itself inside a hash-locked virtual
+environment on every comment, because a skill script could not assume the converter was importable —
+a subprocess hop that bought nothing here and cost an interpreter start per write.
 
-The validation is the shipped script's `_validate_adf` check, with a different failure mechanism:
-`SystemExit` would end a server process that still has other calls to serve, so every failure is a
-`TrackerError`. Nothing here writes to stdout — stdout carries JSON-RPC frames.
+Every failure is a `TrackerError`, never a `SystemExit`, which would end a server process that still
+has other calls to serve. Nothing here writes to stdout — stdout carries JSON-RPC frames.
 
 The read path converts with `plain=True`, dropping the `adf="…"` attributes `marklas` uses to make
 its own round-trip lossless. `skills/tracker/CONTRACT.md` says rich text crossing this seam is

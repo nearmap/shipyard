@@ -16,22 +16,24 @@ ruff = "*"
 ty = "*"
 pytest = "*"
 
-# `mcp` pulls the first two in already, but this package imports them directly — the Jira adapter
-# speaks httpx2 and the GitHub adapter offloads its blocking `gh` calls with anyio — so they are
-# declared rather than inherited from a transitive edge that is free to move. `marklas` is the
-# Markdown/rich-text converter the Jira adapter calls in process, replacing the CLI deployment's
-# subprocess-into-an-isolated-venv hop. Its floor is `>=0.8.2` — the version the CLI deployment's
-# `skills/tracker/jira/adf-requirements.lock` pins — because marklas is pre-1.0 and has already
-# removed public API in a minor bump (0.7.0 dropped `walk`/`transform`), so an unbounded constraint
-# would let a resolver pick a release whose converter API this adapter does not speak.
+# `mcp` pulls the first three in already, but this package imports them directly — the Jira adapter
+# speaks httpx2, the GitHub adapter offloads its blocking `gh` calls with anyio, and both the tool
+# surface and `sy_tools/ship_metrics.py` declare their schemas with pydantic — so they are declared
+# rather than inherited from a transitive edge that is free to move. `marklas` is the
+# Markdown/rich-text converter the Jira adapter calls in process. Its floor is `>=0.8.2` because
+# marklas is pre-1.0 and has already removed public API in a minor bump (0.7.0 dropped
+# `walk`/`transform`), so an unbounded constraint would let a resolver pick a release whose
+# converter API this adapter does not speak.
 [tool.pixi.pypi-dependencies]
 mcp = ">=2.0.0"
 httpx2 = "*"
 anyio = "*"
+pydantic = ">=2.0"
 marklas = ">=0.8.2"
 
 [tool.pixi.tasks]
 sy-server = "python -m sy_tools.server"
+pytest = "pytest"
 
 [tool.ruff]
 line-length = 120

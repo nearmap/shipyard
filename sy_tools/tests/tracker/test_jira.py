@@ -657,7 +657,7 @@ async def test_get_issue_finds_an_epics_children_through_the_parent_search(crede
         ("POST", f"{BASE}/search/jql"),
         ("GET", f"{BASE}/issue/PROJ-1/comment?maxResults={adapter.COMMENT_PAGE}&orderBy=-created"),
     ], f"an Epic's children need the parent search, which subtasks cannot answer: {calls}"
-    assert _sent(calls[1])["jql"] == 'project = "PROJ" AND parent = "PROJ-1"', _sent(calls[1])["jql"]
+    assert _sent(calls[1])["jql"] == 'parent = "PROJ-1"', _sent(calls[1])["jql"]
     assert full["children"] == ["PROJ-8", "PROJ-9"], f"the Epic's Tasks are its children: {full['children']}"
     assert full["children_truncated"] is truncated, (
         f"a child page carrying a next token is not the whole set: {full['children_truncated']}"
@@ -666,7 +666,7 @@ async def test_get_issue_finds_an_epics_children_through_the_parent_search(crede
 
 @pytest.mark.anyio
 async def test_get_issue_reads_a_non_epics_children_from_subtasks_without_a_search(credentials, monkeypatch):
-    """Only an Epic needs the search: a Task's children are the Sub-tasks the field already carried."""
+    """Only a known leaf type skips the search: a Task's children are the Sub-tasks the field carried."""
     calls = _transport(monkeypatch, ISSUE, THREAD)
 
     full = await adapter.JiraAdapter().get_issue("PROJ-7")
@@ -712,7 +712,7 @@ OTHER_PROJECT_CHILDREN = {
 
 
 @pytest.mark.anyio
-async def test_get_issue_scopes_the_child_search_to_the_issues_own_project(credentials, monkeypatch):
+async def test_get_issue_reads_the_children_of_an_epic_outside_the_configured_project(credentials, monkeypatch):
     """`get-issue` reads any key; only `find-issues` is about the configured board.
 
     Following a `dependencies` link routinely lands on an Epic in another project. The child search was
@@ -727,10 +727,41 @@ async def test_get_issue_scopes_the_child_search_to_the_issues_own_project(crede
 
     full = await adapter.JiraAdapter().get_issue("OTHER-1")
 
-    assert _sent(calls[1])["jql"] == 'project = "OTHER" AND parent = "OTHER-1"', (
-        f"the search must be scoped to the read issue's own project, not {FAKE_PROJECT}: {_sent(calls[1])['jql']}"
+    assert _sent(calls[1])["jql"] == 'parent = "OTHER-1"', (
+        f"the child search must not be scoped to {FAKE_PROJECT}: {_sent(calls[1])['jql']}"
     )
     assert full["children"] == ["OTHER-8"], f"a cross-project Epic's children must still be read: {full['children']}"
+
+
+MIGRATED_CHILDREN = {
+    "issues": [{"key": "NEW-4", "fields": {"summary": "A child on the board the parent moved to",
+                                           "status": {"name": "In Progress"}, "issuetype": {"name": "Task"},
+                                           "parent": {"key": "MOVED-1"}, "labels": []}}],
+}
+"""Children whose keys share no prefix with their own parent — a moved Epic, or a cross-project hierarchy."""
+
+
+@pytest.mark.anyio
+async def test_get_issue_reads_children_whose_project_differs_from_the_parents_key_prefix(credentials, monkeypatch):
+    """`parent = <key>` names one issue, so a project clause on top of it can only subtract real children.
+
+    A key prefix is not a project: an issue moved between projects keeps the prefix it was created with,
+    and Advanced Roadmaps parents children across projects outright. Deriving a `project =` clause from
+    the parent's prefix therefore excluded the very children the search exists to find, and Jira answers a
+    search that matched nothing with zero issues rather than an error — `children: []` with
+    `children_truncated: False`, indistinguishable from a parent nobody has decomposed yet.
+    """
+    epic = {"key": "MOVED-1", "fields": EPIC["fields"]}
+    calls = _routed(monkeypatch, ("/comment", THREAD), ("/search/jql", MIGRATED_CHILDREN), ("/issue/", epic))
+
+    full = await adapter.JiraAdapter().get_issue("MOVED-1")
+
+    assert _sent(calls[1])["jql"] == 'parent = "MOVED-1"', (
+        f"the parent clause is already fully selective; nothing else may narrow it: {_sent(calls[1])['jql']}"
+    )
+    assert full["children"] == ["NEW-4"], (
+        f"a child in neither the parent's key prefix nor {FAKE_PROJECT} is still its child: {full['children']}"
+    )
 
 
 @pytest.mark.anyio
@@ -841,6 +872,20 @@ async def test_find_issues_bounds_the_page_size(credentials, monkeypatch):
     with pytest.raises(TrackerError, match="positive"):
         await adapter.JiraAdapter().find_issues(limit=0)
     assert len(calls) == 1, "a nonsensical limit must fail before the search runs"
+
+
+@pytest.mark.anyio
+async def test_a_search_with_no_project_and_no_filter_refuses_rather_than_reading_the_site(credentials, monkeypatch):
+    """The project scope is optional so the child search can drop it; an empty JQL is not the fallback.
+
+    `" AND ".join([])` is the empty string, which `/search/jql` reads as "every issue this account can
+    see" — a whole-site read where a caller meant one narrow question. Fails closed instead.
+    """
+    calls = _transport(monkeypatch, {"issues": [], "isLast": True})
+
+    with pytest.raises(TrackerError, match="whole site"):
+        await adapter.JiraAdapter()._search()
+    assert calls == [], "an unscoped search must fail before it is sent"
 
 
 @pytest.mark.anyio

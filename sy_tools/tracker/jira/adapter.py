@@ -204,7 +204,7 @@ class JiraAdapter:
 
     async def _search(
         self,
-        project: str,
+        project: str | None = None,
         *,
         status: str | None = None,
         issue_type: str | None = None,
@@ -212,19 +212,20 @@ class JiraAdapter:
         text: str | None = None,
         limit: int = 50,
     ) -> dict:
-        """One page of `project`'s issues matching the given filters: the search both readers share.
+        """One page of issues matching the given filters: the search both readers share.
 
-        `project` is a parameter rather than a read of config because the two callers scope differently.
-        `find-issues` is a verb about the configured board, so it passes `_project()`. `get-issue` reads
-        any issue by key whatever project it lives in, so the child search it runs passes the read
-        issue's own project: scoping that to the configured one answered `children: []` for an Epic in
-        another project — routine when following a `dependencies` link across projects — because a JQL
-        search naming a project the key does not belong to matches nothing, and Jira reports no error
-        for a search that matched nothing.
+        `project` is a parameter rather than a read of config, and an optional one, because the two
+        callers scope differently. `find-issues` is a verb about the configured board, so it passes
+        `_project()`. `get-issue` reads any issue by key whatever project it lives in, and scopes its
+        child search by `parent = <key>` alone, which already names one specific issue: any project
+        clause on top of that can only ever subtract, and it subtracted real children — an issue moved
+        between projects keeps its original key prefix, and Advanced Roadmaps parents children across
+        projects outright, so either one turned a decomposed parent into `children: []`. Jira reports no
+        error for a search that matched nothing, so nothing downstream could tell that from a bare issue.
         """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
-        clauses = [f"project = {_jql(project)}"]
+        clauses = [f"project = {_jql(project)}"] if project else []
         if status:
             clauses.append(f"status = {_jql(native_status(status))}")
         if issue_type:
@@ -233,6 +234,8 @@ class JiraAdapter:
             clauses.append(f"parent = {_jql(parent)}")
         if text:
             clauses.append(f"text ~ {_jql(text)}")
+        if not clauses:
+            raise TrackerError("a search with no project and no filters would return the whole site; refusing")
         base, auth = _credentials()
         payload = {
             "jql": " AND ".join(clauses),
@@ -477,13 +480,15 @@ class JiraAdapter:
         one page like every other search here, and the bound is reported rather than hidden:
         `children_truncated` is to a clipped child list what `comments_truncated` is to a clipped thread.
 
-        `subtasks` is trusted only for a known leaf type, per `LEAF_TYPES`, and the search is scoped to
-        the read issue's own project, per `_key_project`: an unrecognised type and a cross-project Epic
-        both used to reach the same silent `children: []`.
+        `subtasks` is trusted only for a known leaf type, per `LEAF_TYPES`, and the search is scoped by
+        `parent = <key>` and nothing else. That clause already names one specific issue, so no project
+        clause can narrow it truthfully: a key prefix survives a move between projects, and Advanced
+        Roadmaps parents children across projects outright, so scoping by the prefix answered
+        `children: []` for a decomposed parent — the same silent emptiness an unrecognised type reached.
         """
         if canonical_type(_field(fields.get("issuetype"), "name")) in LEAF_TYPES:
             return _keys(fields.get("subtasks")), False
-        page = await self._search(_key_project(issue), parent=issue, limit=RESULT_CEILING)
+        page = await self._search(parent=issue, limit=RESULT_CEILING)
         return [str(item["id"]) for item in page["issues"]], not page["is_last"]
 
     async def preflight(self) -> dict:
@@ -823,17 +828,6 @@ def _field(value: object, key: str) -> str | None:
         return None
     member = value.get(key)
     return str(member) if member else None
-
-
-def _key_project(issue: str) -> str:
-    """The project an issue key belongs to: `PROJ-123` → `PROJ`, falling back to the configured one.
-
-    Split on the last hyphen rather than the first, because the issue number is the one part of a key
-    that cannot contain one. A value carrying no number at all is not a key this can scope, so the
-    configured project stands in — the same scope such a value got before there was a fallback to make.
-    """
-    prefix = issue.rpartition("-")[0].strip()
-    return prefix or _project()
 
 
 def _jql(value: str) -> str:

@@ -655,8 +655,9 @@ async def attachment_update(
     same two sanitisation passes, in the same order, as `attach-artifact` — a second upload path that
     skipped them would be exactly the hole that keeping both passes inside one tool exists to close.
 
-    Destructive: the attachments it replaces are removed once the new one is uploaded, and there is
-    no undo. Confirm the target first.
+    Destructive: the artifact it replaces is irrecoverable once the replacement lands, and there is
+    no undo — how each tracker performs the replacement is in its own `ADAPTER.md`. Confirm the
+    target first.
     """
     _required(issue=issue)
 

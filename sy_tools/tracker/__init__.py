@@ -151,11 +151,13 @@ class TrackerAdapter(Protocol):
         ...
 
     async def attachment_update(self, issue: str, path: Path) -> dict:
-        """Replace every attachment on `issue` named `path.name` with `path`; zero existing is fine.
+        """Replace the attachment(s) on `issue` named `path.name` with `path`; zero existing is fine.
 
         Replace-by-filename rather than by id, because the caller regenerating a transcript knows the
-        name it writes and not the id the tracker minted. The returned evidence says how many were
-        replaced, so a caller can see whether it superseded anything.
+        name it writes and not the id the tracker minted. How many namesakes a tracker replaces in one
+        call when several share that filename is adapter-specific — see this class's own docstring
+        above and each `ADAPTER.md`. The returned evidence says how many were replaced, so a caller can
+        see whether it superseded anything.
         """
         ...
 

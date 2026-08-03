@@ -1237,6 +1237,38 @@ async def test_attachment_update_uploads_first_then_deletes_every_namesake(crede
 
 
 @pytest.mark.anyio
+async def test_attachment_update_replaces_every_namesake_when_two_share_the_filename(
+    credentials, monkeypatch, artifact
+):
+    """Unlike GitHub (which refuses an ambiguous match), Jira has no id to disambiguate by and no
+    single-attachment 'replace' primitive, so every namesake is deleted, not just the first found."""
+    echoed = [{"id": "10999", "filename": ARTIFACT_NAME, "size": 16, "created": "2026-08-01T00:00:00.000+0000"}]
+    first, second = _attachment("10501"), _attachment("10503")
+    other = _attachment("10502", filename="unrelated.txt")
+    calls = _transport(
+        monkeypatch,
+        _attachments(first, other, second),
+        echoed,
+        (204, None),
+        _attachments(other, second),
+        (204, None),
+        _attachments(other),
+    )
+
+    replaced = await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("POST", f"{BASE}/issue/PROJ-7/attachments"),
+        ("DELETE", f"{BASE}/attachment/10501"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("DELETE", f"{BASE}/attachment/10503"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+    ], f"both namesakes must be deleted, each verified gone before the next: {calls}"
+    assert replaced["replaced"] == 2, f"two namesakes existed, so both must be counted: {replaced}"
+
+
+@pytest.mark.anyio
 async def test_attachment_update_uploads_a_first_artifact_without_deleting_anything(
     credentials, monkeypatch, artifact
 ):

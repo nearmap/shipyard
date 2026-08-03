@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pytest
@@ -27,6 +28,8 @@ FAKE_SITE = "example.atlassian.net"
 FAKE_PROJECT = "PROJ"
 BASE = f"https://{FAKE_SITE}/rest/api/3"
 MYSELF = f"{BASE}/myself"
+ARTIFACT_NAME = "PROJ-1-ship-transcript.txt"
+ARTIFACT_BYTES = b"transcript body\n"
 
 COLUMNS = {
     "columns.backlog": "Created",
@@ -59,8 +62,8 @@ def credentials(monkeypatch) -> None:
 
 @pytest.fixture
 def artifact(tmp_path) -> Path:
-    path = tmp_path / "PROJ-1-ship-transcript.txt"
-    path.write_bytes(b"transcript body\n")
+    path = tmp_path / ARTIFACT_NAME
+    path.write_bytes(ARTIFACT_BYTES)
     return path
 
 
@@ -71,17 +74,68 @@ def _transport(monkeypatch, *responses: object) -> list[dict]:
     in order and the last one repeats, which is what the read-write-verify verbs need. A response
     given as a `(status, body)` pair sets the status too — Jira answers most writes 204 with no body,
     and a verb that asserts that status has to be able to see it.
+
+    A response given as an exception is raised rather than returned. That is how a test drives the
+    failure of one call in a sequence: the real helper turns a non-2xx status, a stall and an
+    unreachable host alike into a `TrackerError`, so a verb whose safety depends on *which* call failed
+    can only be exercised by failing one.
+
+    `binary` is recorded rather than ignored: it is the one flag that changes how the transport reads a
+    response, so which call path asked for bytes is part of what a test asserts.
     """
     calls: list[dict] = []
     queue = list(responses) or [None]
 
-    async def fake_request(method, url, auth, data=None, headers=None, *, transport=None):
-        calls.append({"method": method, "url": url, "auth": auth, "data": data, "headers": headers or {}})
+    async def fake_request(method, url, auth, data=None, headers=None, *, transport=None, binary=False):
+        calls.append({
+            "method": method, "url": url, "auth": auth, "data": data, "headers": headers or {}, "binary": binary,
+        })
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(answer, BaseException):
+            raise answer
         return answer if isinstance(answer, tuple) else (200, answer)
 
     monkeypatch.setattr(adapter, "request", fake_request)
     return calls
+
+
+def _routed(monkeypatch, *matched: tuple[str, object]) -> list[dict]:
+    """Like `_transport`, but answering each call by the first URL fragment that matches it, in order.
+
+    A positional queue is the right shape for a verb whose calls are fixed, and the wrong shape for a
+    test about a call the adapter should have made: skipping one hands the next its predecessor's
+    response, and the verb fails on a shape mismatch instead of on the answer it built from what it
+    did read. Matching the URL keeps that failure the assertion's own.
+    """
+    calls: list[dict] = []
+
+    async def fake_request(method, url, auth, data=None, headers=None, *, transport=None, binary=False):
+        calls.append({
+            "method": method, "url": url, "auth": auth, "data": data, "headers": headers or {}, "binary": binary,
+        })
+        for fragment, answer in matched:
+            if fragment in url:
+                return (200, answer)
+        raise AssertionError(f"no canned response for {method} {url}")
+
+    monkeypatch.setattr(adapter, "request", fake_request)
+    return calls
+
+
+def _attachment(attachment_id: str = "10501", filename: str = ARTIFACT_NAME, content: str | None = None) -> dict:
+    """One attachment as Jira's `attachment` field reports it, trimmed to the keys the adapter reads."""
+    return {
+        "id": attachment_id,
+        "filename": filename,
+        "created": "2026-07-30T00:00:00.000+0000",
+        "size": len(ARTIFACT_BYTES),
+        "content": f"{BASE}/attachment/content/{attachment_id}" if content is None else content,
+    }
+
+
+def _attachments(*entries: dict) -> dict:
+    """A `GET /issue/{key}?fields=attachment` response carrying exactly `entries`."""
+    return {"fields": {"attachment": list(entries)}}
 
 
 def _sent(call: dict) -> dict:
@@ -292,6 +346,9 @@ ISSUE = {
         "status": {"name": "In Review"},
         "issuetype": {"name": "Task"},
         "parent": {"key": "PROJ-1", "fields": {"summary": "The epic"}},
+        # A Task's `subtasks`, which is the only kind of child that field ever carries: genuine
+        # Sub-tasks of a Task. An Epic's children never appear here, whatever is parented beneath it,
+        # which is why an Epic read takes the `parent = <key>` search instead (see the Epic test below).
         "subtasks": [{"key": "PROJ-8"}, {"key": "PROJ-9"}],
         # Read semantics measured live: a counterpart under `outwardIssue` blocks this issue, one
         # under `inwardIssue` is blocked BY it. So PROJ-5 is the blocker and PROJ-6 is downstream.
@@ -334,6 +391,94 @@ LABELS_READ = {"fields": {"labels": ["decomposed"]}}
 LINK_CONFIRMED = {"fields": {"issuelinks": [{"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}]}}
 """Read back from the BLOCKER: the issue it blocks arrives as the link's inward end."""
 MYSELF_BODY = {"accountId": "5f8a1c2d3e4f", "displayName": "Ship Bot"}
+PROJECT_BODY = {"id": "10000", "key": FAKE_PROJECT, "name": "Shipyard"}
+"""A `GET /project/{key}` response for the configured project, trimmed to what preflight reads."""
+
+
+@pytest.mark.anyio
+async def test_preflight_reads_the_account_and_the_configured_project(credentials, monkeypatch):
+    """Both identifiers are read, not merely present: only one of the two used to be checked.
+
+    A project key nothing reads is the misconfiguration no other verb reports — Jira answers a JQL
+    search naming an unknown or invisible project with zero issues rather than an error, so
+    `find-issues` says "nothing to pick up" about a board that has work on it, and the key is not
+    noticed until a create fails much later.
+    """
+    calls = _transport(monkeypatch, MYSELF_BODY, PROJECT_BODY)
+
+    facts = await adapter.JiraAdapter().preflight()
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", MYSELF), ("GET", f"{BASE}/project/{FAKE_PROJECT}")
+    ], f"preflight must read the account and the project, and nothing else: {calls}"
+    assert facts == {
+        "ok": True, "site": f"https://{FAKE_SITE}", "account_id": MYSELF_BODY["accountId"], "project": FAKE_PROJECT,
+    }, facts
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (
+            adapter.JiraStatusError("HTTP 404 from GET /project/PROJ: No project could be found with key 'PROJ'", 404),
+            "could not read",
+        ),
+        ({"id": "10000", "key": "OTHER", "name": "Somebody else's board"}, "came back as project 'OTHER'"),
+    ],
+    ids=["not-found", "resolved-to-another-project"],
+)
+async def test_preflight_fails_naming_the_project_it_could_not_confirm(credentials, monkeypatch, answer, expected):
+    """The claim `skills/tracker/jira/ADAPTER.md` makes is that preflight names which value is wrong.
+
+    A 404 is the mistyped or invisible key; a key that comes back as another project is the endpoint
+    resolving a numeric id, which is not the value the configuration named either.
+    """
+    _transport(monkeypatch, MYSELF_BODY, answer)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().preflight()
+
+    message = str(failure.value)
+    assert "tracker_config.project" in message, f"the failure must name the setting to fix: {message}"
+    assert FAKE_PROJECT in message and expected in message, f"the failure must name the project key: {message}"
+    assert FAKE_TOKEN not in message, "a preflight failure must not leak the credential it authenticated with"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "detail", "blamed"),
+    [
+        (adapter.JiraStatusError(f"HTTP 404 from GET {BASE}/project/PROJ: no such project", 404), "HTTP 404", True),
+        (TrackerError(f"GET {BASE}/project/PROJ timed out after {TIMEOUT_SECONDS}s"), "timed out", False),
+        (TrackerError(f"could not reach {BASE}/project/PROJ: [Errno 8] nodename not provided"), "reach", False),
+        (adapter.JiraStatusError(f"HTTP 503 from GET {BASE}/project/PROJ: gateway", 503), "HTTP 503", False),
+    ],
+    ids=["not-found", "timeout", "unreachable-host", "server-error"],
+)
+async def test_preflight_blames_the_project_key_only_when_jira_answered_not_found(
+    credentials, monkeypatch, failure, detail, blamed
+):
+    """A stall and a mistyped key both failed the project read, and both used to read as a bad key.
+
+    `request` raises one exception class for a status, a stall and an unreachable host alike, so catching
+    `TrackerError` here rewrote every one of them into "check the key against the projects this account
+    can see" — a diagnosis nothing measured, pointing at a setting that was right, while the fault that
+    actually happened disappeared from the message.
+    """
+    _transport(monkeypatch, MYSELF_BODY, failure)
+
+    with pytest.raises(TrackerError) as raised:
+        await adapter.JiraAdapter().preflight()
+
+    message = str(raised.value)
+    assert detail in message, f"the real cause must survive whatever this verb adds to it: {message}"
+    assert ("Check the key" in message) is blamed, (
+        f"only a not-found answer may be reported as a wrong project key: {message}"
+    )
+    assert (raised.value is failure) is not blamed, (
+        "a fault this verb cannot diagnose must reach the caller as itself, not as a rewritten copy"
+    )
 
 
 @pytest.mark.anyio
@@ -392,9 +537,13 @@ async def test_get_issue_reads_canonical_fields_markdown_and_only_the_blockers(c
     assert "*all" not in calls[0]["url"], "a read must name its fields, not pull every custom field"
     assert calls[1]["url"].startswith(f"{BASE}/issue/PROJ-7/comment?maxResults="), calls[1]["url"]
     assert set(full) == {
-        "id", "title", "body", "status", "type", "parent", "children", "labels", "dependencies", "url", "comments",
-        "comments_truncated",
-    }, f"the return shape is a frozen cross-adapter contract: {sorted(full)}"
+        "id", "title", "body", "status", "type", "parent", "children", "children_truncated", "labels",
+        "dependencies", "url", "comments", "comments_truncated",
+    }, (
+        "the content keys are the cross-adapter contract; the `*_truncated` flags are per-adapter, each "
+        f"naming a list that tracker's own API can silently clip — github reports `dependencies_truncated` "
+        f"and no `comments_truncated`, because its comment read has no page cap to breach: {sorted(full)}"
+    )
     assert full["comments_truncated"] is False, "a thread Jira reports as complete must not read as clipped"
     assert (full["status"], full["type"]) == ("in-review", "task"), f"natives were not canonicalised: {full}"
     assert full["parent"] == "PROJ-1", f"the parent key was not extracted: {full['parent']}"
@@ -457,6 +606,162 @@ async def test_get_issue_says_whether_the_comment_page_left_anything_out(
         f"truncated={truncated}: {full['comments_truncated']}"
     )
     assert len(full["comments"]) == len(thread["comments"]), "every comment on the page must still be returned"
+
+
+EPIC: dict[str, Any] = {
+    "id": "10000",
+    "key": "PROJ-1",
+    "fields": {
+        "summary": "The epic",
+        "description": ADF_BODY,
+        "status": {"name": "In Progress"},
+        "issuetype": {"name": "Epic"},
+        # Jira really does return this: an Epic's Tasks are parented to it, and `subtasks` is the
+        # sub-task-level relation, so it is empty on every Epic however decomposed the Epic is.
+        "subtasks": [],
+        "issuelinks": [],
+        "labels": ["decomposed"],
+    },
+}
+
+EPIC_CHILDREN = {
+    "issues": [
+        {"key": "PROJ-8", "fields": {"summary": "First task", "status": {"name": "Ready for Build"},
+                                     "issuetype": {"name": "Task"}, "parent": {"key": "PROJ-1"}, "labels": []}},
+        {"key": "PROJ-9", "fields": {"summary": "A bug", "status": {"name": "Closed"},
+                                     "issuetype": {"name": "Bug"}, "parent": {"key": "PROJ-1"}, "labels": []}},
+    ],
+}
+"""The `parent = "PROJ-1"` search page an Epic's children actually come back on."""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("page", "truncated"),
+    [(EPIC_CHILDREN, False), ({**EPIC_CHILDREN, "nextPageToken": "eyJzdGFydEF0Ijo1MH0"}, True)],
+    ids=["complete", "clipped"],
+)
+async def test_get_issue_finds_an_epics_children_through_the_parent_search(credentials, monkeypatch, page, truncated):
+    """`subtasks` is empty on every Epic, so reading children from it reported a decomposed Epic as bare.
+
+    That is the answer the duplicate-work and decomposition checks above this seam read as "nothing has
+    been planned here yet" — on the one issue type Shipyard hangs all execution off. The children come
+    from the same `parent = <key>` search `find-issues` serves, and a page that left any out says so.
+    """
+    calls = _transport(monkeypatch, EPIC, page, THREAD)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-1")
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-1?fields={','.join(adapter.ISSUE_FIELDS)}"),
+        ("POST", f"{BASE}/search/jql"),
+        ("GET", f"{BASE}/issue/PROJ-1/comment?maxResults={adapter.COMMENT_PAGE}&orderBy=-created"),
+    ], f"an Epic's children need the parent search, which subtasks cannot answer: {calls}"
+    assert _sent(calls[1])["jql"] == 'parent = "PROJ-1"', _sent(calls[1])["jql"]
+    assert full["children"] == ["PROJ-8", "PROJ-9"], f"the Epic's Tasks are its children: {full['children']}"
+    assert full["children_truncated"] is truncated, (
+        f"a child page carrying a next token is not the whole set: {full['children_truncated']}"
+    )
+
+
+@pytest.mark.anyio
+async def test_get_issue_reads_a_non_epics_children_from_subtasks_without_a_search(credentials, monkeypatch):
+    """Only a known leaf type skips the search: a Task's children are the Sub-tasks the field carried."""
+    calls = _transport(monkeypatch, ISSUE, THREAD)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    assert [c["method"] for c in calls] == ["GET", "GET"], f"a Task read must not cost a search: {calls}"
+    assert (full["children"], full["children_truncated"]) == (["PROJ-8", "PROJ-9"], False), full
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "issuetype",
+    [{"name": "Initiative"}, {"name": "Deliverable"}, None],
+    ids=["above-epic", "custom-level", "missing"],
+)
+async def test_get_issue_searches_for_the_children_of_any_type_that_is_not_a_known_leaf(
+    credentials, monkeypatch, issuetype
+):
+    """`canonical_type` passes an unmapped native name straight through, so "is not an Epic" is not a test.
+
+    A level above Epic, a custom hierarchy level, and an issue whose `issuetype` is missing altogether all
+    failed that test, were read from `subtasks` — empty on every one of them — and came back as
+    `children: []` with `children_truncated: False`: a decomposed parent reported as childless, with
+    nothing in the answer to suggest the emptiness was manufactured here rather than measured in Jira.
+    """
+    unplaceable = {"key": "PROJ-1", "fields": {**EPIC["fields"], "issuetype": issuetype, "subtasks": []}}
+    calls = _routed(monkeypatch, ("/comment", THREAD), ("/search/jql", EPIC_CHILDREN), ("/issue/", unplaceable))
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-1")
+
+    assert full["children"] == ["PROJ-8", "PROJ-9"], (
+        f"a type this adapter cannot place in the hierarchy must be searched, not read off the `subtasks` "
+        f"field that answers empty for every one of them: {full['children']}"
+    )
+    assert [c["method"] for c in calls] == ["GET", "POST", "GET"], f"the search is the call that finds them: {calls}"
+
+
+OTHER_PROJECT_CHILDREN = {
+    "issues": [{"key": "OTHER-8", "fields": {"summary": "A task on another board", "status": {"name": "Closed"},
+                                             "issuetype": {"name": "Task"}, "parent": {"key": "OTHER-1"},
+                                             "labels": []}}],
+}
+"""The child page for an Epic outside the configured project — the read that used to come back empty."""
+
+
+@pytest.mark.anyio
+async def test_get_issue_reads_the_children_of_an_epic_outside_the_configured_project(credentials, monkeypatch):
+    """`get-issue` reads any key; only `find-issues` is about the configured board.
+
+    Following a `dependencies` link routinely lands on an Epic in another project. The child search was
+    scoped to `tracker_config.project` regardless, so the JQL named a project the key does not belong to,
+    matched nothing, and reported a decomposed cross-project Epic as childless — Jira answers such a
+    search with zero issues rather than an error, so nothing else could notice.
+    """
+    epic = {"key": "OTHER-1", "fields": EPIC["fields"]}
+    calls = _routed(
+        monkeypatch, ("/comment", THREAD), ("/search/jql", OTHER_PROJECT_CHILDREN), ("/issue/", epic)
+    )
+
+    full = await adapter.JiraAdapter().get_issue("OTHER-1")
+
+    assert _sent(calls[1])["jql"] == 'parent = "OTHER-1"', (
+        f"the child search must not be scoped to {FAKE_PROJECT}: {_sent(calls[1])['jql']}"
+    )
+    assert full["children"] == ["OTHER-8"], f"a cross-project Epic's children must still be read: {full['children']}"
+
+
+MIGRATED_CHILDREN = {
+    "issues": [{"key": "NEW-4", "fields": {"summary": "A child on the board the parent moved to",
+                                           "status": {"name": "In Progress"}, "issuetype": {"name": "Task"},
+                                           "parent": {"key": "MOVED-1"}, "labels": []}}],
+}
+"""Children whose keys share no prefix with their own parent — a moved Epic, or a cross-project hierarchy."""
+
+
+@pytest.mark.anyio
+async def test_get_issue_reads_children_whose_project_differs_from_the_parents_key_prefix(credentials, monkeypatch):
+    """`parent = <key>` names one issue, so a project clause on top of it can only subtract real children.
+
+    A key prefix is not a project: an issue moved between projects keeps the prefix it was created with,
+    and Advanced Roadmaps parents children across projects outright. Deriving a `project =` clause from
+    the parent's prefix therefore excluded the very children the search exists to find, and Jira answers a
+    search that matched nothing with zero issues rather than an error — `children: []` with
+    `children_truncated: False`, indistinguishable from a parent nobody has decomposed yet.
+    """
+    epic = {"key": "MOVED-1", "fields": EPIC["fields"]}
+    calls = _routed(monkeypatch, ("/comment", THREAD), ("/search/jql", MIGRATED_CHILDREN), ("/issue/", epic))
+
+    full = await adapter.JiraAdapter().get_issue("MOVED-1")
+
+    assert _sent(calls[1])["jql"] == 'parent = "MOVED-1"', (
+        f"the parent clause is already fully selective; nothing else may narrow it: {_sent(calls[1])['jql']}"
+    )
+    assert full["children"] == ["NEW-4"], (
+        f"a child in neither the parent's key prefix nor {FAKE_PROJECT} is still its child: {full['children']}"
+    )
 
 
 @pytest.mark.anyio
@@ -567,6 +872,31 @@ async def test_find_issues_bounds_the_page_size(credentials, monkeypatch):
     with pytest.raises(TrackerError, match="positive"):
         await adapter.JiraAdapter().find_issues(limit=0)
     assert len(calls) == 1, "a nonsensical limit must fail before the search runs"
+
+
+@pytest.mark.anyio
+async def test_a_search_with_no_project_and_no_parent_refuses_rather_than_reading_unbounded(credentials, monkeypatch):
+    """The project scope is optional so the child search can drop it; an empty JQL is not the fallback.
+
+    Neither `project` nor `parent` bounds the query to one board or one issue's children, so the
+    search refuses before it is sent rather than let an unbounded query reach Jira's API.
+    """
+    calls = _transport(monkeypatch, {"issues": [], "isLast": True})
+
+    with pytest.raises(TrackerError, match="neither project nor parent"):
+        await adapter.JiraAdapter()._search()
+    assert calls == [], "an unscoped search must fail before it is sent"
+
+
+@pytest.mark.anyio
+async def test_a_status_or_text_filter_alone_does_not_bound_a_search(credentials, monkeypatch):
+    """A filter that is neither `project` nor `parent` still leaves the query unbounded to one board
+    or one issue's children, so it must refuse just like the no-filter-at-all case."""
+    calls = _transport(monkeypatch, {"issues": [], "isLast": True})
+
+    with pytest.raises(TrackerError, match="neither project nor parent"):
+        await adapter.JiraAdapter()._search(status="ready", text="incident")
+    assert calls == [], "a status/text-only search must fail before it is sent"
 
 
 @pytest.mark.anyio
@@ -735,6 +1065,286 @@ async def test_a_comment_that_returns_no_id_is_not_reported_as_posted(credential
         await adapter.JiraAdapter().post_comment("PROJ-7", "log")
 
 
+TYPE_READ = {"fields": {"issuetype": {"name": "Epic"}}}
+CONTENT_URL = f"{BASE}/attachment/content/10501"
+
+
+@pytest.mark.anyio
+async def test_type_convert_writes_the_native_type_and_reads_it_back(credentials, monkeypatch):
+    calls = _transport(monkeypatch, (204, None), TYPE_READ)
+
+    converted = await adapter.JiraAdapter().type_convert("PROJ-7", "epic")
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("PUT", f"{BASE}/issue/PROJ-7"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=issuetype"),
+    ], calls
+    assert _sent(calls[0]) == {"fields": {"issuetype": {"name": "Epic"}}}, (
+        f"the canonical token must reach Jira as its native name: {_sent(calls[0])}"
+    )
+    assert converted == {"id": "PROJ-7", "type": "epic", "native": "Epic"}
+
+
+@pytest.mark.anyio
+async def test_type_convert_fails_naming_the_type_a_restricted_workflow_left_in_place(credentials, monkeypatch):
+    """A workflow can accept the field write and leave the type where it was; that is not a conversion."""
+    _transport(monkeypatch, (204, None), {"fields": {"issuetype": {"name": "Task"}}})
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().type_convert("PROJ-7", "epic")
+
+    assert "still reads type 'Task'" in str(failure.value), (
+        f"the failure must name the type the issue actually carries: {failure.value}"
+    )
+
+
+@pytest.mark.anyio
+async def test_type_convert_refuses_an_unknown_canonical_token_before_it_writes(credentials, monkeypatch):
+    """The seam takes canonical tokens, so an unmappable one must not reach Jira as a native name."""
+    calls = _transport(monkeypatch, (204, None))
+
+    with pytest.raises(TrackerError, match="unknown canonical type"):
+        await adapter.JiraAdapter().type_convert("PROJ-7", "story")
+
+    assert calls == [], "an unmappable type must fail before the field is written"
+
+
+@pytest.mark.anyio
+async def test_attachment_download_fetches_the_resolved_content_url_and_writes_the_bytes(
+    credentials, monkeypatch, tmp_path
+):
+    calls = _transport(monkeypatch, _attachments(_attachment()), (200, ARTIFACT_BYTES))
+    destination = tmp_path / "downloaded.txt"
+
+    got = await adapter.JiraAdapter().attachment_download("PROJ-7", ARTIFACT_NAME, destination)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("GET", CONTENT_URL),
+    ], calls
+    assert calls[1]["binary"] is True, "the content URL answers bytes behind a redirect, not JSON"
+    assert destination.read_bytes() == ARTIFACT_BYTES, "the artifact must reach disk byte for byte"
+    assert got == {
+        "issue": "PROJ-7",
+        "filename": ARTIFACT_NAME,
+        "id": "10501",
+        "bytes": len(ARTIFACT_BYTES),
+        "path": str(destination),
+    }
+
+
+@pytest.mark.anyio
+async def test_an_attachment_with_no_content_url_is_refused_rather_than_written_as_an_empty_file(
+    credentials, monkeypatch, tmp_path
+):
+    """A zero-byte file on disk reads exactly like an artifact that was never uploaded."""
+    _transport(monkeypatch, _attachments(_attachment(content="")))
+    destination = tmp_path / "downloaded.txt"
+
+    with pytest.raises(TrackerError, match="no content URL"):
+        await adapter.JiraAdapter().attachment_download("PROJ-7", ARTIFACT_NAME, destination)
+
+    assert not destination.exists(), "a failed download must leave nothing behind that reads as an artifact"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "wanted", "count"),
+    [
+        (_attachments(_attachment("10501"), _attachment("10502")), ARTIFACT_NAME, "2 attachments"),
+        (_attachments(_attachment("10501")), "other.txt", "0 attachments"),
+    ],
+    ids=["ambiguous-filename", "absent-filename"],
+)
+async def test_a_name_matching_other_than_exactly_one_attachment_is_refused(
+    credentials, monkeypatch, field, wanted, count, tmp_path
+):
+    """Jira lets one issue carry two files with one name, so a filename is not a key.
+
+    Picking either would download an arbitrary one of two transcripts, so the ambiguity is reported
+    with the ids a caller can name instead — and an absent name fails the same way rather than
+    reading as a successful no-op.
+    """
+    calls = _transport(monkeypatch, field)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().attachment_download("PROJ-7", wanted, tmp_path / "downloaded.txt")
+
+    message = str(failure.value)
+    assert count in message, f"the failure must say how many matched: {message}"
+    assert "id=10501" in message, f"the candidates are the actionable part of the failure: {message}"
+    assert len(calls) == 1, "an unresolved name must not lead to a download"
+
+
+@pytest.mark.anyio
+async def test_an_attachment_id_names_one_of_two_uploads_sharing_a_filename(credentials, monkeypatch, tmp_path):
+    calls = _transport(
+        monkeypatch, _attachments(_attachment("10501"), _attachment("10502")), (200, b"the second upload")
+    )
+
+    got = await adapter.JiraAdapter().attachment_download("PROJ-7", "10502", tmp_path / "downloaded.txt")
+
+    assert calls[1]["url"] == f"{BASE}/attachment/content/10502", (
+        f"the id must select the attachment, not the first namesake: {calls[1]['url']}"
+    )
+    assert got["id"] == "10502", got
+
+
+@pytest.mark.anyio
+async def test_an_attachment_still_on_the_issue_after_a_204_is_a_failed_replace(
+    credentials, monkeypatch, artifact
+):
+    """The 204 says Jira accepted the delete; only the re-read says the old file is off the issue.
+
+    Exercised through `attachment_update`, which supersedes every same-named attachment: the shared
+    `_delete_attachment` verification this pins has no other public caller now that there is no
+    standalone `attachment-delete` verb.
+    """
+    echoed = [{"id": "10999", "filename": ARTIFACT_NAME}]
+    _transport(
+        monkeypatch, _attachments(_attachment()), echoed, (204, None), _attachments(_attachment())
+    )
+
+    with pytest.raises(TrackerError, match="still on PROJ-7"):
+        await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+
+@pytest.mark.anyio
+async def test_attachment_update_uploads_first_then_deletes_every_namesake(credentials, monkeypatch, artifact):
+    """The order is the safety: the old artifact only goes once the new one is confirmed on the issue."""
+    echoed = [{"id": "10999", "filename": ARTIFACT_NAME, "size": 16, "created": "2026-08-01T00:00:00.000+0000"}]
+    other = _attachment("10502", filename="unrelated.txt")
+    calls = _transport(
+        monkeypatch, _attachments(_attachment("10501"), other), echoed, (204, None), _attachments(other)
+    )
+
+    replaced = await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("POST", f"{BASE}/issue/PROJ-7/attachments"),
+        ("DELETE", f"{BASE}/attachment/10501"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+    ], f"the upload comes first, and only the namesake may then be deleted: {calls}"
+    assert replaced == {
+        "issue": "PROJ-7",
+        "filename": ARTIFACT_NAME,
+        "id": "10999",
+        "size": 16,
+        "created": "2026-08-01T00:00:00.000+0000",
+        "replaced": 1,
+    }
+
+
+@pytest.mark.anyio
+async def test_attachment_update_replaces_every_namesake_when_two_share_the_filename(
+    credentials, monkeypatch, artifact
+):
+    """Unlike GitHub (which refuses an ambiguous match), Jira has no id to disambiguate by and no
+    single-attachment 'replace' primitive, so every namesake is deleted, not just the first found."""
+    echoed = [{"id": "10999", "filename": ARTIFACT_NAME, "size": 16, "created": "2026-08-01T00:00:00.000+0000"}]
+    first, second = _attachment("10501"), _attachment("10503")
+    other = _attachment("10502", filename="unrelated.txt")
+    calls = _transport(
+        monkeypatch,
+        _attachments(first, other, second),
+        echoed,
+        (204, None),
+        _attachments(other, second),
+        (204, None),
+        _attachments(other),
+    )
+
+    replaced = await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [(c["method"], c["url"]) for c in calls] == [
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("POST", f"{BASE}/issue/PROJ-7/attachments"),
+        ("DELETE", f"{BASE}/attachment/10501"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+        ("DELETE", f"{BASE}/attachment/10503"),
+        ("GET", f"{BASE}/issue/PROJ-7?fields=attachment"),
+    ], f"both namesakes must be deleted, each verified gone before the next: {calls}"
+    assert replaced["replaced"] == 2, f"two namesakes existed, so both must be counted: {replaced}"
+
+
+@pytest.mark.anyio
+async def test_attachment_update_uploads_a_first_artifact_without_deleting_anything(
+    credentials, monkeypatch, artifact
+):
+    calls = _transport(monkeypatch, _attachments(), [{"id": "10999", "filename": ARTIFACT_NAME}])
+
+    replaced = await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [c["method"] for c in calls] == ["GET", "POST"], f"nothing existed to delete: {calls}"
+    assert replaced["replaced"] == 0, "replacing nothing is a normal first upload, not a failure"
+
+
+@pytest.mark.anyio
+async def test_attachment_update_refuses_a_missing_file_before_it_deletes_the_old_one(
+    credentials, monkeypatch, tmp_path
+):
+    """Deleting first and failing to upload leaves the issue with no artifact at all."""
+    calls = _transport(monkeypatch, _attachments(_attachment()), (204, None))
+
+    with pytest.raises(TrackerError, match="attachment not found"):
+        await adapter.JiraAdapter().attachment_update("PROJ-7", tmp_path / ARTIFACT_NAME)
+
+    assert calls == [], "the source file must be checked before anything is deleted"
+
+
+@pytest.mark.anyio
+async def test_an_upload_that_fails_leaves_the_previous_artifact_on_the_issue(credentials, monkeypatch, artifact):
+    """A refused upload must cost the issue nothing, which only the upload-first order can promise.
+
+    Every refusal made before the request is checked elsewhere; this is the one that cannot be: a
+    timeout, a 413 or a permission change on the upload itself. Deleting first, the issue was left with
+    no artifact at all — a total loss, strictly worse than the stale transcript it started with.
+    """
+    calls = _transport(
+        monkeypatch, _attachments(_attachment("10501")), TrackerError("HTTP 413 from POST /attachments: too large")
+    )
+
+    with pytest.raises(TrackerError, match="HTTP 413"):
+        await adapter.JiraAdapter().attachment_update("PROJ-7", artifact)
+
+    assert [c["method"] for c in calls] == ["GET", "POST"], f"the upload must be attempted before any delete: {calls}"
+    assert not any(c["method"] == "DELETE" for c in calls), (
+        f"the previous artifact was deleted for an upload that never landed: {calls}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_binary_fetch_follows_the_redirect_and_drops_the_credential_crossing_it():
+    """An attachment's content URL answers a redirect to media storage, which one call path follows.
+
+    The credential must not follow with it: the storage URL is a different origin carrying its own
+    pre-signed query, so httpx2 strips `Authorization` — asserted rather than assumed, because the flag
+    that follows the redirect is the flag that would otherwise forward the token to another host. The
+    default is pinned too: every other call must still treat a 302 as a failure.
+    """
+    signed = "https://media.example.net/file/abc/binary?token=presigned"
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if str(request.url) == signed:
+            return httpx2.Response(200, content=ARTIFACT_BYTES)
+        return httpx2.Response(302, headers={"Location": signed})
+
+    auth = "Basic " + base64.b64encode(f"{FAKE_EMAIL}:{FAKE_TOKEN}".encode()).decode()
+    answer = await adapter.request(
+        "GET", CONTENT_URL, auth, transport=httpx2.MockTransport(handler), binary=True
+    )
+
+    assert answer == (200, ARTIFACT_BYTES), f"the bytes must come back unparsed: {answer}"
+    assert [url for url, _ in seen] == [CONTENT_URL, signed], f"the redirect was not followed: {seen}"
+    assert seen[1][1] is None, "the credential must not cross to the storage host the redirect names"
+
+    with pytest.raises(TrackerError, match="HTTP 302"):
+        await adapter.request("GET", CONTENT_URL, auth, transport=httpx2.MockTransport(handler))
+
+
 VERB_CALLS = [
     ("create_issue", lambda a: a.create_issue("task", "T", "body"), [(201, {"key": "PROJ-7"})]),
     ("get_issue", lambda a: a.get_issue("PROJ-7"), [ISSUE, THREAD]),
@@ -746,8 +1356,13 @@ VERB_CALLS = [
     ("add_dependency", lambda a: a.add_dependency("PROJ-7", "PROJ-5"), [(201, None), LINK_CONFIRMED]),
     ("add_label", lambda a: a.add_label("PROJ-7", "shipyard"), [LABELS_READ, (204, None)]),
     ("post_comment", lambda a: a.post_comment("PROJ-7", "log"), [(201, {"id": "20001"})]),
+    ("type_convert", lambda a: a.type_convert("PROJ-7", "epic"), [(204, None), TYPE_READ]),
 ]
-"""Every canonical verb with just enough canned responses to complete, for the whole-surface sweeps."""
+"""Every canonical verb that needs no path on disk, with just enough canned responses to complete.
+
+The two attachment verbs taking a `Path` are covered by their own tests above instead: this sweep is
+about the credential and stdout, and both of those verbs reach the transport through the same upload and
+download paths the entries here already drive."""
 
 
 @pytest.mark.anyio

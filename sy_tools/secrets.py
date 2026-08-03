@@ -90,6 +90,9 @@ def scan_file(path: Path) -> list[dict]:
 
     `--redact` is mandatory and `--verbose` is never passed: an unredacted scanner report would
     write the matched value straight back out, re-leaking exactly what this exists to prevent.
+
+    `stdin` is closed, as it is on every subprocess this server spawns: the server's own stdin is the
+    JSON-RPC transport, and a child that inherits it can eat a frame the server was going to read.
     """
     if not shutil.which(SCANNER):
         raise SanitizeError(
@@ -103,6 +106,7 @@ def scan_file(path: Path) -> list[dict]:
                 [SCANNER, "dir", str(path), "--redact", "--report-format", "json",
                  "--report-path", str(report), "--exit-code", "0", "--log-level", "error"],
                 capture_output=True, text=True, check=False, timeout=SCANNER_TIMEOUT_SECONDS,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
             raise SanitizeError(

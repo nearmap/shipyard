@@ -178,7 +178,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" migrate \
   --settings .claude/settings.json --out .shipyard/config.json
 ```
 
-It maps every recognised legacy name to its config key, coerces numbers and booleans, and refuses to copy anything credential-shaped. Then **remove the migrated keys from the `env` block** — leaving both in place is a deliberate hard failure. `/sy:init-repo` does all of this interactively, including splitting per-person values into the local layer.
+It maps every recognised legacy name to its config key, coerces numbers and booleans, and refuses to copy anything credential-shaped. Half the map is one adapter's own (below), and which adapter is the `env` block's own answer: the `SY_TRACKER` in the block being converted, falling back to the currently resolved tracker only if the block names none. That distinction is load-bearing because `migrate` normally runs *before* any tracker has been configured, so the resolved value is still the shipped default — deriving the adapter's names from it dropped every `tracker_config.*` variable in the block. `migrate` resolves the configuration first and refuses outright if it cannot, and refuses a tracker that names no adapter rather than converting a subset: a conversion that dropped the adapter's keys and still wrote the file would look complete and would not be. An `--out` file that already exists is **merged into**, never overwritten — migrated values win on conflict, every other key already in the file survives, and a destination that is not valid JSON is a refusal rather than a file this command replaces. The summary names three separate outcomes, never one list: what migrated, what was deliberately left in the environment because it is credential-shaped, and what matched no config key at all (a typo, or a stale setting). Then **remove the migrated keys from the `env` block** — leaving both in place is a deliberate hard failure. `/sy:init-repo` does all of this interactively, including splitting per-person values into the local layer.
 
 The mapping:
 
@@ -209,7 +209,7 @@ The mapping:
 
 Silent precedence is exactly what made the old boundary illegible: `ACLI_TOKEN` and `SY_READY_COLNAME` sat in one mechanism with nothing but prose separating them. A loud rejection naming both values is what makes the new boundary obvious. A variable that merely *agrees* with config is still an error, because two live resolution paths for one key is the thing being removed.
 
-There is no escape hatch, including for CI and for scripts run outside a session: `install.sh` and `docs/smoke_github.sh` read through the resolver like everything else.
+There is no escape hatch, including for CI and for scripts run outside a session: `install.sh` and `docs/smoke_mcp.py` read through the resolver like everything else.
 
 `CLAUDE_CODE_SUBAGENT_MODEL` is also a hard failure. It outranks the per-invocation model parameter, so setting it silently reroutes every agent off whatever the resolver decided — including the independent reviewer.
 

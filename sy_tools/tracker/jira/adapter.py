@@ -1,11 +1,10 @@
-"""Jira REST, spoken by a long-lived server process.
+"""Jira REST, spoken by a long-lived server process. This is the implementation, not a wrapper.
 
-Ported from `skills/tracker/jira/jira_rest.py` rather than imported from it: that script is a
-CLI, so it signals with `print()` and `raise SystemExit`. Inside the MCP server stdout carries
-JSON-RPC frames — a stray print desynchronises the client — and a `SystemExit` would end a
-process that still has other calls to serve. Everything here returns a dict or raises
-`TrackerError`, and nothing in this module writes to stdout. The shipped script stays untouched
-so the CLI deployment keeps working unchanged.
+Every canonical verb of `skills/tracker/CONTRACT.md` is served from here, and the shape of that
+service is set by where it runs: inside the MCP server stdout carries JSON-RPC frames, so a stray
+print desynchronises the client, and a `SystemExit` would end a process that still has other calls
+to serve. So everything here returns a dict or raises `TrackerError`, and nothing in this module
+writes to stdout.
 
 The transport is async httpx2, and the canonical verbs are `async` because the server serves calls
 concurrently: an upload waiting on Jira must not block an unrelated tool call. Only the transport
@@ -24,6 +23,7 @@ import mimetypes
 import os
 from pathlib import Path
 import secrets
+from urllib.parse import quote
 
 import httpx2
 
@@ -69,6 +69,37 @@ RESULT_CEILING = 200
 """The hard cap on a search's `maxResults`, whatever a caller asks for. An unbounded search on a
 busy project is a large response assembled in memory for a caller that wanted a page."""
 
+LEAF_TYPES = ("task", "bug")
+"""The canonical types whose children Jira's `subtasks` field really does report.
+
+Membership is tested positively rather than by asking whether the type *is* an Epic, because
+`canonical_type` passes a native name it does not map through unchanged: an issue at a hierarchy
+level above Epic, at a custom level, or carrying no `issuetype` at all is not `"epic"` either, and
+excluding only `"epic"` sent every one of them to `subtasks` — empty for all of them — so a
+decomposed parent read as childless, with no error and no truncation flag to make that look wrong.
+
+Getting this wrong in the safe direction costs one search on an issue that has no children to find.
+Getting it wrong in the other direction is silent, and `children: []` is what the duplicate-work and
+decomposition checks above this seam read as "nothing has been planned here yet".
+"""
+
+NOT_FOUND = 404
+"""The one status that means a configured project key names nothing this account can read."""
+
+
+class JiraStatusError(TrackerError):
+    """A `TrackerError` for a call Jira actually answered, carrying the status it answered with.
+
+    A stall, an unreachable host and a 404 all reach a caller as a `TrackerError`, and one caller has
+    to tell them apart: the project preflight rewrites a not-found into "the configured project key is
+    wrong", which is a fabricated diagnosis when the real cause was a timeout. The status rides on the
+    exception rather than being parsed back out of its message.
+    """
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class JiraAdapter:
     """The canonical tracker verbs, implemented against the Jira Cloud REST API."""
@@ -111,12 +142,17 @@ class JiraAdapter:
         Two calls, because Jira serves comments from their own endpoint: the field read is scoped to
         `ISSUE_FIELDS`, and the comment read is bounded and newest-first.
 
-        `comments_truncated` reports whether that bound actually cut anything off. A silently short
+        Children take a third call on anything that is not a known leaf type, for the reasons
+        `_children` documents; on a Task or a Bug they come from the field read.
+
+        `comments_truncated` reports whether that bound actually cut anything off, and
+        `children_truncated` does the same for a child list read one page at a time. A silently short
         thread reads as a complete ship log, so a caller deciding on the strength of "no one raised
         this" has to be able to tell a quiet issue from a clipped page.
         """
         base, auth = _credentials()
         fields = await _read_fields(base, auth, issue, ISSUE_FIELDS)
+        children, children_truncated = await self._children(issue, fields)
         _, thread = await request(
             "GET", f"{base}{API}/issue/{issue}/comment?maxResults={COMMENT_PAGE}&orderBy=-created", auth
         )
@@ -124,7 +160,8 @@ class JiraAdapter:
         return {
             **_summary(base, issue, fields),
             "body": adf.adf_to_markdown(fields.get("description")),
-            "children": _keys(fields.get("subtasks")),
+            "children": children,
+            "children_truncated": children_truncated,
             "dependencies": _linked(fields.get("issuelinks"), BLOCKER_SIDE),
             "comments": comments,
             "comments_truncated": truncated,
@@ -161,10 +198,34 @@ class JiraAdapter:
         Every interpolated value is a quoted JQL literal, so a title containing a quote cannot break
         out of its clause and widen the search.
         """
-        project = _project()
+        return await self._search(
+            _project(), status=status, issue_type=issue_type, parent=parent, text=text, limit=limit
+        )
+
+    async def _search(
+        self,
+        project: str | None = None,
+        *,
+        status: str | None = None,
+        issue_type: str | None = None,
+        parent: str | None = None,
+        text: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """One page of issues matching the given filters: the search both readers share.
+
+        `project` is a parameter rather than a read of config, and an optional one, because the two
+        callers scope differently. `find-issues` is a verb about the configured board, so it passes
+        `_project()`. `get-issue` reads any issue by key whatever project it lives in, and scopes its
+        child search by `parent = <key>` alone, which already names one specific issue: any project
+        clause on top of that can only ever subtract, and it subtracted real children — an issue moved
+        between projects keeps its original key prefix, and Advanced Roadmaps parents children across
+        projects outright, so either one turned a decomposed parent into `children: []`. Jira reports no
+        error for a search that matched nothing, so nothing downstream could tell that from a bare issue.
+        """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
-        clauses = [f"project = {_jql(project)}"]
+        clauses = [f"project = {_jql(project)}"] if project else []
         if status:
             clauses.append(f"status = {_jql(native_status(status))}")
         if issue_type:
@@ -173,6 +234,13 @@ class JiraAdapter:
             clauses.append(f"parent = {_jql(parent)}")
         if text:
             clauses.append(f"text ~ {_jql(text)}")
+        if not (project or parent):
+            raise TrackerError(
+                "a search scoped by neither project nor parent is not bounded to a single issue or "
+                "board; Jira's search API rejects an unbounded query outright, and this adapter does "
+                "not treat a status/type/text filter as bounding on its own, since it does not scope "
+                "to one board or one issue's children — refusing before the request"
+            )
         base, auth = _credentials()
         payload = {
             "jql": " AND ".join(clauses),
@@ -312,69 +380,135 @@ class JiraAdapter:
         return {"id": issue, "comment_id": comment_id, "url": f"{_browse(base, issue)}?focusedCommentId={comment_id}"}
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
-        """Upload `path` to `issue` and return the response evidence confirming the write.
-
-        The filename is checked before the body is built, not escaped: it goes into a hand-assembled
-        `Content-Disposition` header, where a quote or backslash malforms the quoted string and a CR
-        or LF — both legal in a POSIX filename — appends attacker-chosen headers to the request.
-        Refusing the four characters is one comparison; escaping them correctly is a multipart
-        quoting implementation.
-        """
-        if any(ch in path.name for ch in FORBIDDEN_IN_FILENAME):
-            raise TrackerError(
-                "attachment filename may not contain a quote, backslash, carriage return or newline: "
-                "those would break the multipart header this upload builds by hand. Rename the file and retry"
-            )
-        if not path.is_file():
-            raise TrackerError(f"attachment not found: {path}")
+        """Upload `path` to `issue` and return the response evidence confirming the write."""
         base, auth = _credentials()
-        boundary = "----shipyard-" + secrets.token_hex(16)
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        payload = b"".join([
-            f"--{boundary}\r\n".encode(),
-            f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'.encode(),
-            f"Content-Type: {content_type}\r\n\r\n".encode(),
-            path.read_bytes(),
-            b"\r\n",
-            f"--{boundary}--\r\n".encode(),
-        ])
-        _, result = await request(
-            "POST",
-            f"{base}{API}/issue/{issue}/attachments",
-            auth,
-            payload,
-            {
-                "X-Atlassian-Token": "no-check",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-            },
-        )
-        confirmed = _confirmation(result, path.name)
-        if confirmed is None:
+        return await _upload(base, auth, issue, path)
+
+    async def type_convert(self, issue: str, issue_type: str) -> dict:
+        """Change `issue`'s type to a canonical type, verified by reading the type back.
+
+        A Jira workflow can accept the field write and leave the type where it was, so the re-read is
+        not belt-and-braces: an unverified conversion is reported as a failure naming the type the
+        issue still carries, because a caller told an issue is now an Epic will decompose it as one.
+
+        `issue_type` is a canonical token mapped through `native_type`, so an unknown one fails before
+        the write. That is a deliberate improvement on the raw native name this used to take: a caller
+        above this seam names types in one vocabulary, and a native name that no longer exists on the
+        board otherwise reached Jira as a 400 rather than being refused here.
+        """
+        native = native_type(issue_type)
+        base, auth = _credentials()
+        await _send_json("PUT", f"{base}{API}/issue/{issue}", auth, {"fields": {"issuetype": {"name": native}}})
+        actual = _field((await _read_fields(base, auth, issue, ("issuetype",))).get("issuetype"), "name")
+        if (actual or "").strip().lower() != native.strip().lower():
             raise TrackerError(
-                f"upload response did not confirm {path.name!r} on {issue}; treat the attachment as failed"
+                f"{issue} still reads type {actual or 'unset'!r} rather than {native!r} after the write; the "
+                "workflow may restrict this conversion. Treat the change as failed"
             )
-        attachment_id = _field(confirmed, "id")
-        if not attachment_id:
+        return {"id": issue, "type": issue_type, "native": actual}
+
+    async def attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
+        """Write the one attachment on `issue` matching `filename_or_id` to `output_path`.
+
+        The download is a second authenticated call to the `content` URL Jira reports for the
+        attachment, not to a path built here: that URL redirects to media storage with its own
+        pre-signed query, which is why this is the one call in the module that follows redirects.
+
+        An attachment carrying no `content` URL is a failure rather than an empty file: a zero-byte
+        artifact on disk reads exactly like an artifact that was never uploaded.
+        """
+        base, auth = _credentials()
+        found = _resolve_attachment(await _get_attachments(base, auth, issue), filename_or_id, issue)
+        content_url = found.get("content")
+        if not isinstance(content_url, str) or not content_url:
             raise TrackerError(
-                f"upload of {path.name!r} on {issue} came back without an attachment id; there is nothing "
-                "to point at later, so treat the attachment as failed rather than reported"
+                f"attachment {_field(found, 'id') or '?'} on {issue} carries no content URL, so there is "
+                "nothing to download; treat the read as failed rather than writing an empty file"
             )
+        _, data = await request("GET", content_url, auth, binary=True)
+        if not isinstance(data, bytes):
+            raise TrackerError(f"the download of {filename_or_id!r} from {issue} returned no bytes to write")
+        output_path.write_bytes(data)
         return {
             "issue": issue,
-            "filename": path.name,
-            "id": attachment_id,
-            "size": confirmed.get("size"),
-            "created": confirmed.get("created"),
+            "filename": _field(found, "filename"),
+            "id": _field(found, "id"),
+            "bytes": len(data),
+            "path": str(output_path),
         }
 
-    async def preflight(self) -> dict:
-        """Prove the configured account and its credential authenticate, reporting no secret value.
+    async def attachment_update(self, issue: str, path: Path) -> dict:
+        """Replace every attachment on `issue` named `path.name` with `path`, verifying each step.
 
-        A credential can be present and still be dead, so this is a real authenticated read
-        rather than a presence check. `myself` is the cheapest one Jira offers.
+        Jira has no attachment replace: an upload of a name that is already there adds a second
+        attachment beside it, and the two are then told apart only by an id nobody above this seam
+        holds. So the namesakes are resolved to their ids, the new file is uploaded, and only then is
+        each old one deleted — each delete verified gone.
+
+        The order is the whole point of this verb's safety. Deleting first left a window in which the
+        upload could fail — a timeout, a 413, a permission change — with the old artifact already gone
+        and no new one in its place: total loss, strictly worse than the stale artifact it started with.
+        Uploading first inverts that: a failed delete leaves both files on the issue, which is visible,
+        recoverable, and reported as a failure rather than silently losing the record.
+
+        Every refusal is still made before the upload, for the same reason: a missing or unnameable
+        source file, or a namesake carrying no id to delete it by, is discovered before anything changes.
         """
         base, auth = _credentials()
-        return {"ok": True, "site": base, "account_id": await self._account(base, auth)}
+        _checked_source(path)
+        existing = [a for a in await _get_attachments(base, auth, issue) if a.get("filename") == path.name]
+        superseded = []
+        for found in existing:
+            attachment_id = _field(found, "id")
+            if not attachment_id:
+                raise TrackerError(
+                    f"an attachment named {path.name!r} on {issue} carries no id, so it cannot be deleted and "
+                    "the upload would sit beside it; refusing rather than leaving two files with one name"
+                )
+            superseded.append(attachment_id)
+        uploaded = await _upload(base, auth, issue, path)
+        for attachment_id in superseded:
+            await _delete_attachment(base, auth, issue, attachment_id)
+        return {**uploaded, "replaced": len(superseded)}
+
+    async def _children(self, issue: str, fields: dict) -> tuple[list[str], bool]:
+        """`issue`'s children, and whether that list is one page short of all of them.
+
+        Jira's `subtasks` field carries sub-task-level children only: it comes back empty on every Epic,
+        whatever is parented beneath it. This adapter's execution model is flat — one tracking Epic with
+        every executable Task and Bug directly under it, per `skills/tracker/jira/ADAPTER.md` — so an
+        Epic's children are exactly the ones that field cannot report, and reading them from it answered
+        "no children" for a fully decomposed Epic. That is the answer the duplicate-work and
+        decomposition checks above this seam read as work nobody has planned yet.
+
+        An Epic's children therefore come from the same `parent = <key>` search `find-issues` serves,
+        one page like every other search here, and the bound is reported rather than hidden:
+        `children_truncated` is to a clipped child list what `comments_truncated` is to a clipped thread.
+
+        `subtasks` is trusted only for a known leaf type, per `LEAF_TYPES`, and the search is scoped by
+        `parent = <key>` and nothing else. That clause already names one specific issue, so no project
+        clause can narrow it truthfully: a key prefix survives a move between projects, and Advanced
+        Roadmaps parents children across projects outright, so scoping by the prefix answered
+        `children: []` for a decomposed parent — the same silent emptiness an unrecognised type reached.
+        """
+        if canonical_type(_field(fields.get("issuetype"), "name")) in LEAF_TYPES:
+            return _keys(fields.get("subtasks")), False
+        page = await self._search(parent=issue, limit=RESULT_CEILING)
+        return [str(item["id"]) for item in page["issues"]], not page["is_last"]
+
+    async def preflight(self) -> dict:
+        """Prove the configured account, credential and project are all usable, reporting no secret value.
+
+        Each of the three can be present and still be wrong, so each is read rather than checked for
+        presence: a credential can be revoked, and a project key can name a board this account cannot
+        see. `myself` is the cheapest authenticated read Jira offers; `_project_key` is what makes the
+        project half of `skills/tracker/jira/ADAPTER.md`'s preflight contract true.
+        """
+        base, auth = _credentials()
+        project = _project()
+        account_id = await self._account(base, auth)
+        key = await _project_key(base, auth, project)
+        return {"ok": True, "site": base, "account_id": account_id, "project": key}
 
     async def _account(self, base: str, auth: str) -> str:
         """The authenticated account's id, read from `myself` once per adapter instance.
@@ -403,6 +537,7 @@ async def request(
     headers: dict[str, str] | None = None,
     *,
     transport: httpx2.AsyncBaseTransport | None = None,
+    binary: bool = False,
 ) -> tuple[int, object]:
     """One authenticated REST call, returning `(status, parsed body or None)`.
 
@@ -418,14 +553,29 @@ async def request(
     `data` is sent as a raw body (`content=`), never form-encoded: the multipart payload carries a
     hand-built boundary that must reach Jira byte-for-byte. `transport` is the seam a test uses to
     drive this mapping without a network; production callers leave it None.
+
+    `binary` serves the one call that fetches an attachment's bytes, and it changes two things
+    together because that call needs both: the body comes back unparsed, and redirects are followed.
+    Every other endpoint here answers JSON at the URL asked for, while an attachment's `content` URL
+    answers a redirect to media storage — a 302 is not `is_success`, so without this the download
+    fails on the redirect it is supposed to follow. Following it is safe with the credential attached:
+    httpx2 drops the `Authorization` header when a redirect leaves the origin, and the storage URL it
+    lands on carries its own pre-signed query, so the token never reaches a host Jira did not name.
+    Defaulted off so no existing caller changes behaviour.
     """
     sent = {"Authorization": auth, "Accept": "application/json"}
     sent.update(headers or {})
     try:
-        async with httpx2.AsyncClient(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        async with httpx2.AsyncClient(
+            timeout=TIMEOUT_SECONDS, transport=transport, follow_redirects=binary
+        ) as client:
             resp = await client.request(method, url, content=data, headers=sent)
             if not resp.is_success:
-                raise TrackerError(f"HTTP {resp.status_code} from {method} {url}: {resp.text[:2000]}")
+                raise JiraStatusError(
+                    f"HTTP {resp.status_code} from {method} {url}: {resp.text[:2000]}", resp.status_code
+                )
+            if binary:
+                return resp.status_code, resp.content
             return resp.status_code, json.loads(resp.content) if resp.content else None
     except httpx2.TimeoutException as exc:
         raise TrackerError(f"{method} {url} timed out after {TIMEOUT_SECONDS}s") from exc
@@ -462,6 +612,137 @@ async def _read_fields(base: str, auth: str, issue: str, names: tuple[str, ...])
     if not isinstance(fields, dict):
         raise TrackerError(f"read of {issue} returned no fields block; got {_shape(item)}")
     return fields
+
+
+async def _upload(base: str, auth: str, issue: str, path: Path) -> dict:
+    """One verified multipart upload of `path` to `issue`, and the evidence it landed.
+
+    Shared by `attach-artifact` and the replace path rather than written twice: the hand-built
+    boundary is the part of this module Jira validates byte-for-byte, and a second copy of it is a
+    second place for the filename refusal below to be left out.
+    """
+    filename = _checked_source(path)
+    boundary = "----shipyard-" + secrets.token_hex(16)
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    payload = b"".join([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode(),
+        f"Content-Type: {content_type}\r\n\r\n".encode(),
+        path.read_bytes(),
+        b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    _, result = await request(
+        "POST",
+        f"{base}{API}/issue/{issue}/attachments",
+        auth,
+        payload,
+        {
+            "X-Atlassian-Token": "no-check",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+    confirmed = _confirmation(result, filename)
+    if confirmed is None:
+        raise TrackerError(f"upload response did not confirm {filename!r} on {issue}; treat the attachment as failed")
+    attachment_id = _field(confirmed, "id")
+    if not attachment_id:
+        raise TrackerError(
+            f"upload of {filename!r} on {issue} came back without an attachment id; there is nothing "
+            "to point at later, so treat the attachment as failed rather than reported"
+        )
+    return {
+        "issue": issue,
+        "filename": filename,
+        "id": attachment_id,
+        "size": confirmed.get("size"),
+        "created": confirmed.get("created"),
+    }
+
+
+def _checked_source(path: Path) -> str:
+    """`path.name`, refusing before any request the two things an upload cannot recover from.
+
+    The filename is checked, not escaped: it goes into a hand-assembled `Content-Disposition` header,
+    where a quote or backslash malforms the quoted string and a CR or LF — both legal in a POSIX
+    filename — appends attacker-chosen headers to the request. Refusing the four characters is one
+    comparison; escaping them correctly is a multipart quoting implementation.
+
+    Both checks live here so the replace path can make them before it deletes anything: a missing or
+    unnameable file discovered after the old attachment is gone leaves the issue with nothing.
+    """
+    if any(ch in path.name for ch in FORBIDDEN_IN_FILENAME):
+        raise TrackerError(
+            "attachment filename may not contain a quote, backslash, carriage return or newline: "
+            "those would break the multipart header this upload builds by hand. Rename the file and retry"
+        )
+    if not path.is_file():
+        raise TrackerError(f"attachment not found: {path}")
+    return path.name
+
+
+async def _get_attachments(base: str, auth: str, issue: str) -> list[dict]:
+    """Every attachment currently on `issue`, or a failure naming the shape that came back.
+
+    An unreadable field is a failure rather than an empty list, because both callers read absence as
+    an answer: the resolver would report "no attachment by that name" for an issue that has one, and
+    the delete verification would read a field it could not parse as proof the file is gone.
+    """
+    found = (await _read_fields(base, auth, issue, ("attachment",))).get("attachment")
+    if not isinstance(found, list) or not all(isinstance(a, dict) for a in found):
+        raise TrackerError(
+            f"read of {issue}'s attachments returned {_shape(found)}, not a list of attachments; the issue's "
+            "attachments are unknown and must not be reported as none"
+        )
+    return found
+
+
+def _resolve_attachment(attachments: list[dict], filename_or_id: str, issue: str) -> dict:
+    """The one attachment `filename_or_id` names, by attachment id or by exact filename.
+
+    Jira lets one issue carry several attachments with the same name, so a filename is not a key: two
+    uploads of one transcript are two attachments, and picking either would download or delete an
+    arbitrary one of them. The id is therefore accepted in the same argument and tried first, and
+    anything other than exactly one match fails listing the candidates with their ids and timestamps —
+    which is what a caller needs to name the one it meant.
+    """
+    by_id = [a for a in attachments if _field(a, "id") == filename_or_id]
+    matches = by_id if len(by_id) == 1 else [a for a in attachments if a.get("filename") == filename_or_id]
+    if len(matches) == 1:
+        return matches[0]
+    listing = ", ".join(
+        f"id={_field(a, 'id')} filename={a.get('filename')!r} created={_field(a, 'created')}"
+        for a in (matches or attachments)
+    )
+    raise TrackerError(
+        f"{len(matches)} attachments on {issue} match {filename_or_id!r}; expected exactly one, so pass an "
+        f"attachment id to name the one you mean. Candidates: {listing or 'none'}"
+    )
+
+
+async def _delete_attachment(base: str, auth: str, issue: str, attachment_id: str) -> None:
+    """Delete one attachment and prove it is gone by re-reading the issue's own attachment field.
+
+    The 204 alone is not the evidence: it says Jira accepted the call, while the read says the file is
+    no longer on the issue — which is the claim both the delete and the replace verbs make to their
+    caller, and the claim a stale transcript left in place would silently falsify.
+    """
+    status, _ = await request("DELETE", _attachment_url(base, attachment_id), auth)
+    if status != 204:
+        raise TrackerError(
+            f"expected HTTP 204 deleting attachment {attachment_id} from {issue}, got {status}; treat the "
+            "deletion as failed"
+        )
+    if any(_field(a, "id") == attachment_id for a in await _get_attachments(base, auth, issue)):
+        raise TrackerError(
+            f"attachment {attachment_id} is still on {issue} after the delete reported success; treat the "
+            "deletion as failed rather than reported"
+        )
+
+
+def _attachment_url(base: str, attachment_id: str) -> str:
+    """One attachment's own endpoint: attachments are addressed by id, not through their issue."""
+    return f"{base}{API}/attachment/{attachment_id}"
 
 
 def _summary(base: str, key: str, fields: dict) -> dict:
@@ -579,6 +860,44 @@ def _project() -> str:
             "tracker_config.project is unset; set it in .shipyard/config.json, e.g. the board's key"
         )
     return project
+
+
+async def _project_key(base: str, auth: str, project: str) -> str:
+    """The configured project's own key, read back from Jira, or a failure naming the configured value.
+
+    Nothing else here notices a wrong project key. Jira answers a JQL search naming a project that does
+    not exist, or that this account cannot see, with zero issues rather than an error, so a mistyped key
+    reads as an empty board from `find-issues` — "nothing to pick up" from a board with work on it — and
+    only surfaces much later, as a 400 inside a create. Reading the project 404s loudly instead, which is
+    what makes the preflight contract in `skills/tracker/jira/ADAPTER.md` — one failure naming which
+    configured value is wrong — true of the project as well as of the credential.
+
+    The key that comes back is compared, not merely fetched: this endpoint resolves a project by numeric
+    id as well as by key, so a response arriving under a different key is not the project the
+    configuration names.
+
+    Only a `NOT_FOUND` answer is rewritten into a verdict about the configured key, and it keeps the
+    original failure as its cause. Catching every `TrackerError` here relabelled a timeout, an
+    unreachable host, a revoked credential and a 500 as "check your project key" — a diagnosis nothing
+    measured, which sends a reader to edit a setting that was right and drops the fault that happened.
+    """
+    try:
+        _, item = await request("GET", f"{base}{API}/project/{quote(project, safe='')}", auth)
+    except JiraStatusError as exc:
+        if exc.status != NOT_FOUND:
+            raise
+        raise TrackerError(
+            f"tracker_config.project is set to {project!r}, which this account could not read: {exc} "
+            "Check the key against the projects this account can see; a wrong key is invisible to every "
+            "search, which answers zero issues rather than failing"
+        ) from exc
+    key = _field(item, "key") or ""
+    if key.strip() != project.strip():
+        raise TrackerError(
+            f"reading tracker_config.project {project!r} came back as project {key or 'nothing'!r}, so the "
+            "configured value does not name that project's key; treat the configuration as wrong"
+        )
+    return key
 
 
 def _credentials() -> tuple[str, str]:

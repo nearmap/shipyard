@@ -30,7 +30,7 @@ One call does gate, both sanitisation passes, and upload. It re-checks the gate 
 
 The tool dispatches to the configured tracker's adapter, so the caller names no tracker: Jira gets a native work-item attachment, GitHub a private gist. Credentials are read from the server's environment — never argv, never stdout. It returns whether it attached or skipped, the scrub summary (variable names and counts, never a value), and the tracker's own response evidence.
 
-`${CLAUDE_PLUGIN_ROOT}/scripts/scrub_known_secrets.py` and `${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py attach` both still ship and both still work (`--help` documents each). Off the tool's path they are unwired from each other: the upload helper uploads exactly what it is given, so running both passes in the order below, every time, becomes the caller's problem.
+`${CLAUDE_PLUGIN_ROOT}/scripts/scrub_known_secrets.py` still ships and still works standalone (`--help` documents it) — it is a general-purpose security utility, not tracker mechanics, and is unaffected by anything here. What no longer exists is a second, unscanned upload path: replacing an already-attached artifact goes through `attachment-update`, which runs the same gate and the same two passes in the same order, so there is no way to upload one that skips them.
 
 ## Why sanitisation is part of the attach
 

@@ -1,22 +1,22 @@
 """GitHub tracker adapter, spoken to only through `sy_tools.tracker.adapter()`.
 
-Ports `skills/tracker/github/gh_project.py`'s `gh` transport rather than importing it: the CLI
-deployment stays byte-identical, and this copy differs in two ways the server requires. It never
-writes to stdout (that stream carries JSON-RPC frames, so one stray line desynchronises the
-client), and a failure raises `TrackerError` instead of `SystemExit`, because this process has
-other calls to serve after a bad one.
+This is the implementation of every canonical verb of `skills/tracker/CONTRACT.md` for this tracker,
+and the `gh` transport it speaks them over. Two properties come from where it runs rather than from
+`gh`: it never writes to stdout (that stream carries JSON-RPC frames, so one stray line
+desynchronises the client), and a failure raises `TrackerError` instead of exiting, because this
+process has other calls to serve after a bad one.
 
-Issue `Type` and `Status` are Projects v2 single-select fields, so the board-resolution logic in
-`skills/tracker/github/gh_project.py` is ported here too, one behaviour at a time: resolve, look
-the option up case-insensitively, and on a miss re-resolve once before failing, so a column added
-minutes ago works without a restart. Two differences from that helper are deliberate. The disk
-cache becomes a per-instance dict, and the `item-edit` response is not parsed, because a
-human-readable success line must not turn a completed write into a failure.
+Issue `Type` and `Status` are Projects v2 single-select fields, which `gh issue` cannot touch at all,
+so the board is resolved here: resolve, look the option up case-insensitively, and on a miss
+re-resolve once before failing, so a column added minutes ago works without a restart. The resolved
+board is cached in a per-instance dict, and the `item-edit` response is deliberately not parsed —
+a human-readable success line must not turn a completed write into a failure.
 
-`attach-artifact` is the deliberate asymmetry `skills/tracker/github/ADAPTER.md` documents: this
-tracker has no CLI-scriptable file attachment, so an artifact becomes a secret gist that a
-comment on the work item links to. Privacy is verified by reading the created gist back, not
-assumed from the flags passed: a public gist would publish a transcript irrevocably.
+The attachment verbs are the deliberate asymmetry `skills/tracker/github/ADAPTER.md` documents: this
+tracker has no scriptable file attachment, so an artifact becomes a secret gist that a comment on the
+work item links to, and the lifecycle verbs act on that gist through the link the comment carries.
+Privacy is verified by reading the created gist back, not assumed from the flags passed: a public
+gist would publish a transcript irrevocably.
 
 Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token, and every message
 built from command output or from a configured value goes through `_safe`, which both scrubs the
@@ -69,6 +69,25 @@ matched against the read, so a filter that matches nothing reads every remaining
 subprocess each, bounded individually by `TIMEOUT_SECONDS` and in aggregate by nothing. Past this many
 the search fails and says how to narrow itself, because a query that spends minutes and then reports
 nothing is indistinguishable to its caller from a board that has nothing on it."""
+
+ARTIFACT_COMMENT = "Shipyard artifact `{filename}`: {url}\n\nSecret gist — reachable only from this link."
+ARTIFACT_LINK = re.compile(r"Shipyard artifact `([^`\n]+)`: (https://\S+)")
+"""The comment `attach-artifact` writes, and the pattern the lifecycle verbs read it back with.
+
+The template and the pattern are one pair on purpose. This tracker stores nothing that links an issue to
+its artifact except that comment, so the comment *is* the attachment index: `attachment-download` and
+`-update` each find their gist by matching it. Written at one site and matched at another, the two drift
+the first time the wording changes, and the symptom is every lifecycle verb reporting that an issue has
+no artifacts while its transcripts sit in gists nobody can find again."""
+
+FORBIDDEN_IN_FILENAME = ("`", "\n")
+"""Characters an artifact's filename may not carry, because that index is prose with no escaping in it.
+
+`ARTIFACT_LINK` reads the filename back from between backticks on one line, so a name holding either
+character writes an entry no read can match: the upload reports success, and the next
+`attachment-update` then finds no artifact of that name and uploads a second gist beside the first,
+while `attachment-download` reports the issue has none. Both are legal in a POSIX filename, and both are
+refused rather than escaped — there is nowhere in a comment body to escape them to."""
 
 VERIFY_ATTEMPTS = 4
 VERIFY_BACKOFF_SECONDS = 0.75
@@ -169,6 +188,18 @@ class GithubAdapter:
         """Upload `path` as a secret gist and link it from a comment on `issue`, off the event loop."""
         return await to_thread.run_sync(self._sync_attach_artifact, issue, path)
 
+    async def type_convert(self, issue: str, issue_type: str) -> dict:
+        """Change `issue`'s board `Type` to canonical `issue_type`, verified by re-reading the card."""
+        return await to_thread.run_sync(self._sync_type_convert, issue, issue_type)
+
+    async def attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
+        """Write the artifact gist `filename_or_id` names on `issue` to `output_path`, off the event loop."""
+        return await to_thread.run_sync(self._sync_attachment_download, issue, filename_or_id, output_path)
+
+    async def attachment_update(self, issue: str, path: Path) -> dict:
+        """Replace the contents of `issue`'s artifact gist named `path.name` with `path`, off the event loop."""
+        return await to_thread.run_sync(self._sync_attachment_update, issue, path)
+
     async def preflight(self) -> dict:
         """Confirm `gh` is installed and authenticated, off the event loop."""
         return await to_thread.run_sync(self._sync_preflight)
@@ -192,18 +223,27 @@ class GithubAdapter:
         """Read `issue` from `gh`, with status and type taken from the board.
 
         `gh issue view --json` exposes no project single-select value, so the board item is read
-        separately — the same source `skills/tracker/github/gh_project.py get` reads.
+        separately: `Status` and `Type` live on the card, not on the issue.
+
+        `children_truncated` and `dependencies_truncated` say whether `gh`'s own per-page cap on those
+        two relations cut anything off, for the reason `_relation` documents. They are the same signal
+        the other adapter reports as `comments_truncated`: a clipped list reads exactly like a complete
+        short one, and only one of them means what a caller acts on.
         """
         data = _view(issue, ISSUE_FIELDS)
         url = str(data.get("url") or "")
         if not url:
             raise TrackerError(f"gh issue view {issue} returned no issue; treat the read as failed.")
         owner, number = _project_ref()
+        children, children_truncated = _relation(data.get("subIssues"))
+        dependencies, dependencies_truncated = _relation(data.get("blockedBy"))
         return {
             **_summary(data, _item_index(owner, number).get(url, {})),
             "body": str(data.get("body") or ""),
-            "children": _refs(data.get("subIssues")),
-            "dependencies": _refs(data.get("blockedBy")),
+            "children": children,
+            "children_truncated": children_truncated,
+            "dependencies": dependencies,
+            "dependencies_truncated": dependencies_truncated,
             "comments": _comments(data),
         }
 
@@ -366,9 +406,10 @@ class GithubAdapter:
     def _set_field(self, issue_url: str, field_name: str, option_name: str) -> str:
         """Ensure the issue is a board item, set one single-select field, and read the value back.
 
-        Ported from `gh_project.set_field`, bar the option lookup: that is `_checked_option`, because the
-        board-filtered read has to make the very same check against the very same board fields before it
-        matches a card by one of them.
+        The option lookup is `_checked_option` rather than inline, because the board-filtered read has to
+        make the very same check against the very same board fields before it matches a card by one of
+        them. Every write of a board value — `Status`, and the `Type` both `create-issue` and
+        `type-convert` set — goes through here, so the read-back verification cannot be skipped by one.
         """
         owner, number = _project_ref()
         resolved, (field_id, option_id) = self._checked_option(owner, number, field_name, option_name)
@@ -388,14 +429,13 @@ class GithubAdapter:
     ) -> tuple[dict[str, Any], tuple[str, str]]:
         """The board and the `(field_id, option_id)` for one native option name, or a failure naming the drift.
 
-        Ported from `gh_project.set_field`, and shared by the write path with the read filter because the
-        two meet the same fault: the board's real `Status` column or `Type` option name has drifted from
-        the `columns.*` config key naming it — renamed, retyped, or never created. Only the write path used
-        to notice. `_board_page` compared canonical tokens against values `canonical_status` had passed
-        through unmapped, so the same drift filtered every card out and `find_issues` answered `count: 0,
-        is_last: true` from a board with work on it, which is the one wrong answer a caller cannot tell from
-        an empty queue. `context` is what the read path adds to say the query was refused rather than
-        answered; the write path's message stays the one the CLI helper prints, word for word.
+        Shared by the write path with the read filter because the two meet the same fault: the board's real
+        `Status` column or `Type` option name has drifted from the `columns.*` config key naming it —
+        renamed, retyped, or never created. Only the write path used to notice. `_board_page` compared
+        canonical tokens against values `canonical_status` had passed through unmapped, so the same drift
+        filtered every card out and `find_issues` answered `count: 0, is_last: true` from a board with work
+        on it, which is the one wrong answer a caller cannot tell from an empty queue. `context` is what the
+        read path adds to say the query was refused rather than answered.
 
         The refresh retry is the load-bearing part for both: an option added to the board after this board
         was resolved must work without restarting the server, so a lookup miss re-resolves once before it
@@ -581,22 +621,21 @@ class GithubAdapter:
         that produces no output, or exits non-zero, is a failure rather than a warning.
         """
         issue = _checked_ref(issue)
-        if not path.is_file():
-            raise TrackerError(f"artifact not found: {path}")
+        _checked_artifact(path)
 
         gist_url = _gh(["gist", "create", "--desc", f"shipyard artifact {issue}", str(path)])
         if not gist_url.startswith("https://"):
             raise TrackerError(
                 f"gist creation returned no usable URL for {path.name}; nothing was attached to {issue}."
             )
-        gist_id = gist_url.rstrip("/").rsplit("/", 1)[-1]
+        gist_id = _gist_id(gist_url)
         if _gh_json(["api", f"gists/{gist_id}"]).get("public") is not False:
             raise TrackerError(
                 f"{gist_url} is public or its visibility could not be confirmed; refusing to link it "
                 f"from {issue}. Delete it: gh gist delete {gist_id}"
             )
 
-        body = f"Shipyard artifact `{path.name}`: {gist_url}\n\nSecret gist — reachable only from this link."
+        body = ARTIFACT_COMMENT.format(filename=path.name, url=gist_url)
         comment_url = _gh(["issue", "comment", issue, *_repo_args(), "--body", body])
         if not comment_url.startswith("https://"):
             raise TrackerError(
@@ -610,19 +649,127 @@ class GithubAdapter:
             "comment_url": comment_url,
         }
 
+    def _sync_type_convert(self, issue: str, issue_type: str) -> dict:
+        """Set the board `Type` on an issue that already exists, reporting both vocabularies.
+
+        The same board write `create_issue` makes, on an issue it did not just create, so it goes through
+        `_set_field` and inherits that path's bounded read-back: `gh project item-edit` reports success
+        whether or not the value changed. The type is mapped before anything is written, so an unknown
+        canonical token cannot leave a card half-converted.
+
+        The issue is resolved to a URL first because board items are keyed by their content URL: an issue
+        number identifies nothing on the board.
+        """
+        option = native_type(issue_type)
+        url = _url_of(issue)
+        self._set_field(url, TYPE_FIELD, option)
+        return {"id": url, "type": issue_type, "native": option}
+
+    def _sync_attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
+        """Write the artifact gist `filename_or_id` names on `issue` to `output_path`.
+
+        `--filename` is not optional here, and leaving it off is not a smaller version of this call:
+        `gh gist view --raw` with no filename prepends the gist's *description* and a blank line to the
+        output, so it wrote a corrupted artifact — the description text, then the transcript — while
+        reporting a successful download. Naming the file returns exactly that file's bytes and nothing
+        else, on a multi-file gist as well as a single-file one. Measured against a real gist, because
+        this is the shape an offline fake reproduces only if it already knows about it: the mocked
+        transport answered the description-less content for the same argv, so the tests agreed with the
+        bug until a live run disagreed with both.
+
+        Empty output is a failure rather than a zero-byte file: on disk the two are indistinguishable,
+        and only one of them is an artifact.
+
+        The bytes written are the artifact's text, not a byte-exact copy: `_gh` trims the output it
+        returns, so a trailing newline is not preserved. That is stated rather than worked around because
+        every other verb in this file goes through `_gh` for the timeout and the credential scrubbing it
+        applies, and a transcript is read for its content.
+        """
+        issue = _checked_ref(issue)
+        gist_id, filename, _ = _resolve_gist(issue, filename_or_id)
+        content = _gh(["gist", "view", gist_id, "--raw", "--filename", filename])
+        if not content:
+            raise TrackerError(
+                f"gist {gist_id} holding {filename!r} on {issue} read back empty, so there is nothing to "
+                f"write to {output_path}; treat the download as failed rather than writing an empty file."
+            )
+        data = content.encode("utf-8")
+        output_path.write_bytes(data)
+        return {
+            "issue": issue,
+            "filename": filename,
+            "id": gist_id,
+            "bytes": len(data),
+            "path": str(output_path),
+        }
+
+    def _sync_attachment_update(self, issue: str, path: Path) -> dict:
+        """Replace the contents of `issue`'s artifact gist named `path.name` with `path`.
+
+        `gh gist edit <id> --filename <name> <source>` replaces one file in a gist from a local file,
+        which is a real in-place replace: the gist id and therefore the URL in the comment survive, so the
+        link on the work item keeps pointing at the current artifact and no second comment is posted. That
+        is the flag semantics `gh 2.96.0` documents for itself, not an assumption — `--add` adds a *new*
+        file, and adding one under a name the gist already carries is not what replace means here.
+
+        Verified by reading the gist back and comparing what it now holds against the file that was sent,
+        because `gh gist edit` prints nothing and exits zero either way. The read-back names the file for
+        the same reason the download does: without `--filename`, `gh gist view --raw` prepends the gist's
+        description, so the comparison could never match and a replacement that had landed was reported as
+        unconfirmed. The comparison ignores surrounding whitespace only, since `_gh` trims its output.
+
+        An issue carrying no artifact of that name is a first upload, not an error: the verb's contract is
+        replace-by-filename with zero existing explicitly fine, and routing that through the resolver's
+        exactly-one rule made this adapter refuse every first `attachment-update` where the other adapter
+        performs one. So it does what a fresh attach does — the same gist, privacy re-read and linking
+        comment — and reports `replaced: 0`, which is how a caller tells a supersede from an upload.
+        """
+        issue = _checked_ref(issue)
+        _checked_artifact(path)
+        try:
+            intended = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise TrackerError(
+                f"{path.name} is not UTF-8 text, and a gist holds text: this tracker has no binary "
+                "attachment, so there is nothing to replace it with. Attach the artifact as text."
+            ) from None
+        found = _find_gist(issue, path.name)
+        if found is None:
+            fresh = self._sync_attach_artifact(issue, path)
+            return {
+                "issue": issue,
+                "filename": path.name,
+                "id": _gist_id(fresh["gist_url"]),
+                "gist_url": fresh["gist_url"],
+                "replaced": 0,
+                "comment_url": fresh["comment_url"],
+            }
+        gist_id, filename, gist_url = found
+        _gh(["gist", "edit", gist_id, "--filename", filename, str(path)])
+        if _gh(["gist", "view", gist_id, "--raw", "--filename", filename]).strip() != intended.strip():
+            raise TrackerError(
+                f"gist {gist_id} does not read back as the contents of {path.name} after the edit, so the "
+                f"replacement is unconfirmed and {issue} may still link the previous artifact."
+            )
+        return {"issue": issue, "filename": filename, "id": gist_id, "gist_url": gist_url, "replaced": 1}
+
     def _sync_preflight(self) -> dict:
-        """Confirm `gh` is installed, authenticated, and able to reach the board.
+        """Confirm `gh` is installed, authenticated, and able to reach the configured board.
 
-        The `project` scope is checked, not just named in the failure text: every `set_status` and
-        every `Type` write goes through Projects v2, so a `repo`-only token passes an authentication
-        check and then dies on the first board write — the half-finished workflow this call exists to
-        prevent.
+        The board is read on every path, because that is the only thing that confirms the board this
+        repository is configured against is actually reachable — the claim
+        `skills/tracker/github/ADAPTER.md` makes for this verb. A scope is a property of the credential,
+        not of the board: a token that reports `project` still fails every `set_status` and every `Type`
+        write if the configured board has since been deleted, renamed, or made invisible to it, and
+        checking only the scope deferred that to the first board write, which is the half-finished
+        workflow this call exists to prevent.
 
-        Only a classic or OAuth token has scopes to check, though: `gh auth status` prints no
-        `Token scopes:` line at all for a fine-grained PAT or an App token, which is the token type
-        GitHub now recommends. An absent line therefore cannot mean "unscoped" — that would fail a
-        working configuration — so capability is confirmed positively instead, by reading the board,
-        and `scopes` comes back as None rather than as an empty or invented list.
+        The scope check stays, ahead of the read, as the cheap pre-check it is: it names the exact fix
+        for the one failure a credential can be diagnosed for without touching the board, and only a
+        classic or OAuth token has scopes to check at all. `gh auth status` prints no `Token scopes:`
+        line for a fine-grained PAT or an App token — the type GitHub now recommends — so an absent line
+        cannot mean "unscoped" without failing a working configuration, and `scopes` comes back as None
+        rather than as an empty or invented list to say which check was available.
         """
         version = _gh(["--version"]).splitlines()
         try:
@@ -639,8 +786,7 @@ class GithubAdapter:
                     f"the gh token is missing the 'project' scope, so every board write would fail; it has "
                     f"{scopes or 'no scopes'}. Grant it with `gh auth refresh -s project,read:project`."
                 )
-        else:
-            _confirm_board_access()
+        _confirm_board_access(scopes)
         return {
             "tool": "gh",
             "version": version[0] if version else "unknown",
@@ -667,6 +813,30 @@ def _checked_ref(issue: str) -> str:
     return ref
 
 
+def _checked_artifact(path: Path) -> str:
+    """`path.name`, refusing before any upload the two faults an artifact's own name cannot recover from.
+
+    The name is checked, not escaped: it is written into the comment that is this tracker's entire index
+    of which gist holds which artifact, and `ARTIFACT_LINK` reads it back from between backticks on one
+    line. A backtick or a newline in it therefore corrupts the index silently — the upload reports success
+    and every later lookup of that artifact misses, producing a duplicate gist or "0 artifacts match"
+    instead of a failure naming the problem. See `FORBIDDEN_IN_FILENAME`.
+
+    Both checks are shared by the two uploading verbs rather than repeated, because on this tracker a
+    first `attachment-update` *is* an upload: a check only one of them made would be a check the other
+    could write past.
+    """
+    if any(character in path.name for character in FORBIDDEN_IN_FILENAME):
+        raise TrackerError(
+            f"an artifact filename may not contain a backtick or a newline, and {path.name!r} does: it is "
+            "written into the comment that is this tracker's only record of which gist holds which "
+            "artifact, and no later read of that comment could match it. Rename the file and retry."
+        )
+    if not path.is_file():
+        raise TrackerError(f"artifact not found: {path}")
+    return path.name
+
+
 def _edit(issue: str, flag: str, value: str) -> str:
     """One `gh issue edit` write, returning the issue URL it printed as proof the write landed."""
     url = _gh(["issue", "edit", _checked_ref(issue), *_repo_args(), flag, value])
@@ -691,6 +861,84 @@ def _url_of(issue: str) -> str:
     if not url:
         raise TrackerError(f"gh issue view {issue} reported no URL, so the board item cannot be identified.")
     return url
+
+
+def _gist_id(gist_url: str) -> str:
+    """The gist id in a gist URL: the last path segment, which is what every `gh gist` call takes."""
+    return gist_url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _artifact_gists(issue: str, filename_or_id: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """`(the artifacts on `issue` that `filename_or_id` selects, every artifact its comments record)`.
+
+    The issue's own comments are the index: `attach-artifact` records the artifact's filename and the gist
+    URL in one, and nothing else on this tracker ties the two together. So the comments are read and
+    matched, by gist id first and then by exact filename.
+
+    Both lists come back from the one read, because how many matched decides the outcome and everything
+    recorded is what a failure has to list. Each entry is `(filename, gist_id, gist_url)`. Two comments
+    naming the same filename *and* the same gist are one artifact recorded twice, so they collapse rather
+    than reading as an ambiguity a caller cannot resolve.
+    """
+    links = list(
+        dict.fromkeys(
+            (match.group(1), _gist_id(match.group(2)), match.group(2))
+            for comment in _comments(_view(issue, "comments"))
+            for match in ARTIFACT_LINK.finditer(comment["body"])
+        )
+    )
+    by_id = [link for link in links if link[1] == filename_or_id]
+    matches = by_id if len(by_id) == 1 else [link for link in links if link[0] == filename_or_id]
+    return matches, links
+
+
+def _not_one_artifact(
+    issue: str,
+    filename_or_id: str,
+    matches: list[tuple[str, str, str]],
+    links: list[tuple[str, str, str]],
+) -> TrackerError:
+    """The refusal for a name that selects other than one artifact, listing what the comments do record.
+
+    The listing goes through `_safe`: it is built from comment bodies, which carry whatever a caller wrote.
+    """
+    listing = ", ".join(f"{filename} -> {gist_id}" for filename, gist_id, _ in (matches or links))
+    return TrackerError(
+        f"{len(matches)} artifacts on {issue} match {filename_or_id!r}; expected exactly one, so pass the gist "
+        f"id to name the one you mean. The artifact comments on {issue} record: {_safe(listing) or 'none'}"
+    )
+
+
+def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
+    """The one artifact gist `filename_or_id` names on `issue`, as `(gist_id, filename, gist_url)`.
+
+    Exactly one match, or a failure — the same rule the other adapter applies to attachments sharing a
+    filename, and for the same reason: attaching one transcript twice leaves two gists under one name,
+    and picking either would download or irrevocably delete an arbitrary one of them. Zero is a failure
+    too, for the verbs that have nothing to act on without a match; `_find_gist` is the one for the verb
+    where zero is a legitimate answer.
+    """
+    matches, links = _artifact_gists(issue, filename_or_id)
+    if len(matches) != 1:
+        raise _not_one_artifact(issue, filename_or_id, matches, links)
+    filename, gist_id, gist_url = matches[0]
+    return gist_id, filename, gist_url
+
+
+def _find_gist(issue: str, filename_or_id: str) -> tuple[str, str, str] | None:
+    """`_resolve_gist`, returning None instead of raising when the issue records no such artifact.
+
+    `attachment-update` is replace-by-filename with zero existing explicitly fine — a plain first upload —
+    so a no-match there is a decision for the caller, not a failure. More than one still raises: which of
+    two namesakes to overwrite is exactly the question nothing here can answer.
+    """
+    matches, links = _artifact_gists(issue, filename_or_id)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise _not_one_artifact(issue, filename_or_id, matches, links)
+    filename, gist_id, gist_url = matches[0]
+    return gist_id, filename, gist_url
 
 
 def _repo_slug(url: str) -> str:
@@ -896,6 +1144,31 @@ def _refs(payload: object) -> list[str]:
     return [ref for ref in (_ref(node) for node in nodes) if ref]
 
 
+def _relation(payload: object) -> tuple[list[str], bool]:
+    """A relation's related issues, plus whether `gh` returned fewer of them than the relation holds.
+
+    `gh` asks for one page of each of these relations and has no loop behind it — 100 sub-issues, 50
+    blocked-by — but it returns `totalCount` beside the nodes, so the two disagreeing is the one signal
+    that says the list is short. Reading only `nodes` meant an issue with sixty blockers came back as
+    exactly fifty, indistinguishable from an issue that really has fifty: the same failure `_refs` refuses
+    for an unparseable relation, one step quieter, and the same one the other adapter reports as
+    `comments_truncated` for a clipped comment thread.
+
+    An absent `totalCount` reports complete: `gh` prints it for every relation object, and the bare-list
+    shape `_refs` also tolerates carries no count to compare against. Every other unreadable count reports
+    truncated instead — a `totalCount` of `"60"` must not skip the check the way a clean `int` comparison
+    silently would, which is how false completeness has been reintroduced one type away before.
+
+    The comparison is against the refs, not the nodes, so a node `_refs` could not address — no URL and no
+    number — reports truncated too: a related issue that cannot be named is one this read did not return.
+    """
+    found = _refs(payload)
+    total = payload.get("totalCount") if isinstance(payload, dict) else None
+    if total is None:
+        return found, False
+    return found, not isinstance(total, int) or isinstance(total, bool) or total > len(found)
+
+
 def _same_ref(ref: str | None, other: str | None) -> bool:
     """Whether two issue references name the same issue, comparing `7`, `#7` and a URL alike.
 
@@ -929,28 +1202,42 @@ def _project_ref() -> tuple[str, str]:
     return owner, number
 
 
-def _confirm_board_access() -> None:
-    """Prove the credential reaches Projects v2 by reading the board, for a token that reports no scopes.
+def _confirm_board_access(scopes: list[str] | None = None) -> None:
+    """Prove the configured board is reachable with this credential, by reading it.
 
-    Stands in for the scope check preflight cannot make on a fine-grained or App token: the failure it
-    exists to catch is a `repo`-only credential, and such a credential cannot read Projects v2 at all,
-    so one successful board read is positive evidence rather than an assumption. A grant that can read
-    the board but not write it is indistinguishable from here without performing a write, which a
-    preflight must not do; that residual case fails later, at the write, with its own message.
+    Run for every token, whatever its scopes say. On a fine-grained or App token it stands in for the
+    scope check preflight cannot make: the failure it exists to catch is a `repo`-only credential, which
+    cannot read Projects v2 at all, so one successful board read is positive evidence rather than an
+    assumption. On a token that does report `project` it checks the other half, which the scope cannot:
+    a scope is a property of the credential, and the board it is pointed at can still be deleted,
+    renamed, or invisible to it — which used to surface only at the first real board write.
 
-    Only `gh` refusing the read is relabelled as the scope problem, because only that shape can be one.
-    Everything else `_raw_items` can raise — a board larger than one read, a payload it will not parse as
-    a board, a `gh` that is missing or hung — keeps its own message: telling an operator to grant the
-    `project` scope over a board too large to read sends them to fix a credential that is already correct.
+    A grant that can read the board but not write it is indistinguishable from here without performing a
+    write, which a preflight must not do; that residual case fails later, at the write, with its own
+    message.
+
+    Only `gh` refusing the read is relabelled as a credential problem, because only that shape can be
+    one, and `scopes` decides how it is named: recommending `gh auth refresh` to a token that already
+    holds `project` sends its operator to re-grant a scope that is already there instead of at the board
+    the read could not reach. Everything else `_raw_items` can raise — a board larger than one read, a
+    payload it will not parse as a board, a `gh` that is missing or hung — keeps its own message for the
+    same reason.
     """
     owner, number = _project_ref()
     try:
         _raw_items(owner, number)
     except _GhFailure as exc:
+        fix = (
+            f"The token already reports the 'project' scope ({scopes}), so check tracker_config.project "
+            "against `gh project list`: a board that has been deleted, renamed or made invisible to this "
+            "credential fails every board write the same way."
+            if scopes is not None
+            else "Grant it with `gh auth refresh -s project,read:project`, or give a fine-grained token "
+            "read and write access to the board."
+        )
         raise TrackerError(
-            f"the gh token reports no scopes and project {owner}/{number} could not be read with it, so the "
-            f"Projects v2 access every board write needs is unconfirmed: {exc} Grant it with `gh auth refresh "
-            "-s project,read:project`, or give a fine-grained token read and write access to the board."
+            f"project {owner}/{number} could not be read with the gh token, so the Projects v2 access every "
+            f"board write needs is unconfirmed: {exc} {fix}"
         ) from None
 
 
@@ -1017,10 +1304,9 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     """One board item, with its `Type` and `Status` option names mapped to canonical tokens.
 
     `kind` is the card's own content type — `Issue`, `PullRequest` or `DraftIssue` — carried through
-    unmapped, and is the one key with no counterpart in `skills/tracker/github/gh_project.py`'s mapping:
-    that helper lists board items as board items, while `find_issues` here owes its caller issues and
-    has to be able to tell which cards are ones. It is deliberately not folded into `type`, which is the
-    board's own single-select and the canonical `epic`/`task`/`bug` vocabulary.
+    unmapped, because `find_issues` owes its caller issues and a board holds pull request and draft cards
+    in the same columns. It is deliberately not folded into `type`, which is the board's own single-select
+    and the canonical `epic`/`task`/`bug` vocabulary.
 
     A `content` that is anything but an object reads as no content, rather than being asked for keys it
     has no `get` for: `null` is what `gh` renders a card the credential may not view as, and any other
@@ -1194,14 +1480,43 @@ class _GhFailure(TrackerError):
 
 
 def _gh(args: list[str]) -> str:
-    """Run `gh` and return its trimmed stdout. Writes nothing to this process's stdout.
+    """Run `gh` in the consuming repository and return its trimmed stdout. Writes nothing to stdout.
+
+    The working directory is the repository the configuration resolved against, never this process's
+    own. `_repo_args()` is empty whenever `tracker_config.repo` is unset — a documented-optional
+    field — and an unqualified `gh` call then resolves its target repository from wherever it runs.
+    That is not where the server runs: a `pixi run <declared-task>` launch puts the process in the
+    *plugin's* checkout, which has an `origin` of its own, so an unqualified write would land in
+    Shipyard's repository rather than the consumer's and report success for it. Pinning `cwd` to the
+    resolved root makes the two agree by construction, config-configured repo or not.
+
+    That `cwd` is checked before `gh` is invoked rather than left to `subprocess.run`, which reports a
+    `cwd` that does not exist as `FileNotFoundError` — the same class a missing `gh` binary raises, so
+    a resolved root pointing at nothing would be reported as "install the GitHub CLI" and send whoever
+    read it after the wrong fix — and a `cwd` that exists but is not a directory as `NotADirectoryError`,
+    an `OSError` this adapter never contracted to let escape. Checked here, `FileNotFoundError` below
+    can only mean the binary.
 
     The timeout bounds a `gh` that never returns — a network stall, or a credential helper
     prompting on a stdin no one is answering — because this process has other calls to serve.
+
+    That stdin is closed rather than inherited. This process's own stdin carries the JSON-RPC frames the
+    MCP client sends, and a child inherits it by default: a credential helper prompting for a password, or
+    anything else `gh` reads a line from, would consume a frame the server needed and desynchronise the
+    session — the same failure a stray write to stdout causes, in the other direction. `DEVNULL` turns any
+    such read into an immediate EOF, so `gh` fails fast with its own message instead.
     """
+    root = config.resolved_root()
+    if not root.is_dir():
+        raise TrackerError(
+            f"the repository the configuration resolved against, {root}, is not an existing directory, "
+            "so there is nowhere to run gh. This is a configuration fault, not a gh or credential one: "
+            "check CLAUDE_PROJECT_DIR and the .shipyard/ layers it points at."
+        )
     try:
         proc = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS
+            ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS,
+            cwd=root, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise TrackerError("gh is not installed or not on PATH; install the GitHub CLI.") from None

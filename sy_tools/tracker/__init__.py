@@ -64,6 +64,19 @@ class TrackerAdapter(Protocol):
     concurrently: a slow upload must not be able to block an unrelated tool call. An adapter whose
     transport is only available synchronously (`gh`) still presents an `async` verb and offloads
     the blocking work to a worker thread, so the seam stays uniform above this module.
+
+    `attachment_download` names an existing attachment by `filename_or_id`, and every adapter
+    resolves it the same way: exactly one attachment on that issue must match, by filename or by
+    the adapter's own attachment id, and anything else — none, or several sharing a filename — is a
+    `TrackerError` naming the candidates it found. Guessing which of two same-named uploads a caller
+    meant is how the wrong transcript gets downloaded, so the id is the disambiguator and the
+    ambiguity is reported rather than resolved.
+
+    `attachment_update` is different by design (see `../../skills/tracker/CONTRACT.md`, "Attachment
+    lifecycle has no delete"): it takes no id and resolves purely by `path`'s filename — a corrective
+    overwrite, not a targeted single-attachment operation. What an adapter does when more than one
+    existing attachment shares that filename is adapter-specific, documented in each adapter's own
+    `ADAPTER.md`: the two trackers offer no common primitive for "replace all of these".
     """
 
     name: str
@@ -118,6 +131,34 @@ class TrackerAdapter(Protocol):
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload an already-sanitised artifact to `issue` and return verified response evidence."""
+        ...
+
+    async def type_convert(self, issue: str, issue_type: str) -> dict:
+        """Change an existing `issue`'s type to canonical `issue_type`, verified by reading it back.
+
+        Separate from `create_issue` because a type set at creation is a field on a new issue, while
+        changing one is a write a workflow may quietly refuse: an adapter that cannot confirm the new
+        type fails rather than reporting the conversion it asked for.
+        """
+        ...
+
+    async def attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
+        """Write the one attachment on `issue` matching `filename_or_id` to `output_path`.
+
+        Returns the byte count and the destination, so a caller can tell an empty artifact from an
+        attachment that never arrived.
+        """
+        ...
+
+    async def attachment_update(self, issue: str, path: Path) -> dict:
+        """Replace the attachment(s) on `issue` named `path.name` with `path`; zero existing is fine.
+
+        Replace-by-filename rather than by id, because the caller regenerating a transcript knows the
+        name it writes and not the id the tracker minted. How many namesakes a tracker replaces in one
+        call when several share that filename is adapter-specific — see this class's own docstring
+        above and each `ADAPTER.md`. The returned evidence says how many were replaced, so a caller can
+        see whether it superseded anything.
+        """
         ...
 
     async def preflight(self) -> dict:

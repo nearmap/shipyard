@@ -26,9 +26,10 @@ EXPECTED_SKILLS = {
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
 CANONICAL_VERBS = {
-    "create-issue", "create-child", "get-issue", "update-issue", "find-issues", "set-status",
-    "assign", "link-parent", "add-dependency", "add-label", "post-comment", "post-log",
-    "attach-artifact", "link-pr",
+    "preflight", "create-issue", "create-child", "get-issue", "update-issue", "find-issues",
+    "set-status", "assign", "link-parent", "add-dependency", "add-label", "type-convert",
+    "post-comment", "post-log", "attach-artifact", "attachment-download", "attachment-update",
+    "link-pr",
 }
 CANONICAL_STATUSES = {"backlog", "ready", "in-progress", "in-review", "done"}
 COLUMN_KEYS = {
@@ -88,16 +89,10 @@ REQUIRED = {
     "skills/tracker/SKILL.md",
     "skills/tracker/CONTRACT.md",
     "skills/tracker/jira/ADAPTER.md",
-    "skills/tracker/jira/md_to_adf.py",
-    "skills/tracker/jira/jira_rest.py",
-    "skills/tracker/jira/adf-requirements.lock",
-    "skills/tracker/jira/references/accounting.md",
     "skills/tracker/jira/references/attachments.md",
-    "skills/tracker/jira/references/adf.md",
-    "skills/tracker/jira/references/acli-cookbook.md",
     "skills/tracker/jira/references/migration.md",
+    "docs/smoke_mcp.py",
     "skills/tracker/github/ADAPTER.md",
-    "skills/tracker/github/gh_project.py",
     "skills/ship/references/start-resume.md",
     "skills/ship/references/implementation.md",
     "skills/ship/references/immutable-gate.md",
@@ -661,9 +656,8 @@ def main() -> int:
     run_self_test("scripts/sy_config.py", errors)
     run_self_test("scripts/scrub_known_secrets.py", errors)
     run_self_test("scripts/secret_words.py", errors)
-    run_self_test("skills/tracker/github/gh_project.py", errors)
-    run_self_test("skills/tracker/jira/jira_rest.py", errors)
     run_self_test("scripts/ci_poll.sh", errors)
+    run_self_test("docs/smoke_mcp.py", errors)
 
     if errors:
         print("Shipyard validation FAILED:", file=sys.stderr)

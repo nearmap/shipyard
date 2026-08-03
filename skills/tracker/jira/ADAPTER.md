@@ -1,30 +1,27 @@
 # Jira adapter
 
-Implements the tracker contract (`../CONTRACT.md`) against Jira via the Atlassian `acli`, with a small REST helper for operations where `acli` is ambiguous or inverted. This is the default tracker (`tracker: "jira"`).
+Implements the tracker contract (`../CONTRACT.md`) against Jira Cloud. This is the default tracker (`tracker: "jira"`).
+
+Every canonical verb is one call to the `sy` MCP server's tool of the same name; the server dispatches to this adapter's REST implementation in `sy_tools/tracker/jira/adapter.py`. This file documents what Jira does with each verb and where its behaviour is Jira-specific — it is not a list of commands to run instead. There is no maintained `acli` or raw-REST recipe for any verb, by design: see `../CONTRACT.md`, "Every verb is one MCP tool call", for the tool-name resolution rule and why the second path is gone.
 
 ## Configuration (self-check before any work)
 
-Required config (`.shipyard/config.json`): `tracker_config.email`, `tracker_config.site`, `tracker_config.project`. Required secret, environment only: `ACLI_TOKEN`. The split is declared machine-readably in this directory's `config-map.json`, which `sy_config.py validate` enforces. Never put tokens in command arguments, and never put one in a config file. Resolve the project once and build JQL from it, never a hard-coded key:
+Required config (`.shipyard/config.json`): `tracker_config.email`, `tracker_config.site`, `tracker_config.project`. Required secret, environment only: `ACLI_TOKEN`. The split is declared machine-readably in this directory's `config-map.json`, which `sy_config.py validate` enforces. Never put a token in a config file or in a command argument.
 
-```bash
-PROJECT=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker_config.project)
-```
+`tracker_config.email` is per-person but not a secret — it belongs in the gitignored `.shipyard/config.local.json` layer. `ACLI_TOKEN` is a personal Atlassian API token that stays in the environment, so no `cat` of a committed file can burn it into transcript history. The server inherits it from the launching process's environment and puts it in an `Authorization` header and nowhere else: never a URL, never a returned value, never a failure message.
 
-**Two independent auth mechanisms, both required.** Raw `acli jira ...` calls (most verbs below) use `acli`'s own login session, established once with `acli jira auth login` and cached under `~/.config/acli/` — entirely outside Shipyard's config. `jira_rest.py` (the REST fallback, and every attachment operation) authenticates separately with `tracker_config.email` plus the `ACLI_TOKEN` secret. A repo's shared config can supply everything except the two things that are genuinely per-person: the one-time `acli jira auth login`, and this person's own `ACLI_TOKEN` (a personal Atlassian API token that stays in the environment and never enters a config file, so no `cat` of a committed file can burn it into transcript history). `tracker_config.email` is per-person too, but it is not a secret — it belongs in the gitignored `.shipyard/config.local.json` layer. Verifying one does not verify the other.
+**One auth mechanism.** The adapter authenticates with `tracker_config.email` plus `ACLI_TOKEN` over REST, and that is the whole story. `acli`'s own separate login session — established with `acli jira auth login` and cached under `~/.config/acli/`, entirely outside Shipyard's config — used to be a second thing to verify because most verbs shelled out to `acli`. Nothing on this path shells `acli` any more, so that check is inapplicable: `acli` being logged out no longer breaks anything Shipyard does, and `acli jira auth status` passing no longer evidences that Shipyard can reach Jira.
 
-**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** `acli jira auth status` proves only local credential presence, not liveness — validate both mechanisms with a real read, gated by the shared cache so this does not repeat on every invocation:
+**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** A credential can be present and still be dead, and a project key can be set and still name a board this account cannot see, so the canonical `preflight` verb performs two real authenticated reads rather than a presence check — `/myself` for the account, and the configured project itself — and reports the site, account id and project key without ever naming a secret value. The project read is not decoration: Jira answers a search naming an unknown or invisible project with zero issues rather than an error, so nothing else here notices a wrong key. Gate it behind the shared cache so it does not repeat on every invocation:
 
 ```bash
 python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN
-# exit 0 → cached fresh, skip both reads below.
-# exit 2 → run both real reads now:
-acli jira workitem search --jql "project = ${PROJECT:?}" --count              # proves acli's own login session
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" preflight     # proves email/site/project + ACLI_TOKEN via REST
-# both succeed →
+# exit 0 → cached fresh, nothing to do.
+# exit 2 → call the `preflight` tool now; on success:
 python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker jira --vars ACLI_TOKEN
 ```
 
-A missing or expired `acli` login fails the first read with `acli`'s own auth error (`acli jira auth status` first, if unclear, to confirm which of the two is actually broken — it only proves credential presence, so a fresh error from the real read above is the one to act on); a missing or invalid `ACLI_TOKEN`, `tracker_config.site`, or `tracker_config.project` fails `jira_rest.py preflight` with its own error naming the problem. Either failure is the exact text `preflight.md`'s `## Action needed` block relays — never a bare crash discovered later inside an attachment upload.
+A missing or invalid `ACLI_TOKEN`, `tracker_config.email`, `tracker_config.site`, or `tracker_config.project` fails `preflight` with an error naming which one, and that text is exactly what `preflight.md`'s `## Action needed` block relays — never a bare crash discovered later inside an attachment upload.
 
 ## Type mapping
 
@@ -38,7 +35,7 @@ Execution is flat: one tracking Epic, every executable Task/Bug directly beneath
 
 ## Status mapping
 
-Each canonical status maps to the Jira status/transition named by the shared, required per-repo column env var (the Jira workflow must have statuses with those names):
+Each canonical status maps to the Jira status named by the shared, required per-repo column config key (the Jira workflow must have statuses with those names):
 
 | Canonical | Jira status (transition target) |
 |---|---|
@@ -48,134 +45,41 @@ Each canonical status maps to the Jira status/transition named by the shared, re
 | `in-review` | `columns.in_review` |
 | `done` | `columns.done` |
 
-`set-status` transitions to the resolved name:
+`set-status` resolves the column name, matches it against each reachable transition's *target* status (not the transition's own name — they often coincide but are different fields, and matching the wrong one is a silent move to the wrong column), performs the transition, and re-reads to confirm. When nothing reachable matches, it fails **listing the reachable targets** so a workflow gap is visible rather than absorbed; transition to the correct reachable target, or surface the gap loudly if none maps to the requested canonical status.
 
-```bash
-acli jira workitem transition --key <ID> --status "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get columns.in_review)" --yes
-```
-
-(`--yes` only where the installed command supports it). Inspect the closure reason before treating a `done` issue as delivered — decomposed/superseded closure is not delivery.
-
-**Transition fallback.** When a transition is rejected (the target status is not reachable from the current state, or the name does not resolve), do not retry blind and do not treat the old status as acceptable: list the valid transitions from the current state and surface them —
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" transitions <ID>
-```
-
-— then transition to the correct reachable target (or surface the workflow gap loudly if none maps to the requested canonical status).
+Inspect the closure reason before treating a `done` issue as delivered — decomposed/superseded closure is not delivery.
 
 ## Rich text: Markdown → ADF
 
-Jira comments and descriptions are ADF. Stage the Markdown, convert, then write:
+Jira comments and descriptions are ADF. The conversion happens inside the server, in process, on every body and comment it writes — there is no staging file and no converter to provision. It is done there rather than client-side because the node classes a Markdown-ish client drops silently, bullet lists and fenced code, are exactly the ones a ship log is made of.
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/md_to_adf.py" .scratch/<ID>-body.md > .scratch/<ID>-body.adf.json
-```
+## Verb behaviour on Jira
 
-Namespace every staging file by the issue key it targets (`<ID>`; before a key exists — issue creation — use the parent key or a goal slug), matching the `.scratch/<ID>-ship-transcript.txt` convention: parallel sessions and successive writes must never clobber each other's staged bodies. Load `references/adf.md` for converter setup/verification.
+Everything below is Jira-specific behaviour a caller can rely on. Where a verb is unremarkable — `update-issue` replaces the description, `assign` self-assigns — it is not listed.
 
-## Verb implementations
+- **`create-issue`** creates into the configured project with the mapped native type. It deliberately does **not** send `reporter`, even though Jira's own `createmeta` lists it as required: omitting it makes Jira default the reporter to the authenticated account, where sending it would let a shared config file decide whose issues these are. Passing `parent` is the canonical verb **`create-child`**; Jira enforces its own hierarchy here, so a type that cannot be parented to the parent's type is rejected with the field named.
+- **`post-comment`** converts the Markdown body to ADF and returns the created comment's id and a deep link to it. `post-log` is this same verb carrying only a fenced JSON block, and `link-pr`'s durable half is it carrying the PR URL — Jira gets no separate write for either. A `shipyard.ship_metrics.v1` block is schema-validated before anything is posted; see `../CONTRACT.md`.
+- **`get-issue`** reads REST directly and untruncated, naming the fields it needs rather than `*all` (which fetches every custom field on the board — kilobytes nothing above the seam reads). It returns the description as Markdown, canonical status and type, parent, children, `Blocks`-derived dependencies, and up to 50 comments newest-first, plus `comments_truncated` saying whether that bound actually cut anything off. A silently short thread reads as a complete ship log, so check that flag before concluding "no one raised this". Jira's `subtasks` field carries sub-task-level children only, so it is read for a known leaf type (Task, Bug) and nothing else: on any other type — Epic, Story, Initiative, a custom hierarchy level, or an issue whose `issuetype` is missing — `children` come from a `parent = <key>` search instead, because `subtasks` is empty on every one of them however decomposed they are. That search is scoped by `parent` alone (a key prefix is not a project — issues move, and hierarchies cross projects), and it is one page, so `children_truncated` says whether it left any child out.
+- **`find-issues`** posts JQL to `/search/jql` (the classic `/search` endpoint is gone — 410). One page only: `is_last` and `next_page_token` are how a caller asks for more, and every interpolated value is a quoted JQL literal so a title containing a quote cannot widen the search.
+- **`add-dependency`** creates the `Blocks` link with `issue` as the blocked side and `blocked_by` as the blocker, taken straight from Jira's REST model, where the outward issue performs the type's outward action. It then re-reads to prove the direction took, and fails rather than warns if it cannot: a reversed dependency reads as entirely plausible and misleads every later decomposition. This is where the old `acli link --in/--out` recipe was wrong — those flags are inverted relative to Jira's model, so it silently created the reverse link.
+- **`add-label`** reads the current set and writes it back with the new label unioned in, because Jira has no append. A labels field that does not read back as a list of strings aborts the write instead of being coerced; coercing it would delete labels.
+- **`link-parent`** is a field write on Jira, not a link. Ask before crossing into another project or portfolio hierarchy.
+- **`link-pr`**: PRs surface in the Jira development panel when the branch or commit names the issue key. The verb's durable half is a comment carrying the PR URL, so the association survives regardless of dev-panel wiring.
+- **`type-convert`** rewrites the work item's type in place and verifies by reading it back. Some site workflows restrict type changes (required fields, hierarchy rules); it then fails loudly rather than leaving the type silently unchanged. Irreversible side effects — parent links, board membership — follow the type.
 
-```bash
-# create-issue  (epic)
-acli jira workitem create --project "${PROJECT:?}" --type Epic \
-  --summary "<title>" --description-file .scratch/<slug>-epic.adf.json
+Deleting a dependency link is not a contract verb: no workflow drives it, so it stays a manual `acli jira workitem link delete --id <id> --yes` outside Shipyard.
 
-# create-child  (task/bug under a parent)
-acli jira workitem create --project "${PROJECT:?}" --type Task \
-  --parent <PARENT_ID> --summary "<title>" --description-file .scratch/<PARENT_ID>-task.adf.json
+## `attach-artifact` and the attachment lifecycle
 
-# get-issue  (first rung of the read ladder below)
-acli jira workitem view <ID> --fields '*all'
-acli jira workitem comment list --key <ID>
+Jira supports native work-item attachments. Render the artifact, then hand the path to the `attach-artifact` tool: it checks the gate, runs both sanitisation passes in order, and uploads over this adapter's REST path, so no pass can be skipped and `ACLI_TOKEN` never reaches argv or stdout. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
 
-# update-issue  (replace body)
-acli jira workitem edit --key <ID> --description-file .scratch/<ID>-body.adf.json
+`attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
 
-# find-issues  (JQL against the configured project)
-acli jira workitem search --jql "project = ${PROJECT:?} AND status = 'In Progress'"
+`attachment-download` resolves the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 
-# assign
-acli jira workitem assign --key <ID> --assignee @me
-
-# post-comment / post-log  (both are comments; post-log carries only fenced JSON)
-acli jira workitem comment create --key <ID> --body-file .scratch/<ID>-comment.adf.json
-
-# link-pr  (Jira dev-panel link is driven from the commit/PR; record the URL in a comment too)
-#   PRs surface in the Jira development panel when the branch/commit names the key.
-#   Post the PR URL as a comment so it is durable regardless of dev-panel wiring.
-```
-
-### `get-issue` read ladder (acli → REST → MCP, never a silent empty read)
-
-`acli`'s `view --fields '*all'` truncates relational fields — parent, issue links, and labels can render empty even when set — and some field selections are rejected outright. When a field you need is missing/empty in the `acli` view, or the command rejects, fall through in order:
-
-1. **REST** — raw JSON, untruncated:
-
-   ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" get <ID> --fields parent,issuelinks,labels,status,issuetype
-   python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" comment-get <ID> <COMMENT_ID>   # one full comment body
-   ```
-
-2. **Atlassian MCP** — when the MCP server is connected in this session, `getJiraIssue` (and its comment/transition siblings) is the last resort.
-
-If every rung fails, fail loudly with the last error. An empty read is never evidence the field is empty — relational reads (blockers, parents) drove real false negatives before this ladder existed.
-
-### `add-dependency` (X blocked by Y) — use the REST helper
-
-`acli`'s `link --out`/`--in` flags are inverted relative to Jira's model (empirically `--in` is the blocker), so it silently creates the reverse link. The helper sets direction via the REST model and verifies it:
-
-```bash
-# ID_Y blocks ID_X  (ID_X is blocked by ID_Y)
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" link --blocker <ID_Y> --blocked <ID_X>
-```
-
-Deleting a link is unambiguous on `acli`: `acli jira workitem link delete --id <id> --yes`.
-
-### `add-label` — use the REST helper
-
-`acli` append-vs-replace label semantics are ambiguous. The helper reads the current set and writes it back plus the requested label:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" add-label <ID> decomposed
-```
-
-### `link-parent` — use the REST helper
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" set-parent <ID> <PARENT_ID>
-```
-
-Ask before crossing into another project or portfolio hierarchy.
-
-### `attach-artifact`
-
-Jira supports native work-item attachments. Render the artifact, then hand the path to the `sy` MCP server's `attach-artifact` tool: it checks the gate, runs both sanitisation passes in order, and uploads over this adapter's REST path, so no pass can be skipped and `ACLI_TOKEN` never reaches argv or stdout. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
-
-`jira_rest.py attach <ID> <FILE>` still ships and still works, but it uploads exactly what it is given — it does not scan. Use it only when the server is unavailable, and only after running both passes yourself.
-
-Attachment lifecycle beyond upload (all resolve by filename with an exactly-one match rule; pass `--id` to disambiguate duplicates):
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" attachment-download <ID> <FILENAME> [--output <PATH>]
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" attachment-update <ID> <FILE>     # replace-by-filename: deletes same-name attachments, re-uploads, verifies
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" attachment-delete <ID> <FILENAME> [--id <ATTACHMENT_ID>]
-```
-
-`attachment-delete` is destructive and `attachment-update` deletes before it uploads — confirm the target first; there is no undo.
-
-### `type-convert` (Task ↔ Epic) — best-effort, loud failure
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/tracker/jira/jira_rest.py" type-convert <ID> Epic   # or Task
-```
-
-Rewrites the work item's type in place and verifies by reading it back. Some site workflows restrict type changes (required fields, hierarchy rules); the helper then fails loudly rather than leaving the type silently unchanged — treat it as best-effort, and fall back to create-new + link + close-old when the workflow refuses. Irreversible side effects (parent links, board membership) follow the type; confirm before converting.
+`attachment-update` takes no id: it resolves purely by filename, and — unlike `attachment-download` — does not refuse on multiple namesakes. It uploads the new file first, then deletes every same-named attachment it supersedes, each delete verified gone; an absent match is a first upload instead, reported as `replaced: 0`. Confirm the target first — the deletes are real and there is no undo. That upload-then-delete order is the safety margin: an upload that fails (a timeout, a 413, a permission change) leaves the old artifact(s) still attached, where deleting first would have left the issue with nothing. There is no standalone `attachment-delete` verb: this seam has no way to remove an artifact from an issue's durable record without replacing it with something.
 
 ## References
 
-- `references/adf.md` — Markdown→ADF converter setup/verification.
 - `references/attachments.md` — transcript render/scan/redact/upload/verify.
-- `references/accounting.md` — usage/metrics JSON shapes and standalone-comment rules.
-- `references/acli-cookbook.md` — extended commands and REST parent updates.
 - `references/migration.md` — GitHub-issue → Jira migration (separate workflow, not used in the loop).

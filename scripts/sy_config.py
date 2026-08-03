@@ -88,6 +88,9 @@ LEGACY_ENV = {
     "SY_IMAGE_MODEL": "models.agents.img-inspector.model",
     "SY_DEBATE_MODEL": "models.agents.debate.model",
 }
+# The retired name for `tracker` specifically. `migrate` reads it out of the block it is converting to
+# decide whose adapter names to migrate; derived from the map above so the two cannot drift apart.
+_TRACKER_ENV = next(name for name, path in LEGACY_ENV.items() if path == "tracker")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,12 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def get(path: str, *, default: str | None = None) -> object:
+def get(path: str, *, default: object | None = None) -> object:
     """One resolved value by dotted path. Refuses credential-shaped keys outright.
 
     An unknown key is an error unless `default` is given: a key an adapter documents as optional
     has no entry to resolve, and a caller that knows it is optional says so explicitly rather than
     every unknown key silently becoming empty.
+
+    A default is any JSON-shaped value, not only a string: config values are lists and objects too,
+    and `secret_guard.py` already passes `default=[]` for `redaction.extra_words`.
     """
     if _looks_like_secret(path.replace(".", "_")):
         raise SystemExit(
@@ -225,26 +231,50 @@ def layers() -> list[tuple[str, Path]]:
 
 
 def validate() -> list[str]:
-    """Every reason the resolved configuration must be rejected, each naming its key and source."""
-    errors: list[str] = []
-    errors.extend(env_conflicts())
-    for label, path in layers():
-        if path.is_file():
-            errors.extend(_layer_violations(path, label))
+    """Every reason the resolved configuration must be rejected, each naming its key and source.
+
+    A configuration that cannot be resolved at all — a `CLAUDE_PROJECT_DIR` naming no git checkout, a
+    `git` that cannot be run, `Path.cwd()` on a deleted working directory, a layer file that cannot be
+    read or parsed — is collected as an error and returned, not raised: this function exists to report
+    every problem it can see, and both `repo_root()` and `resolve()` are reached from `layers()` and
+    `_layer_violations()` as well, so each is asked once up front rather than allowed to exit the
+    process from whichever call site got there first.
+
+    A resolution failure is reported *first*, and only the checks that need nothing resolved run
+    alongside it. `_legacy_env_conflicts()` absorbs the same failure into an empty flat config and
+    then reports every legacy `SY_*` variable as disagreeing with a key that "resolves to None" — a
+    derived, factually wrong line that would bury the one real cause — so it is skipped, while
+    `_outranking_env_conflicts()`, which reads only the environment, still runs: a root that will not
+    resolve is no reason to hide a live problem that has nothing to do with it.
+    """
+    errors: list[str] = list(_outranking_env_conflicts())
+    try:
+        root = repo_root()
+    except SystemExit as exc:
+        return [str(exc), *errors]
+    except OSError as exc:
+        return [f"sy_config: the repository root could not be resolved: {exc}", *errors]
     try:
         values, provenance = resolve()
     except SystemExit as exc:
-        return errors + [str(exc)]
+        return [str(exc), *errors]
+    errors.extend(_legacy_env_conflicts())
+    for label, path in layers():
+        if path.is_file():
+            errors.extend(_layer_violations(path, label))
 
     flat = _flatten(values)
     tracker = flat.get("tracker")
-    if tracker and not (plugin_root() / "skills" / "tracker" / str(tracker)).is_dir():
-        errors.append(f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/")
+    if tracker and str(tracker) not in _known_trackers():
+        errors.append(
+            f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/. "
+            f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
+        )
     required = list(REQUIRED_PATHS) + list(_adapter_map().get("required", []))
     for path in required:
         if flat.get(path) in (None, ""):
             errors.append(
-                f"{path} is required and unset. Set it in {repo_root() / CONFIG_DIRNAME / CONFIG_FILENAME}."
+                f"{path} is required and unset. Set it in {root / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
     # A presence check only: the env var's name is reported, its value never read into a variable
     # or a message. `os.environ.get(name)` here is used solely for its truthiness.
@@ -260,12 +290,30 @@ def validate() -> list[str]:
 
 def env_conflicts() -> list[str]:
     """Config-shaped environment variables, which are an error and never an override."""
-    errors: list[str] = []
+    return [*_outranking_env_conflicts(), *_legacy_env_conflicts()]
+
+
+def _outranking_env_conflicts() -> list[str]:
+    """The conflicts that need nothing resolved: a variable Claude Code lets outrank this resolver.
+
+    Split from the legacy-name checks because it depends on the environment alone, so `validate()` can
+    keep reporting it when the configuration cannot be resolved at all.
+    """
     if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
-        errors.append(
+        return [
             "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
             "would silently reroute every agent off the model this config resolved. Unset it."
-        )
+        ]
+    return []
+
+
+def _legacy_env_conflicts() -> list[str]:
+    """Retired `SY_*` names still set in the environment, compared against what they now resolve to.
+
+    Needs a resolved configuration on both sides — the value to compare against, and the adapter's own
+    legacy names — so `validate()` only asks once resolution has succeeded.
+    """
+    errors: list[str] = []
     try:
         flat = _flatten(resolve()[0])
     except SystemExit:
@@ -334,15 +382,75 @@ def plugin_root() -> Path:
 
 
 def repo_root() -> Path:
-    """The consuming repository's root, else the working directory when not in a checkout."""
+    """The consuming repository's root: the session's own pointer when set, else derived from cwd.
+
+    `CLAUDE_PROJECT_DIR` wins for the same reason the MCP server's resolver honours it — Claude Code
+    sets it for every hook and stdio server it launches, and it survives a dispatch that resets the
+    working directory. Both resolvers must agree on it or the same key resolves two ways: a
+    worktree-local `.shipyard/config.local.json` would be read by one and invisible to the other.
+
+    Both paths go through the same `git rev-parse`, so a pointer at a subdirectory resolves to the
+    checkout root, and a pointer naming no checkout is refused rather than silently resolving the
+    shipped defaults with no layer above them. A `git` that cannot be run is a separate refusal from
+    `_git_toplevel` itself, so it is never misreported as the pointer's fault and reaches the cwd
+    path too, which has no pointer to blame. A working directory that can no longer be read at all —
+    deleted or made inaccessible under a hook that inherited it — is a third named refusal, mirroring
+    `sy_tools/config.py::repo_root`: `validate()` had its own guard, but `show`, `get`, `agent` and
+    `fingerprint` reach here without one and used to traceback raw out of `Path.cwd()`.
+    """
     global _REPO_ROOT
     if _REPO_ROOT is None:
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+        if project_dir:
+            root = _git_toplevel(Path(project_dir))
+            if root is None:
+                raise SystemExit(
+                    f"sy_config: CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a "
+                    "git checkout, so no repository configuration can be resolved from it. Point it at the "
+                    "consuming repository, or unset it to resolve from the working directory."
+                )
+            _REPO_ROOT = root
+        else:
+            try:
+                _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+            except OSError as exc:
+                raise SystemExit(
+                    f"sy_config: the working directory could not be read to derive the repository root: "
+                    f"{exc}. Set CLAUDE_PROJECT_DIR to the consuming repository, or run from a directory "
+                    "that still exists."
+                ) from None
+    return _REPO_ROOT
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """The resolved root of the git checkout containing `start`, or None when there is not one.
+
+    A `git` that cannot be *run* at all is refused here rather than folded into None, for the reasons
+    `sy_tools/config.py::_git_toplevel` gives — None means "git ran and reported no checkout", which
+    the cwd path legitimately answers with a cwd fallback. Refused *here* so that one guard covers
+    every path to the repository root: `validate()` guards its own `repo_root()` call, but `resolve()`,
+    `layers()` and the `show`/`get`/`agent`/`fingerprint` subcommands reach it without one, and each
+    used to traceback raw on a missing binary. The claim is scoped to root resolution — `fingerprint()`
+    also calls `sy_preflight.plugin_build()`, whose own `git rev-parse HEAD` is a separate, unguarded
+    subprocess in another script. As this module's own `SystemExit`, the refusal arrives as one line
+    for the CLI and is caught by the callers that already degrade on one — `_adapter_map()`,
+    `validate()`, and `secret_guard.py`'s word-list fallback.
+    """
+    if not start.is_dir():
+        return None
+    try:
         proc = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
         )
-        _REPO_ROOT = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else Path.cwd()
-    return _REPO_ROOT
+    except OSError as exc:
+        raise SystemExit(
+            f"sy_config: git could not be run to resolve the repository root from {start}: {exc}. "
+            "Every configuration layer above the shipped defaults lives under <root>/.shipyard/, so "
+            "without git there is no root to read them from. Install git, or put it on PATH."
+        ) from None
+    out = proc.stdout.strip()
+    return Path(out).resolve() if proc.returncode == 0 and out else None
 
 
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:
@@ -400,8 +508,28 @@ def _adapter_map() -> dict:
         tracker = _flatten(resolve()[0]).get("tracker")
     except SystemExit:
         return {}
-    path = plugin_root() / "skills" / "tracker" / str(tracker) / "config-map.json"
+    path = _adapter_map_path(tracker)
     return _load_json(path) if path.is_file() else {}
+
+
+def _adapter_map_path(tracker: object) -> Path:
+    """Where one tracker's `config-map.json` lives: one spelling for the lenient and strict readers."""
+    return plugin_root() / "skills" / "tracker" / str(tracker) / "config-map.json"
+
+
+def _known_trackers() -> list[str]:
+    """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
+
+    A configured `tracker` is checked against these enumerated names rather than by asking whether
+    `skills/tracker/<value>/` exists. `".."` and `"."` both name existing directories, so the
+    path-existence form passed them clean and then found no `config-map.json` for them, skipping every
+    `required` and `secret_env` check that config validation exists to enforce; `"../tracker/<name>"`
+    traversed to a real adapter's map under a name no adapter answers to. `sy_tools/tracker/__init__.py`
+    refuses each of them at tool-call time, which is exactly the point — validation is meant to catch it
+    before then.
+    """
+    tracker_dir = plugin_root() / "skills" / "tracker"
+    return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []
 
 
 _SCHEMA: dict | None = None
@@ -613,6 +741,10 @@ def _load_json(path: Path) -> dict:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise SystemExit(f"sy_config: missing required file {path}") from None
+    except OSError as exc:
+        # An unreadable layer (a bad mode, a dead symlink target) is a configuration fault like any
+        # other and must arrive as this module's own refusal, not as a raw traceback in a hook.
+        raise SystemExit(f"sy_config: {path} could not be read: {exc}") from None
     except json.JSONDecodeError as exc:
         raise SystemExit(f"sy_config: {path} is not valid JSON: {exc}") from None
     if not isinstance(loaded, dict):
@@ -675,30 +807,118 @@ def _show(*, as_json: bool) -> int:
 
 
 def _migrate(settings_path: Path, out_path: Path | None) -> int:
-    """Convert a legacy settings.json `env` block into config JSON, leaving secrets behind."""
+    """Convert a legacy settings.json `env` block into config JSON, leaving secrets behind.
+
+    Resolution is forced up front so that a failure to resolve refuses the whole conversion. Half the
+    legacy map is one adapter's own `legacy_env` block, and *which* adapter is the block's own answer
+    (`_migrating_tracker`), never the currently resolved one: `migrate` runs at step 1b of
+    skills/init-repo/SKILL.md, before step 2 resolves a tracker, so pre-migration the resolved value is
+    whatever the shipped default says. Reading the adapter map from that dropped every
+    `tracker_config.*` variable in a block migrating to a different tracker and still exited 0 with a
+    file that looked complete. `_adapter_map()`'s best-effort `{}` degradation is right for a caller
+    that only wants tracker metadata and wrong here for the same reason, so a tracker naming no adapter
+    is refused rather than silently costing the adapter's half of the map.
+
+    An `--out` that already exists is merged into, not overwritten. The documented flow points `--out`
+    straight at `.shipyard/config.json` and SKILL.md's own instruction for that file is to "preserve
+    every existing key rather than overwriting"; docs/configuration.md treats a config file coexisting
+    with a lingering `env` block as a real state, so truncating it destroyed exactly the keys the run
+    before it had written. Migrated values win on conflict — that is the point of running `migrate` —
+    which is the same precedence `_deep_merge` gives a higher layer, and a destination that cannot be
+    parsed is a refusal from `_load_json` rather than a file this command overwrites blind. The write
+    itself goes through `_write_atomically`, so a merge that cannot be written leaves the destination
+    exactly as it was rather than truncated mid-value.
+    """
     env = _load_json(settings_path).get("env", {})
     if not env:
         raise SystemExit(f"sy_config: {settings_path} has no env block to migrate")
-    mapping = _legacy_env_map()
+    resolve()  # see the docstring: refuse loudly rather than migrate a partial map
+    tracker = _migrating_tracker(env, settings_path)
+    mapping = dict(LEGACY_ENV) | _load_json(_adapter_map_path(tracker)).get("legacy_env", {})
     config: dict = {"$schema": SCHEMA_URL}
-    skipped: list[str] = []
+    # Two different reasons a variable stays behind, reported separately: a credential belongs in the
+    # environment and is *meant* to stay, while an unmapped name is a typo or a stale setting nothing
+    # will read again. Collapsing them read as "these are fine" for both.
+    secrets: list[str] = []
+    unmapped: list[str] = []
     for name, value in sorted(env.items()):
         if _looks_like_secret(name):
-            skipped.append(name)
-            continue
-        path = mapping.get(name)
-        if not path:
-            skipped.append(name)
-            continue
-        _assign(config, path, _coerce(value))
-    out = json.dumps(config, indent=2, sort_keys=True) + "\n"
+            secrets.append(name)
+        elif path := mapping.get(name):
+            _assign(config, path, _coerce(value))
+        else:
+            unmapped.append(name)
+    summary = {
+        "tracker": tracker,
+        "migrated": sorted(k for k in _flatten(config) if k != "$schema"),
+        "secrets_left_in_env": secrets,
+        "unmapped_and_not_migrated": unmapped,
+    }
     if out_path:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(out, encoding="utf-8")
-        print(json.dumps({"written": str(out_path), "migrated": len(_flatten(config)) - 1, "left_in_env": skipped}))
+        existing = _load_json(out_path) if out_path.is_file() else {}
+        merged = _deep_merge(existing, config)
+        _write_atomically(out_path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
+        preserved = sorted(set(_flatten(existing)) - set(_flatten(config)))
+        print(json.dumps({"written": str(out_path), **summary, "preserved": preserved}))
     else:
-        sys.stdout.write(out)
+        sys.stdout.write(json.dumps(config, indent=2, sort_keys=True) + "\n")
+        # stdout carries the config alone so it stays pipeable; the summary is the same either way.
+        print(json.dumps(summary), file=sys.stderr)
     return 0
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Write `text` to `path` through a sibling temporary file and one `os.replace`, or refuse by name.
+
+    The same temp-write-then-replace pattern as `scripts/sy_memory.py::_atomic_write`, for a stronger
+    reason: `migrate --out` is pointed straight at a repo's `.shipyard/config.json` by the documented
+    flow, and a plain `write_text` truncates the destination before it writes a byte. A write that then
+    fails partway — a full disk, a quota, a file-size limit — left that file cut off mid-value and
+    unparseable, so every later read of it was a `_load_json` refusal, while the operator saw a raw
+    `OSError` traceback that said nothing about the destination now being broken. Replacing onto the
+    destination is atomic on POSIX, so it either carries the whole merge or is untouched, and any
+    `OSError` (including an `--out` that names a directory, which `os.replace` refuses) arrives as this
+    module's own refusal. The partial temporary file is removed, so a failed run leaves nothing behind.
+
+    A destination with no filename at all — `--out .`, `--out /` — is refused before anything is
+    derived from it. It never reached the `OSError` guard: deriving the sibling temporary name from an
+    empty basename raises `ValueError`, so the one case this refusal names first (an `--out` that is a
+    directory) escaped as a raw traceback instead of the refusal itself.
+    """
+    def refuse(cause: str) -> SystemExit:
+        return SystemExit(
+            f"sy_config: {path} could not be written: {cause}. Nothing was migrated — the destination is "
+            "still exactly as it was before this run, so fix the cause and run migrate again."
+        )
+
+    if not path.name:
+        raise refuse("it names a directory rather than a file, so there is no config file to write")
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise refuse(str(exc)) from None
+
+
+def _migrating_tracker(env: dict, settings_path: Path) -> str:
+    """The tracker this `env` block is migrating *to*, refused unless it names a shipped adapter.
+
+    Checked against the enumerated adapter names rather than by testing a path built from the value, so
+    a name carrying path separators cannot address anything outside `skills/tracker/`.
+    """
+    tracker = str(env.get(_TRACKER_ENV) or _flatten(resolve()[0]).get("tracker") or "")
+    if tracker not in _known_trackers():
+        raise SystemExit(
+            f"sy_config: refusing to migrate {settings_path}: tracker {tracker!r} names no adapter under "
+            f"skills/tracker/, so any adapter-specific variable in this env block has no config key to "
+            f"migrate into and would be dropped silently from a file that looked complete. Correct the "
+            f"tracker name — known trackers: {', '.join(_known_trackers()) or 'none'}."
+        )
+    return tracker
 
 
 def _assign(target: dict, path: str, value: object) -> None:
@@ -924,6 +1144,20 @@ def _self_test() -> None:
                 "the shipped defaults.json must itself be clean against the schema it ships alongside"
             )
 
+            # A tracker naming no adapter must be refused by the enumerated names, not by testing a
+            # path built from the value: "." and ".." are existing directories, so the path form
+            # reported a clean config and then skipped every adapter-specific required/secret_env
+            # check, and a traversal loaded a different adapter's map than the string names.
+            traversal = f"../tracker/{_known_trackers()[0]}"  # reaches a real adapter's map sideways
+            for bogus in (".", "..", traversal):
+                write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"tracker": bogus})
+                assert any(repr(bogus) in e and "has no adapter" in e for e in validate()), (
+                    f"tracker {bogus!r} names no adapter and must be refused, not validated clean"
+                )
+            for known in _known_trackers():
+                write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME, {"tracker": known})
+                assert not any("has no adapter" in e for e in validate()), f"{known} is a shipped adapter"
+
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,
                         {"columns": {"ready": "Ready"}, "ci": {"poll_timeout": 90}})
             reset_cache()  # tracker resolves to the shipped default ("jira") for the checks below
@@ -960,19 +1194,66 @@ def _self_test() -> None:
             else:
                 raise AssertionError("reading a credential-shaped key must be refused")
 
+            # The block migrates to a tracker the pre-migration config does *not* resolve — the
+            # documented order, since `migrate` runs before the tracker is ever chosen. The adapter's
+            # own names are read from its map rather than spelled: they are its vocabulary, not this
+            # script's map's.
             settings = repo / "settings.json"
+            resolved_tracker = str(_flatten(resolve()[0])["tracker"])
+            target = next(t for t in _known_trackers() if t != resolved_tracker)
+            target_legacy = _load_json(_adapter_map_path(target))["legacy_env"]
             settings.write_text(json.dumps({"env": {
-                "SY_TRACKER": "somethingelse", "SY_CI_POLL_TIMEOUT": "45",
+                _TRACKER_ENV: target, "SY_CI_POLL_TIMEOUT": "45",
                 "SY_DEBUG_EVALS": "1", "ACLI_TOKEN": "secret-value-here",
+                "SY_NOT_A_SETTING": "stale",
+                **{name: f"legacy-value-{i}" for i, name in enumerate(sorted(target_legacy))},
             }}), encoding="utf-8")
             out = repo / CONFIG_DIRNAME / "migrated.json"
-            with contextlib.redirect_stdout(io.StringIO()):
+            out.write_text(json.dumps({"columns": {"done": "Already Here"}}), encoding="utf-8")
+            summary_out = io.StringIO()
+            with contextlib.redirect_stdout(summary_out):
                 _migrate(settings, out)
             migrated = _flatten(_load_json(out))
-            assert migrated["tracker"] == "somethingelse"
+            assert migrated["tracker"] == target
             assert migrated["ci.poll_timeout"] == 45, "a numeric env string must migrate as a number"
             assert migrated["debug.evals"] is True, "a truthy env string must migrate as a boolean"
             assert not any("TOKEN" in k.upper() for k in migrated), "migration must never copy a secret into config"
+            for adapter_path in sorted(target_legacy.values()):
+                assert adapter_path in migrated, (
+                    f"{adapter_path} was dropped: the adapter half of the map must come from the tracker the "
+                    "block being migrated names, not from whatever the pre-migration config resolved"
+                )
+            assert migrated["columns.done"] == "Already Here", (
+                "migrating onto an existing config file must merge into it, never truncate it"
+            )
+            summary = json.loads(summary_out.getvalue())
+            assert summary["preserved"] == ["columns.done"]
+            assert any("TOKEN" in n.upper() for n in summary["secrets_left_in_env"]), (
+                "a credential left behind on purpose must be reported as such"
+            )
+            assert summary["unmapped_and_not_migrated"] == ["SY_NOT_A_SETTING"], (
+                "a name with no config key at all is a different report from a credential left on purpose"
+            )
+
+            # An `--out` naming no file must arrive as this module's own refusal. A path with an empty
+            # basename (`.`, `/`) never reached the `OSError` guard at all: deriving the sibling
+            # temporary name from it raises `ValueError`, so the very case that refusal names first —
+            # an `--out` pointed at a directory — escaped as a raw traceback.
+            for bogus in (Path("."), repo / CONFIG_DIRNAME):
+                try:
+                    _migrate(settings, bogus)
+                except SystemExit as exc:
+                    assert "could not be written" in str(exc) and "Nothing was migrated" in str(exc), str(exc)
+                else:
+                    raise AssertionError(f"migrate --out {bogus} names no file to write and must refuse")
+
+            settings.write_text(json.dumps({"env": {_TRACKER_ENV: "jria"}}), encoding="utf-8")
+            try:
+                _migrate(settings, out)
+            except SystemExit as exc:
+                assert "names no adapter" in str(exc)
+            else:
+                raise AssertionError("a tracker naming no adapter must refuse, not drop the adapter's own keys")
 
             assert len(fingerprint()) == 16
             before = fingerprint()

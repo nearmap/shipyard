@@ -8,11 +8,11 @@ cleans this up after the fact, right before a rendered transcript is scanned and
 hook exists to stop the value from ever reaching a tool-call result in the first place.
 
 It denies exactly the two anti-patterns this repo's own docs already warn against
-(docs/configuration.md, skills/tracker/jira/references/attachments.md): dumping the environment
-(`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly
-(`echo $ACLI_TOKEN`). The denial message points at the safe alternative that already exists for
-Jira specifically — `sy_preflight.py check` / `jira_rest.py preflight`, or a bare presence check
-(`[ -n "$VAR" ]`) for anything else.
+(docs/configuration.md, the tracker adapters' attachment references): dumping the environment
+(`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly.
+The denial message points at the safe alternatives that already exist — `sy_preflight.py check`
+and the tracker's own `preflight` verb, which name what is missing without printing a value, or a
+bare presence check (`[ -n "$VAR" ]`) for anything else.
 
 Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this hook never reads
 the actual environment, only the command string, so it fires the same way whether or not a secret
@@ -33,6 +33,7 @@ Commands:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import sys
@@ -52,6 +53,7 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
 _PRINT_CALL = re.compile(r"\b(print|console\.log|sys\.stdout\.write|process\.stdout\.write|puts|warn)\s*\(")
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _ADVICE = (
     'this can print a secret value into this command\'s own tool-call result, which becomes '
     'permanent transcript history. Use a presence-only check instead (`[ -n "$VAR" ]`), or for '
@@ -60,25 +62,44 @@ _ADVICE = (
 )
 
 
-def deny(reason: str) -> None:
-    # reason names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value
-    # is ever read from the environment or printed here.
-    print(json.dumps({
-        "hookSpecificOutput": {
+def emit(reason: str | None, warning: str | None) -> None:
+    """The hook's one JSON object on stdout: the deny decision, the degraded-config warning, or both.
+
+    `reason` names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value is
+    ever read from the environment or printed here. `warning` goes in the top-level `systemMessage`
+    field, which per Claude Code's documented hook-output contract is surfaced to the user on an allow
+    decision too — unlike stderr, which that contract describes as reaching only an opt-in debug log on
+    a hook's exit-0 path.
+    """
+    payload: dict = {}
+    if reason is not None:
+        payload["hookSpecificOutput"] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }
-    }))
+    if warning is not None:
+        payload["systemMessage"] = warning
+    if payload:
+        print(json.dumps(payload))
 
 
 def decision(tool: str, args: dict) -> str | None:
-    """Return a deny reason, or None to allow."""
+    """Return a deny reason, or None to allow.
+
+    Every segment of a compound command is checked, and no segment can excuse another. This hook
+    once carried an exemption for a segment that ran an in-place edit (`sed -i`, `perl -pi` —
+    review_guard's concern, not this hook's), which was a bypass twice over: matched against the
+    whole command string, prefixing any denied command with a harmless `sed -i` allowed the whole
+    thing, and matched against a segment's text, the token needed no command of its own to appear,
+    so `echo "sed -i" $ACLI_TOKEN` disarmed the check for the segment that was the leak. Scoped
+    finally to a segment's actually-invoked command it became unreachable — no segment can lead with
+    `sed`/`perl` and with one of the printing or dumping commands `_segment_reason` denies — so it is
+    gone rather than left wired up to fail open again the day that denied set grows.
+    """
     if tool != "Bash":
         return None
     command = str(args.get("command", ""))
-    if re.search(r"\bsed\s+-[^\n;]*i\b", command) or re.search(r"\bperl\s+-[^\n;]*pi\b", command):
-        return None  # in-place edits are review_guard's concern, not this hook's
     reason = _interpreter_reason(command)
     if reason:
         return f"secret guard: {reason} — {_ADVICE}"
@@ -101,24 +122,36 @@ def main() -> None:
     if not isinstance(event, dict):
         return
     reason = decision(event.get("tool_name", ""), event.get("tool_input") or {})
-    if reason:
-        deny(reason)
+    emit(reason, _CONFIG_WARNING)
 
 
-def _segment_reason(segment: str) -> str | None:
+def _leading_command(segment: str) -> tuple[str, list[str]] | None:
+    """The command a segment actually invokes and its remaining tokens, or None if it invokes nothing.
+
+    The walk steps over leading `FOO=bar` assignments and exactly one token per recognised `WRAPPERS`
+    name (`sudo somecmd` reads as `somecmd`), and basenames what it lands on so `/bin/echo` reads as
+    `echo`. It accounts for no wrapper's own argument arity, so a wrapper that takes an argument leaves
+    the walk on that argument rather than on the command: `timeout 5 echo $VAR` returns `("5", [...])`.
+    """
     tokens = [t.strip("\"'") for t in segment.split()]
     i = 0
     while i < len(tokens):
         tok = tokens[i]
         base = tok.lstrip("\\").rsplit("/", 1)[-1]
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok) or base in WRAPPERS:
+        if _ASSIGNMENT.fullmatch(tok) or base in WRAPPERS:
             i += 1
             continue
         break
     if i >= len(tokens):
         return None
-    cmd = tokens[i].lstrip("\\").rsplit("/", 1)[-1]
-    rest = tokens[i + 1:]
+    return tokens[i].lstrip("\\").rsplit("/", 1)[-1], tokens[i + 1:]
+
+
+def _segment_reason(segment: str) -> str | None:
+    leading = _leading_command(segment)
+    if leading is None:
+        return None
+    cmd, rest = leading
 
     if cmd in {"env", "printenv"}:
         return _env_reason(cmd, rest)
@@ -199,6 +232,7 @@ def _interpreter_reason(command: str) -> str | None:
 
 
 _EXTRA_WORDS: frozenset[str] | None = None
+_CONFIG_WARNING: str | None = None
 
 
 def _extra_words() -> frozenset[str]:
@@ -208,13 +242,32 @@ def _extra_words() -> frozenset[str]:
     every `Bash` call, so importing `sy_config` costs nothing beyond that). A misconfigured repo
     must not turn every command into a hard failure: fall back to the built-in word list alone,
     exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
+
+    Every resolution failure degrades, including an `OSError`. `SystemExit` alone was not enough: the
+    resolver shells out to `git rev-parse`, so a `git` missing from `PATH` raised `FileNotFoundError`
+    straight through this catch and crashed the hook process — and a crashed `PreToolUse` hook is
+    fail-open, so the *whole* gate went quiet, not just the configured extra words. That is the
+    opposite of what this fallback is for.
+
+    The fallback reports through the hook's `systemMessage` output rather than degrading silently.
+    What it drops is a security control the repo asked for, and the reasons resolution can refuse
+    include a stale `CLAUDE_PROJECT_DIR` or an unusable `git` — environment faults, not missing files,
+    that leave the guard quietly narrower than the repo configured it for the whole session. Non-fatal
+    by design: the built-in word list still applies and the command still runs. The hook is a fresh
+    process per call and holds no session state, so the warning repeats on every command that consults
+    the word list until the fault is fixed; that is accepted over inventing cross-process session
+    plumbing here, and the trigger is narrow (only commands naming a candidate variable at all).
     """
-    global _EXTRA_WORDS
+    global _EXTRA_WORDS, _CONFIG_WARNING
     if _EXTRA_WORDS is None:
         try:
             from sy_config import get as _config_get
             words = _config_get("redaction.extra_words", default=[])
-        except SystemExit:
+        except (SystemExit, OSError) as exc:
+            _CONFIG_WARNING = (
+                f"secret_guard: redaction.extra_words could not be resolved, so only the built-in secret "
+                f"word list applies for this command: {exc}"
+            )
             words = []
         _EXTRA_WORDS = frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
     return _EXTRA_WORDS
@@ -277,7 +330,50 @@ def _self_test() -> None:
     assert not _looks_like_secret_name("PATH")
     _EXTRA_WORDS = saved_extra_words
 
+    _test_an_in_place_edit_excuses_no_segment_and_denies_none()
     _test_extra_words_from_config()
+    _test_unresolvable_config_warns_rather_than_dropping_silently()
+
+
+def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:
+    """`sed -i`/`perl -pi` is review_guard's concern: this hook neither denies one nor lets one excuse.
+
+    Both halves used to need an exemption, and the exemption was fail-open twice — matched against the
+    whole command string, prefixing a denied command with a harmless in-place edit allowed the whole
+    thing; matched against a segment's text, a quoted argument or a `#` comment carried the token and
+    disarmed the segment that was the leak. It is now gone entirely, because a segment leading with
+    `sed`/`perl` never leads with a command `_segment_reason` denies. Pinned with the built-in word list
+    alone, for the same reason the pass/fail lists above are.
+    """
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
+    try:
+        for command in (
+            "sed -i.bak s/a/b/ f && echo $ACLI_TOKEN",
+            "perl -pi -e x f ; echo $ACLI_TOKEN",
+            "sed -i s/x/y/ f | env",
+            "sed -i s/x/y/ f && printenv GITHUB_TOKEN",
+            'echo "sed -i" $ACLI_TOKEN',
+            "echo $ACLI_TOKEN # sed -i",
+            'printf "ran sed -i %s" "$ACLI_TOKEN"',
+            "echo $ACLI_TOKEN # perl -pi",
+        ):
+            assert decision("Bash", {"command": command}) is not None, (
+                f"an in-place edit, run or merely mentioned, must not excuse a secret-bearing segment: {command!r}"
+            )
+        for command in (
+            "sed -i.bak s/a/b/ f",
+            "perl -pi -e s/a/b/ f",
+            "sed -i s/x/y/ f && ls",
+            "sudo sed -i s/a/b/ f",
+            "perl -i -pe s/a/b/ f",
+        ):
+            assert decision("Bash", {"command": command}) is None, (
+                f"an in-place edit carrying no secret name is not this hook's to deny: {command!r}"
+            )
+    finally:
+        _EXTRA_WORDS = saved
 
 
 def _test_extra_words_from_config() -> None:
@@ -314,6 +410,56 @@ def _test_extra_words_from_config() -> None:
             sy_config.repo_root = original_repo_root
             sy_config.reset_cache()
             _EXTRA_WORDS = saved
+
+
+def _test_unresolvable_config_warns_rather_than_dropping_silently() -> None:
+    """A stale `CLAUDE_PROJECT_DIR` narrows this gate for the whole session and must say so.
+
+    The fallback stays non-fatal — the built-in word list still applies and the command still runs —
+    but dropping a configured security control with no signal at all is the failure this pins: the
+    pointer is an environment fault nobody edits a file to cause, so nothing else would report it.
+    The signal has to ride the hook's own JSON output, which is why `emit()` is asserted here too:
+    an exit-0 `PreToolUse` hook's stderr reaches no human.
+    """
+    import contextlib
+    import io
+    from pathlib import Path
+    import tempfile
+
+    import sy_config
+
+    global _EXTRA_WORDS, _CONFIG_WARNING
+    saved, saved_warning = _EXTRA_WORDS, _CONFIG_WARNING
+    saved_pointer = os.environ.get("CLAUDE_PROJECT_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["CLAUDE_PROJECT_DIR"] = str(Path(tmp) / "not-a-checkout")
+        sy_config.reset_cache()
+        _EXTRA_WORDS, _CONFIG_WARNING = None, None
+        try:
+            assert _extra_words() == frozenset(), "an unresolvable config must not be fatal here"
+            warning = _CONFIG_WARNING or ""
+            assert "redaction.extra_words" in warning, f"the drop must be reported: {warning!r}"
+            assert "CLAUDE_PROJECT_DIR" in warning, f"the warning must name the cause: {warning!r}"
+            assert decision("Bash", {"command": "git status"}) is None, "the guard must keep working"
+            assert decision("Bash", {"command": "echo $ACLI_TOKEN"}) is not None, "built-ins still deny"
+        finally:
+            if saved_pointer is None:
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            else:
+                os.environ["CLAUDE_PROJECT_DIR"] = saved_pointer
+            sy_config.reset_cache()
+            _EXTRA_WORDS, _CONFIG_WARNING = saved, saved_warning
+
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        emit("denied", "degraded")
+    payload = json.loads(captured.getvalue())
+    assert payload["systemMessage"] == "degraded", f"the warning must reach the user: {payload!r}"
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny", payload
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        emit(None, None)
+    assert captured.getvalue() == "", "a clean allow must stay silent"
 
 
 if __name__ == "__main__":

@@ -4,9 +4,9 @@ One server, not one per tracker. Everything tracker-specific lives under `sy_too
 and is reached only through `sy_tools.tracker.adapter()`, mirroring the seam rule CONTRIBUTING.md
 states for `skills/tracker/`. `sy_tools/tests/test_tracker_seam.py` enforces it mechanically.
 
-This package deliberately duplicates rather than imports the equivalent `scripts/` and
-`skills/tracker/**` helpers: those stay shipped and unmodified so the CLI deployment keeps
-working while the MCP deployment lands beside it.
+Every canonical verb's one implementation lives here. `skills/tracker/**` is the documentation
+zone for the same seam — what each tracker does with a verb — and carries no executable path of its
+own; `CONTRIBUTING.md` states both zones and what enforces each.
 """
 from __future__ import annotations
 

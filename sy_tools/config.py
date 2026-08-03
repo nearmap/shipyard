@@ -60,13 +60,79 @@ def plugin_root() -> Path:
 
 
 def repo_root() -> Path:
-    """The consuming repository's root, else the working directory when not in a checkout."""
-    proc = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
+    """The consuming repository's root: Claude Code's own pointer when set, else derived from cwd.
+
+    `CLAUDE_PROJECT_DIR` is authoritative when present — Claude Code sets it for every MCP stdio
+    server it launches (matching the pointer it already gives hooks), and unlike cwd it survives a
+    `pixi run <declared-task>` dispatch, which resets the launched process's working directory to
+    the manifest's own directory rather than inheriting the caller's. Falling back to `git
+    rev-parse --show-toplevel` from cwd keeps every non-Claude-Code invocation working exactly as
+    before (manual `pixi run sy-server`, `docs/smoke_mcp.py`, the pytest suite).
+
+    Both paths go through the same `git rev-parse`, so a pointer at a subdirectory resolves to the
+    checkout root exactly as cwd does, and a pointer that names no checkout is a `ConfigError`
+    rather than a silent fall-through: every layer above the shipped defaults lives under
+    `<root>/.shipyard/`, so an unusable root resolves to the shipped defaults with no tracker, no
+    column names and nothing said about why. A `git` that cannot be run is a third, separately named
+    `ConfigError` raised by `_git_toplevel` itself, so it reaches both paths — including the cwd
+    fallback, which has no pointer to blame — and is never reported as the pointer's fault. A working
+    directory that can no longer be read at all — deleted or made inaccessible under a long-lived
+    server process — is a fourth named `ConfigError`, so it reaches `validate()` as a reportable fault
+    rather than a raw `FileNotFoundError` out of whichever tool call resolved first.
+    """
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project_dir:
+        root = _git_toplevel(Path(project_dir))
+        if root is None:
+            raise ConfigError(
+                f"CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a git checkout, "
+                "so no repository configuration can be resolved from it. Point it at the consuming "
+                "repository, or unset it to resolve from the working directory."
+            )
+        return root
+    try:
+        return _git_toplevel(Path.cwd()) or Path.cwd()
+    except OSError as exc:
+        raise ConfigError(
+            f"the working directory could not be read to derive the repository root: {exc}. Set "
+            "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a directory "
+            "that still exists."
+        ) from None
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """The resolved root of the git checkout containing `start`, or None when there is not one.
+
+    A `git` that cannot be *run* at all raises rather than returning None, and it raises from here so
+    that every caller is covered by one guard instead of each call site growing its own. None means
+    one specific thing — git ran and reported no checkout — and the callers act on it accordingly:
+    the cwd path treats it as "not in a checkout" and falls back to cwd, which is a legitimate way to
+    run the server. Collapsing a missing binary into that same None would take the fallback, resolve
+    the shipped defaults alone, and leave every tool call reporting no tracker and unset columns with
+    nothing naming the cause; under `CLAUDE_PROJECT_DIR` it would instead blame the pointer for not
+    being a checkout, which is false when the pointer is fine and the binary is absent. A missing
+    binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
+
+    `stdin` is closed for the same reason the tracker adapters close it on their own subprocesses: this
+    runs inside the MCP server, whose stdin is the JSON-RPC transport, and a child that inherits it can
+    consume a frame the server was going to read.
+    """
+    if not start.is_dir():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise ConfigError(
+            f"git could not be run to resolve the repository root from {start}: {exc}. Every "
+            "configuration layer above the shipped defaults lives under <root>/.shipyard/, so "
+            "without git there is no root to read them from. Install git, or put it on PATH."
+        ) from None
     out = proc.stdout.strip()
-    return Path(out) if proc.returncode == 0 and out else Path.cwd()
+    return Path(out).resolve() if proc.returncode == 0 and out else None
 
 
 def layers(root: Path) -> list[tuple[str, Path]]:
@@ -194,22 +260,70 @@ def fingerprint() -> str:
 
 
 def validate() -> list[str]:
-    """Every reason the resolved configuration must be rejected. Side-effect-free."""
-    errors: list[str] = []
+    """Every reason the resolved configuration must be rejected. Side-effect-free.
+
+    A configuration that cannot be resolved at all — an unusable repository root, a layer file that
+    cannot be read or parsed — is returned as one error rather than raised, exactly as
+    `sy_config.validate()` does it: `validate_config`'s contract is to report a broken config, and an
+    exception escaping here reaches the operator as a traceback string instead of a report. Resolution
+    is therefore asked before the per-layer schema pass.
+
+    Guarding `resolve()` alone is not enough here, and that is the difference between this deployment
+    and the CLI's. The CLI resolves once per process, so a layer the resolver just read successfully
+    reads again in the schema pass. This server resolves once per *process lifetime* and then serves
+    memory, so once the hot copy is warm the schema pass — plus `adapter_map()`, the floors and the
+    schema — are the only things still touching disk, and a layer edited into invalid JSON after that
+    point raised out of the one tool whose whole job is diagnosing exactly this fault. Everything after
+    resolution therefore reports its own read failure as an error too, on any call, warm or cold.
+
+    The one check that needs nothing resolved — an environment variable Claude Code lets outrank this
+    resolver — runs first and survives a resolution failure, exactly as in the CLI: a root that will
+    not resolve is no reason to hide a live problem that has nothing to do with it.
+    """
+    errors: list[str] = list(_outranking_env_conflicts())
     try:
         values, provenance = resolve()
     except ConfigError as exc:
-        return [str(exc)]
+        return [str(exc), *errors]
 
-    for label, path in layers(_state_root()):
+    try:
+        errors.extend(_post_resolution_violations(values, provenance))
+    except ConfigError as exc:
+        errors.append(str(exc))
+    return errors
+
+
+def _outranking_env_conflicts() -> list[str]:
+    """A variable Claude Code lets outrank this resolver: an error, never an override.
+
+    Mirrors `scripts/sy_config.py::_outranking_env_conflicts`, message included, because the CLI's
+    `validate` and the `validate_config` tool are one contract read two ways — and this is now the
+    only path a session takes, so a fault reported by the CLI alone is a fault nobody sees. Unlike the
+    retired-`SY_*` half of the CLI's report (see the module docstring), this names no config key, so it
+    opens no second resolution path for one. It reads only the environment: the value is never read,
+    only its presence.
+    """
+    if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
+        return [
+            "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
+            "would silently reroute every agent off the model this config resolved. Unset it."
+        ]
+    return []
+
+
+def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> list[str]:
+    """Every check that re-reads a file after resolution: the layers, the adapter map, the floors."""
+    errors: list[str] = []
+    for label, path in layers(resolved_root()):
         if path.is_file():
             errors.extend(f"{label} layer {path}: {message}" for message in _layer_violations(path))
 
     flat = _flatten(values)
     tracker = flat.get("tracker")
-    if tracker and not (plugin_root() / "skills" / "tracker" / str(tracker)).is_dir():
+    if tracker and str(tracker) not in _known_trackers():
         errors.append(
-            f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/"
+            f"tracker {tracker!r} (from {provenance.get('tracker')}) has no adapter under skills/tracker/. "
+            f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
         )
     for path_key in (*REQUIRED_PATHS, *adapter_map().get("required", [])):
         if flat.get(path_key) in (None, ""):
@@ -223,6 +337,21 @@ def validate() -> list[str]:
             )
     errors.extend(_validate_models(values, provenance))
     return errors
+
+
+def _known_trackers() -> list[str]:
+    """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
+
+    Mirrors `scripts/sy_config.py::_known_trackers`. A configured `tracker` is checked against these
+    enumerated names rather than by asking whether `skills/tracker/<value>/` exists: `".."` and `"."`
+    both name existing directories, so the path-existence form reported a clean config and then found no
+    `config-map.json` for them, silently skipping every `required` and `secret_env` check this validator
+    exists to enforce, while `"../tracker/<name>"` traversed to a real adapter's map under a name no
+    adapter answers to. `sy_tools/tracker/__init__.py` refuses all three at tool-call time, which is the
+    point: `validate_config` is what is supposed to catch them before a tool call ever runs.
+    """
+    tracker_dir = plugin_root() / "skills" / "tracker"
+    return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []
 
 
 def adapter_map() -> dict:
@@ -242,8 +371,14 @@ def extra_secret_words() -> frozenset[str]:
     return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
 
 
-def _state_root() -> Path:
-    """The repo root the hot state resolved against, so `validate` reports the same layer paths."""
+def resolved_root() -> Path:
+    """The consuming repository the hot configuration resolved against.
+
+    `repo_root()` re-derives; this reports what the live values were actually resolved from, so
+    `validate` names the same layer paths it read and a caller that must act *inside* the consumer's
+    checkout — a subprocess whose own working directory would otherwise decide which repository it
+    talks to — cannot pick a different one than the configuration did.
+    """
     resolve()
     assert _STATE is not None
     return _STATE.root
@@ -442,6 +577,10 @@ def _load_json(path: Path) -> dict:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ConfigError(f"missing required file {path}") from None
+    except OSError as exc:
+        # An unreadable layer (a bad mode, a dead symlink target) is a configuration fault like any
+        # other, and `validate()`'s whole contract is to report one rather than raise on it.
+        raise ConfigError(f"{path} could not be read: {exc}") from None
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} is not valid JSON: {exc}") from None
     if not isinstance(loaded, dict):

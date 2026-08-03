@@ -46,6 +46,11 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 OPT_IN_ENV = "SMOKE_LIVE"
 CLEANUP_ENV = "SMOKE_CLEANUP"
 PR_PLACEHOLDER = "https://example.invalid/repo/pull/1"
+SMOKE_LABEL = "documentation"
+"""A label a scratch project already has, because `add-label` deliberately does not create a missing one.
+
+An adapter that invented one would hide a typo in a real caller, so it refuses instead — which means this
+scenario has to name a label that exists rather than one that reads well."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
 VERB_TOOLS: dict[str, str] = {
@@ -157,13 +162,16 @@ class Smoke:
             ids = [str(entry.get("id")) for entry in found.get("issues", [])]
             self.check("find-issues", epic in ids, f"epic {epic} absent from {len(ids)} matching epics")
 
+        # Two created already parented and one created unparented: `link-parent` re-parents an existing
+        # issue, so aiming it at the parent an issue already has exercises nothing, and a tracker may refuse
+        # it outright as a duplicate relation.
         tasks: list[str] = []
         for n in (1, 2, 3):
-            task = _issue_id(await self.call("create-child", {
+            task = _issue_id(await self.call("create-child" if n < 3 else "create-issue", {
                 "issue_type": "task",
                 "title": f"[{run_tag}] task {n}",
                 "body": f"# {run_tag} task {n}\n\nChild task. Safe to delete.\n",
-                "parent": epic,
+                **({"parent": epic} if n < 3 else {}),
             }))
             if task:
                 tasks.append(task)
@@ -173,7 +181,13 @@ class Smoke:
             return
         first, second, third = tasks
 
-        await self.call("link-parent", {"issue": third, "parent": epic})
+        if await self.call("link-parent", {"issue": third, "parent": epic}) is not None:
+            read = await self.call("get-issue", {"issue": third})
+            self.check(
+                "link-parent",
+                read is not None and bool(read.get("parent")),
+                f"{third} reads back with no parent after being re-parented under {epic}",
+            )
 
         dependency = await self.call("add-dependency", {"issue": second, "blocked_by": first})
         if dependency is not None:
@@ -183,7 +197,7 @@ class Smoke:
                 f"the tracker did not verify {second} as blocked by {first}",
             )
 
-        await self.call("add-label", {"issue": first, "label": "decomposed"})
+        await self.call("add-label", {"issue": first, "label": SMOKE_LABEL})
         await self.call("assign", {"issue": first, "assignee": "@me"})
         for status in STATUSES:
             await self.call("set-status", {"issue": first, "status": status})
@@ -208,11 +222,19 @@ class Smoke:
         if attached is not None:
             self.check("attach-artifact", bool(attached.get("attached")), f"not attached: {attached}")
 
+        # Compared by content, not by existence: a download that wrote the wrong bytes passed an
+        # existence check as a success once already, and on disk the two are indistinguishable.
+        sent = artifact.read_text(encoding="utf-8")
         roundtrip = tmp / "roundtrip.txt"
         await self.call("attachment-download", {
             "issue": issue, "filename_or_id": artifact.name, "output_path": str(roundtrip),
         })
-        self.check("attachment-download", roundtrip.is_file(), f"nothing landed at {roundtrip}")
+        landed = roundtrip.read_text(encoding="utf-8") if roundtrip.is_file() else ""
+        self.check(
+            "attachment-download",
+            landed.strip() == sent.strip(),
+            f"what came back is not what was attached: sent {sent.strip()!r}, got {landed.strip()!r}",
+        )
 
         artifact.write_text(f"shipyard smoke transcript for {run_tag}\nrevised, still no secrets.\n", encoding="utf-8")
         await self.call("attachment-update", {"issue": issue, "path": str(artifact)})

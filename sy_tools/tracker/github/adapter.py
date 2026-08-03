@@ -662,9 +662,17 @@ class GithubAdapter:
     def _sync_attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
         """Write the artifact gist `filename_or_id` names on `issue` to `output_path`.
 
-        `gh gist view --raw` prints the gist's contents unrendered, which for the single-file gists
-        `attach-artifact` creates is the artifact itself. Empty output is a failure rather than a
-        zero-byte file: on disk the two are indistinguishable, and only one of them is an artifact.
+        `--filename` is not optional here, and leaving it off is not a smaller version of this call:
+        `gh gist view --raw` with no filename prepends the gist's *description* and a blank line to the
+        output, so it wrote a corrupted artifact — the description text, then the transcript — while
+        reporting a successful download. Naming the file returns exactly that file's bytes and nothing
+        else, on a multi-file gist as well as a single-file one. Measured against a real gist, because
+        this is the shape an offline fake reproduces only if it already knows about it: the mocked
+        transport answered the description-less content for the same argv, so the tests agreed with the
+        bug until a live run disagreed with both.
+
+        Empty output is a failure rather than a zero-byte file: on disk the two are indistinguishable,
+        and only one of them is an artifact.
 
         The bytes written are the artifact's text, not a byte-exact copy: `_gh` trims the output it
         returns, so a trailing newline is not preserved. That is stated rather than worked around because
@@ -673,7 +681,7 @@ class GithubAdapter:
         """
         issue = _checked_ref(issue)
         gist_id, filename, _ = _resolve_gist(issue, filename_or_id)
-        content = _gh(["gist", "view", gist_id, "--raw"])
+        content = _gh(["gist", "view", gist_id, "--raw", "--filename", filename])
         if not content:
             raise TrackerError(
                 f"gist {gist_id} holding {filename!r} on {issue} read back empty, so there is nothing to "
@@ -699,8 +707,10 @@ class GithubAdapter:
         file, and adding one under a name the gist already carries is not what replace means here.
 
         Verified by reading the gist back and comparing what it now holds against the file that was sent,
-        because `gh gist edit` prints nothing and exits zero either way. The comparison ignores surrounding
-        whitespace only, since `_gh` trims the output it returns.
+        because `gh gist edit` prints nothing and exits zero either way. The read-back names the file for
+        the same reason the download does: without `--filename`, `gh gist view --raw` prepends the gist's
+        description, so the comparison could never match and a replacement that had landed was reported as
+        unconfirmed. The comparison ignores surrounding whitespace only, since `_gh` trims its output.
         """
         issue = _checked_ref(issue)
         if not path.is_file():
@@ -714,7 +724,7 @@ class GithubAdapter:
             ) from None
         gist_id, filename, gist_url = _resolve_gist(issue, path.name)
         _gh(["gist", "edit", gist_id, "--filename", filename, str(path)])
-        if _gh(["gist", "view", gist_id, "--raw"]).strip() != intended.strip():
+        if _gh(["gist", "view", gist_id, "--raw", "--filename", filename]).strip() != intended.strip():
             raise TrackerError(
                 f"gist {gist_id} does not read back as the contents of {path.name} after the edit, so the "
                 f"replacement is unconfirmed and {issue} may still link the previous artifact."

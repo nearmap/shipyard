@@ -2092,6 +2092,74 @@ async def test_type_convert_refuses_an_unknown_canonical_token_before_it_calls_g
     assert fake.calls == [], "an unmappable type must fail before a card is touched"
 
 
+GIST_DESCRIPTION = "shipyard artifact 7"
+
+
+class _RealisticGist(_FakeSubprocess):
+    """A fake `gh` that reproduces the one `gist view` behaviour a canned reply cannot: the header.
+
+    Real `gh gist view <id> --raw` prepends the gist's *description* and a blank line; naming the file
+    with `--filename` returns that file's bytes alone. The canned fakes above answer the same content
+    for either argv, which is why both gist readers shipped without `--filename` and their tests agreed
+    with them — the download wrote the description into the artifact and the update's read-back could
+    never match, and only a live run disagreed. This fake encodes the distinction so the mock can no
+    longer be satisfied by the wrong call, on either read path.
+    """
+
+    def __init__(self, comments: tuple[int, str, str], content: str) -> None:
+        super().__init__()
+        self._comments = comments
+        self._content = content
+
+    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        self.kwargs.append(dict(kwargs))
+        self.threads.append(threading.get_ident())
+        head = argv[1:3]
+        if head == ["issue", "view"]:
+            code, out, err = self._comments
+        elif head == ["gist", "view"]:
+            named = "--filename" in argv
+            out = self._content if named else f"{GIST_DESCRIPTION}\n\n{self._content}"
+            code, err = 0, ""
+        elif head == ["gist", "edit"]:
+            code, out, err = 0, "", ""
+        else:
+            raise AssertionError(f"this fake was asked for an unexpected gh call: {argv}")
+        return subprocess.CompletedProcess(argv, code, out, err)
+
+
+@pytest.mark.anyio
+async def test_a_gist_read_that_omits_the_filename_reads_the_description_into_the_artifact(
+    monkeypatch, board, tmp_path
+):
+    """Both gist readers must name the file. Driven over a fake that tells the two argvs apart.
+
+    Found by a live run, not by the offline suite: the download wrote `<description>\n\n<transcript>`
+    to disk and still reported success, and the update's read-back compared against a header it had
+    itself asked for and called a landed replacement unconfirmed. This asserts the outcome each bug
+    produced, not merely the flag, so a future refactor that drops `--filename` fails on content.
+    """
+    destination = tmp_path / "downloaded.txt"
+    fake = _RealisticGist(_json({"comments": [_artifact_comment()]}), ARTIFACT_TEXT)
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    await adapter.GithubAdapter().attachment_download("7", ARTIFACT_NAME, destination)
+    written = destination.read_text(encoding="utf-8")
+    assert GIST_DESCRIPTION not in written, f"the gist description leaked into the artifact: {written!r}"
+    assert written == ARTIFACT_TEXT.strip(), written
+
+    path = _artifact(tmp_path)
+    fake = _RealisticGist(_json({"comments": [_artifact_comment()]}), path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(adapter, "subprocess", fake)
+
+    replaced = await adapter.GithubAdapter().attachment_update("7", path)
+    assert replaced["replaced"] == 1, (
+        f"a replacement that landed was reported unconfirmed, which is what comparing against the "
+        f"description header does: {replaced}"
+    )
+
+
 @pytest.mark.anyio
 async def test_attachment_download_writes_the_raw_gist_the_artifact_comment_names(monkeypatch, board, tmp_path):
     fake = _install(monkeypatch, _json({"comments": [_artifact_comment()]}), (0, ARTIFACT_TEXT, ""))
@@ -2101,7 +2169,7 @@ async def test_attachment_download_writes_the_raw_gist_the_artifact_comment_name
 
     assert [call[1:] for call in fake.calls] == [
         ["issue", "view", "7", *REPO_ARGS, "--json", "comments"],
-        ["gist", "view", GIST_ID, "--raw"],
+        ["gist", "view", GIST_ID, "--raw", "--filename", ARTIFACT_NAME],
     ], fake.calls
     assert destination.read_text(encoding="utf-8") == ARTIFACT_TEXT.strip(), (
         "the artifact's content must reach disk; gh's trailing newline is trimmed by the transport"
@@ -2165,7 +2233,7 @@ async def test_a_gist_id_names_one_of_two_artifacts_sharing_a_filename(monkeypat
 
     got = await adapter.GithubAdapter().attachment_download("7", "def456", tmp_path / "downloaded.txt")
 
-    assert fake.calls[1][1:] == ["gist", "view", "def456", "--raw"], (
+    assert fake.calls[1][1:] == ["gist", "view", "def456", "--raw", "--filename", ARTIFACT_NAME], (
         f"the id must select the artifact, not the first namesake: {fake.calls[1]}"
     )
     assert got["id"] == "def456", got
@@ -2184,7 +2252,7 @@ async def test_attachment_update_replaces_the_gist_file_in_place_and_reads_it_ba
     assert [call[1:] for call in fake.calls] == [
         ["issue", "view", "7", *REPO_ARGS, "--json", "comments"],
         ["gist", "edit", GIST_ID, "--filename", ARTIFACT_NAME, str(path)],
-        ["gist", "view", GIST_ID, "--raw"],
+        ["gist", "view", GIST_ID, "--raw", "--filename", ARTIFACT_NAME],
     ], fake.calls
     assert replaced == {
         "issue": "7",

@@ -178,7 +178,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" migrate \
   --settings .claude/settings.json --out .shipyard/config.json
 ```
 
-It maps every recognised legacy name to its config key, coerces numbers and booleans, and refuses to copy anything credential-shaped. Then **remove the migrated keys from the `env` block** — leaving both in place is a deliberate hard failure. `/sy:init-repo` does all of this interactively, including splitting per-person values into the local layer.
+It maps every recognised legacy name to its config key, coerces numbers and booleans, and refuses to copy anything credential-shaped. Half the map is the selected adapter's own (below), so `migrate` resolves the configuration first and refuses outright if it cannot — a conversion that dropped the adapter's keys and still wrote the file would look complete and would not be. Then **remove the migrated keys from the `env` block** — leaving both in place is a deliberate hard failure. `/sy:init-repo` does all of this interactively, including splitting per-person values into the local layer.
 
 The mapping:
 

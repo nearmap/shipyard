@@ -227,34 +227,35 @@ def layers() -> list[tuple[str, Path]]:
 def validate() -> list[str]:
     """Every reason the resolved configuration must be rejected, each naming its key and source.
 
-    A repo root that cannot be derived at all — a `CLAUDE_PROJECT_DIR` naming no git checkout, or a
-    `git` that cannot be run — is collected as one error and returned, not raised: this function
-    exists to report every problem it can see, and `repo_root()` is reached from `layers()` as well as
-    from `resolve()`, so it is asked once up front rather than allowed to exit the process from
-    whichever call site got there first. It is asked *first*, before `env_conflicts()`, because
-    `env_conflicts()` absorbs the same failure into an empty flat config and then reports every legacy
-    `SY_*` variable as disagreeing with a key that "resolves to None" — a derived, factually wrong
-    line that would otherwise bury the one real cause under it.
+    A configuration that cannot be resolved at all — a `CLAUDE_PROJECT_DIR` naming no git checkout, a
+    `git` that cannot be run, `Path.cwd()` on a deleted working directory, a layer file that cannot be
+    read or parsed — is collected as an error and returned, not raised: this function exists to report
+    every problem it can see, and both `repo_root()` and `resolve()` are reached from `layers()` and
+    `_layer_violations()` as well, so each is asked once up front rather than allowed to exit the
+    process from whichever call site got there first.
 
-    An unrunnable `git` now arrives as this module's own `SystemExit` from `_git_toplevel`, so it is
-    reported with its cause named and every other caller is covered by the same guard. The `OSError`
-    branch stays for what `repo_root()` can still raise directly — `Path.cwd()` on a deleted working
-    directory — which is likewise a fault to report rather than a traceback.
+    A resolution failure is reported *first*, and only the checks that need nothing resolved run
+    alongside it. `_legacy_env_conflicts()` absorbs the same failure into an empty flat config and
+    then reports every legacy `SY_*` variable as disagreeing with a key that "resolves to None" — a
+    derived, factually wrong line that would bury the one real cause — so it is skipped, while
+    `_outranking_env_conflicts()`, which reads only the environment, still runs: a root that will not
+    resolve is no reason to hide a live problem that has nothing to do with it.
     """
+    errors: list[str] = list(_outranking_env_conflicts())
     try:
         root = repo_root()
     except SystemExit as exc:
-        return [str(exc)]
+        return [str(exc), *errors]
     except OSError as exc:
-        return [f"sy_config: the repository root could not be resolved: {exc}"]
-    errors: list[str] = list(env_conflicts())
-    for label, path in layers():
-        if path.is_file():
-            errors.extend(_layer_violations(path, label))
+        return [f"sy_config: the repository root could not be resolved: {exc}", *errors]
     try:
         values, provenance = resolve()
     except SystemExit as exc:
-        return [*errors, str(exc)]
+        return [str(exc), *errors]
+    errors.extend(_legacy_env_conflicts())
+    for label, path in layers():
+        if path.is_file():
+            errors.extend(_layer_violations(path, label))
 
     flat = _flatten(values)
     tracker = flat.get("tracker")
@@ -280,12 +281,30 @@ def validate() -> list[str]:
 
 def env_conflicts() -> list[str]:
     """Config-shaped environment variables, which are an error and never an override."""
-    errors: list[str] = []
+    return [*_outranking_env_conflicts(), *_legacy_env_conflicts()]
+
+
+def _outranking_env_conflicts() -> list[str]:
+    """The conflicts that need nothing resolved: a variable Claude Code lets outrank this resolver.
+
+    Split from the legacy-name checks because it depends on the environment alone, so `validate()` can
+    keep reporting it when the configuration cannot be resolved at all.
+    """
     if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
-        errors.append(
+        return [
             "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
             "would silently reroute every agent off the model this config resolved. Unset it."
-        )
+        ]
+    return []
+
+
+def _legacy_env_conflicts() -> list[str]:
+    """Retired `SY_*` names still set in the environment, compared against what they now resolve to.
+
+    Needs a resolved configuration on both sides — the value to compare against, and the adapter's own
+    legacy names — so `validate()` only asks once resolution has succeeded.
+    """
+    errors: list[str] = []
     try:
         flat = _flatten(resolve()[0])
     except SystemExit:
@@ -389,12 +408,14 @@ def _git_toplevel(start: Path) -> Path | None:
 
     A `git` that cannot be *run* at all is refused here rather than folded into None, for the reasons
     `sy_tools/config.py::_git_toplevel` gives — None means "git ran and reported no checkout", which
-    the cwd path legitimately answers with a cwd fallback. Refused *here* so that every caller gets
-    it: `validate()` guards its own `repo_root()` call, but `resolve()`, `layers()`, `fingerprint()`
-    and the `show`/`get`/`agent` subcommands do not, and each used to traceback raw on a missing
-    binary. As this module's own `SystemExit`, it arrives as one refusal line for the CLI and is
-    caught by the callers that already degrade on one — `_adapter_map()`, `validate()`, and
-    `secret_guard.py`'s word-list fallback.
+    the cwd path legitimately answers with a cwd fallback. Refused *here* so that one guard covers
+    every path to the repository root: `validate()` guards its own `repo_root()` call, but `resolve()`,
+    `layers()` and the `show`/`get`/`agent`/`fingerprint` subcommands reach it without one, and each
+    used to traceback raw on a missing binary. The claim is scoped to root resolution — `fingerprint()`
+    also calls `sy_preflight.plugin_build()`, whose own `git rev-parse HEAD` is a separate, unguarded
+    subprocess in another script. As this module's own `SystemExit`, the refusal arrives as one line
+    for the CLI and is caught by the callers that already degrade on one — `_adapter_map()`,
+    `validate()`, and `secret_guard.py`'s word-list fallback.
     """
     if not start.is_dir():
         return None
@@ -747,10 +768,19 @@ def _show(*, as_json: bool) -> int:
 
 
 def _migrate(settings_path: Path, out_path: Path | None) -> int:
-    """Convert a legacy settings.json `env` block into config JSON, leaving secrets behind."""
+    """Convert a legacy settings.json `env` block into config JSON, leaving secrets behind.
+
+    Resolution is forced up front so that a failure to resolve refuses the whole conversion. Half the
+    legacy map is the selected adapter's own `legacy_env` block, reached through `_adapter_map()`,
+    which degrades to `{}` on any resolution failure — best-effort is right for a caller that only
+    wants tracker metadata, and wrong here: an unrunnable `git` or an unreadable layer would silently
+    cost every adapter-specific variable (`tracker_config.*`) and still write a file that looks
+    complete, which a one-time, data-preserving conversion must never do.
+    """
     env = _load_json(settings_path).get("env", {})
     if not env:
         raise SystemExit(f"sy_config: {settings_path} has no env block to migrate")
+    resolve()  # see the docstring: refuse loudly rather than migrate a partial map
     mapping = _legacy_env_map()
     config: dict = {"$schema": SCHEMA_URL}
     skipped: list[str] = []

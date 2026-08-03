@@ -66,8 +66,9 @@ def emit(reason: str | None, warning: str | None) -> None:
 
     `reason` names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value is
     ever read from the environment or printed here. `warning` goes in the top-level `systemMessage`
-    field, which Claude Code surfaces to the user on an allow decision too — unlike stderr, which on
-    this hook's exit-0 path is written only to an opt-in `--debug` log.
+    field, which per Claude Code's documented hook-output contract is surfaced to the user on an allow
+    decision too — unlike stderr, which that contract describes as reaching only an opt-in debug log on
+    a hook's exit-0 path.
     """
     payload: dict = {}
     if reason is not None:

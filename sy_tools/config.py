@@ -75,7 +75,10 @@ def repo_root() -> Path:
     `<root>/.shipyard/`, so an unusable root resolves to the shipped defaults with no tracker, no
     column names and nothing said about why. A `git` that cannot be run is a third, separately named
     `ConfigError` raised by `_git_toplevel` itself, so it reaches both paths — including the cwd
-    fallback, which has no pointer to blame — and is never reported as the pointer's fault.
+    fallback, which has no pointer to blame — and is never reported as the pointer's fault. A working
+    directory that can no longer be read at all — deleted or made inaccessible under a long-lived
+    server process — is a fourth named `ConfigError`, so it reaches `validate()` as a reportable fault
+    rather than a raw `FileNotFoundError` out of whichever tool call resolved first.
     """
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if project_dir:
@@ -87,7 +90,14 @@ def repo_root() -> Path:
                 "repository, or unset it to resolve from the working directory."
             )
         return root
-    return _git_toplevel(Path.cwd()) or Path.cwd()
+    try:
+        return _git_toplevel(Path.cwd()) or Path.cwd()
+    except OSError as exc:
+        raise ConfigError(
+            f"the working directory could not be read to derive the repository root: {exc}. Set "
+            "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a directory "
+            "that still exists."
+        ) from None
 
 
 def _git_toplevel(start: Path) -> Path | None:
@@ -245,7 +255,15 @@ def fingerprint() -> str:
 
 
 def validate() -> list[str]:
-    """Every reason the resolved configuration must be rejected. Side-effect-free."""
+    """Every reason the resolved configuration must be rejected. Side-effect-free.
+
+    A configuration that cannot be resolved at all — an unusable repository root, a layer file that
+    cannot be read or parsed — is returned as one error rather than raised, exactly as
+    `sy_config.validate()` does it: `validate_config`'s contract is to report a broken config, and an
+    exception escaping here reaches the operator as a traceback string instead of a report. Resolution
+    is therefore asked before the per-layer schema pass, which can only read files the resolver
+    already read successfully.
+    """
     errors: list[str] = []
     try:
         values, provenance = resolve()
@@ -499,6 +517,10 @@ def _load_json(path: Path) -> dict:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ConfigError(f"missing required file {path}") from None
+    except OSError as exc:
+        # An unreadable layer (a bad mode, a dead symlink target) is a configuration fault like any
+        # other, and `validate()`'s whole contract is to report one rather than raise on it.
+        raise ConfigError(f"{path} could not be read: {exc}") from None
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} is not valid JSON: {exc}") from None
     if not isinstance(loaded, dict):

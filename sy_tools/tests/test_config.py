@@ -234,10 +234,13 @@ def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(
     through a subprocess because the escape is a process exit, which an in-process call cannot
     distinguish from the collected result once it has already happened.
 
-    Also pinned here: the pointer's own error comes *first*. `env_conflicts()` absorbs the same
-    resolution failure into an empty flat config, so with any legacy `SY_*` variable also set it used
-    to lead with "disagrees with <key>, which resolves to None" — wrong on its face, since the shipped
-    defaults give that key a value — and left the real cause underneath it.
+    Also pinned here: what a resolution failure may and may not suppress. The pointer's own error comes
+    *first*, because the legacy-variable comparison absorbs the same failure into an empty flat config
+    and would lead with "disagrees with <key>, which resolves to None" — wrong on its face, since the
+    shipped defaults give that key a value. That derived line must be gone, but a check that needs
+    nothing resolved must survive: `CLAUDE_CODE_SUBAGENT_MODEL` reads only the environment, and an
+    unusable root is no reason to stop reporting it. Both variables are set here, so the assertions
+    cannot pass on a `validate()` that returns the root failure alone.
     """
     proc = _validate_probe(
         tmp_path,
@@ -245,10 +248,14 @@ def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(
         # trip the config seam that `scripts/validate.py` enforces over every file but the resolver.
         preamble="os.environ[next(n for n, p in sy_config.LEGACY_ENV.items() if p == 'ci.poll_timeout')] = '60'\n",
         CLAUDE_PROJECT_DIR=str(tmp_path / "definitely-not-a-repo"),
+        CLAUDE_CODE_SUBAGENT_MODEL="sonnet",
     )
     assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
-    first = proc.stdout.strip().splitlines()[0]
-    assert "CLAUDE_PROJECT_DIR" in first, f"the real cause must be the first line: {proc.stdout!r}"
+    lines = proc.stdout.strip().splitlines()
+    assert "CLAUDE_PROJECT_DIR" in lines[0], f"the real cause must be the first line: {proc.stdout!r}"
+    assert any("CLAUDE_CODE_SUBAGENT_MODEL" in line for line in lines[1:]), (
+        f"a root failure must not swallow the checks that need no root: {proc.stdout!r}"
+    )
     assert "resolves to None" not in proc.stdout, f"no derived follow-on error: {proc.stdout!r}"
 
 
@@ -262,6 +269,123 @@ def test_the_cli_validator_reports_a_git_it_cannot_run_rather_than_crashing(tmp_
     proc = _validate_probe(tmp_path, PATH=str(_empty_bin(tmp_path)))
     assert proc.returncode == 0, f"validate() crashed instead of collecting the failure: {proc.stderr}"
     assert "git could not be run" in proc.stdout, f"the failure must name its cause: {proc.stdout!r}"
+
+
+def test_the_cli_validator_collects_an_unreadable_layer_rather_than_exiting(tmp_path):
+    """The per-layer schema pass re-reads every present layer, outside the guard around `resolve()`.
+
+    A layer the process cannot read — a bad mode, a dead symlink target — arrives from `_load_json` as
+    the module's own `SystemExit`: the right shape for the CLI, the wrong one inside the function
+    contracted to *return* its problems as strings, where it exited the process from the schema pass
+    instead. Resolution is now asked first, so the schema pass only ever reads files the resolver has
+    already read successfully.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".shipyard").mkdir()
+    layer = tmp_path / ".shipyard" / "config.json"
+    layer.write_text(json.dumps(FIXTURE_LAYER), encoding="utf-8")
+    layer.chmod(0o000)
+    try:
+        proc = _validate_probe(tmp_path, HOME=str(tmp_path / "home"))
+    finally:
+        layer.chmod(0o644)
+    assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
+    assert "could not be read" in proc.stdout, f"the failure must name its cause: {proc.stdout!r}"
+
+
+def test_migrate_refuses_rather_than_writing_a_config_missing_the_adapter_variables(tmp_path):
+    """`migrate` is a one-time, data-preserving conversion, so a partial result must be a refusal.
+
+    Half the legacy map is the selected adapter's own `legacy_env` block, reached through
+    `_adapter_map()`, which degrades to `{}` on any resolution failure — best-effort is right for a
+    caller that only wants tracker metadata, and wrong here. With `git` off `PATH` that degradation
+    made `migrate` exit 0 having quietly dropped every `tracker_config.*` variable from the file whose
+    entire purpose is to carry them across: the same inputs migrated the adapter's keys with `git`
+    present and omitted them without it, with nothing printed about what vanished.
+    """
+    tracker, legacy = _an_adapter_declaring_legacy_env()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".shipyard").mkdir()
+    (tmp_path / ".shipyard" / "config.json").write_text(json.dumps({"tracker": tracker}), encoding="utf-8")
+    values = {name: f"legacy-value-{i}" for i, name in enumerate(sorted(legacy))}
+    (tmp_path / "settings.json").write_text(json.dumps({"env": values}), encoding="utf-8")
+
+    with_git = _migrate_probe(tmp_path)
+    assert with_git.returncode == 0, with_git.stderr
+    for value in values.values():
+        assert value in with_git.stdout, f"{value} never migrated at all: {with_git.stdout!r}"
+
+    without_git = _migrate_probe(tmp_path, PATH=str(_empty_bin(tmp_path)))
+    assert without_git.returncode != 0, (
+        f"migrate wrote a config missing the adapter's own keys: {without_git.stdout!r}"
+    )
+    assert without_git.stdout == "", f"a refusal must not also emit a partial config: {without_git.stdout!r}"
+    assert "git could not be run" in without_git.stderr, without_git.stderr
+
+
+def _an_adapter_declaring_legacy_env() -> tuple[str, dict[str, str]]:
+    """One shipped tracker adapter that declares legacy variable names of its own, read from the adapter.
+
+    Read rather than spelled: those names are the adapter's own vocabulary, and `scripts/validate.py`'s
+    config seam fails any file but the resolver and the adapters themselves for naming one.
+    """
+    for config_map in sorted((PLUGIN_ROOT / "skills" / "tracker").glob("*/config-map.json")):
+        legacy = json.loads(config_map.read_text(encoding="utf-8")).get("legacy_env", {})
+        if legacy:
+            return config_map.parent.name, legacy
+    pytest.fail("no shipped tracker adapter declares legacy_env")
+
+
+def _migrate_probe(cwd: Path, **env: str) -> subprocess.CompletedProcess:
+    """`sy_config.py migrate` onto stdout, where a silently partial conversion is visible in full."""
+    return subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "migrate", "--settings", "settings.json"],
+        cwd=cwd, capture_output=True, text=True, check=False,
+        env={
+            **os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "CLAUDE_PROJECT_DIR": str(cwd),
+            "HOME": str(cwd / "home"), **env,
+        },
+    )
+
+
+def test_the_server_validator_collects_an_unreadable_layer_rather_than_raising(fixture_repo):
+    """`validate_config`'s contract is to report a broken config rather than crash on one.
+
+    `_load_json` named a missing file and invalid JSON but let `PermissionError` through, so the SDK
+    turned it into an `isError` result carrying a raw traceback string instead of the clean report the
+    tool promises. The CLI resolver guards this; the module docstring claims the two resolve
+    identically, and error handling is part of that.
+    """
+    layer = fixture_repo / ".shipyard" / "config.json"
+    layer.chmod(0o000)
+    try:
+        with pytest.raises(config.ConfigError, match="could not be read"):
+            config.reload()  # drops the hot state, then cannot re-resolve
+        errors = config.validate()  # ... which validate() must report rather than raise again
+    finally:
+        layer.chmod(0o644)
+    assert any("could not be read" in e for e in errors), errors
+
+
+def test_a_working_directory_that_cannot_be_read_is_refused_by_name(tmp_path, monkeypatch):
+    """The cwd fallback calls `Path.cwd()`, which a deleted working directory answers with `OSError`.
+
+    A server process outlives the directory it was launched from, so this is the resolver's own fault
+    to name — not a raw `FileNotFoundError` out of whichever tool call resolved first, and not
+    something `validate()` may raise.
+    """
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    gone = tmp_path / "deleted-under-us"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+
+    with pytest.raises(config.ConfigError, match="working directory could not be read"):
+        config.reload()
+    assert any("working directory could not be read" in e for e in config.validate()), (
+        "validate() must collect the failure rather than raise it"
+    )
 
 
 @pytest.mark.parametrize("pointer", [None, "self"])

@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pytest
@@ -607,7 +608,7 @@ async def test_get_issue_says_whether_the_comment_page_left_anything_out(
     assert len(full["comments"]) == len(thread["comments"]), "every comment on the page must still be returned"
 
 
-EPIC = {
+EPIC: dict[str, Any] = {
     "id": "10000",
     "key": "PROJ-1",
     "fields": {

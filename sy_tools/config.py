@@ -112,6 +112,10 @@ def _git_toplevel(start: Path) -> Path | None:
     nothing naming the cause; under `CLAUDE_PROJECT_DIR` it would instead blame the pointer for not
     being a checkout, which is false when the pointer is fine and the binary is absent. A missing
     binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
+
+    `stdin` is closed for the same reason the tracker adapters close it on their own subprocesses: this
+    runs inside the MCP server, whose stdin is the JSON-RPC transport, and a child that inherits it can
+    consume a frame the server was going to read.
     """
     if not start.is_dir():
         return None
@@ -119,6 +123,7 @@ def _git_toplevel(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except OSError as exc:
         raise ConfigError(

@@ -128,3 +128,23 @@ def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
     assert "redaction.extra_words" in payload.get("systemMessage", ""), (
         f"the narrowed gate must be reported to the user, not only on unread stderr: {payload!r}"
     )
+
+
+def test_the_scanner_does_not_inherit_the_servers_stdin(planted, monkeypatch):
+    """The scanner is spawned from inside the MCP server, whose stdin is the JSON-RPC transport.
+
+    Same invariant the tracker adapters pin for their own spawns: a child that inherits this stdin
+    can consume a frame the server was going to read, desynchronising the session.
+    """
+    seen: list[dict] = []
+
+    def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        seen.append(kwargs)
+        Path(cmd[cmd.index("--report-path") + 1]).write_text("[]", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(secrets.subprocess, "run", fake_run)
+    secrets.scan_file(planted)
+    assert seen and all(kwargs.get("stdin") == subprocess.DEVNULL for kwargs in seen), (
+        f"the scanner was handed the server's own stdin: {seen}"
+    )

@@ -735,3 +735,23 @@ def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):
     assert summary["previous_fingerprint"] == before
     assert config.get("columns.done") == "Shipped"
     assert config.reload()["changed"] is False, "a reload with no edit must report no change"
+
+
+def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_repo, monkeypatch):
+    """Config resolution runs inside the MCP server, whose stdin is the JSON-RPC transport.
+
+    Same invariant the tracker adapters pin for their own spawns: a child that inherits this stdin
+    can consume a frame the server was going to read, desynchronising the session.
+    """
+    seen: list[dict] = []
+    real_run = subprocess.run
+
+    def record(cmd, **kwargs):
+        seen.append(kwargs)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(config.subprocess, "run", record)
+    config.reload()
+    assert seen and all(kwargs.get("stdin") == subprocess.DEVNULL for kwargs in seen), (
+        f"a git call was handed the server's own stdin: {seen}"
+    )

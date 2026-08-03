@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import anyio
@@ -665,6 +666,139 @@ async def test_an_unrelated_malformed_block_beside_a_valid_log_still_posts(monke
         result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"an unrelated malformed block must not be a candidate: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
+
+
+def _escaped_id() -> str:
+    """The schema id with its last character written as a `\\u` escape, so no literal id is present.
+
+    Both halves are asserted rather than assumed: an escape that did not decode to the id, or a
+    spelling that still held the id literally, would quietly turn every test below into a check of
+    the case it exists to defeat — the same trap `_claiming_json_that_does_not_parse` guards against.
+    """
+    escaped = SCHEMA_ID[:-1] + "\\u00" + format(ord(SCHEMA_ID[-1]), "x")
+    assert json.loads(f'"{escaped}"') == SCHEMA_ID, f"{escaped} must decode to the schema id"
+    assert SCHEMA_ID not in escaped, f"{escaped} must not name the schema id literally"
+    return escaped
+
+
+def _escaped_metrics_block(**fields: Any) -> str:
+    """A fenced metrics record whose `schema` value is escaped, hand-built to keep the escape intact."""
+    written = "".join(f', "{name}": {json.dumps(value)}' for name, value in fields.items())
+    return '```json\n{"schema": "' + _escaped_id() + '"' + written + "}\n```\n"
+
+
+@pytest.mark.anyio
+async def test_a_record_that_escapes_the_schema_id_is_still_validated(monkeypatch):
+    """Identity had two rules — a parse for what counts as the record, literal text for what arms the
+    check — and the bypass lived in the gap: JSON can spell one string many ways.
+
+    This body holds no literal occurrence of the id at all, so the literal arming saw nothing to check
+    and the record posted whole and unread — blank `task`, a negative count and a misspelled field
+    name, every one of them the failure this validation exists to catch. `json.loads` normalises the
+    escape, so it is a claim by every definition except the one the code was using.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = _escaped_metrics_block(task="   ", ci_fix_rounds=-7, ci_fix_round=2)
+    assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        # `extra="forbid"` fails before the model validators run at all, so the same record without the
+        # misspelled field is what shows the escaped content reaching them: the first to raise wins,
+        # which is the blank `task`.
+        rest = await client.call_tool(
+            "post-comment", {"issue": "PROJ-1", "body": _escaped_metrics_block(task="   ", ci_fix_rounds=-7)}
+        )
+    assert result.is_error is True, f"an escaped record was posted unvalidated: {body}"
+    text = _text(result)
+    assert "does not match the schema" in text, f"the escaped record must be validated, not merely refused: {text}"
+    assert "ci_fix_round" in text, f"the refusal must name the misspelled field it rejected: {text}"
+    assert rest.is_error is True and "cannot be blank" in _text(rest), (
+        f"an escaped record must be checked field by field like any other: {_text(rest)}"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_valid_record_that_escapes_the_schema_id_posts(monkeypatch):
+    """Deciding identity on the parsed value means *validating* escaped records, not refusing them.
+
+    The counterweight to the test above: a record is judged by what it says, so an escaped spelling of
+    the id is a machine log to check against the schema like any other, and one that passes posts.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = _escaped_metrics_block(task="PROJ-1", ci_fix_rounds=1)
+    assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, f"a valid escaped record must post: {result.content}"
+    assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
+
+
+@pytest.mark.anyio
+async def test_an_escaped_second_record_is_counted_beside_a_literal_valid_one(monkeypatch):
+    """The tally has to see an escaped claim too, or a valid block is cover for one nobody read.
+
+    A literal valid log beside an escaped record correcting the gate verdict with no reason: counting
+    claims by literal text found only the first, validated it alone, and posted a `gate_false_pass`
+    the schema would have rejected — the ambiguity case wearing an escape instead of a trailing comma.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    body = _metrics_comment() + "\nAnd the correction:\n\n" + _escaped_metrics_block(
+        task="PROJ-1", gate_false_pass=True
+    )
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"an escaped second record was invisible to the tally: {body}"
+    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
+        f"the refusal must name the schema and count the escaped record too: {_text(result)}"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "wrapper"),
+    [("wrapped in an array", "[{inner}]"), ("nested under a key", '{{"log": {inner}}}')],
+)
+async def test_an_escaped_record_one_level_down_is_still_a_claim(monkeypatch, case, wrapper):
+    """Identity is one rule at every depth, or the gap reopens exactly one level lower.
+
+    A literal `[{"schema": "shipyard.ship_metrics.v1", ...}]` is already refused, caught by the
+    raw-text fallback on the block's content. Checking the parsed value only at the top level would
+    let the *escaped* spelling of that same block post unread — the same two-rules asymmetry, one
+    nesting deep. Counted, never validated: what a machine log is stays the top-level object.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    inner = '{"schema": "' + _escaped_id() + '", "task": "   ", "ci_fix_round": 2}'
+    body = "```json\n" + wrapper.format(inner=inner) + "\n```\n"
+    assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is True, f"an escaped record {case} was posted unread: {body}"
+    assert "carries no fenced block that parses as one" in _text(result), (
+        f"a buried claim is the no-block refusal, not a validated record: {_text(result)}"
+    )
+
+
+def test_fence_detection_stays_linear_on_a_body_of_unclosed_openers():
+    """The scan is linear, and this is the body that proves it: 40,000 openers that never close.
+
+    The backtracking pattern this replaced took 91 seconds here, because a lazy match reaching for the
+    next closing marker re-scans the rest of the body once per opener. `_validate_machine_log` runs
+    synchronously inside the `post_comment` coroutine, so that was not one slow call — it was the whole
+    server's event loop wedged for every concurrent tool call by one malformed comment.
+
+    The bound is deliberately loose (the scan measures in single-digit milliseconds) so a slow runner
+    cannot make this flaky while still failing by three orders of magnitude on a quadratic regression.
+    """
+    body = f"The {SCHEMA_ID} log was meant to go here:\n" + "```json\n" * 40_000
+    start = time.perf_counter()
+    with pytest.raises(server.ToolError, match="carries no fenced block"):
+        server._validate_machine_log(body)
+    assert time.perf_counter() - start < 2.0, "fence detection is backtracking again, not scanning"
+
+    start = time.perf_counter()
+    server._validate_machine_log("```json\n" * 40_000)
+    assert time.perf_counter() - start < 2.0, "a body that claims nothing must not be scanned at all"
 
 
 @pytest.mark.anyio

@@ -249,42 +249,80 @@ async def post_comment(
     log is always its own comment, never appended to prose, and honouring that is yours to do.
     `link-pr`'s durable half is this call carrying the PR URL.
 
-    A body that names `shipyard.ship_metrics.v1` must carry exactly one fenced JSON block that
-    validates against that schema, and must not name the id anywhere else — none, several, one that
-    does not match, or a mention loose in the body or in a fence left unclosed, and nothing is
-    posted; every other body passes through unchanged.
+    A body that claims `shipyard.ship_metrics.v1` — by naming it, or by carrying a block that parses
+    as it however the JSON escaped the id — must carry exactly one fenced JSON block that validates
+    against that schema, and must not name the id anywhere else: none, several, one that does not
+    match, or a mention loose in the body or in a fence left unclosed, and nothing is posted. Every
+    other body passes through unchanged.
     """
     _required(issue=issue)
     _validate_machine_log(body)
     return await tracker.adapter().post_comment(issue, body)
 
 
-FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})[^\n]*\n(.*?)^[ \t]*(?:`{3,}|~{3,})[ \t]*$", re.M | re.S)
-"""Each fenced block's inner text, from a body whose fences may be backticks or tildes.
+_FENCE_OPENER = re.compile(r"[ \t]*(?:`{3,}|~{3,})")
+"""A line that opens a fenced block: the marker, then anything at all in the info-string position."""
 
-The info string is not matched on: `handoff-accounting.md` shows the metrics block as ```` ```json ````,
-but a caller that omits the language must not thereby skip validation — and the check that decides
-whether a block is a machine log is the `schema` key inside it, not the fence it arrived in.
-"""
+_FENCE_CLOSER = re.compile(r"[ \t]*(?:`{3,}|~{3,})[ \t]*")
+"""A line that closes one: the marker alone. Text after the marker leaves the block open."""
 
 
-def _outside_fences(body: str, matches: list[re.Match[str]]) -> str:
+def _fenced_contents(body: str) -> list[tuple[int, int]]:
+    """Every properly closed fenced block's *content* span, as offsets into `body`.
+
+    One forward pass over the lines, because the equivalent backtracking pattern was quadratic: a
+    lazy `(.*?)` reaching for the next closing marker re-scans the whole rest of the body once per
+    opener that never closes, which measured 93 seconds on a 320 KB body holding 40,000 unclosed
+    openers. That is not merely slow — `_validate_machine_log` runs synchronously inside the
+    `post_comment` coroutine, so one malformed body stalls the event loop for every other tool call
+    in flight. This scan is linear in the body's length and keeps no state beyond the open fence.
+
+    The matching rules are the pattern's, unchanged, and each is load-bearing:
+
+    * Lines are split on `\\n` alone. `str.splitlines` also splits on `\\r`, `\\f` and more, which
+      would newly *find* the block in a CRLF body — where `` ```\\r `` is not the marker alone, so
+      nothing closes and the whole body stays unfenced text, which is the refusal that body earns.
+    * The info string is anything. `handoff-accounting.md` writes the metrics block as ```` ```json ````,
+      but a caller that omits the language must not thereby skip validation, and what decides whether
+      a block is a machine log is the `schema` key inside it, not the fence it arrived in.
+    * An opener needs a newline after it, so a marker on an unterminated last line opens nothing.
+    * Backticks and tildes are interchangeable within a pair and the counts need not match. Loose on
+      purpose: a looseness here can only ever *find* a block, and a block found is a block validated,
+      where a block missed is one that reaches the tracker unread.
+    """
+    spans: list[tuple[int, int]] = []
+    lines = body.split("\n")
+    last = len(lines) - 1
+    content_start: int | None = None
+    offset = 0
+    for index, line in enumerate(lines):
+        line_start, offset = offset, offset + len(line) + 1
+        if content_start is None:
+            if index < last and _FENCE_OPENER.match(line):
+                content_start = offset
+        elif _FENCE_CLOSER.fullmatch(line):
+            spans.append((content_start, line_start))
+            content_start = None
+    return spans
+
+
+def _outside_fences(body: str, spans: list[tuple[int, int]]) -> str:
     """Whatever is left of the body once every properly closed block's *content* is cut out.
 
     Cut by span rather than by substring replacement: two identical blocks in one body would make
     `str.replace` remove the wrong copies and leave the count short.
 
-    The span cut is the content group's, not the whole match's, so the fence delimiter lines stay in
-    what comes back. That matters for the opening line: `FENCE`'s content group starts after the
-    first newline, so anything sitting in the info-string position — conventionally a bare language
-    tag, but the pattern constrains it to nothing — is not content and is never parsed or validated.
-    Cutting the whole match swallowed it, which let one fence carry a second machine log there that
-    reached the tracker unread. Leaving it in makes it a stray mention like any other unfenced text.
+    The cut is the content span, not the whole block, so the fence delimiter lines stay in what comes
+    back. That matters for the opening line: content starts after its newline, so anything sitting in
+    the info-string position — conventionally a bare language tag, but anything is allowed there — is
+    not content and is never parsed or validated. Cutting the whole block swallowed it, which let one
+    fence carry a second machine log there that reached the tracker unread. Leaving it in makes it a
+    stray mention like any other unfenced text.
     """
     kept, cursor = [], 0
-    for match in matches:
-        kept.append(body[cursor : match.start(1)])
-        cursor = match.end(1)
+    for start, end in spans:
+        kept.append(body[cursor:start])
+        cursor = end
     kept.append(body[cursor:])
     return "".join(kept)
 
@@ -297,14 +335,50 @@ def _as_json(block: str) -> object:
         return None
 
 
+def _record(parsed: object) -> dict[Any, Any] | None:
+    """The `shipyard.ship_metrics.v1` record a parsed block *is*, or None when it is not one.
+
+    Identity is decided on the **parsed** value, never on the raw text, so it holds however the JSON
+    spelled that string: `"shipyard.ship_metrics.v\\u0031"` decodes to this id and is this record.
+    """
+    if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID:
+        return parsed
+    return None
+
+
+def _claims_within(parsed: object) -> bool:
+    """Whether a parsed block carries a `shipyard.ship_metrics.v1` object at any depth inside it.
+
+    A record one level down is not a machine log this can validate — `_record` is what a machine log
+    *is* — but it is unmistakably a claim, and the only alternative to counting it is posting it
+    unread. Escaping is why the depth matters: a literal `[{"schema": "shipyard.ship_metrics.v1"}]`
+    is caught by the raw-text fallback, so leaving the escaped spelling of that same block to pass
+    would be the identity-versus-text gap reopened one level down.
+
+    Iterative rather than recursive: `json.loads` accepts nesting deep enough to blow a recursive
+    walk's stack, and a body should not be able to choose which exception this check raises.
+    """
+    stack = [parsed]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            if value.get("schema") == SCHEMA_ID:
+                return True
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return False
+
+
 def _validate_machine_log(body: str) -> None:
     """Reject a malformed `shipyard.ship_metrics.v1` block before the comment is posted.
 
-    Naming the schema id anywhere in the body is what arms this check, and a body that names it must
-    then carry exactly one fenced block that validates against it. Everything else — prose, a code
-    sample, another machine log's schema id — never mentions this id and passes through untouched.
+    Naming the schema id anywhere in the body arms this check, and so does carrying a fenced block
+    that parses as this schema however it spelled the id; a body that does either must then carry
+    exactly one fenced block that validates against it. Everything else — prose, a code sample,
+    another machine log's schema id — never claims this id and passes through untouched.
 
-    Arming on the id rather than only on a *parsed* block is deliberate, and is what closes the
+    Arming on the id rather than only on a *valid* block is deliberate, and is what closes the
     bypasses this had: a trailing comma inside the fence, a CRLF body whose closing fence the pattern
     cannot see, a heading with the block pasted as prose, all reached the tracker unvalidated because
     each one failed to produce a block to validate and a missing block was read as "nothing to check".
@@ -318,50 +392,84 @@ def _validate_machine_log(body: str) -> None:
     unvalidated-block incident wearing a valid block as cover. Nothing is chosen for the caller —
     the comment is refused and the extra block has to go.
 
-    A block counts as claiming the schema when its *raw text* names the id, before any parse is
-    attempted — the same reason the body-level check arms on the id. Counting only blocks that parsed
+    A block whose content will not parse counts as claiming the schema when its *raw text* names the
+    id — the same reason the body-level check arms on the id. Counting only blocks that parsed
     into a matching object reopened the bypass one level down: a valid block beside a second block
     that named this id but held a trailing comma left the malformed one invisible to both the
     ambiguity count and the schema check, so the valid one validated alone and the comment posted
     carrying an unread machine log. Unparseable-but-claiming is a refusal, never a block to skip.
 
-    Counting only what `FENCE` matched left that same bypass open one level further down, because the
-    pattern sees a block only once its closing marker is a bare fence on a line of its own: an unclosed
-    fence, or a closing marker with text after it, produced no match to tally at all. So the id is also
-    looked for in what is left of the body after every matched block is cut out, and a mention there is
+    Counting only what `_fenced_contents` finds left that same bypass open one level further down, since
+    a block is only found once its closing marker is a bare fence on a line of its own: an unclosed
+    fence, or a closing marker with text after it, produced nothing to tally at all. So the id is also
+    looked for in what is left of the body after every found block is cut out, and a mention there is
     a refusal on its own terms — with a valid block beside it, that mention is one more candidate the
     caller has to resolve, and without one it is the malformed-log case the body-level arming already
     caught. The narrowness that keeps this usable is unchanged: unfenced *text* is only a candidate
     when it names this id, so quoting someone else's broken JSON beside a valid log still posts.
 
-    "Raw text" means the block's *content*, and the split between content and delimiter is where this
-    bypass surfaced last: a fence's opening line can carry text after the marker, and that text is not
-    content, so it is never parsed or validated. Tallying candidates off the whole match counted a
+    "Raw text" means the block's *content*, and the split between content and delimiter is where that
+    bypass surfaced next: a fence's opening line can carry text after the marker, and that text is not
+    content, so it is never parsed or validated. Tallying candidates off the whole block counted a
     fence whose info string held a complete second machine log — while validating only the content
     beside it, which was itself valid — so the comment posted with the info string's log inside it
-    verbatim. Both halves of the answer are one change: candidates are counted in the content group,
-    and `_outside_fences` cuts only that group, which leaves the info string to the stray-mention
+    verbatim. Both halves of the answer are one change: candidates are counted in the content span,
+    and `_outside_fences` cuts only that span, which leaves the info string to the stray-mention
     check. A plain language tag mentions nothing and changes nothing.
+
+    All of which was decided by *literal text* while what counts as the record was decided by a
+    *parse* — two rules for one question, and the bypass lives in the gap between them, because JSON
+    can spell the same string many ways. A block reading `{"schema": "shipyard.ship_metrics.v\\u0031",
+    ...}` holds no literal occurrence of the id at all, so it armed nothing and posted whole: blank
+    task, negative counts, misspelled field names, none of it looked at. Beside a valid block it was
+    worse, being invisible to the tally too, so the valid one validated alone. So identity is settled
+    once, on the parsed value (`_record`), for both arming and counting — immune to any escaping,
+    because `json.loads` has already undone it. Literal text survives only as the *fallback* for
+    content a parse cannot speak to, which is what keeps an unparseable claim a refusal, and as the
+    only available signal for a stray mention, which is text and nothing else.
+
+    One rule, one question, at every depth: `_claims_within` looks for that same parsed identity below
+    the top level too, because the fallback catches `[{"schema": "shipyard.ship_metrics.v1"}]` on its
+    text while the top-level parse alone would let the escaped spelling of that same block through —
+    the gap this closes, reopened one level down. Such a claim is counted but never validated: what a
+    machine log *is* stays the top-level object, so a buried one is refused as no block at all.
     """
-    if SCHEMA_ID not in body:
+    named = SCHEMA_ID in body
+    # A JSON string decodes to this id either by naming it outright or by escaping part of it, and every
+    # JSON escape is a backslash — so a body with neither cannot hold a claim in any spelling, and is
+    # answered without scanning it for fences at all. Almost every body is this one.
+    if not named and "\\" not in body:
         return
-    matches = list(FENCE.finditer(body))
-    claiming = [match for match in matches if SCHEMA_ID in match.group(1)]
-    stray = SCHEMA_ID in _outside_fences(body, matches)
-    if len(claiming) + stray > 1:
+    spans = _fenced_contents(body)
+    records: list[dict[Any, Any]] = []
+    unread = 0
+    for start, end in spans:
+        content = body[start:end]
+        parsed = _as_json(content)
+        record = _record(parsed)
+        if record is not None:
+            records.append(record)
+        elif SCHEMA_ID in content or _claims_within(parsed):
+            unread += 1
+    # The other half of arming: a body that never names the id in plain text is still this check's
+    # business the moment a block claims this schema, which is the escaped-record case.
+    if not named and not records and not unread:
+        return
+    stray = SCHEMA_ID in _outside_fences(body, spans)
+    blocks = len(records) + unread
+    if blocks + stray > 1:
         raise ToolError(
-            f"this comment claims {SCHEMA_ID} in {len(claiming) + stray} places, so it was not posted: "
-            f"{len(claiming)} in a properly closed fenced block"
+            f"this comment claims {SCHEMA_ID} in {blocks + stray} places, so it was not posted: "
+            f"{blocks} in a properly closed fenced block"
             + (", and once outside any such block" if stray else "")
             + ". Which one is the machine log is ambiguous, and validating one of them would post the "
             "others unchecked. A machine log is always its own comment carrying exactly one such block: "
             "post the log on its own, and when quoting earlier numbers as prose, leave the literal id "
             "out — say `the ship metrics log` instead, because naming the id arms this check."
         )
-    parsed = _as_json(claiming[0].group(1)) if claiming else None
-    if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID:
+    if records:
         try:
-            ShipMetricsV1.model_validate(parsed)
+            ShipMetricsV1.model_validate(records[0])
         except ValidationError as exc:
             raise ToolError(
                 f"this comment carries a {SCHEMA_ID} block that does not match the schema, so it was "
@@ -370,8 +478,11 @@ def _validate_machine_log(body: str) -> None:
                 + ". The field definitions are in skills/ship/references/handoff-accounting.md."
             ) from None
         return
+    # Exactly one claim and it is not a record: an unparseable block, a claim buried inside a block that
+    # parsed as something else, or a mention outside every block. Zero claims cannot arrive here — a
+    # named id sits either in some block's content, which makes that block a claim, or outside them all.
     raise ToolError(
-        f"this comment names {SCHEMA_ID} but carries no fenced block that parses as one, so it was not "
+        f"this comment claims {SCHEMA_ID} but carries no fenced block that parses as one, so it was not "
         "posted. A machine log is a fenced JSON object whose `schema` key is that id: check the JSON "
         "parses (a trailing comma is the usual culprit), that the closing fence is on a line of its own "
         "with nothing after it and Unix line endings, and that the block is fenced at all. If the comment "

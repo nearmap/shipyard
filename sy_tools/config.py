@@ -396,19 +396,23 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
     `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
     guarded resolve from one cwd concept; the default is the resolved repository root, which is what
     a direct in-session caller means. Containment against the resolved *root* is `scratch_dir`'s own
-    job, never restated here — but the resolved *directory* is additionally checked against both this
-    repository's logical checkout and `start`'s own actual working tree, because `scratch.dir` itself
-    is one of the values a repo-committed `.shipyard/config.json` can set: `scratch_dir()` already
-    refuses a non-absolute root, but nothing stops an absolute value that happens to equal or contain
-    the checkout being reviewed, which would hand `review_guard.py`'s hunt-mode write sandbox the
-    checkout's own source. Checking only the logical (main) checkout is not enough: `sy:gate` and
-    `sy:hunt` always run from a *worktree* of it, never the main checkout itself, so a `scratch.dir`
-    that overlaps only the worktree — for example a naturally-plausible `worktree.root` nested under
-    the same root as `scratch.dir` — would pass a main-checkout-only check while still exposing the
-    one checkout actually under review. The comparison is by device and inode, not by resolved
-    spelling: `Path.resolve()` normalizes symlinks, `.` and `..`, but not case, and a case-insensitive
-    filesystem (APFS's default) lets a differently-cased spelling of the same ancestor stay
-    string-unequal to a checkout path while being the identical directory on disk.
+    job, never restated here — but the resolved *directory* is additionally checked against every
+    worktree of this repository, main and linked alike, because `scratch.dir` itself is one of the
+    values a repo-committed `.shipyard/config.json` can set: `scratch_dir()` already refuses a
+    non-absolute root, but nothing stops an absolute value that happens to equal or contain a checkout
+    being reviewed, which would hand `review_guard.py`'s hunt-mode write sandbox that checkout's own
+    source. Checking only `start`'s own working tree is not enough: a `PreToolUse` hook's cwd is the
+    *main* checkout in the overwhelming majority of `sy:gate`/`sy:hunt` runs, not the build/slice/review
+    worktree the tool call actually targets — `/sy:ship` names the worktree only in the dispatched
+    agent's prompt text, never as the subagent's own cwd — so a `scratch.dir` that overlaps some other,
+    currently-inactive worktree of the repo (for example a naturally-plausible `worktree.root` nested
+    under the same root as `scratch.dir`) would pass a check scoped to `start` alone while still
+    exposing whichever worktree an absolute-path write actually targets. `_all_worktrees` enumerates
+    every worktree from git's own bookkeeping, independent of `start`, so this holds regardless of
+    which one the current invocation happens to be running from. The comparison is by device and
+    inode, not by resolved spelling: `Path.resolve()` normalizes symlinks, `.` and `..`, but not case,
+    and a case-insensitive filesystem (APFS's default) lets a differently-cased spelling of the same
+    ancestor stay string-unequal to a checkout path while being the identical directory on disk.
     """
     origin = Path(start) if start is not None else repo_root()
     common = _git_common_dir(origin)
@@ -419,19 +423,47 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
         )
     logical = _logical_repo(origin)
     directory = scratch_dir(logical.name)
-    checkout = _git_toplevel(origin) or origin
-    for guarded in (logical, checkout):
+    for guarded in _all_worktrees(common, logical):
         if _same_directory(directory, guarded) or any(
             _same_directory(directory, parent) for parent in guarded.parents
         ):
             raise ConfigError(
-                f"the resolved scratch directory {directory.resolve()} contains a checkout this "
-                f"repository resolves from ({guarded}). scratch.dir must not resolve to that checkout "
-                "or an ancestor of it — every file inside it would then satisfy the containment check "
-                "that is supposed to keep hunt out of it; check for a misconfigured scratch.dir or "
+                f"the resolved scratch directory {directory.resolve()} contains a worktree of this "
+                f"repository ({guarded}). scratch.dir must not resolve to that worktree or an ancestor "
+                "of it — every file inside it would then satisfy the containment check that is "
+                "supposed to keep hunt out of it; check for a misconfigured scratch.dir or "
                 "worktree.root in a committed or local .shipyard/config.json."
             )
     return directory
+
+
+def _all_worktrees(common: Path, logical: Path) -> list[Path]:
+    """Every worktree of this repository — the main checkout plus every linked worktree — read
+    directly from git's own bookkeeping under `<common>/worktrees/`, independent of which one the
+    current invocation happens to be running from.
+
+    A `PreToolUse` hook's cwd is the main checkout in the overwhelming majority of `sy:gate`/`sy:hunt`
+    runs, never the build/slice/review worktree `/sy:ship` actually dispatched the tool call against —
+    so a check scoped to the current invocation's own working tree misses every *other* live worktree
+    of the same repository, exactly where those worktrees live. Each linked worktree's own absolute
+    path is `<common>/worktrees/<id>/gitdir`'s content with the trailing `.git` stripped — that file is
+    git's own record of where the worktree lives, not a guess, so this needs no cwd and no assumption
+    about which worktree exists on disk beyond `common` itself.
+    """
+    worktrees = [logical]
+    worktrees_dir = common / "worktrees"
+    if not worktrees_dir.is_dir():
+        return worktrees
+    for entry in sorted(worktrees_dir.iterdir()):
+        gitdir_file = entry / "gitdir"
+        if not gitdir_file.is_file():
+            continue
+        try:
+            pointed = Path(gitdir_file.read_text(encoding="utf-8").strip())
+        except OSError:
+            continue
+        worktrees.append(pointed.parent)
+    return worktrees
 
 
 def _logical_repo(start: Path) -> Path:

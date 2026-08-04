@@ -520,6 +520,23 @@ def test_scratch_dir_refuses_a_non_absolute_root(fixture_repo):
         config.repo_scratch_dir(fixture_repo)
 
 
+def test_same_directory_identifies_a_symlinked_alias_portably(tmp_path):
+    """`_same_directory`'s whole purpose is to catch aliasing a spelling comparison misses, and the
+    case-variant regression coverage below only exercises that on a case-insensitive filesystem (a
+    no-op on Linux CI). A symlink alias is a portable way to exercise the same device+inode comparison
+    on any filesystem, so this runs unconditionally everywhere.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    assert str(link) != str(real)
+    assert config._same_directory(link, real)
+    other = tmp_path / "other"
+    other.mkdir()
+    assert not config._same_directory(link, other)
+
+
 def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo):
     """Even an absolute `scratch.dir` must not resolve to a directory that equals or contains the
     checkout it is asked to provide a scratch directory for -- `scratch_dir()`'s own containment check
@@ -556,40 +573,63 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
         layer = {**FIXTURE_LAYER, "scratch": {"dir": spelling}}
         (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
         config.reload()
-        with pytest.raises(config.ConfigError, match="contains a checkout this repository resolves from"):
+        with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
             config.repo_scratch_dir(fixture_repo)
 
 
-def test_repo_scratch_dir_refuses_a_root_that_overlaps_only_the_review_worktree(fixture_repo):
-    """`sy:gate`/`sy:hunt` always run from a *worktree* of the logical repository, never the main
-    checkout itself -- so checking the overlap guard only against the main checkout misses a
-    `scratch.dir` that overlaps only the worktree actually under review, which is exactly where the
-    hunt-mode write sandbox needs to hold. A plausible, non-adversarial layout reproduces this: a
-    `worktree.root` nested inside the resolved `scratch.dir` for this same repository (naturally
-    plausible when both are configured under one shared parent), so the review worktree `/sy:ship`
-    creates there lands inside the very directory the "sandbox" is rooted at.
+def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_of_cwd(fixture_repo):
+    """A `PreToolUse` hook's cwd is the *main* checkout in the overwhelming majority of `sy:gate`/
+    `sy:hunt` runs, not the build/slice/review worktree the tool call actually targets -- `/sy:ship`
+    names the worktree only in the dispatched agent's prompt text, never as the subagent's own cwd.
+    So checking the overlap guard only against `start`'s own working tree is not enough: it must catch
+    a `scratch.dir` that overlaps some *other*, currently-inactive worktree of the repo regardless of
+    which one -- main or any linked worktree -- the current call happens to resolve from. A plausible,
+    non-adversarial layout reproduces this: a `worktree.root` nested inside the resolved `scratch.dir`
+    for this same repository (naturally plausible when both are configured under one shared parent),
+    so the review worktree `/sy:ship` creates there lands inside the very directory the "sandbox" is
+    rooted at.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
-    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
 
     shared_root = fixture_repo.parent / "shared-root"
     resolved_scratch_dir = shared_root / fixture_repo.name  # what scratch_dir(logical.name) will be
     resolved_scratch_dir.mkdir(parents=True)
-    linked = resolved_scratch_dir / "AM-9999"  # the worktree.root this repo would derive there
-    subprocess.run([*git, "-C", str(fixture_repo), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
 
+    # Committed (not just written) before the worktree is created, so it is a *tracked* file git
+    # actually checks out into the linked worktree too -- matching a real repo-committed
+    # .shipyard/config.json, which every worktree of the repo carries an identical copy of.
     layer = {**FIXTURE_LAYER, "scratch": {"dir": str(shared_root)}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    subprocess.run([*git, "-C", str(fixture_repo), "add", ".shipyard/config.json"], check=True)
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "-m", "malicious scratch.dir"], check=True)
+
+    linked = resolved_scratch_dir / "AM-9999"  # the worktree.root this repo would derive there
+    subprocess.run([*git, "-C", str(fixture_repo), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
     config.reload()
 
-    # The main checkout alone is unaffected: shared_root is not an ancestor of fixture_repo.
-    assert config.repo_scratch_dir(fixture_repo) == resolved_scratch_dir
+    # The main checkout is the cwd that always occurs in practice, and is exactly where this must
+    # refuse -- the resolved scratch directory is an ancestor of the linked worktree regardless of
+    # which checkout the current invocation happens to resolve from.
+    with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
+        config.repo_scratch_dir(fixture_repo)
 
-    # But the resolved scratch directory is an ancestor of the linked worktree, which is the checkout
-    # sy:gate/sy:hunt would actually be running from -- this must refuse even though the main checkout
-    # was clean.
-    with pytest.raises(config.ConfigError, match="contains a checkout this repository resolves from"):
+    # And from the linked worktree itself, for the same reason.
+    with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(linked)
+
+    # review_guard.py imports scripts/sy_config.py, not sy_tools.config -- confirm that copy refuses
+    # identically from both cwds, not just the in-process resolver exercised above. The committed
+    # .shipyard/config.json is tracked, so it is present at the same relative path in both checkouts.
+    for cwd in (fixture_repo, linked):
+        proc = subprocess.run(
+            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+            cwd=cwd, capture_output=True, text=True, check=False,
+            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+        )
+        assert proc.returncode != 0 and "contains a worktree of this repository" in proc.stderr, (
+            f"the CLI resolver must refuse the same way from {cwd}: rc={proc.returncode}, "
+            f"stderr={proc.stderr!r}"
+        )
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

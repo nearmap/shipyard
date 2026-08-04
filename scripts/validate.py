@@ -235,8 +235,9 @@ def check_config_seam(errors: list[str]) -> None:
     for p in sorted(ROOT.rglob("*")):
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
             continue
-        rel = str(p.relative_to(ROOT))
-        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/", ".pixi/")):
+        parts = p.relative_to(ROOT).parts
+        rel = "/".join(parts)
+        if rel in CONFIG_ENV_ALLOWED or ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
         for var in sorted(LEGACY_CONFIG_ENV):
@@ -259,11 +260,11 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     — for `review_guard.py`'s hunt sandbox — a boundary the guard and the agent it guards would
     resolve two different ways.
 
-    This check is scoped to Shipyard's own tracked files, never to whether a `.scratch/` directory
-    exists in the checkout — that directory is not Shipyard's to police. Something else on this
-    machine may depend on it for entirely unrelated reasons, so `.gitignore` keeps excluding it (it
-    is not this migration's to remove either) and this check does not scan its contents: whatever is
-    in there belongs to whoever put it there, not to Shipyard.
+    This walks Shipyard's own files by suffix, never asks whether a `.scratch/` directory exists in
+    the checkout at all — that directory is not Shipyard's to police. Something else on this machine
+    may depend on it for entirely unrelated reasons, so `.gitignore` keeps excluding it (it is not
+    this migration's to remove either) and this check does not scan its contents, at any depth:
+    whatever is in there belongs to whoever put it there, not to Shipyard.
 
     `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
     installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
@@ -273,8 +274,9 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     for p in sorted(ROOT.rglob("*")):
         if not p.is_file() or p.suffix not in _SCRATCH_REF_SUFFIXES:
             continue
-        rel = str(p.relative_to(ROOT))
-        if rel == "scripts/validate.py" or rel.startswith((".scratch/", ".shipyard/", ".git/", ".pixi/")):
+        parts = p.relative_to(ROOT).parts
+        rel = "/".join(parts)
+        if rel == "scripts/validate.py" or ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
         m = _SCRATCH_REF_PATTERN.search(text)
@@ -728,10 +730,14 @@ def main() -> int:
     for p in ROOT.rglob("*"):
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh"} or p.name == "validate.py":
             continue
-        text = p.read_text(encoding="utf-8")
+        parts = p.relative_to(ROOT).parts
+        if ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
+            continue
+        rel = "/".join(parts)
+        text = p.read_text(encoding="utf-8", errors="replace")
         for old in FORBIDDEN_OLD_NAMES:
             if old in text:
-                fail(f"{p.relative_to(ROOT)}: stale agent name {old}", errors)
+                fail(f"{rel}: stale agent name {old}", errors)
 
     for p in agent_paths:
         text = p.read_text(encoding="utf-8")

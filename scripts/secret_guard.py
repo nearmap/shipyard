@@ -10,9 +10,10 @@ hook exists to stop the value from ever reaching a tool-call result in the first
 It denies exactly the two anti-patterns this repo's own docs already warn against
 (docs/configuration.md, the tracker adapters' attachment references): dumping the environment
 (`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly.
-The denial message points at the safe alternatives that already exist — `sy_preflight.py check`
-and the tracker's own `preflight` verb, which name what is missing without printing a value, or a
-bare presence check (`[ -n "$VAR" ]`) for anything else.
+The denial message points at the safe alternatives that already exist — the `check_env` MCP tool, a
+presence-only environment check that never returns a value, and for tracker credentials
+`sy_preflight.py check` / the tracker's own `preflight` verb, which name what is missing or dead
+without printing a value.
 
 Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this hook never reads
 the actual environment, only the command string, so it fires the same way whether or not a secret
@@ -25,6 +26,15 @@ plain `echo`/`env` form is denied, not a deliberate sandbox escape.
 This is a backstop over the documented anti-patterns, not a shell sandbox: encoded indirection
 (`base64`, sourcing a script that does the printing, a nested `bash -c` two levels deep) is a
 known gap, the same category `review_guard.py` documents for its own `bash -c` indirection gap.
+
+The recognised wrapper list (`WRAPPERS`) is the other named gap, and unlike a wrapper's argument
+arity — which is knowable and is accounted for below — this one cannot be closed by enumeration: the
+set of things that run another command is unbounded (`pixi run`, `xargs`, `flock`, `setsid`, `doas`,
+`taskset`, any repo's own task runner), so a wrapper this file does not know leaves the walk on the
+wrong token and the command behind it unchecked. Widening the list buys one bypass at a time and
+never finishes, so the primary mitigation is not a longer list here: it is the `check_env` MCP tool,
+a presence-only environment check that returns whether a variable is set and never its value, which
+leaves nothing worth wrapping in the first place.
 
 Commands:
   (no args)   read Claude Code hook JSON from stdin; deny if the Bash command matches
@@ -40,7 +50,22 @@ import sys
 
 from secret_words import looks_like_secret_name as _base_looks_like_secret_name
 
-WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "timeout", "stdbuf", "command"}
+_WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
+    "sudo": frozenset({
+        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D",
+        "--user", "--group", "--prompt", "--close-from", "--host", "--role", "--type",
+        "--other-user", "--chdir",
+    }),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "nohup": frozenset(),
+    "time": frozenset(),
+    "command": frozenset(),
+}
+_WRAPPER_POSITIONALS = {"timeout": 1}  # timeout's mandatory DURATION, consumed after its flags
+WRAPPERS = frozenset(_WRAPPER_ARG_FLAGS)
 PRINTING_COMMANDS = {"echo", "printf", "print"}
 _ENV_ARG_FLAGS = {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
 INTERPRETERS = {"python", "python3", "node", "ruby", "perl"}
@@ -55,10 +80,10 @@ _ENV_ACCESS = re.compile(
 _PRINT_CALL = re.compile(r"\b(print|console\.log|sys\.stdout\.write|process\.stdout\.write|puts|warn)\s*\(")
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _ADVICE = (
-    'this can print a secret value into this command\'s own tool-call result, which becomes '
-    'permanent transcript history. Use a presence-only check instead (`[ -n "$VAR" ]`), or for '
-    "the tracker: `sy_preflight.py check` / the adapter's `preflight` command, which names what's "
-    "missing or dead without ever printing a value."
+    "this can print a secret value into this command's own tool-call result, which becomes "
+    "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
+    "variable is set, never its value — or for the tracker: `sy_preflight.py check` / the adapter's "
+    "`preflight` command, which names what's missing or dead without ever printing a value."
 )
 
 
@@ -128,20 +153,40 @@ def main() -> None:
 def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     """The command a segment actually invokes and its remaining tokens, or None if it invokes nothing.
 
-    The walk steps over leading `FOO=bar` assignments and exactly one token per recognised `WRAPPERS`
-    name (`sudo somecmd` reads as `somecmd`), and basenames what it lands on so `/bin/echo` reads as
-    `echo`. It accounts for no wrapper's own argument arity, so a wrapper that takes an argument leaves
-    the walk on that argument rather than on the command: `timeout 5 echo $VAR` returns `("5", [...])`.
+    The walk steps over leading `FOO=bar` assignments and over each recognised `WRAPPERS` name
+    together with that wrapper's own arguments — the flags whose *next* token is their value
+    (`_WRAPPER_ARG_FLAGS`, the same shape as `_ENV_ARG_FLAGS`) and any mandatory positional
+    (`_WRAPPER_POSITIONALS`, `timeout`'s DURATION) — so `timeout 5 echo $VAR` reads as `echo`. It
+    stays iterative so a nested wrapper unwraps one layer per pass (`sudo timeout 5 echo $VAR`), and
+    it basenames what it lands on so `/bin/echo` reads as `echo`. A bare `--` ends that wrapper's
+    option processing.
+
+    The two ways this can miscount are not symmetric, and the tables err accordingly. Over-consuming
+    — treating a flag as value-taking when it isn't — steps past the real command onto its first
+    argument, which fails open; under-consuming leaves the walk on a flag, which is recoverable. So
+    only flags confirmed to take a separated value consume two tokens, and every other flag consumes
+    one: an unrecognised `-x` is skipped rather than treated as the command, because landing on the
+    real command is what makes the deny reachable. `--flag=value` and an attached short value (`-o0`)
+    are one token by construction.
     """
     tokens = [t.strip("\"'") for t in segment.split()]
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        base = tok.lstrip("\\").rsplit("/", 1)[-1]
-        if _ASSIGNMENT.fullmatch(tok) or base in WRAPPERS:
+        if _ASSIGNMENT.fullmatch(tok):
             i += 1
             continue
-        break
+        base = tok.lstrip("\\").rsplit("/", 1)[-1]
+        if base not in WRAPPERS:
+            break
+        flags = _WRAPPER_ARG_FLAGS[base]
+        i += 1
+        while i < len(tokens) and tokens[i].startswith("-"):
+            if tokens[i] == "--":
+                i += 1
+                break
+            i += 2 if tokens[i] in flags else 1
+        i += _WRAPPER_POSITIONALS.get(base, 0)
     if i >= len(tokens):
         return None
     return tokens[i].lstrip("\\").rsplit("/", 1)[-1], tokens[i + 1:]
@@ -168,9 +213,12 @@ def _segment_reason(segment: str) -> str | None:
 
 def _env_reason(cmd: str, rest: list[str]) -> str | None:
     """`env`/`printenv` reasons. `env` also runs a command with a modified environment
-    (`env FOO=bar somecmd`) — that usage is a wrapper, not a dump, and is allowed. A few `env`
-    flags (`-u`/`-C`/`-S` and long forms) consume the *next* token as their own argument rather
-    than naming the command to run — `env -u ACLI_SITE` alone still dumps the environment."""
+    (`env FOO=bar somecmd`) — that usage is a wrapper, not a dump, so what it wraps is re-checked as a
+    segment of its own rather than blanket-allowed: `env echo $VAR` and `env printenv VAR` deny for
+    exactly the reasons their unwrapped forms do, and a genuine wrapper use stays allowed because the
+    wrapped command is allowed. A few `env` flags (`-u`/`-C`/`-S` and long forms) consume the *next*
+    token as their own argument rather than naming the command to run — `env -u ACLI_SITE` alone still
+    dumps the environment."""
     names: list[str] = []
     i = 0
     while i < len(rest):
@@ -186,7 +234,7 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
             if tok.startswith("-"):
                 i += 1
                 continue
-            return None  # first bare word here is the command env runs — wrapper usage
+            return _segment_reason(" ".join(rest[i:]))  # the command env runs — check it, don't excuse it
         if tok.startswith("-"):
             i += 1
             continue
@@ -291,7 +339,12 @@ def _self_test() -> None:
         "export FOO=bar", "export PATH=$PATH:/usr/local/bin",
         "env FOO=bar python script.py", "env -i FOO=bar somecmd",
         "env -u ACLI_SITE python script.py", "env --unset=ACLI_SITE somecmd",
+        "env FOO=bar echo hello", "sudo env FOO=bar python script.py",
         "printenv PATH", "printenv HOME SHELL",
+        "timeout 5 ls", "timeout --signal SIGKILL 5 ls", "timeout -k 1 5 pytest -q",
+        "nice -n 10 git status", "ionice -c 3 pytest -q",
+        "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
+        "sudo timeout 5 git status", "nohup python script.py",
         "echo hello", "echo $HOME", 'echo "path is $PATH"',
         '[ -n "$ACLI_TOKEN" ]', "[ -z \"$GITHUB_TOKEN\" ] && echo missing",
         'python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN',
@@ -312,6 +365,15 @@ def _self_test() -> None:
         "cd /tmp && env",
         "echo $ACLI_TOKEN > /dev/null",
         "env -u ACLI_SITE", "env -u ACLI_SITE -u ACLI_EMAIL",
+        "timeout 5 echo $ACLI_TOKEN", "timeout --signal SIGKILL 5 echo $ACLI_TOKEN",
+        "timeout --signal=SIGKILL 5 printenv ACLI_TOKEN", "timeout -k 1 5 env",
+        "nice -n 10 echo $ACLI_TOKEN", "nice -n10 echo $ACLI_TOKEN",
+        "ionice -c 3 echo $ACLI_TOKEN",
+        "stdbuf -o0 echo $ACLI_TOKEN", "stdbuf -o 0 echo $ACLI_TOKEN",
+        "sudo -u root echo $ACLI_TOKEN", "sudo --user=root echo $ACLI_TOKEN",
+        "sudo -- echo $ACLI_TOKEN", "sudo -n printenv ACLI_TOKEN",
+        "env echo $ACLI_TOKEN", "env printenv ACLI_TOKEN", "env FOO=bar echo $ACLI_TOKEN",
+        "sudo env echo $ACLI_TOKEN", "sudo timeout 5 env",
         '''python -c "import os; print(os.environ['ACLI_TOKEN'])"''',
         '''node -e "console.log(process.env.GITHUB_TOKEN)"''',
         '''node -e "console.log(process.env['GITHUB_TOKEN'])"''',

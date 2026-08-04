@@ -39,7 +39,7 @@ Ask one question at a time, via `AskUserQuestion`, only when research cannot set
 
 ### New goal
 
-Draft Summary, Context/constraints, and Out of scope. Use Bug for a defect fix, Task otherwise. Every Task/Bug must be parented to an Epic. Confirm parent and draft before creation via the `tracker` skill.
+Draft Summary, Context/constraints, and Out of scope. Write the body as short natural prose by default — a few sentences someone reads once and understands, not a nested outline of headings; when supporting detail is genuinely load-bearing and would bloat the body, it goes in a companion comment instead, the same body/comment split `/sy:pr` already makes between a PR description and its evidence comment. Use Bug for a defect fix, Task otherwise. Every Task/Bug must be parented to an Epic. Confirm parent and draft before creation via the `tracker` skill.
 
 ### Existing Task
 
@@ -56,6 +56,7 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 - Pull representative data when shape/frequency matters.
 - Actively look for breaking cases and evidence against the preferred approach.
 - Before the plan reaches sign-off (§7), pressure-test its core design decision with `sy:debate` — unconditionally, not only when this search happened to surface a two-sided fork: `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`. When research does surface a genuine fork, debate it here, as soon as the choice is stated in one sentence, rather than carrying it unresolved into the plan.
+- Then, once the plan is fully drafted and before it is presented (§7), put the plan itself through the `sy:spec-gate` review: resolve its model with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent spec-gate` and pass that as the `Agent` invocation's model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`, seeding the prompt with both §7 parts as drafted, the resolved standards contract, and the activated risk lenses. Triage every finding before presenting anything: a plan defect is fixed in the draft, a real risk you cannot design out becomes a "risks/edge cases" entry, and a finding whose fix is "take the rejected alternative" is dropped — the debate above settled that, with the user's steer. Nothing reaches sign-off undispositioned. The checklist and the re-dispatch rule live in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md`; cite them, do not restate them.
 
 Record standards compactly, for example:
 
@@ -105,7 +106,9 @@ Not every spec ends in a plan. When research shows the premise is already delive
 
 ## 7. Capture exactly one active versioned plan
 
-Present the full plan for sign-off — only after the mandatory `sy:debate` pass from §3 has run — structured in two clearly labeled parts, so a human reviewer and a fresh `/sy:ship` session each get only what they need without wading through the other's:
+Nothing here starts until both mandatory §3 passes have run — the `sy:debate` pass over the core decision and the `sy:spec-gate` review of the drafted plan — with every spec-gate finding already dispositioned.
+
+The plan itself has two clearly labeled parts, so a human reviewer and a fresh `/sy:ship` session each get only what they need without wading through the other's:
 
 **For your sign-off** (rationale and judgment calls):
 
@@ -122,12 +125,30 @@ Present the full plan for sign-off — only after the mandatory `sy:debate` pass
 - standards authority and task-specific constraints/risk lenses;
 - verification obligations (lens → claim → named evidence);
 - design invariants — the deliberately small load-bearing list `sy:gate` must protect;
+- `docs requiring updates: <list, or 'none'>` — every doc, README, guide, or reference this change makes stale;
+- `visual-debug obligations: <list, or 'none'>` — every figure, screenshot, plot, or rendered visual the work produces, regenerates, selects among, or invalidates, each one a verification obligation whose named evidence is an `sy:img-inspector` text verdict (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`);
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 
-Present that content as a status update, then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED) and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
+The `docs requiring updates` and `visual-debug obligations` fields are both required, and both are legitimately answerable with `none`. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder.
 
-After approval (marking a superseded plan SUPERSEDED rather than leaving two ACTIVE is the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: an overruled record is corrected on its own surface, never left standing):
+End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
+
+Model tier is a quality floor, not a cost lever. Each phase's floor is declared in `config/floors.json` — `ship-start` cheap, `ship-build` standard, `sy:gate` frontier (frontier is absolute and cost-scaling-exempt, and the `GATE` model names the reviewer's tier rather than the lightweight GATE controller's) — and a plan may state a higher model for a phase when its own judgment calls for it. A stated model below a phase's floor is clamped up to the floor, never honored downward, by the resolver rather than by anyone remembering to. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Tune cost through **effort**: request lower effort only with evidence the work is mechanical end to end, and never lower review effort. Process tier `light` (no transcript attachment at handoff) is allowed only when no risk lenses are activated and the plan's declared file set is at most the resolved `spec.light_tier_max_files` cap (resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`); default `full`.
+
+The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus (the profile may raise it, never lower it), and immutable CI/review coverage is identical in both process tiers.
+
+### Step 1 — ask for sign-off on the judgment, not the mechanics
+
+Present a short natural-prose summary: what you are going to do, why this way, the strongest alternative you rejected and why, the risks worth knowing, and what this deliberately excludes. A few paragraphs, read once and understood — no nested outline, no file inventory, no restatement of the `/sy:ship` section. What is being approved is the judgment; the mechanics exist for `/sy:ship`, and pasting them here buries the decision the user is being asked to make.
+
+Then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED), refresh the Task body with this summary, and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
+
+A `request changes` answer revises the draft and returns to this step; re-run `sy:spec-gate` only when that revision is material, per the re-dispatch rule in its reference.
+
+### Step 2 — after approval, post the full plan
+
+Both labeled parts are revealed here, in full, rather than at Step 1. Marking a superseded plan SUPERSEDED rather than leaving two ACTIVE is the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: an overruled record is corrected on its own surface, never left standing.
 
 1. if an older plan is ACTIVE, edit its comment to:
 
@@ -137,7 +158,7 @@ Status: SUPERSEDED
 Superseded by: v<N>
 ```
 
-2. append the new comment:
+2. append the new comment, carrying both labeled parts above in full:
 
 ```text
 # Execution Plan v<N>
@@ -146,13 +167,8 @@ Supersedes: v<N-1>   # omit for v1
 ```
 
 3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
-4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
-
-End the plan with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
-
-Model tier is a quality floor, not a cost lever. Each phase's floor is declared in `config/floors.json` — `ship-start` cheap, `ship-build` standard, `sy:gate` frontier (frontier is absolute and cost-scaling-exempt, and the `GATE` model names the reviewer's tier rather than the lightweight GATE controller's) — and a plan may state a higher model for a phase when its own judgment calls for it. A stated model below a phase's floor is clamped up to the floor, never honored downward, by the resolver rather than by anyone remembering to. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Tune cost through **effort**: request lower effort only with evidence the work is mechanical end to end, and never lower review effort. Process tier `light` (no transcript attachment at handoff) is allowed only when no risk lenses are activated and the plan's declared file set is at most the resolved `spec.light_tier_max_files` cap (resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`); default `full`.
-
-The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus (the profile may raise it, never lower it), and immutable CI/review coverage is identical in both process tiers.
+4. refresh the Task body with the Step-1 summary via the `tracker` skill, so the body stays the current human-facing statement of the work while the mechanical detail lives in the plan comment.
+5. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
 The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.
 

@@ -1,7 +1,7 @@
 {
   "name": "sy",
   "displayName": "Shipyard",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "Disciplined plan -> spec -> ship workflow for Claude Code: adversarial review against pinned commits, briefs-not-transcripts context hygiene, and a full paper trail on a pluggable issue tracker (Jira or GitHub Projects).",
   "author": {
     "name": "Brett Tully"

@@ -9,7 +9,7 @@ model: opus
 effort: high
 ---
 
-Run only the caller-named mode and scope. Output is evidence for `sy:gate`, never the final ship verdict. Your one writable location is the repository's own scratch directory: resolve it with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir --repo` and write only under the path it prints — it is keyed on the repository, so it is the same directory from the main checkout or any ship worktree of it, and a write anywhere else is refused by the mutation guard rather than merely discouraged. Everything else is read-only; Bash may inspect state, run existing checks, and run measurements/reproducers written there.
+Run only the caller-named mode and scope. Output is evidence for `sy:gate`, never the final ship verdict. Your one writable location is the repository's own scratch directory: resolve it with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir --repo` and write only under the path it prints — it is keyed on the repository, so it is the same directory from the main checkout or any ship worktree of it, and a write anywhere else is refused by the mutation guard for direct writes and shell redirection (see the guard's own module docstring for its documented limits). Everything else is read-only; Bash may inspect state, run existing checks, and run measurements/reproducers written there.
 
 ## Hunt mode
 

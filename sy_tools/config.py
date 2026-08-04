@@ -168,31 +168,29 @@ def _git_common_dir(start: Path) -> Path | None:
     return candidate.resolve() if candidate.is_absolute() else None
 
 
-def _in_submodule(start: Path) -> bool:
-    """Whether `start` resolves inside a git submodule's own working tree.
+def _configured_worktree(common: Path) -> Path | None:
+    """The absolute working tree `git config core.worktree` in `common`'s own config names, or None.
 
-    `--show-superproject-working-tree` prints the superproject's working tree only from inside a
-    submodule checkout, and nothing otherwise. `_git_common_dir` cannot tell submodules apart on its
-    own: `--git-common-dir` from inside any submodule resolves to `<superproject>/.git/modules/<name>`,
-    whose parent directory name is the literal string `modules` for every submodule on the machine —
-    keying an identifier on it would commingle every submodule anywhere into one scratch directory and
-    one `worktree.root`, exactly the "never machine-global" boundary this resolver exists to keep.
+    A submodule's shared git dir (`<super>/.git/modules/<name>`) sets `core.worktree` to the relative
+    path back to the submodule's own working tree, in `<common>/config` — and that is true identically
+    from the submodule's main checkout and from every linked worktree created inside it, because
+    `--git-common-dir` already resolves to this same shared directory from either. `--separate-git-dir`
+    checkouts set the same key for the same reason. An ordinary checkout never sets it, so `None` here
+    is the normal case, and callers fall back to `common.parent`.
+
+    `stdin` is closed for the same reason the sibling resolvers close it: this can run inside the MCP
+    server, whose stdin is the JSON-RPC transport.
     """
-    if not start.is_dir():
-        return False
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(start), "rev-parse", "--path-format=absolute",
-             "--show-superproject-working-tree"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        raise ConfigError(
-            f"git could not be run to resolve the repository's scratch directory from {start}: {exc}. "
-            "Install git, or put it on PATH."
-        ) from None
-    return proc.returncode == 0 and bool(proc.stdout.strip())
+    proc = subprocess.run(
+        ["git", "config", "--file", str(common / "config"), "--get", "core.worktree"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    out = proc.stdout.strip()
+    if proc.returncode != 0 or not out:
+        return None
+    resolved = (common / out).resolve()
+    return resolved if resolved.is_dir() else None
 
 
 def layers(root: Path) -> list[tuple[str, Path]]:
@@ -350,9 +348,11 @@ def _logical_repo(start: Path) -> Path:
 
     A submodule's `--git-common-dir` resolves under the superproject's `.git/modules/`, whose parent
     directory name is the fixed string `modules` for every submodule on the machine; keyed on that,
-    two unrelated submodules would share one scratch directory and one `worktree.root`. Detected via
-    `_in_submodule` and resolved instead to the submodule's own working-tree root (`_git_toplevel`),
-    which is already a distinct, stable path per submodule instance and needs no further qualification.
+    two unrelated submodules would share one scratch directory and one `worktree.root`. The shared git
+    dir names the submodule's own working tree in its `core.worktree`, so `_configured_worktree` reads
+    it from the *shared* config and needs no per-checkout detection — which matters because a linked
+    worktree of a submodule reports no superproject at all, and so any detection keyed on the checkout
+    would miss exactly the worktrees `/sy:ship` itself creates.
 
     Falls back rather than refusing, because `repo_root()`'s own cwd path legitimately resolves a
     directory that is in no checkout at all, and resolution must still produce a value there.
@@ -360,11 +360,8 @@ def _logical_repo(start: Path) -> Path:
     common = _git_common_dir(start)
     if common is None:
         return start
-    if _in_submodule(start):
-        toplevel = _git_toplevel(start)
-        if toplevel is not None:
-            return toplevel
-    return common.parent
+    configured = _configured_worktree(common)
+    return configured if configured is not None else common.parent
 
 
 def fingerprint() -> str:

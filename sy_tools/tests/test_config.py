@@ -251,8 +251,10 @@ def test_repo_scratch_dir_does_not_collapse_every_submodule_onto_one_directory(f
         subprocess.run([*git, "-C", str(fixture_repo), "submodule", "add", "-q", str(source), name], check=True)
         subs.append(fixture_repo / name)
 
-    assert [config._in_submodule(s) for s in subs] == [True, True], "the fixture must be real submodules"
-    assert not config._in_submodule(fixture_repo), "the superproject itself is not a submodule"
+    super_common = config._git_common_dir(fixture_repo)
+    assert super_common is not None and config._configured_worktree(super_common) is None, (
+        "an ordinary checkout must not set core.worktree, so the fallback stays the normal path"
+    )
 
     for sub in subs:
         common = config._git_common_dir(sub)
@@ -280,6 +282,30 @@ def test_repo_scratch_dir_does_not_collapse_every_submodule_onto_one_directory(f
         resolved.append(Path(proc.stdout.strip()))
     assert resolved == [config.repo_scratch_dir(s) for s in subs], (
         f"the CLI resolver disagrees with the server resolver on submodules: {resolved}"
+    )
+
+    linked = fixture_repo.parent / "linked-submodule-worktree"
+    subprocess.run([*git, "-C", str(subs[0]), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
+    assert not subprocess.run(
+        ["git", "-C", str(linked), "rev-parse", "--show-superproject-working-tree"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip(), (
+        "the case this keys around: a submodule's *linked* worktree reports no superproject, so any "
+        "detection keyed on the checkout misses exactly the worktrees /sy:ship itself creates"
+    )
+    assert config._logical_repo(linked) == config._logical_repo(subs[0]) == subs[0], (
+        "a linked worktree of a submodule must resolve the submodule's own working tree, neither "
+        f".git/modules nor the worktree's own path: {config._logical_repo(linked)}"
+    )
+    assert config.repo_scratch_dir(linked) == config.repo_scratch_dir(subs[0]) == root / subs[0].name
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+        cwd=linked, capture_output=True, text=True, check=False,
+        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert Path(proc.stdout.strip()) == config.repo_scratch_dir(subs[0]), (
+        f"the CLI resolver disagrees from a submodule's linked worktree: {proc.stdout!r}"
     )
 
 

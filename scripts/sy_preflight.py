@@ -112,8 +112,10 @@ def _split_vars(raw: str) -> list[str]:
 def cache_path() -> Path:
     """Where the cache lives: this repository's own resolved scratch directory.
 
-    Repo-qualified rather than machine-global so two repos never share one liveness verdict, and
-    resolved outside the checkout rather than beside it so it outlives a `/sy:ship` worktree — the
+    Scoped by the repository's own directory name rather than machine-global, so differently named
+    repos never share one liveness verdict — two repos that happen to share a name still do, which is
+    the same name-keying limitation `repo_scratch_dir` itself carries. Resolved outside the checkout
+    rather than beside it so it outlives a `/sy:ship` worktree — the
     old repo-relative path meant every ship threw the cache away with the worktree it was built in.
 
     A function rather than a module constant because resolution shells out to git and reads the config

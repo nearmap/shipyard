@@ -260,9 +260,14 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
 
     The directory's own presence fails too, not just references to it: with the `.gitignore` entry
     gone it is one `git add -A` from being committed. That presence check is the *only* thing that
-    reports a leftover directory — `check_config_seam` still skips its contents, because it scans for
-    legacy env-var names and would otherwise bury this one actionable message under a seam failure per
-    scratch file.
+    reports a leftover directory, so the content scan below skips `.scratch/` for the same reason
+    `check_config_seam` does: a leftover directory holds thousands of files that legitimately name
+    `.scratch/`, and one failure each would bury the single actionable "delete it" message.
+
+    `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
+    installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
+    directory nobody authored would raise out of this check and discard every error the whole run had
+    already collected.
     """
     stale = ROOT / ".scratch"
     if stale.exists():
@@ -275,9 +280,9 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
         if not p.is_file() or (p.suffix not in _SCRATCH_REF_SUFFIXES and p.name != ".gitignore"):
             continue
         rel = str(p.relative_to(ROOT))
-        if rel == "scripts/validate.py" or rel.startswith((".shipyard/", ".git/")):
+        if rel == "scripts/validate.py" or rel.startswith((".scratch/", ".shipyard/", ".git/", ".pixi/")):
             continue
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8", errors="replace")
         m = _SCRATCH_REF_PATTERN.search(text)
         if m:
             line = text[: m.start()].count("\n") + 1

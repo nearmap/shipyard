@@ -541,10 +541,14 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
     symlink_spelling = str(symlinked_dir)
     spellings = [literal_parent, dotdot_spelling, symlink_spelling]
 
+    # Probed with os.path.samestat directly, never config._same_directory (the function under test):
+    # a probe built from the same code path it is meant to catch a regression in would pass vacuously
+    # if that code regressed to a spelling-based comparison, since the same wrong logic would decide
+    # both "is this filesystem case-insensitive" and "does the case-variant spelling overlap".
     probe_dir = fixture_repo.parent / "CaseProbeDir"
     probe_dir.mkdir()
     case_variant_probe = probe_dir.parent / "caseprobedir"
-    if case_variant_probe.is_dir() and config._same_directory(case_variant_probe, probe_dir):
+    if case_variant_probe.is_dir() and os.path.samestat(case_variant_probe.stat(), probe_dir.stat()):
         case_variant_ancestor = fixture_repo.parent.parent / fixture_repo.parent.name.swapcase()
         spellings.append(str(case_variant_ancestor))
 
@@ -552,8 +556,40 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
         layer = {**FIXTURE_LAYER, "scratch": {"dir": spelling}}
         (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
         config.reload()
-        with pytest.raises(config.ConfigError, match="contains this repository's own checkout"):
+        with pytest.raises(config.ConfigError, match="contains a checkout this repository resolves from"):
             config.repo_scratch_dir(fixture_repo)
+
+
+def test_repo_scratch_dir_refuses_a_root_that_overlaps_only_the_review_worktree(fixture_repo):
+    """`sy:gate`/`sy:hunt` always run from a *worktree* of the logical repository, never the main
+    checkout itself -- so checking the overlap guard only against the main checkout misses a
+    `scratch.dir` that overlaps only the worktree actually under review, which is exactly where the
+    hunt-mode write sandbox needs to hold. A plausible, non-adversarial layout reproduces this: a
+    `worktree.root` nested inside the resolved `scratch.dir` for this same repository (naturally
+    plausible when both are configured under one shared parent), so the review worktree `/sy:ship`
+    creates there lands inside the very directory the "sandbox" is rooted at.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    shared_root = fixture_repo.parent / "shared-root"
+    resolved_scratch_dir = shared_root / fixture_repo.name  # what scratch_dir(logical.name) will be
+    resolved_scratch_dir.mkdir(parents=True)
+    linked = resolved_scratch_dir / "AM-9999"  # the worktree.root this repo would derive there
+    subprocess.run([*git, "-C", str(fixture_repo), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
+
+    layer = {**FIXTURE_LAYER, "scratch": {"dir": str(shared_root)}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+
+    # The main checkout alone is unaffected: shared_root is not an ancestor of fixture_repo.
+    assert config.repo_scratch_dir(fixture_repo) == resolved_scratch_dir
+
+    # But the resolved scratch directory is an ancestor of the linked worktree, which is the checkout
+    # sy:gate/sy:hunt would actually be running from -- this must refuse even though the main checkout
+    # was clean.
+    with pytest.raises(config.ConfigError, match="contains a checkout this repository resolves from"):
+        config.repo_scratch_dir(linked)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

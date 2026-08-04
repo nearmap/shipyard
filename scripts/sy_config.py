@@ -57,7 +57,14 @@ SCHEMA_URL = "https://raw.githubusercontent.com/nearmap/shipyard/main/config/sch
 # The only subprocess this module runs (`git rev-parse --show-toplevel`) is bounded, because
 # `secret_guard.py`'s `PreToolUse` hook reaches it on the Bash hot path and a hook that blocks emits no
 # decision, which is an allow. Generous for a local rev-parse under load, short of anything a caller
-# would sit through on a single tool call. Same shape as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
+# would sit through on a single tool call — and that is a bound per *process*, not per call, because
+# `repo_root()` memoizes its refusal as well as its answer: one failed `get()` reaches root resolution
+# twice (once through the credential-shape gate's own `resolve()`, once for the value), and re-running
+# git for the second would have made the real wait twice this number. What is bounded is the git
+# subprocess and nothing else — `layers()` and `_load_json` read `~/.shipyard/config.json` and the
+# repo's own layers with no bound at all, so a home directory that has stopped answering hangs there
+# whatever this says. Same shape as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS` and
+# `sy_tools/config.py::GIT_TIMEOUT_SECONDS`.
 GIT_TIMEOUT_SECONDS = 5
 
 # Weakest to strongest. Clamping a floor needs a total order, so an alias absent here is an error
@@ -71,6 +78,7 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 
 _RESOLVED: tuple[dict, dict[str, str]] | None = None
 _REPO_ROOT: Path | None = None
+_REPO_ROOT_REFUSAL: SystemExit | None = None
 
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 # Config keys whose absence is fatal rather than defaulted.
@@ -399,9 +407,10 @@ def resolve() -> tuple[dict, dict[str, str]]:
 
 def reset_cache() -> None:
     """Drop the memoized resolution, so the next read sees the files as they are on disk now."""
-    global _RESOLVED, _REPO_ROOT
+    global _RESOLVED, _REPO_ROOT, _REPO_ROOT_REFUSAL
     _RESOLVED = None
     _REPO_ROOT = None
+    _REPO_ROOT_REFUSAL = None
 
 
 def _resolve_uncached() -> tuple[dict, dict[str, str]]:
@@ -631,28 +640,41 @@ def repo_root() -> Path:
     deleted or made inaccessible under a hook that inherited it — is a third named refusal, mirroring
     `sy_tools/config.py::repo_root`: `validate()` had its own guard, but `show`, `get`, `agent` and
     `fingerprint` reach here without one and used to traceback raw out of `Path.cwd()`.
+
+    A refusal is memoized alongside an answer, so root resolution runs git at most once per process.
+    One failed `get()` asks for the root twice — the credential-shape gate resolves first through
+    `_extra_secret_words()`, which swallows the refusal, and the value's own `resolve()` asks again — so
+    without this the wait a caller actually sits through on a wedged git was twice
+    `GIT_TIMEOUT_SECONDS`, not the one bound that constant documents. `reset_cache()` clears both, the
+    same contract `_RESOLVED` already has: nothing re-reads until something asks it to.
     """
-    global _REPO_ROOT
+    global _REPO_ROOT, _REPO_ROOT_REFUSAL
+    if _REPO_ROOT_REFUSAL is not None:
+        raise _REPO_ROOT_REFUSAL
     if _REPO_ROOT is None:
-        project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-        if project_dir:
-            root = _git_toplevel(Path(project_dir))
-            if root is None:
-                raise SystemExit(
-                    f"sy_config: CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a "
-                    "git checkout, so no repository configuration can be resolved from it. Point it at the "
-                    "consuming repository, or unset it to resolve from the working directory."
-                )
-            _REPO_ROOT = root
-        else:
-            try:
-                _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
-            except OSError as exc:
-                raise SystemExit(
-                    f"sy_config: the working directory could not be read to derive the repository root: "
-                    f"{exc}. Set CLAUDE_PROJECT_DIR to the consuming repository, or run from a directory "
-                    "that still exists."
-                ) from None
+        try:
+            project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+            if project_dir:
+                root = _git_toplevel(Path(project_dir))
+                if root is None:
+                    raise SystemExit(
+                        f"sy_config: CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a "
+                        "git checkout, so no repository configuration can be resolved from it. Point it at the "
+                        "consuming repository, or unset it to resolve from the working directory."
+                    )
+                _REPO_ROOT = root
+            else:
+                try:
+                    _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+                except OSError as exc:
+                    raise SystemExit(
+                        f"sy_config: the working directory could not be read to derive the repository root: "
+                        f"{exc}. Set CLAUDE_PROJECT_DIR to the consuming repository, or run from a directory "
+                        "that still exists."
+                    ) from None
+        except SystemExit as refusal:
+            _REPO_ROOT_REFUSAL = refusal
+            raise
     return _REPO_ROOT
 
 
@@ -673,8 +695,17 @@ def _git_toplevel(start: Path) -> Path | None:
     A git that *hangs* is refused the same way, which needs `timeout=` and nothing else can substitute
     for it: `secret_guard.py` reaches here on every Bash command naming a candidate variable, and that
     hook's fail-closed backstop is an `except Exception`, which a hang never raises. Blocking there
-    writes no decision at all and Claude Code reads that as an allow, so an unbounded wait on a
-    filesystem this module does not control is a fail-open path on the secret gate's own hot path.
+    writes no decision at all and Claude Code reads that as an allow, so an unbounded wait here is a
+    fail-open path on the secret gate's own hot path. What the bound closes is this one subprocess — a
+    `git` binary that does not return, a git wrapper or credential helper that waits on something.
+    Reading the configuration layers themselves is not bounded by it or by anything else (`layers()`,
+    `_load_json`), so a home directory that has stopped answering hangs there instead; bounding an
+    arbitrary local file read needs a watchdog thread and a design of its own, and there is no evidence
+    of that happening to warrant one.
+
+    `stdin` is closed for the reason `sy_tools/config.py::_git_toplevel` closes its own: a child that
+    inherits the caller's stdin can consume input the caller was going to read, and here the caller is a
+    `PreToolUse` hook whose stdin carries the very event it is deciding on.
     """
     if not start.is_dir():
         return None
@@ -682,13 +713,13 @@ def _git_toplevel(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-            timeout=GIT_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         raise SystemExit(
             f"sy_config: git did not resolve the repository root from {start} within "
-            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git (an unresponsive network mount, a "
-            "blocking git wrapper) cannot be waited out here, so resolution refuses instead."
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, so "
+            "resolution refuses instead."
         ) from None
     except OSError as exc:
         raise SystemExit(

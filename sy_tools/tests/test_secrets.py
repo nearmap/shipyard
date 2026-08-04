@@ -134,33 +134,52 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
     """The same call site as the test above, failing the one way an `except` clause cannot catch.
 
     `secret_guard.py` resolves `redaction.extra_words` through `sy_config.repo_root()`, which shells out
-    to `git rev-parse`. That call had no `timeout=`, so a git that blocks rather than fails — an
-    unresponsive network mount, a git wrapper that waits on something — left the `PreToolUse` hook with
-    no output for as long as the platform allowed, and no output is no decision, i.e. every built-in
+    to `git rev-parse`. That call had no `timeout=`, so a git that blocks rather than fails — a wrapper
+    or credential helper waiting on something, a binary that does not return — left the `PreToolUse` hook
+    with no output for as long as the platform allowed, and no output is no decision, i.e. every built-in
     denial silently skipped. The hook's own fail-closed backstop is an `except Exception`, which a hang
     never reaches, so only the bound closes this path. Once bounded, it degrades exactly as the missing
     binary above does: a `SystemExit` the hook's word-list fallback already catches.
 
+    The call count is part of the claim, because the bound the constant documents is per resolution and
+    one failed `get()` asks for the root twice: without a memoized refusal the hook waited
+    twice `GIT_TIMEOUT_SECONDS`, twice the number anyone reading that constant would expect.
+
     In a child process with `scripts/` on `PYTHONPATH`, as `test_config.py` runs that resolver: those
-    modules are the shipped CLI, not part of this package, so they are not importable from here.
+    modules are the shipped CLI, not part of this package, so they are not importable from here. Every
+    check inside that child raises explicitly rather than asserting: the child inherits this
+    environment, and a `PYTHONOPTIMIZE`/`-O` in it would strip an `assert` and leave the negative
+    control — removing `timeout=` from the real code — passing when it must fail.
     """
     child = (
         "import subprocess\n"
         "import sy_config, secret_guard\n"
+        "calls = []\n"
         "def wedge(cmd, **kwargs):\n"
-        "    assert kwargs.get('timeout') == sy_config.GIT_TIMEOUT_SECONDS, 'the git call must be bounded'\n"
+        "    calls.append(kwargs)\n"
+        "    if kwargs.get('timeout') != sy_config.GIT_TIMEOUT_SECONDS:\n"
+        "        raise AssertionError(f'the git call must be bounded: {kwargs}')\n"
+        "    if kwargs.get('stdin') is not subprocess.DEVNULL:\n"
+        "        raise AssertionError(f'the git call must not read the hook event on stdin: {kwargs}')\n"
         "    raise subprocess.TimeoutExpired(cmd=cmd, timeout=sy_config.GIT_TIMEOUT_SECONDS)\n"
         "subprocess.run = wedge\n"
         "try:\n"
         "    sy_config.repo_root()\n"
         "except SystemExit as exc:\n"
-        "    assert 'did not resolve the repository root' in str(exc), exc\n"
-        "    assert f'within {sy_config.GIT_TIMEOUT_SECONDS}s' in str(exc), exc\n"
+        "    if 'did not resolve the repository root' not in str(exc):\n"
+        "        raise AssertionError(f'the refusal must name its cause: {exc}')\n"
+        "    if f'within {sy_config.GIT_TIMEOUT_SECONDS}s' not in str(exc):\n"
+        "        raise AssertionError(f'and the bound it hit: {exc}')\n"
         "else:\n"
         "    raise AssertionError('a wedged git must be refused, not waited on')\n"
-        "assert secret_guard._extra_words() == frozenset(), 'the timeout must narrow the gate, not break it'\n"
-        "assert 'extra_words' in (secret_guard._CONFIG_WARNING or ''), secret_guard._CONFIG_WARNING\n"
-        "assert secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}), 'built-ins must still deny'\n"
+        "if secret_guard._extra_words() != frozenset():\n"
+        "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
+        "if 'extra_words' not in (secret_guard._CONFIG_WARNING or ''):\n"
+        "    raise AssertionError(f'the drop must be reported: {secret_guard._CONFIG_WARNING}')\n"
+        "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
+        "    raise AssertionError('built-ins must still deny')\n"
+        "if len(calls) != 1:\n"
+        "    raise AssertionError(f'one failed resolution waits len(calls) x the bound: {len(calls)}')\n"
     )
     proc = subprocess.run(
         [sys.executable, "-c", child], cwd=tmp_path, capture_output=True, text=True, check=False,

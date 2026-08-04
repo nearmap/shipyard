@@ -36,6 +36,14 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 REQUIRED_PATHS = (*(f"columns.{name}" for name in CANONICAL_COLUMNS), "tracker")
+# The only subprocess this module runs (`git rev-parse --show-toplevel`) is bounded, because it runs
+# inside the MCP server on the path *every* tool call takes to a resolved value, and a hung resolution
+# is a hung server: no response for the call that triggered it and none for any call queued behind it.
+# Generous for a local rev-parse under load, short of anything a caller would sit through on a single
+# tool call. Same shape and number as `scripts/sy_config.py::GIT_TIMEOUT_SECONDS`, whose own hot path
+# is the `PreToolUse` secret gate, and as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
+GIT_TIMEOUT_SECONDS = 5
+
 
 @dataclasses.dataclass(frozen=True)
 class _Resolved:
@@ -113,6 +121,13 @@ def _git_toplevel(start: Path) -> Path | None:
     being a checkout, which is false when the pointer is fine and the binary is absent. A missing
     binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
 
+    A `git` that *hangs* is refused the same way, and only `timeout=` can refuse it: an unbounded wait
+    is not an exception any `except` clause here catches, it is the server never answering. This resolver
+    is the twin of `scripts/sy_config.py::_git_toplevel`, which was bounded first because the secret
+    gate's fail-open reaches it, but this is the hotter of the two — it runs on every tool call, not once
+    per CLI process — so the same bound belongs here, degrading to this module's own `ConfigError`
+    exactly as the unrunnable-binary case does.
+
     `stdin` is closed for the same reason the tracker adapters close it on their own subprocesses: this
     runs inside the MCP server, whose stdin is the JSON-RPC transport, and a child that inherits it can
     consume a frame the server was going to read.
@@ -123,8 +138,14 @@ def _git_toplevel(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise ConfigError(
+            f"git did not resolve the repository root from {start} within {GIT_TIMEOUT_SECONDS}s and "
+            "was killed. A wedged git binary cannot be waited out on the path every tool call takes to "
+            "a resolved value, so resolution refuses instead."
+        ) from None
     except OSError as exc:
         raise ConfigError(
             f"git could not be run to resolve the repository root from {start}: {exc}. Every "

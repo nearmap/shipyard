@@ -1371,6 +1371,39 @@ def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, mon
     assert "git could not be run" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
 
 
+def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, monkeypatch):
+    """The same call site as the test above, failing the one way no `except` clause can catch.
+
+    A `git` that blocks rather than fails — a wrapper or credential helper waiting on something, a binary
+    that does not return — is not an exception this resolver could have handled: it is the server never
+    answering. And this resolver is the hotter of the two twins, because every tool call reaches a
+    resolved value through it, where the CLI's own `_git_toplevel` runs once per process; the CLI's was
+    bounded first only because the secret gate's fail-open reaches that one. So the bound is asserted on
+    the call's own kwargs, not just on the refusal: `TimeoutExpired` is raised here by the fake either
+    way, so removing `timeout=` from the real code would still produce a `ConfigError` and pass a test
+    that only checked that. What proves the hang is actually bounded is that the real call asks for it.
+    """
+    seen: list[dict] = []
+
+    def wedge(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        seen.append(kwargs)
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=config.GIT_TIMEOUT_SECONDS)
+
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(config.subprocess, "run", wedge)
+    with pytest.raises(config.ConfigError, match="did not resolve the repository root") as raised:
+        config.reload()
+    assert f"within {config.GIT_TIMEOUT_SECONDS}s" in str(raised.value), raised.value
+    assert "CLAUDE_PROJECT_DIR" not in str(raised.value), "a wedged binary is not the pointer's fault"
+    assert seen, "the refusal must come from the git call, not from something short of it"
+    assert all(kwargs.get("timeout") == config.GIT_TIMEOUT_SECONDS for kwargs in seen), (
+        f"only `timeout=` can refuse a hang, and the real call must pass it: {seen}"
+    )
+    assert all(kwargs.get("stdin") is subprocess.DEVNULL for kwargs in seen), (
+        f"the git call must not inherit the server's JSON-RPC stdin: {seen}"
+    )
+
+
 def _empty_bin(tmp_path: Path) -> Path:
     """A directory holding no `git`, for use as the whole of `PATH`."""
     empty = tmp_path / "no-git-here"

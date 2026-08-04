@@ -638,7 +638,7 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_o
         )
 
 
-def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkout(fixture_repo):
+def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkout(fixture_repo, monkeypatch):
     """A `--separate-git-dir` (or bare-plus-`worktree-add`) main checkout has no `core.worktree` and
     no entry under `<common>/worktrees/` at all -- `<common>/worktrees/` only ever holds *linked*
     worktrees, never the main one. `_logical_repo` falls back to `common` (the detached gitdir itself)
@@ -670,8 +670,14 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
         "fixture must reproduce the tier-3 (common-dir) fallback for this test to be non-vacuous"
     )
 
+    # detached_work is its own, unrelated checkout (not a worktree of fixture_repo), so its own
+    # .shipyard/config.json -- not fixture_repo's -- is what a fresh resolver anchored there would
+    # read. Written there, and cwd moved there, so the in-process and CLI resolvers agree on what a
+    # real invocation from detached_work would see.
+    (detached_work / ".shipyard").mkdir()
     layer = {**FIXTURE_LAYER, "scratch": {"dir": str(checkouts_parent)}}
-    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    (detached_work / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    monkeypatch.chdir(detached_work)
     config.reload()
 
     # The resolved scratch directory (checkouts_parent/"sepwork") is NOT an ancestor of `common`
@@ -685,6 +691,17 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
 
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(detached_work)
+
+    # scripts/sy_config.py is the copy review_guard.py actually enforces with -- confirm it refuses
+    # the same way, not just the sy_tools.config resolver exercised above.
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+        cwd=detached_work, capture_output=True, text=True, check=False,
+        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    )
+    assert proc.returncode != 0 and "contains a worktree of this repository" in proc.stderr, (
+        f"the CLI resolver must refuse the same way: rc={proc.returncode}, stderr={proc.stderr!r}"
+    )
 
 
 def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
@@ -726,6 +743,17 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     # can catch this. It must, because the linked worktree lives inside the resolved scratch directory.
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(fixture_repo)
+
+    # scripts/sy_config.py is the copy review_guard.py actually enforces with -- confirm it refuses
+    # the same way, not just the sy_tools.config resolver exercised above.
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+        cwd=fixture_repo, capture_output=True, text=True, check=False,
+        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    )
+    assert proc.returncode != 0 and "contains a worktree of this repository" in proc.stderr, (
+        f"the CLI resolver must refuse the same way: rc={proc.returncode}, stderr={proc.stderr!r}"
+    )
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

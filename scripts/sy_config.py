@@ -286,9 +286,13 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
     file as a path relative to `<common>/worktrees/<id>/` itself, not to `common` or to any process's
     cwd, so a relative record is resolved against the entry's own directory before use — resolving it
     against the wrong base, or leaving it relative and comparing it as-is, would silently stat the
-    guard process's own cwd instead of the worktree. A `gitdir` file that is missing, unreadable, or
-    still relative after that resolution means this cannot determine part of the guarded set at all,
-    which fails closed (raises) rather than silently guarding fewer worktrees than exist.
+    guard process's own cwd instead of the worktree. Every gitdir record git itself writes ends in the
+    literal `.git`, naming the worktree's own `.git` file — so `.parent` is applied only after that is
+    confirmed, never unconditionally, because a truncated or otherwise corrupted record would
+    otherwise still produce *some* directory (most often `<common>/worktrees` itself) and silently
+    guard the wrong one instead of the real worktree. A `gitdir` file that is missing, unreadable, or
+    does not end in `.git` after resolution means this cannot determine part of the guarded set at
+    all, which fails closed (raises) rather than silently guarding fewer worktrees than exist.
     """
     worktrees = [logical]
     worktrees_dir = common / "worktrees"
@@ -311,11 +315,12 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
             ) from None
         if not pointed.is_absolute():
             pointed = (entry / pointed).resolve()
-        if not pointed.is_absolute():
+        if pointed.name != ".git":
             raise SystemExit(
-                f"sy_config: {str(gitdir_file)!r} names {str(pointed)!r}, which did not resolve to an "
-                "absolute path, so this worktree's own location cannot be determined and so cannot be "
-                "guarded."
+                f"sy_config: {str(gitdir_file)!r} names {str(pointed)!r}, which does not end in "
+                "'.git' as every gitdir record git itself writes does, so this worktree's own "
+                "location cannot be determined and so cannot be guarded — most likely a truncated or "
+                "otherwise corrupted gitdir file."
             )
         worktrees.append(pointed.parent)
     return worktrees

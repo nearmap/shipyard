@@ -31,6 +31,7 @@ TOOL_NAMES = {
     "attach-artifact",
     "attachment-download",
     "attachment-update",
+    "check_env",
     "create-issue",
     "find-issues",
     "get-issue",
@@ -914,3 +915,108 @@ async def test_a_body_that_is_not_a_ship_metrics_log_passes_through_unvalidated(
         result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"{case} must post unchanged: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), f"{case} must reach the adapter byte-for-byte"
+
+
+BODY_WRITES = [
+    ("update-issue", lambda body: {"issue": "PROJ-1", "body": body}),
+    ("create-issue", lambda body: {"issue_type": "task", "title": "T", "body": body}),
+]
+"""Every tool that writes a caller-supplied body, and the arguments that carry one.
+
+The machine-log gate is the body's, not the comment's: a log written into an issue body is the same
+unvalidated-metrics incident, so each of these writes has to refuse what `post-comment` refuses.
+"""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), BODY_WRITES, ids=[t for t, _ in BODY_WRITES])
+@pytest.mark.parametrize(
+    ("case", "body"),
+    [
+        ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
+        ("json the fence holds but nothing parses", _metrics_comment().replace('"PROJ-1"\n', '"PROJ-1",\n')),
+        ("two candidate blocks and no way to choose", _metrics_comment() + "\n" + _metrics_comment(ci_fix_rounds=1)),
+    ],
+)
+async def test_a_malformed_ship_metrics_body_is_refused_by_every_write_not_only_comments(
+    monkeypatch, tool, arguments, case, body
+):
+    """The gate belongs to the body, so a body write must refuse a log a comment would have refused.
+
+    `pytest.fail` as the adapter factory is again the assertion that matters: validation reached only
+    from `post-comment` left an issue body as an unguarded second route for exactly the malformed log
+    that gate exists to stop, and one that reports an error after writing is the same incident.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is True, f"{tool} accepted {case}: {result.content}"
+    assert SCHEMA_ID in _text(result), f"the refusal for {case} must name the schema it checked"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), BODY_WRITES, ids=[t for t, _ in BODY_WRITES])
+async def test_an_ordinary_body_still_reaches_the_adapter_unchanged(monkeypatch, tool, arguments):
+    """The gate is a no-op for a body that claims nothing, which is nearly every body these writes take."""
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = "TL;DR: prose about the ship metrics log, claiming no schema.\n\n```bash\ngit log -1\n```\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is False, f"{tool} refused an ordinary body: {result.content}"
+    _verb, args, kwargs = recorder.calls[0]
+    assert body in (*args, *kwargs.values()), f"{tool} must pass the body through byte-for-byte: {recorder.calls}"
+
+
+@pytest.mark.anyio
+async def test_create_issue_still_accepts_no_body_at_all(monkeypatch):
+    """`create-issue`'s body defaults to `""`, and the gate must not turn an omitted body into a refusal."""
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("create-issue", {"issue_type": "task", "title": "T"})
+    assert result.is_error is False, result.content
+    assert recorder.calls[0][2]["body"] == "", recorder.calls
+
+
+SENTINEL = "sy-check-env-sentinel-9f3a1c"
+"""A value distinctive enough that grepping a whole tool result for it is a sufficient leak test."""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("present", [True, False], ids=["set", "unset"])
+async def test_check_env_reports_presence_and_never_the_value(monkeypatch, present):
+    """Presence has to be reported correctly, and the value must appear nowhere in the result.
+
+    Serialising the entire result and searching it for the sentinel is the assertion, rather than
+    checking one field: the whole point of the tool is that no field, no error string and no log line
+    can carry the value, so what gets pinned is the absence of the value from all of it.
+    """
+    if present:
+        monkeypatch.setenv("SY_CHECK_ENV_PROBE", SENTINEL)
+    else:
+        monkeypatch.delenv("SY_CHECK_ENV_PROBE", raising=False)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
+    assert result.is_error is False, result.content
+    assert _payload(result) == {"name": "SY_CHECK_ENV_PROBE", "set": present}, _payload(result)
+    assert SENTINEL not in str(result), f"the variable's value reached the tool result: {result}"
+
+
+@pytest.mark.anyio
+async def test_check_env_refuses_a_blank_name_without_naming_a_value(monkeypatch):
+    """A whitespace-only name is refused like every other required argument, and the error leaks nothing."""
+    monkeypatch.setenv("SY_CHECK_ENV_PROBE", SENTINEL)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("check_env", {"name": " \n"})
+    assert result.is_error is True, result.content
+    assert SENTINEL not in _text(result), f"the refusal carried a value: {_text(result)}"
+
+
+@pytest.mark.anyio
+async def test_check_env_reads_an_empty_variable_as_unset(monkeypatch):
+    """A variable exported empty holds no credential, so reporting it as set would be a false all-clear."""
+    monkeypatch.setenv("SY_CHECK_ENV_PROBE", "")
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
+    assert _payload(result)["set"] is False, _payload(result)

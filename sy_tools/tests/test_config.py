@@ -1359,3 +1359,18 @@ def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_
     assert seen and all(kwargs.get("stdin") == subprocess.DEVNULL for kwargs in seen), (
         f"a git call was handed the server's own stdin: {seen}"
     )
+
+
+def test_env_present_reports_presence_and_reads_an_empty_variable_as_absent(monkeypatch):
+    """The presence-only primitive `check_env` serves, pinned where it lives rather than only at the tool.
+
+    Empty-counts-as-absent is the load-bearing half: it matches `_post_resolution_violations`' own
+    `secret_env` loop exactly, so a credential exported empty is a missing credential to both, and the
+    return type is `bool` so there is nothing for a caller to accidentally render.
+    """
+    monkeypatch.setenv("SY_ENV_PRESENT_PROBE", "anything at all")
+    assert config.env_present("SY_ENV_PRESENT_PROBE") is True
+    monkeypatch.setenv("SY_ENV_PRESENT_PROBE", "")
+    assert config.env_present("SY_ENV_PRESENT_PROBE") is False, "an empty variable holds no credential"
+    monkeypatch.delenv("SY_ENV_PRESENT_PROBE")
+    assert config.env_present("SY_ENV_PRESENT_PROBE") is False

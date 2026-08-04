@@ -99,8 +99,12 @@ async def create_issue(
 
     Canonical verb `create-issue`. Passing `parent` is also the canonical verb `create-child`:
     there is deliberately no separate tool for a child, because it is this same write.
+
+    A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
+    machine log written into a body cannot bypass that gate; every other body passes through unchanged.
     """
     _required(title=title)
+    _validate_machine_log(body)
     return await tracker.adapter().create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
 
 
@@ -128,8 +132,12 @@ async def update_issue(
 
     Canonical verb `update-issue`. A whole-body replacement, never an append: to keep any of the
     existing body, read it with `get-issue` first and send it back as part of `body`.
+
+    A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
+    machine log written into a body cannot bypass that gate; every other body passes through unchanged.
     """
     _required(issue=issue)
+    _validate_machine_log(body)
     return await tracker.adapter().update_issue(issue, body)
 
 
@@ -689,6 +697,29 @@ def reload_config() -> dict[str, Any]:
     Reports whether the resolved values changed; never reports a value.
     """
     return config.reload()
+
+
+@mcp.tool(name="check_env")
+def check_env(
+    name: Annotated[
+        str,
+        Field(
+            description="Name of the environment variable to check, e.g. a credential the configured "
+            "tracker needs. Only its presence is reported; its value is never read."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Report whether an environment variable is set, without ever reading its value.
+
+    For diagnosing a missing credential without printing one. Dumping the environment or echoing a
+    variable prints the value into that command's own tool-call result, which is permanent transcript
+    history from that point on; the `PreToolUse` guard in `scripts/secret_guard.py` denies those
+    commands and names this tool as the safe alternative, and this is it. Neither the result nor any
+    error it raises can carry the value, because the value is never read at all — only whether the
+    variable is set and non-empty. A variable exported empty reports as unset.
+    """
+    _required(name=name)
+    return {"name": name, "set": config.env_present(name)}
 
 
 @mcp.tool(name="validate_config")

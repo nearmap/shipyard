@@ -674,6 +674,18 @@ def extra_secret_words() -> frozenset[str]:
     return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
 
 
+def env_present(name: str) -> bool:
+    """Whether an environment variable is set and non-empty. The value itself is never read.
+
+    The presence-only idiom `_post_resolution_violations` already applies to each declared
+    `secret_env` name, lifted out so a caller diagnosing a missing credential has something to ask
+    that has no value to leak: the value is never read into a variable, returned, or logged — only
+    whether the variable is set at all. An empty string counts as absent, exactly as that loop reads
+    it, since a variable exported empty is indistinguishable in effect from one never exported.
+    """
+    return bool(os.environ.get(name))
+
+
 def resolved_root() -> Path:
     """The consuming repository the hot configuration resolved against.
 

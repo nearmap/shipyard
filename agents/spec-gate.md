@@ -28,6 +28,8 @@ Inputs: the fully drafted plan, both parts (sign-off rationale and the mechanica
 
 ## Return contract — target ≤600 tokens
 
+When the plan's base commit or the repo to read against was not supplied, do not review anchors against a checkout you cannot identify: return immediately with `TL;DR: blocked — base commit not supplied`, naming what the caller must pass, and report nothing else.
+
 No preamble, narration, praise, pasted plan text, or tool recap. Group findings by severity. Each finding names the axis, the plan element or `file:line` it concerns, the concrete defect, and the concrete revision that fixes it.
 
 End exactly with:

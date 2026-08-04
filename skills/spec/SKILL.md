@@ -43,7 +43,7 @@ Draft Summary, Context/constraints, and Out of scope. Write the body as short na
 
 ### Existing Task
 
-Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
+Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing — that governs research-phase edits; §7 Step 2 owns the post-approval refresh, which preserves whatever this run did not author. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
 
 ## 3. Resolve standards and deep research
 
@@ -56,7 +56,7 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 - Pull representative data when shape/frequency matters.
 - Actively look for breaking cases and evidence against the preferred approach.
 - Before the plan reaches sign-off (§7), pressure-test its core design decision with `sy:debate` — unconditionally, not only when this search happened to surface a two-sided fork: `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`. When research does surface a genuine fork, debate it here, as soon as the choice is stated in one sentence, rather than carrying it unresolved into the plan.
-- Then, once the plan is fully drafted and before it is presented (§7), put the plan itself through the `sy:spec-gate` review: resolve its model with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent spec-gate` and pass that as the `Agent` invocation's model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`, seeding the prompt with both §7 parts as drafted, the resolved standards contract, and the activated risk lenses. Triage every finding before presenting anything: a plan defect is fixed in the draft, a real risk you cannot design out becomes a "risks/edge cases" entry, and a finding whose fix is "take the rejected alternative" is dropped — the debate above settled that, with the user's steer. Nothing reaches sign-off undispositioned. The checklist and the re-dispatch rule live in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md`; cite them, do not restate them.
+- Then, once the plan is fully drafted and before it is presented (§7), put the plan itself through the `sy:spec-gate` review: resolve its model with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent spec-gate` and pass that as the `Agent` invocation's model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`, seeding the prompt with both §7 parts as drafted, the resolved standards contract, the activated risk lenses, and the plan's base commit and repo to read against — name the inspected base explicitly (`PLAN_BASE_SHA` and the repo path) and confirm the working tree is at that commit, since the reviewer checks the plan's anchors against a checkout it cannot otherwise identify. Triage every finding before presenting anything: a plan defect is fixed in the draft, a real risk you cannot design out becomes a "risks/edge cases" entry, and a finding whose fix is "take the rejected alternative" is dropped — the debate above settled that, with the user's steer. Nothing reaches sign-off undispositioned. The checklist and the re-dispatch rule live in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md`; cite them, do not restate them.
 
 Record standards compactly, for example:
 
@@ -125,12 +125,12 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - standards authority and task-specific constraints/risk lenses;
 - verification obligations (lens → claim → named evidence);
 - design invariants — the deliberately small load-bearing list `sy:gate` must protect;
-- `docs requiring updates: <list, or 'none'>` — every doc, README, guide, or reference this change makes stale;
-- `visual-debug obligations: <list, or 'none'>` — every figure, screenshot, plot, or rendered visual the work produces, regenerates, selects among, or invalidates, each one a verification obligation whose named evidence is an `sy:img-inspector` text verdict (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`);
+- `docs requiring updates: <list, or 'none'>`;
+- `visual-debug obligations: <list, or 'none'>`;
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 
-The `docs requiring updates` and `visual-debug obligations` fields are both required, and both are legitimately answerable with `none`. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder.
+Those last two fields are both required and both legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–5 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder.
 
 End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
 
@@ -142,7 +142,7 @@ The ship profile never lowers review or build: `sy:gate` remains frontier tier a
 
 Present a short natural-prose summary: what you are going to do, why this way, the strongest alternative you rejected and why, the risks worth knowing, and what this deliberately excludes. A few paragraphs, read once and understood — no nested outline, no file inventory, no restatement of the `/sy:ship` section. What is being approved is the judgment; the mechanics exist for `/sy:ship`, and pasting them here buries the decision the user is being asked to make.
 
-Then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED), refresh the Task body with this summary, and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
+Then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED), refresh the Task body with this summary while preserving any body content this run did not author, and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
 
 A `request changes` answer revises the draft and returns to this step; re-run `sy:spec-gate` only when that revision is material, per the re-dispatch rule in its reference.
 
@@ -167,7 +167,7 @@ Supersedes: v<N-1>   # omit for v1
 ```
 
 3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
-4. refresh the Task body with the Step-1 summary via the `tracker` skill, so the body stays the current human-facing statement of the work while the mechanical detail lives in the plan comment.
+4. refresh the Task body with the Step-1 summary via the `tracker` skill, so the body stays the current human-facing statement of the work while the mechanical detail lives in the plan comment. `update-issue` replaces the whole body, so read the current body with `get-issue` first and decide by provenance: a Task this run created (§2 "New goal") is replaced outright, since this run authored the prior body too; a Task that pre-existed (§2 "Existing Task") never loses content this run did not write — a reporter's repro steps, a PM's acceptance notes — so carry it forward beneath the summary, or move it to a comment when it would bloat the body. Content this run did not author is never dropped by the refresh.
 5. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
 The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.

@@ -141,6 +141,20 @@ def frontmatter(path: Path, errors: list[str]) -> None:
         fail(f"{path}: plugin-shipped agents/skills cannot declare hooks; move them to hooks/hooks.json", errors)
 
 
+def _frontmatter_field(text: str, field: str) -> str:
+    """Return a frontmatter field's value, joining an indented YAML block list into one string."""
+    block = text.split("---", 2)[1]
+    match = re.search(rf"^{field}:(.*)$", block, re.M)
+    if not match:
+        return ""
+    value = [match.group(1)]
+    for line in block[match.end():].splitlines()[1:]:
+        if line.strip() and not line.startswith((" ", "\t", "-")):
+            break
+        value.append(line)
+    return " ".join(value)
+
+
 def _component_md(seam_only: bool) -> list[Path]:
     """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only."""
     paths: list[Path] = []
@@ -373,6 +387,7 @@ def check_invariants(errors: list[str]) -> None:
     scope = read("skills/shared/references/scope-discipline.md")
     preflight_ref = read("skills/shared/references/preflight.md")
     debate_ref = read("skills/shared/references/debate.md")
+    spec_gate_ref = read("skills/shared/references/spec-gate.md")
     roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
     jira_adapter = read("skills/tracker/jira/ADAPTER.md")
@@ -488,7 +503,13 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec must run the pre-sign-off spec-gate pass and cite spec-gate.md", errors)
     if "spec-gate.md" not in spec_gate:
         fail("spec-gate agent must cite the shared checklist in spec-gate.md, never restate it", errors)
-    if re.search(r"^tools:.*\b(?:Agent|Skill)\b", spec_gate.split("---", 2)[1], re.M):
+    axis_phrase = "the smallest change that delivers the goal"
+    if axis_phrase not in spec_gate_ref:
+        fail(f"spec-gate reference must define the Simplicity axis with {axis_phrase!r}", errors)
+    if axis_phrase in spec_gate:
+        fail("spec-gate agent restates an axis definition; cite spec-gate.md instead of copying it", errors)
+    tools_value = _frontmatter_field(spec_gate, "tools")
+    if re.search(r"\b(?:Agent|Skill)\b", tools_value):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
     if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
         fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)

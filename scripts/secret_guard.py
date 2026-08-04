@@ -10,8 +10,10 @@ hook exists to stop the value from ever reaching a tool-call result in the first
 It denies exactly the two anti-patterns this repo's own docs already warn against
 (docs/configuration.md, the tracker adapters' attachment references): dumping the environment
 (`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly.
-The denial message points at the safe alternatives that already exist — the `check_env` MCP tool, a
-presence-only environment check that never returns a value, and for tracker credentials
+It also covers the same leak in an interpreter idiom — a `python -c` / `node -e` one-liner that reads
+the environment and prints what it read — since that is a very plausible next move once the plain
+`echo`/`env` form is denied, not a deliberate sandbox escape. The denial message points at the safe
+alternatives that already exist: the `check_env` MCP tool, and for tracker credentials
 `sy_preflight.py check` / the tracker's own `preflight` verb, which name what is missing or dead
 without printing a value.
 
@@ -19,22 +21,24 @@ Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this
 the actual environment, only the command string, so it fires the same way whether or not a secret
 happens to be set right now.
 
-Also covers the same leak in an interpreter idiom — `python -c "import os; print(os.environ['TOKEN'])"`,
-`node -e "console.log(process.env.TOKEN)"` — since that's a very plausible next move once the
-plain `echo`/`env` form is denied, not a deliberate sandbox escape.
+This hook is best-effort defense-in-depth over pattern-matching a command string. It is NOT a
+soundness guarantee and must not be read or relied on as one: it is a shell-shaped matcher, not a
+shell. Three categories of route to the same leak are out of scope BY DESIGN rather than tracked as
+bugs — wrappers this file does not recognise, encoded or nested indirection, and shell grouping and
+command substitution. They are stated as categories and never as spellings, on purpose: an enumerated
+list of working bypasses in a docstring that agents read is a bypass index rather than a control, so
+the enumeration this docstring used to carry is gone. (The self-test's deny cases are the opposite
+artefact — inputs this hook refuses — and stay.)
 
-This is a backstop over the documented anti-patterns, not a shell sandbox: encoded indirection
-(`base64`, sourcing a script that does the printing, a nested `bash -c` two levels deep) is a
-known gap, the same category `review_guard.py` documents for its own `bash -c` indirection gap.
-
-The recognised wrapper list (`WRAPPERS`) is the other named gap, and unlike a wrapper's argument
-arity — which is knowable and is accounted for below — this one cannot be closed by enumeration: the
-set of things that run another command is unbounded (`pixi run`, `xargs`, `flock`, `setsid`, `doas`,
-`taskset`, any repo's own task runner), so a wrapper this file does not know leaves the walk on the
-wrong token and the command behind it unchecked. Widening the list buys one bypass at a time and
-never finishes, so the primary mitigation is not a longer list here: it is the `check_env` MCP tool,
-a presence-only environment check that returns whether a variable is set and never its value, which
-leaves nothing worth wrapping in the first place.
+None of those categories can be closed by enumeration, because the set of things that can run another
+command, or encode one, is unbounded; widening a list buys one spelling at a time and never finishes.
+So the primary mitigation for a legitimate presence check is not a longer list here: it is the
+`check_env` MCP tool, a presence-only environment check that reports whether a variable is set and
+never its value. That gives the legitimate need a first-class answer which leaks nothing, so there is
+nothing left worth routing around this hook for. What this file does owe the shapes it recognises is
+being right about them: a recognised wrapper's or flag's argument arity is knowable and is accounted
+for below, and getting it wrong lands the walk on the wrong token and leaves the command behind it
+unchecked — a bug here, not a scope boundary.
 
 Commands:
   (no args)   read Claude Code hook JSON from stdin; deny if the Bash command matches
@@ -89,10 +93,11 @@ _ENV_ARG_FLAGS: frozenset[str] = frozenset({
 """`env`'s own options that take the *next* token as their value, which the walk must step over.
 
 The value is not the command `env` runs for any of them except `-S`/`--split-string`, whose value *is*
-a command — a whole shell-word-split command string, so `env -S "echo $ACLI_TOKEN"` runs the leak with
-no token this walk would ever land on. That is the accepted nested-indirection gap this module's own
-docstring names (`bash -c`, `base64`, sourcing a script), recorded here rather than closed: what the
-arity table owes it is being counted, so the walk does not read the string as `env`'s command name.
+a command: a whole shell-word-split command string, which this walk never lands on a token of. What
+that string then goes on to do is the nested-indirection category this module's own docstring puts out
+of scope by design, recorded here rather than closed. What the arity table owes it is being counted —
+so the walk steps over the string instead of reading it as `env`'s own command name, which is the
+under-consuming failure below.
 
 Completed from both implementations' documented synopses, because the hook cannot know which `env` is
 on the host: GNU coreutils contributes `-a ARG`/`--argv0=ARG` (sets `argv[0]`, and COMMAND still runs
@@ -133,8 +138,37 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\.([A-Za-z_][A-Za-z0-9_]*)"
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
-_PRINT_CALL = re.compile(r"\b(print|console\.log|sys\.stdout\.write|process\.stdout\.write|puts|warn)\s*\(")
-_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_PRINT_CALL = re.compile(
+    r"\b(print|console\.(?:log|info|dir|table|debug|warn)|sys\.stdout\.write|process\.stdout\.write"
+    r"|puts|warn)\s*\("
+)
+"""A call that writes its argument out, so a one-liner that reads a secret without printing it allows.
+
+node's console methods are listed one by one rather than as `log` alone, because they are not aliases
+of it to a matcher that works by name: `console.info`, `console.dir`, `console.table` and
+`console.debug` each print the value exactly as `log` does (verified live on node 24), and with `log`
+alone every one of them was allowed. `console.warn` did deny, but only by coincidence — the bare
+`warn` alternative here is perl's and ruby's own function, so a `console.warn` deny rested on another
+language's name and would have vanished the moment that alternative was scoped per interpreter. Each
+console method now denies for its own reason."""
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*")
+"""A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
+
+One named constant, deliberately, because the duplication was itself the bug: this pattern was also
+spelled out inline inside `_env_reason`'s chain-unwinding loop, so widening it to `+=` in one place
+left the other copy narrow, and `env FOO+=bar echo $VAR` still left `FOO+=bar` standing as the
+apparent command — a token that matches no rule below, which allowed the leak behind it. Missing an
+assignment prefix disarms the whole anti-pattern path rather than narrowing it, so both sites read
+this one constant now.
+
+`=` and `+=` are the only assignment-prefix operators there are to handle: both bash and zsh run
+`NAME+=VALUE cmd` (verified live in both), while `-=`, `*=` and `/=` are not assignment syntax to
+either — they come back as a command not found or a failed glob — so there is no third operator to
+chase. Note that `env(1)` does not read `+=` as an append: it splits on the first `=`, so
+`env FOO+=bar` sets a variable literally named `FOO+` (verified). The `env` layer consumes the token
+as an assignment either way, which is all this walk needs from it."""
+_SHORT_CLUSTER = re.compile(r"-[A-Za-z0-9]+")
+"""A token shaped like a cluster of short options and nothing else — see `_is_short_cluster`."""
 _ADVICE = (
     "this can print a secret value into this command's own tool-call result, which becomes "
     "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
@@ -407,6 +441,37 @@ def _consumes_next(
     return last_match == len(tok) - 1
 
 
+def _is_short_cluster(tok: str) -> bool:
+    """Whether `tok` could be a cluster of short options, which is what scopes `prefer_last` to it.
+
+    `prefer_last` is only ever the right rule for a token that really is a cluster of short options,
+    and `_consumes_next` cannot tell that on its own: its cluster scan reads any token's characters, so
+    the caller has to say. Applied unconditionally it regressed this file's headline interpreter deny.
+    `shlex` hands `python3 -c"<code>"` over as the single token `-c<code>`, and when that code happens
+    to end in a character the interpreter's table lists (`...; import gc` ends in `c`), scanning to the
+    *last* match answered "the value is the next token" — so `_code_argument` looked past the code it
+    was already holding, found no next token at all, and the command was allowed. Requiring every
+    character after the leading dash to be alphanumeric rejects that token, since real code carries
+    punctuation, while every legitimate cluster still passes.
+
+    That is a shape discriminator, not a heuristic, and it can lose no deny. For a token it rejects,
+    the cluster scan now falls through to `_code_argument`'s attached-short-option read, which is the
+    correct read for exactly that shape. For a token it accepts, behaviour is unchanged, and the read
+    that `prefer_last` costs there — the attached value `tok[position + 1:]` — is a substring of an
+    all-alphanumeric token and so is itself all-alphanumeric, which cannot be a leak: every
+    `_ENV_ACCESS` alternative needs a `.` and/or a `[`, and `_PRINT_CALL` needs a `(`. The self-test
+    asserts that property of both matchers rather than leaving it argued here, so adding an all-alnum
+    env-access or print idiom to either one fails loudly instead of quietly voiding this reasoning.
+
+    Deliberately no ceiling on the cluster's length: a bound would put an arbitrary cliff where a longer
+    but perfectly legitimate cluster (`python -uIsSBc CODE`) silently stopped being recognised, and the
+    all-alphanumeric argument closes the case without one. A `--`-prefixed token is not a cluster — its
+    second character is a dash — which is both correct and inert, since `_consumes_next` answers for
+    long options before its cluster scan ever runs.
+    """
+    return _SHORT_CLUSTER.fullmatch(tok) is not None
+
+
 def _segment_reason(segment: str) -> str | None:
     leading = _leading_command(segment)
     if leading is None:
@@ -481,7 +546,7 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
         i = 0
         while i < len(rest):
             tok = rest[i]
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok):
+            if _ASSIGNMENT.fullmatch(tok):
                 i += 1
                 continue
             if cmd == "env":
@@ -607,13 +672,18 @@ def _prints_result(tok: str) -> bool:
     A plain character test rather than `_consumes_next`, because the question here is whether `p` appears
     in this token's own cluster, not whether the token consumes a separate value — different questions for
     a flag that is only sometimes the one carrying the code.
+
+    The long spelling is tested on its `=`-split head rather than for equality with `--print`, because
+    `--print` also takes an attached value and every such spelling reported "does not auto-print" while
+    the invocation printed. The value is not worth parsing: `--print=0` and `--print=false` auto-print
+    exactly as `--print=1` does (all verified live on node 24), because node reads an attached value as
+    present-and-therefore-on. `--eval` alone prints nothing, which is the control that keeps this test
+    from collapsing into "any long option with a value".
     """
     if not tok.startswith("-"):
         return False
-    if tok == "--print":
-        return True
     if tok.startswith("--"):
-        return False
+        return tok.split("=", 1)[0] == "--print"
     return "p" in tok[1:]
 
 
@@ -637,21 +707,25 @@ def _code_argument(tokens: list[str], j: int, flags: frozenset[str]) -> tuple[st
     its cluster scan reads any token's characters, so `foo.c` "clusters" a `-c` at its end and answered
     yes for a filename.
 
-    The arity question goes to `_consumes_next` with `prefer_last=True`, because a code-flag table lists
-    interchangeable carriers: node runs `-pe CODE` as `-p` and `-e` both active with CODE the next token,
-    and first-match-wins read that as `-p` with the attached value `e` and never examined the real code.
-    The attached-short-option fallback below keeps first-match-wins, which is correct for the shape it is
-    for (`-cCODE`, where the rest of the token really is the value) — its remaining imprecision is a code
-    string whose own last character happens to name a listed flag, which sends the read to the next token
-    instead; the same deny-or-miss tradeoff as any cluster heuristic here, and no worse than before.
+    The arity question goes to `_consumes_next` with `prefer_last` on, but only for a token that is
+    actually cluster-shaped (`_is_short_cluster`), which is the whole of that rule's scope. It is needed
+    because a code-flag table lists interchangeable carriers: node runs `-pe CODE` as `-p` and `-e` both
+    active with CODE the next token, and first-match-wins read that as `-p` with the attached value `e`
+    and never examined the real code. It must be scoped because an attached spelling arrives as one token
+    whose tail is the code, and a code string ending in a listed flag character made an unscoped scan
+    report "the value is the next token" — past the code, onto a token that need not even exist. Both
+    halves are pinned in the self-test, since the two spellings of that same miss were found one at a
+    time, in opposite directions. The attached-short-option fallback below stays first-match-wins, which
+    is the correct rule for the shape it is for (`-cCODE`, where the rest of the token really is the
+    value).
     """
     tok = tokens[j]
     if not tok.startswith("-"):
         return None
     head, separator, attached = tok.partition("=")
-    if separator and _consumes_next(head, flags, prefer_last=True):
+    if separator and _consumes_next(head, flags, prefer_last=_is_short_cluster(head)):
         return head, attached
-    if _consumes_next(tok, flags, prefer_last=True):
+    if _consumes_next(tok, flags, prefer_last=_is_short_cluster(tok)):
         return (tok, tokens[j + 1]) if j + 1 < len(tokens) else None
     if not tok.startswith("--"):
         for position, char in enumerate(tok[1:], start=1):
@@ -761,6 +835,9 @@ def _self_test() -> None:
         # whose `-e` still carries the code: a shared code-flag table read the cluster's `e` as the code
         # and skipped the real argument, so the flags are per interpreter.
         "perl -pi -e s/a/b/ f", "ruby -pe 'puts $_' f", '''perl -E "say 1"''',
+        # `NAME+=VALUE` is a real assignment prefix in both shells and is now stepped over as one, so the
+        # widened `_ASSIGNMENT` must not deny the harmless commands behind it either.
+        "FOO+=bar ls", "FOO+=bar git status", "env FOO+=bar ls", "sudo FOO+=bar ls",
     ]
     deny_cases = [
         "env", "env | grep -i acli", "env | grep -i token",
@@ -863,6 +940,38 @@ def _self_test() -> None:
         '''python3.13 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
         '''python2.7 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
         '''python3.13t -c "import os; print(os.environ['ACLI_TOKEN'])"''',
+        # The regression an unscoped `prefer_last` caused, and its siblings. `shlex` hands the attached
+        # spelling over as the single token `-c<code>`; when that code ends in a character the table lists
+        # (`...; import gc` ends in `c`), scanning to the last match reported "the code is the next token",
+        # there was no next token, and this — the plainest interpreter leak there is — was allowed. The
+        # third case denied throughout (its code ends in `)`), which is exactly why the first two shipped
+        # past a self-test that had a case for the attached spelling. The fourth carries an `=` as well, so
+        # it also exercises the `=`-split branch ahead of the cluster scan.
+        '''python3 -c"import os; print(os.environ['ACLI_TOKEN']); import gc"''',
+        '''python -c"import os; print(os.environ['ACLI_TOKEN']); import gc"''',
+        '''python3 -c"import os; print(os.environ['ACLI_TOKEN'])"''',
+        '''python3 -c"import os; x=os.environ['ACLI_TOKEN']; print(x); import gc"''',
+        # An unrecognised assignment prefix does not narrow `_segment_reason`, it disarms its whole
+        # anti-pattern path: the walk stops on `FOO+=bar`, reads that as the command, and matches nothing.
+        # `NAME+=VALUE cmd` runs in both bash and zsh (verified live), and the pattern was spelled out
+        # twice, so `+=` reached one copy and not the other.
+        "FOO+=bar echo $ACLI_TOKEN", "FOO+=bar env", "FOO+=bar printenv ACLI_TOKEN",
+        "FOO+=bar set", "FOO+=bar export",
+        "env FOO+=bar printenv ACLI_TOKEN", "env FOO+=bar echo $ACLI_TOKEN",
+        "sudo FOO+=bar echo $ACLI_TOKEN",
+        # `--print` takes an attached value too, and every such spelling reported "does not auto-print"
+        # while node printed: `--print=0` and `--print=false` auto-print exactly as `--print=1` does
+        # (verified live), since node reads an attached value as present-and-therefore-on.
+        '''node --print=1 --eval "process.env.GITHUB_TOKEN"''',
+        '''node --print=false --eval "process.env.GITHUB_TOKEN"''',
+        # node's other console methods print the value exactly as `log` does (verified live), and were all
+        # allowed while `_PRINT_CALL` listed `log` alone. `console.warn` denied, but only via the bare
+        # `warn` alternative that belongs to perl and ruby — a deny resting on another language's name.
+        '''node -e "console.info(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.dir(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.table(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.debug(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.warn(process.env.GITHUB_TOKEN)"''',
     ]
     for command in allow:
         got = decision("Bash", {"command": command})
@@ -919,9 +1028,38 @@ def _self_test() -> None:
         "and the default stays first-match-wins, which is the right rule for `sudo`-style tables"
     )
     assert _consumes_next("-nu", _WRAPPER_ARG_FLAGS["sudo"]), "unchanged for every existing call site"
+    # And the other direction, which the `-pe` fix above regressed: `prefer_last` belongs to a token that
+    # is actually a short-option cluster, not to an attached code string whose last character happens to
+    # name a listed flag. Pinned on the discriminator itself, because every command-level case for the
+    # attached spelling carried code ending in `)` and so never reached it.
+    assert _is_short_cluster("-pe") and _is_short_cluster("-uIsSBc") and _is_short_cluster("-c")
+    assert not _is_short_cluster("-cimport os; print(os.environ['X']); import gc")
+    assert not _is_short_cluster("--print") and not _is_short_cluster("--") and not _is_short_cluster("-")
+    assert not _is_short_cluster("foo.c"), "and it is not the option-shape test, which is the caller's"
+    # The proof that discriminator rests on: for a token it accepts, the read `prefer_last` costs is an
+    # all-alphanumeric substring, and no all-alphanumeric string can access the environment or print —
+    # every `_ENV_ACCESS` alternative needs a `.` and/or a `[`, and `_PRINT_CALL` needs a `(`. Checked, not
+    # just argued, so an all-alnum env-access or print idiom added to either matcher fails here rather than
+    # silently voiding the reasoning.
+    import itertools
+
+    alnum_samples = [
+        *("".join(p) for n in (1, 2, 3) for p in itertools.product("acepnEV0", repeat=n)),
+        "print", "consolelog", "osenviron", "osenvironget", "osgetenv", "processenv",
+        "processenvACLITOKEN", "sysstdoutwrite", "puts", "warn", "ACLITOKEN",
+    ]
+    for sample in alnum_samples:
+        assert sample.isalnum(), sample
+        assert not _ENV_ACCESS.search(sample), f"an all-alnum string must not read as env access: {sample!r}"
+        assert not _PRINT_CALL.search(sample), f"an all-alnum string must not read as a print call: {sample!r}"
     for tok, prints in (
         ("-p", True), ("--print", True), ("-pe", True), ("-ep", True), ("-np", True),
         ("-e", False), ("--eval", False), ("--", False), ("--eval=CODE", False), ("code", False),
+        # `--print` carries an attached value too, and node treats any attached value as on: `--print=0`
+        # and `--print=false` print (verified live), so the value is not parsed. `--printer` keeps the
+        # `=`-split head from degrading into a prefix test.
+        ("--print=1", True), ("--print=0", True), ("--print=true", True), ("--print=false", True),
+        ("--print==", True), ("--printer", False),
     ):
         assert _prints_result(tok) is prints, f"{tok!r} auto-print should be {prints}"
     # An attached spelling puts the flag and the code in one token, and a deny reason naming that token
@@ -930,6 +1068,9 @@ def _self_test() -> None:
     for command in (
         '''python -c"import os; print(os.environ['ACLI_TOKEN'])"''',
         '''node --eval="console.log(process.env.GITHUB_TOKEN)"''',
+        # Scoping `prefer_last` sends this one to the attached-short-option read, which narrows the reason
+        # from the whole token to `-c` alone — so the hygiene half of that fix is pinned here too.
+        '''python3 -c"import os; print(os.environ['ACLI_TOKEN']); import gc"''',
     ):
         reason = decision("Bash", {"command": command})
         assert reason is not None, command

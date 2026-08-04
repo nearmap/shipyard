@@ -5,9 +5,9 @@ Disabled by default — zero cost unless `debug.evals` is true. When enabled, ap
 compact JSON line per hook firing to ~/.claude/shipyard/eval-events/<session_id>.jsonl: which
 skill or subagent triggered (Trigger), and the tool-call sequence around it (Trace). Keyed by
 session_id under the home directory, like session_usage.py's usage-agent-map ledger, rather
-than a repo-local .scratch/ — a ship build/gate subagent's cwd is a worktree under
-the resolved worktree root, which is deleted after use, so a cwd-relative path would fragment one
-session's trace across directories and lose the worktree-side events entirely. Wired into
+than a task- or repository-keyed scratch directory — such a directory accumulates every run
+against that key, while an eval must read exactly one run, so any key coarser than the session
+would interleave concurrent sessions' traces in a single file. Wired into
 every PreToolUse call, not just the mutating ones review_guard.py cares about, because
 Trigger/Trace evals need to see Skill and Agent invocations too.
 

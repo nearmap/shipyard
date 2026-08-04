@@ -16,7 +16,7 @@ No preamble, narration, praise, pasted bodies, or tool recap. End with exactly o
 
 ```text
 DONE: fresh|resumed at <state>; BRANCH <name>; WORKTREE <path>; PLAN <vN digest>
-STATE: .scratch/<task>-ship-state.yaml
+STATE: scratch_dir($TASK_KEY)/ship-state.yaml
 STANDARDS: <authority/primitives/risk-lens digest>
 AGENTS_USED: <names>
 ```

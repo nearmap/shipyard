@@ -7,7 +7,7 @@ This phase runs as the `sy:ship-start` worker: it initializes or resumes ownersh
 3. Ship profile (the plan's explicit per-phase models, plus effort and process tier) is a parent precondition verified before dispatch; if the parent's own running session is below plan it stops and asks via `AskUserQuestion` (raise the profile / proceed at plan floor / other) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. That check concerns the parent's own session tier only; how each phase's model reaches its worker is the separate dispatch mechanism in `## Resolve start model` below. The profile floors worker models (may raise, never lower, so BUILD keeps its opus tier) and sets worker effort to match the work; it never lowers review effort (`sy:gate` stays max). Do not prompt the user from the worker.
 4. Resolve standards in a delegate (subagent running `/sy:standards resolve <task scope>`, added to `agents_used`) that returns only the retained contract — authority, implementation contract, primitives, risk lenses; rule-file reads stay out of the ship context.
 5. Read durable cross-session memory — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" list` (or `search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the state brief as a known anchor.
-6. Load `.scratch/<task>-ship-state.yaml` from main checkout if present.
+6. Load `$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$TASK_KEY")/ship-state.yaml` if present.
 
 Classify:
 

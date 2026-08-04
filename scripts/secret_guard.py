@@ -121,11 +121,6 @@ interpreter only.
 
 Widening this is bounded in a way `WRAPPERS` is not: it completes the documented flag set of the five
 interpreters already named, rather than chasing the unbounded set of things that can run code."""
-_PRINTING_CODE_FLAGS = frozenset({"-p", "--print"})
-"""Code flags that print their result themselves, so no `_PRINT_CALL` in the code is needed to leak.
-
-`node -p "process.env.ACLI_TOKEN"` writes the value with no `console.log` anywhere in it; requiring the
-print call as well would have added the flag and closed nothing."""
 _PYTHON_BASENAME = re.compile(r"python\d*(\.\d+)?t?")
 """A versioned python basename (`python3.13`, `python2.7`, the free-threaded `python3.13t`).
 
@@ -193,6 +188,15 @@ _UNREADABLE_COMMAND = (
 
 Its own reason rather than `_UNEVALUABLE`: nothing here is nested or deep, so naming wrapper layers as
 the cause would send the caller after the wrong thing."""
+_UNREADABLE_TOOL = (
+    "secret guard: this call's `tool_name` is not a string, so this hook cannot tell whether it is a Bash "
+    "call and refuses it rather than allowing it unchecked."
+)
+"""The same deny for a `tool_name` of an unexpected shape as `_UNREADABLE_COMMAND` is for the command.
+
+`tool != "Bash"` allows, correctly, for every other tool — and so also allowed for a malformed value like
+`["Bash"]`, which is the same silent-allow-on-a-shape-this-hook-cannot-read the `command` check closes.
+Claude Code sets this field, so reachability is low; consistency with the sibling check is the point."""
 
 
 def emit(reason: str | None, warning: str | None) -> None:
@@ -217,7 +221,7 @@ def emit(reason: str | None, warning: str | None) -> None:
         print(json.dumps(payload))
 
 
-def decision(tool: str, args: dict) -> str | None:
+def decision(tool: object, args: dict) -> str | None:
     """Return a deny reason, or None to allow.
 
     Every segment of a compound command is checked, and no segment can excuse another. This hook
@@ -237,8 +241,12 @@ def decision(tool: str, args: dict) -> str | None:
     not raise, so `main()`'s `except Exception` backstop never fired for it: a list-shaped
     `{"command": ["echo $ACLI_TOKEN"]}` became the text `['echo $ACLI_TOKEN']`, whose bracket-and-quote
     punctuation matches none of the patterns below, and the leak was allowed. An input this hook cannot
-    read in the shape it expects is not an input it has cleared.
+    read in the shape it expects is not an input it has cleared. A `tool` of a non-string shape is refused
+    for the same reason: `tool != "Bash"` is an allow for every other tool, and was therefore an allow for
+    a malformed value too.
     """
+    if not isinstance(tool, str):
+        return _UNREADABLE_TOOL
     if tool != "Bash":
         return None
     raw = args.get("command")
@@ -345,7 +353,9 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     return tokens[i].lstrip("\\").rsplit("/", 1)[-1], tokens[i + 1:]
 
 
-def _consumes_next(tok: str, flags: frozenset[str], exact_only: frozenset[str] = frozenset()) -> bool:
+def _consumes_next(
+    tok: str, flags: frozenset[str], exact_only: frozenset[str] = frozenset(), *, prefer_last: bool = False,
+) -> bool:
     """Whether one option token takes the *next* token as its value, per `getopt`/`getopt_long` rules.
 
     Exact membership in `flags` alone is not the question, because the same flag has more spellings
@@ -357,6 +367,16 @@ def _consumes_next(tok: str, flags: frozenset[str], exact_only: frozenset[str] =
       and never when something follows it (`stdbuf -o0`, `nice -n10` — attached values, one token).
       A character the table does not list is a boolean as far as this walk is concerned and the scan
       continues past it, which is the same "skip an unrecognised flag" the caller already does.
+    - `prefer_last` changes only that cluster scan, for the one kind of table where first-match-wins is
+      the wrong rule: `INTERPRETER_CODE_FLAGS["node"]` lists `-e` and `-p` as *interchangeable,
+      combinable* code carriers, so node parses `-pe CODE` as both flags active with CODE the next token
+      — not as `-p` with the attached value `e`. Stopping at the first match answered "attached value"
+      for `-pe` and `_code_argument` never looked at the real code, which allowed
+      `node -pe "process.env.ACLI_TOKEN"`. Scanning the whole cluster and asking whether the *last*
+      matching character is the token's last is right for both orderings, and inert for the wrapper
+      tables, where at most one listed character ever appears in a real cluster. It is off by default
+      because the opposite rule is the correct one for a table whose value-taking short options are not
+      interchangeable (`sudo`'s), where the rest of the token is the first match's own attached value.
     - A long option is a match when it equals a listed flag or, per `getopt_long`, when it is a
       prefix of one (`--us` for `--user`). An ambiguous prefix — one matching several listed flags —
       still consumes: `getopt_long` refuses such a command outright, so nothing runs either way, and
@@ -378,10 +398,13 @@ def _consumes_next(tok: str, flags: frozenset[str], exact_only: frozenset[str] =
         return True
     if tok.startswith("--"):
         return tok != "--" and "=" not in tok and any(f.startswith(tok) for f in flags if f.startswith("--"))
+    last_match = -1
     for position, char in enumerate(tok[1:], start=1):
         if f"-{char}" in flags:
-            return position == len(tok) - 1
-    return False
+            if not prefer_last:
+                return position == len(tok) - 1
+            last_match = position
+    return last_match == len(tok) - 1
 
 
 def _segment_reason(segment: str) -> str | None:
@@ -401,19 +424,32 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
     no output is no decision — so the guarded command ran. `_env_reason` unwinds its own chain
     iteratively and lands here exactly once instead.
 
-    `export`'s print mode is a *shape* test, not a list of flag spellings: it prints when it is given no
-    operand, whatever options precede that. Matching `[]` or `["-p"]` exactly missed `export --`,
+    `export`'s print mode is mostly a *shape* test, not a list of flag spellings: it prints when it is
+    given no operand, whatever options precede that. Matching `[]` or `["-p"]` exactly missed `export --`,
     `export -n`, `export -np` and `export -p -p`, each verified to print `declare -x NAME="VALUE"` for
-    every exported variable. Testing for the absence of an assignment alone would be the opposite miss:
-    `export FOO` and `export -n FOO` name an operand and print nothing, verified in bash and zsh. Every
-    option `export` takes is boolean, so an operand is exactly a token that does not start with `-`.
+    every exported variable. An operand is exactly a token that does not start with `-`, since every
+    option `export` takes is boolean.
+
+    The one spelling that shape test alone still missed is `-p` *with* an operand, because "no operand"
+    is not the whole of print mode in every shell: zsh's `export -p ACLI_TOKEN` prints
+    `export ACLI_TOKEN=<value>` — verified live, as are `export -p -- ACLI_TOKEN` and
+    `export -p FOO ACLI_TOKEN` — while bash's own `-p` prints only when no operand follows. This hook
+    cannot know which shell runs the command (Claude Code's Bash tool runs zsh on this host), and denying
+    is the safe direction for either, so `-p` anywhere among the options forces print mode here with or
+    without an operand. It costs nothing on the allow side: `export FOO=bar` is not all-dash and neither
+    `-n` nor an assignment carries a `p`. `export -np ACLI_TOKEN` denies for the same one-rule reason even
+    though bash prints nothing for it and zsh rejects `-n` outright — an unrunnable or silent command
+    denied is the deny-leaning direction, not a leak missed.
     """
     if cmd in {"env", "printenv"}:
         return _env_reason(cmd, rest)
     if cmd == "set":
         return "bare `set` dumps every shell variable's value" if not rest else None
-    if cmd == "export" and all(t.startswith("-") for t in rest):
-        return "`export` with no name or assignment prints every exported variable's value"
+    if cmd == "export":
+        prints_named = any(t.startswith("-") and t != "--" and "p" in t for t in rest)
+        prints_all = all(t.startswith("-") for t in rest)  # true of `[]`, i.e. bare `export`, too
+        if prints_named or prints_all:
+            return "`export -p`, or `export` with no name or assignment, prints an exported variable's value"
     if cmd in PRINTING_COMMANDS:
         for match in _VAR_REF.finditer(segment):
             if _looks_like_secret_name(match.group(1)):
@@ -501,6 +537,12 @@ def _interpreter_reason(command: str) -> str | None:
     `tokens[j + 1]` — that assumption also needed the loop to stop one token early, which is why an
     attached-value flag in final position could not even be reached.
 
+    Whether the result gets printed is asked of the invocation (`_prints_result` over every token), not of
+    the flag that carried the code. node auto-prints when `-p`/`--print` is anywhere in its own argv, so
+    asking the carrying flag allowed `node --print --eval CODE`: `--eval` is not a printing flag and the
+    code holds no `console.log`, and the check concluded nothing was printed with `--print` sitting in the
+    same command.
+
     One pass, not the nested one this used to be: whether a token carries leaking code depends on the
     token and on the *flag set* it is read against, never on which particular earlier token named that
     interpreter, so it is enough to remember which interpreters have been seen so far — at most the five
@@ -512,6 +554,13 @@ def _interpreter_reason(command: str) -> str | None:
         tokens = shlex.split(command)
     except ValueError:
         return None  # unbalanced quoting: not this hook's problem to parse
+    # One linear pass, not one per (interpreter, token) pair: whether this invocation auto-prints is a
+    # property of the token list. Accepted imprecision, in the deny-leaning direction a security hook
+    # wants: the scan is the whole command's tokens, not just the interpreter's own argv, so a `-p`-shaped
+    # token belonging to something else in a compound command can deny an otherwise-non-printing `-c`/`-e`
+    # one-liner that names a secret variable. A false deny of a command that reads a secret without
+    # printing it is the side to be wrong on.
+    has_print_flag = any(_prints_result(t) for t in tokens)
     seen: dict[str, str] = {}
     for j, tok in enumerate(tokens):
         base = tok.lstrip("\\").rsplit("/", 1)[-1]
@@ -520,7 +569,7 @@ def _interpreter_reason(command: str) -> str | None:
             if carried is None:
                 continue
             flag, code = carried
-            if not _consumes_next(flag, _PRINTING_CODE_FLAGS) and not _PRINT_CALL.search(code):
+            if not has_print_flag and not _PRINT_CALL.search(code):
                 continue
             match = _ENV_ACCESS.search(code)
             if not match:
@@ -545,6 +594,29 @@ def _interpreter_key(base: str) -> str | None:
     return "python" if _PYTHON_BASENAME.fullmatch(base) else None
 
 
+def _prints_result(tok: str) -> bool:
+    """Whether this token, on its own, asks an interpreter to auto-print the result of its code.
+
+    node's `-p`/`--print` prints that result with no `console.log` in the code at all, and it arrives
+    standalone, clustered with `-e` (`-pe`, verified to run), or as its own long token beside a separately
+    spelled `--eval` — so whether *this invocation* auto-prints is a property of the whole token list, not
+    of whichever flag happened to carry the code. Asking only the carrying flag allowed
+    `node --print --eval "process.env.ACLI_TOKEN"`, where `--eval` carries the code and is not itself a
+    printing flag.
+
+    A plain character test rather than `_consumes_next`, because the question here is whether `p` appears
+    in this token's own cluster, not whether the token consumes a separate value — different questions for
+    a flag that is only sometimes the one carrying the code.
+    """
+    if not tok.startswith("-"):
+        return False
+    if tok == "--print":
+        return True
+    if tok.startswith("--"):
+        return False
+    return "p" in tok[1:]
+
+
 def _code_argument(tokens: list[str], j: int, flags: frozenset[str]) -> tuple[str, str] | None:
     """One option token's flag and the code it carries, or None when it carries no code.
 
@@ -564,14 +636,22 @@ def _code_argument(tokens: list[str], j: int, flags: frozenset[str]) -> tuple[st
     Only an option-shaped token is asked about, which is `_consumes_next`'s own unstated precondition —
     its cluster scan reads any token's characters, so `foo.c` "clusters" a `-c` at its end and answered
     yes for a filename.
+
+    The arity question goes to `_consumes_next` with `prefer_last=True`, because a code-flag table lists
+    interchangeable carriers: node runs `-pe CODE` as `-p` and `-e` both active with CODE the next token,
+    and first-match-wins read that as `-p` with the attached value `e` and never examined the real code.
+    The attached-short-option fallback below keeps first-match-wins, which is correct for the shape it is
+    for (`-cCODE`, where the rest of the token really is the value) — its remaining imprecision is a code
+    string whose own last character happens to name a listed flag, which sends the read to the next token
+    instead; the same deny-or-miss tradeoff as any cluster heuristic here, and no worse than before.
     """
     tok = tokens[j]
     if not tok.startswith("-"):
         return None
     head, separator, attached = tok.partition("=")
-    if separator and _consumes_next(head, flags):
+    if separator and _consumes_next(head, flags, prefer_last=True):
         return head, attached
-    if _consumes_next(tok, flags):
+    if _consumes_next(tok, flags, prefer_last=True):
         return (tok, tokens[j + 1]) if j + 1 < len(tokens) else None
     if not tok.startswith("--"):
         for position, char in enumerate(tok[1:], start=1):
@@ -673,6 +753,10 @@ def _self_test() -> None:
         # argument out of a spelling the table did not list must not deny a one-liner that leaks nothing.
         '''python -uc "print(1)"''', '''python3 -Ic "print(1)"''', '''python3.13 -c "print(1)"''',
         '''python -c"print(1)"''', '''node --eval="console.log(42)"''', '''node -p "1 + 1"''',
+        # `node -e`/`--eval` alone evaluates without printing — verified: `node -e "process.env.FOO"`
+        # writes nothing — so a one-liner that reads a secret and neither prints it nor asks for
+        # auto-print leaks nothing. The invocation-wide print test must not widen the gate to this.
+        '''node --eval="process.env.ACLI_TOKEN"''', '''node -e "process.env.ACLI_TOKEN"''',
         # `-p` is node's print-and-evaluate flag, but perl's and ruby's own `-p` is a boolean line loop
         # whose `-e` still carries the code: a shared code-flag table read the cluster's `e` as the code
         # and skipped the real argument, so the flags are per interpreter.
@@ -687,6 +771,13 @@ def _self_test() -> None:
         # against `[]`/`["-p"]` allowed every one of these, each verified to print `declare -x
         # NAME="VALUE"` for every exported variable in bash (`-n` is not a zsh option, the rest are).
         "export", "export -p", "export --", "export -n", "export -np", "export -p -p",
+        # And `-p` prints the *named* variable in zsh — which is the shell Claude Code's Bash tool runs
+        # here — where bash's `-p` prints only with no operand: `export -p ACLI_TOKEN` writes
+        # `export ACLI_TOKEN=<value>`, verified live, as do the `--` and multi-operand forms. So `-p`
+        # anywhere in the options is print mode, operand or not, since deny is safe for either shell.
+        # `-np` is in that one rule too, though bash prints nothing for it and zsh rejects `-n` outright.
+        "export -p ACLI_TOKEN", "export -p -- ACLI_TOKEN", "export -p FOO ACLI_TOKEN",
+        "export -np ACLI_TOKEN",
         "echo $ACLI_TOKEN", 'echo "$ACLI_TOKEN"', "echo ${ACLI_TOKEN}",
         "echo $GITHUB_TOKEN", "echo $AWS_SECRET_ACCESS_KEY",
         "printf '%s\\n' \"$ACLI_TOKEN\"",
@@ -760,6 +851,15 @@ def _self_test() -> None:
         # interpreter under a name exact membership never matched. perl's `-E` is pinned on the matcher
         # below instead, for the reason given there.
         '''node -p "process.env.GITHUB_TOKEN"''', '''node --print "process.env.GITHUB_TOKEN"''',
+        # Auto-print is a property of the invocation, not of the flag carrying the code, and each of these
+        # was allowed while the bare `-p` above denied. `-pe CODE` runs both flags with CODE as the *next*
+        # token (verified: `node -pe "process.env.FOO"` prints the value), which first-match cluster arity
+        # read as `-p` with the attached value `e`, so the real code was never scanned. `--print --eval`
+        # spells the two flags apart, and `--eval` is not itself a printing flag. The reversed cluster
+        # `-ep` needs no case: node rejects it outright ("node: bad option: -ep", verified), so nothing
+        # runs — though the arity rule below handles it anyway.
+        '''node -pe "process.env.GITHUB_TOKEN"''',
+        '''node --print --eval "process.env.GITHUB_TOKEN"''',
         '''python3.13 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
         '''python2.7 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
         '''python3.13t -c "import os; print(os.environ['ACLI_TOKEN'])"''',
@@ -809,6 +909,21 @@ def _self_test() -> None:
     assert _code_argument(["python", "foo.c", "CODE"], 1, python) is None, (
         "`_consumes_next` reads any token as a cluster, so only an option-shaped one may be asked"
     )
+    # A code-flag table lists interchangeable carriers, so the cluster scan has to run to the end of the
+    # token: node's `-pe CODE` is both flags with CODE as the next token, and first-match-wins returned
+    # `-p` with the attached value `e` instead. Pinned on the matcher as well as through the command above,
+    # because the two spellings of the same bypass were found one at a time.
+    assert _code_argument(["node", "-pe", "CODE"], 1, node) == ("-pe", "CODE"), "both flags, code follows"
+    assert _consumes_next("-pe", node, prefer_last=True), "the last listed character is the token's last"
+    assert not _consumes_next("-pe", node), (
+        "and the default stays first-match-wins, which is the right rule for `sudo`-style tables"
+    )
+    assert _consumes_next("-nu", _WRAPPER_ARG_FLAGS["sudo"]), "unchanged for every existing call site"
+    for tok, prints in (
+        ("-p", True), ("--print", True), ("-pe", True), ("-ep", True), ("-np", True),
+        ("-e", False), ("--eval", False), ("--", False), ("--eval=CODE", False), ("code", False),
+    ):
+        assert _prints_result(tok) is prints, f"{tok!r} auto-print should be {prints}"
     # An attached spelling puts the flag and the code in one token, and a deny reason naming that token
     # would copy arbitrary code — the very thing this hook keeps out of transcript history — into the
     # transcript itself. Every reason names the flag alone.
@@ -864,7 +979,7 @@ def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> Non
     finally:
         _EXTRA_WORDS = saved
 
-    def _raise(tool: str, args: dict) -> str | None:
+    def _raise(tool: object, args: dict) -> str | None:
         raise RecursionError("forced")
 
     saved_decision, saved_stdin, saved_argv = globals()["decision"], sys.stdin, sys.argv
@@ -985,6 +1100,9 @@ def _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced() -> N
     punctuation around the text means none of the deny patterns matched what is plainly the leak — an
     allow reached without any exception for `main()` to catch. An absent `command` is a different thing
     and still allows: a Bash call with nothing to run has nothing to leak.
+
+    `tool_name` is the same family: `tool != "Bash"` is a correct allow for every other tool and was
+    therefore also an allow for a shape this hook cannot read, like `["Bash"]`.
     """
     global _EXTRA_WORDS
     saved = _EXTRA_WORDS
@@ -996,6 +1114,10 @@ def _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced() -> N
         assert decision("Bash", {}) is None, "an absent command has nothing to run and nothing to leak"
         assert decision("Bash", {"command": None}) is None
         assert decision("Bash", {"command": ""}) is None
+        for tool in (["Bash"], {"name": "Bash"}, 5, None, True):
+            got = decision(tool, {"command": "env"})
+            assert got == _UNREADABLE_TOOL, f"a {type(tool).__name__}-shaped tool_name must deny: {got!r}"
+        assert decision("Write", {"command": "env"}) is None, "a string naming another tool still allows"
     finally:
         _EXTRA_WORDS = saved
 

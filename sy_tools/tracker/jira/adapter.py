@@ -860,9 +860,18 @@ def _linked(links: object, side: str, field: str) -> list[str]:
     indistinguishable and a link this could not parse reported as no link. A link whose `type` is
     present but unreadable is the same fault one level in: Jira's own spec marks `type` required on an
     `IssueLink` without guaranteeing a `name` inside it, and `(_field(...) or "") != BLOCKS` collapsed
-    "no name to compare" into "compared, and it is not Blocks". Only the type is refused this way —
-    a Blocks link whose *counterpart* is absent is a real "nothing in this direction", since each read
-    carries only one side.
+    "no name to compare" into "compared, and it is not Blocks".
+
+    The counterpart itself needs the same two answers kept apart, and one `if key:` collapsed them.
+    A Blocks link arrives under exactly one of the two sides, so the *absent* side is a real "nothing in
+    this direction" and every ordinary read has one — but a side that is *present* and names no issue is
+    the type fault one level over: Jira's own REST v3 spec documents `key` on this object as "Required if
+    `id` isn't provided", the same specification the type check above cites, so an object carrying
+    neither is drift and dropping it reported a real Blocks link as no link at all. `get_issue` has no
+    truncation channel for `dependencies`, so that drop was unsignalled in a field a caller reads to
+    decide whether an issue is blocked — the drift `_keys` and github's `_refs` already raise on. An
+    `id`-only counterpart is spec-legal and still returns no key, so it stays a skip: this raise is about
+    an unaddressable object, not about the shape this function happens to want.
 
     This was measured, not assumed, because getting it backwards is silent and inverts every
     dependency: a link posted as "AM-1245 blocks AM-1246" reads back on AM-1246 with AM-1245 under
@@ -898,9 +907,20 @@ def _linked(links: object, side: str, field: str) -> list[str]:
             )
         if type_name.lower() != BLOCKS.lower():
             continue
-        key = _field(link.get(side), "key")
+        counterpart = link.get(side)
+        if counterpart is None:
+            continue  # this direction does not apply to this link, which is not a fault
+        key = _field(counterpart, "key")
         if key:
             found.append(key)
+            continue
+        if _field(counterpart, "id"):
+            continue  # spec-legal and addressable, just not by the key a caller reads
+        raise TrackerError(
+            f"entry {index} of the {field} field has a {side} that names no issue "
+            f"({_shape(counterpart)}), so a Blocks link on this issue cannot be read and it must not be "
+            "reported as absent"
+        )
     return found
 
 

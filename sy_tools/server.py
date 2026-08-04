@@ -111,8 +111,17 @@ def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
 
     The `secret_env` names the selected adapter declares are forced in on top of auto-discovery,
     because `discover_secret_vars` selects on a *name* word-heuristic and a value-length floor — so
-    the one credential this repo actually declares can be missed by either, which is exactly the
+    the one credential this repo actually declares can be missed by the heuristic, which is exactly the
     value that must never reach a tracker body.
+
+    The *name* heuristic is what a declaration overrides; `secrets.DEFAULT_MIN_LENGTH` still applies,
+    because that floor is not a guess about what is credential-shaped but the bound that keeps a scrub
+    from being a corruption. Forcing a sub-floor value in replaced every occurrence of it anywhere in a
+    body or title — a one-character declared value redacted every space, verified — which mangles
+    unrelated prose to protect a value too short to be a credential, and disagreed with
+    `secrets.sanitize`, which treats a sub-floor value as absent and refuses the write outright. A name
+    dropped for that reason is reported under its own key rather than silently: this path cannot refuse
+    (see below), so the alternative is a caller told nothing while a declared credential went unscrubbed.
 
     A declared name absent from the environment is *reported*, not raised, which is the opposite of
     `secrets.sanitize`'s `require=` and deliberately so. `sanitize` scrubs a file some other process
@@ -132,11 +141,14 @@ def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
     """
     known = secrets.discover_secret_vars(extra_words=config.extra_secret_words())
     absent: list[str] = []
+    too_short: list[str] = []
     for declared in config.adapter_map().get("secret_env", []):
         name = str(declared)
         value = os.environ.get(name, "")
-        if value:
+        if len(value) >= secrets.DEFAULT_MIN_LENGTH:
             known[name] = value
+        elif value:
+            too_short.append(name)
         else:
             absent.append(name)
     scrubbed: list[str] = []
@@ -149,6 +161,7 @@ def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
         "scrubbed_vars": sorted(totals),  # names only, never a value
         "redactions": sum(totals.values()),
         "declared_absent_from_env": sorted(absent),
+        "declared_below_length_floor": sorted(too_short),
     }
 
 

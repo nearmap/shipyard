@@ -1126,7 +1126,8 @@ async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypat
     assert result.is_error is False, result.content
     assert _body_sent(recorder) == body, f"{tool} rewrote a body holding nothing to redact"
     assert _payload(result)["scrub"] == {
-        "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": []
+        "scrubbed_vars": [], "redactions": 0,
+        "declared_absent_from_env": [], "declared_below_length_floor": [],
     }, _payload(result)
 
 
@@ -1176,7 +1177,8 @@ async def test_one_scrub_report_counts_every_field_of_a_write_not_just_the_body(
     assert result.is_error is False, result.content
     report = _payload(result)["scrub"]
     assert report == {
-        "scrubbed_vars": [FAKE_SECRET_VAR], "redactions": 3, "declared_absent_from_env": []
+        "scrubbed_vars": [FAKE_SECRET_VAR], "redactions": 3,
+        "declared_absent_from_env": [], "declared_below_length_floor": [],
     }, f"the report must total the title's redaction with the body's two: {report}"
 
 
@@ -1202,19 +1204,45 @@ async def test_a_declared_credential_absent_from_the_environment_is_reported_not
 
 @pytest.mark.anyio
 async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip_it(monkeypatch):
-    """Discovery selects on a name heuristic plus a length floor, and a declared name must outrank both.
+    """A declared name outranks discovery's *name* heuristic, which is the half a declaration replaces.
 
-    This name holds no credential word and this value is under the floor, so auto-discovery alone would
-    post it verbatim — while the configuration says in as many words that it is the credential.
+    This name holds no credential word, so auto-discovery alone would post the value verbatim — while
+    the configuration says in as many words that it is the credential.
     """
     monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
-    monkeypatch.setenv("SY_TEST_DECLARED", "q7z")
+    monkeypatch.setenv("SY_TEST_DECLARED", "q7zx4m")
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: it said q7z.\n"})
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: it said q7zx4m.\n"})
     assert result.is_error is False, result.content
     assert _body_sent(recorder) == "TL;DR: it said <REDACTED:SY_TEST_DECLARED>.\n", _body_sent(recorder)
     assert _payload(result)["scrub"] == {
-        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 1, "declared_absent_from_env": []
+        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 1,
+        "declared_absent_from_env": [], "declared_below_length_floor": [],
+    }, _payload(result)
+
+
+@pytest.mark.anyio
+async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_redacted(monkeypatch):
+    """The length floor is not part of the heuristic a declaration overrides: it stops a corruption.
+
+    Forcing a sub-floor value in replaced every occurrence of it anywhere in the write, so a
+    one-character declared credential redacted every space in the prose — mangling the body to protect a
+    value too short to be one, and disagreeing with `secrets.sanitize`, which treats a sub-floor value as
+    absent and refuses. Dropping it silently is the other half of the fault: this path cannot refuse, so
+    a caller who has exported a credential that will not be scrubbed has to be told which one.
+    """
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
+    monkeypatch.setenv("SY_TEST_DECLARED", " ")
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = "TL;DR: ordinary prose with spaces in it.\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == body, f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
+    assert _payload(result)["scrub"] == {
+        "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": [],
+        "declared_below_length_floor": ["SY_TEST_DECLARED"],
     }, _payload(result)

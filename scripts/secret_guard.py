@@ -142,7 +142,7 @@ _PRINT_CALL = re.compile(
     r"\b(print"
     r"|console\.(?:log|info|debug|warn|error|dir|dirxml|table|trace|groupCollapsed|group"
     r"|countReset|count|assert|timeEnd|timeLog|time)"
-    r"|(?:sys|process)\.std(?:out|err)\.write|puts|warn)\s*\("
+    r"|(?:sys|process)\.std(?:out|err)\.write(?:lines)?|puts|warn)\s*\("
 )
 """A call that writes its argument out, so a one-liner that reads a secret without printing it allows.
 
@@ -193,23 +193,34 @@ stderr counts exactly as stdout does, so the writers are one `(?:sys|process)\\.
 pattern instead of the two stdout spellings that were listed: a Bash tool call's result carries both
 streams into transcript history, and `sys.stderr.write(...)`/`process.stderr.write(...)` — verified live
 to reproduce a sentinel — were allowed by twin patterns that differed from the denied ones by four
-characters."""
-_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*")
-"""A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
+characters. `writelines` is the same stream method under its other name — `sys.stdout.writelines([v])`
+reproduces the value exactly as `write(v)` does — and `\\.write\\s*\\(` required the paren immediately
+after `write`, so it matched neither that spelling nor `sys.stderr.writelines`."""
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=.*")
+"""A leading `NAME=VALUE`, `NAME+=VALUE` or `NAME[idx]=VALUE` assignment prefix, naming no command.
 
 One named constant, deliberately, because the duplication was itself the bug: this pattern was also
 spelled out inline inside `_env_reason`'s chain-unwinding loop, so widening it to `+=` in one place
 left the other copy narrow, and `env FOO+=bar echo $VAR` still left `FOO+=bar` standing as the
 apparent command — a token that matches no rule below, which allowed the leak behind it. Missing an
-assignment prefix disarms the whole anti-pattern path rather than narrowing it, so both sites read
-this one constant now.
+assignment prefix disarms the whole anti-pattern path rather than narrowing it, so both sites reach
+this one pattern through `_skip_assignment_prefix` now.
 
-`=` and `+=` are the only assignment-prefix operators there are to handle: both bash and zsh run
+`=` and `+=` are the only assignment-prefix *operators* there are to handle: both bash and zsh run
 `NAME+=VALUE cmd` (verified live in both), while `-=`, `*=` and `/=` are not assignment syntax to
 either — they come back as a command not found or a failed glob — so there is no third operator to
-chase. Note that `env(1)` does not read `+=` as an append: it splits on the first `=`, so
-`env FOO+=bar` sets a variable literally named `FOO+` (verified). The `env` layer consumes the token
-as an assignment either way, which is all this walk needs from it."""
+chase. That is a complete claim about the operator set and it was mistaken for a complete claim about
+the *walk*, which it never was: an assignment prefix also varies in its left-hand side and in its
+value, and both variations disarmed this walk for as long as the tokenizer was `segment.split()`.
+`FOO[1]=bar echo $VAR` (bash, and zsh where the index is 1-based) has an indexed left-hand side, which
+the pattern now matches; `ARR=(a b) echo $VAR` has an array-literal value, whose tokens
+`_skip_assignment_prefix` consumes through the closing paren. Both were verified live in both shells to
+run the command behind them, and both allowed that command unchecked. What guarantees the walk is
+reached at all is `_tokens`, not this pattern.
+
+Note that `env(1)` does not read `+=` as an append: it splits on the first `=`, so `env FOO+=bar` sets
+a variable literally named `FOO+` (verified). The `env` layer consumes the token as an assignment
+either way, which is all this walk needs from it."""
 _SHORT_CLUSTER = re.compile(r"-[A-Za-z0-9]+")
 """A token shaped like a cluster of short options and nothing else — see `_is_short_cluster`."""
 _ADVICE = (
@@ -230,8 +241,8 @@ _TOO_LONG = (
 
 The checks here are not all linear. `_interpreter_reason` re-scanned the remaining tokens once per
 interpreter-shaped token, so `"python " * 50000` took ~38s — a single pass now, since its answer never
-depended on the pair — and `_env_reason` still re-joins and re-splits the remaining tokens once per
-`env` layer, which is the term the ceiling is now standing in front of. This hook is a `PreToolUse` gate
+depended on the pair — and `_env_reason` still walks and slices the remaining tokens once per `env`
+layer, which is the term the ceiling is now standing in front of. This hook is a `PreToolUse` gate
 on every Bash call in every session, so either shape is a stall of the whole session, and a hook that has
 not written by the time anything gives up has written no decision at all — the same fail-open shape as a
 crash. A ceiling on the input closes that class whatever a matcher's shape turns out to be, which
@@ -240,11 +251,14 @@ matters in a file whose matchers have each been found incomplete a round at a ti
 The number is far above any plausible single Bash call (a long `&&`-joined pipeline is hundreds of
 characters, not tens of thousands) and far below where the remaining quadratic term bites. The worst
 input measured among those the ceiling admits is the `env` chain, not the interpreter one: `"env " *
-5000` (20000 characters, 5000 layers) scans in ~0.74s, where the same length in interpreter-shaped
-tokens is now ~0.01s. So the margin is ~50x against the ~38s this replaced, measured on the worst
-admitted case, and that case is what `_test_an_oversized_command_is_refused_instead_of_scanned` times:
-timing the refusal instead only shows that refusing is cheap, which it is by construction, since it
-scans nothing at all."""
+5000` (20000 characters, 5000 layers) scans in ~0.06s, where the same length in interpreter-shaped
+tokens is ~0.01s. The chain used to cost ~0.6s, and ~18s once a token's content carried a quote, because
+each layer re-joined its remaining tokens and re-lexed them; `_leading_of` lexes once per segment
+instead. So the margin is ~600x against the ~38s this replaced, measured on the worst admitted case, and
+that case is what `_test_an_oversized_command_is_refused_instead_of_scanned` times — in both the
+quote-free and the quote-carrying spelling, since only the second one reached the relex. Timing the
+refusal instead would only show that refusing is cheap, which it is by construction, since it scans
+nothing at all."""
 _UNEVALUABLE = (
     "secret guard: this command could not be evaluated safely, so it is refused rather than allowed "
     "unchecked. Deeply nested wrapper or `env` layers are the known cause; flatten them and retry."
@@ -314,6 +328,14 @@ def decision(tool: object, args: dict) -> str | None:
     Command text past `MAX_COMMAND_CHARS` is refused before any of those checks run, since all of them
     scale with it and one of them scales worse than linearly.
 
+    Command text whose quoting `_tokens` cannot lex at all is refused for the same reason a
+    non-string one is: this hook cannot read what would run, and the interpreter family used to answer
+    that case with `return None`, i.e. an allow. The refusal is decided here, on the whole command, and
+    never per segment: the `;&|` split below cuts inside a quoted argument, so a perfectly balanced
+    command (`python -c "import x; f()"`) yields segments with manufactured unbalanced quotes, and
+    refusing those would deny most quoted commands. `_leading_command` therefore keeps a best-effort
+    fallback for its own segment, while the whole-command read fails closed here.
+
     A `command` that is not a string is refused rather than coerced. `str()` on an unexpected shape does
     not raise, so `main()`'s `except Exception` backstop never fired for it: a list-shaped
     `{"command": ["echo $ACLI_TOKEN"]}` became the text `['echo $ACLI_TOKEN']`, whose bracket-and-quote
@@ -332,7 +354,10 @@ def decision(tool: object, args: dict) -> str | None:
     command = raw or ""
     if len(command) > MAX_COMMAND_CHARS:
         return _TOO_LONG
-    reason = _interpreter_reason(command)
+    tokens = _tokens(command)
+    if tokens is None:
+        return _UNEVALUABLE
+    reason = _interpreter_reason(tokens)
     if reason:
         return f"secret guard: {reason} — {_ADVICE}"
     for segment in re.split(r"[;&|\n]+", command):
@@ -376,6 +401,66 @@ def main() -> None:
     emit(reason, _CONFIG_WARNING)
 
 
+def _tokens(text: str) -> list[str] | None:
+    """`text` split into words the way a shell splits it, or None when its quoting cannot be lexed.
+
+    The one tokenizer for this whole file, because every matcher below is only as good as the token
+    boundaries it is handed and this file has now been wrong about those in both directions.
+
+    `shlex`, not `str.split()`, because a *quoted assignment value* defeated the whole walk in
+    `_leading_command`: `FOO="a b" echo $ACLI_TOKEN` split into `FOO="a` and `b"`, the first matched
+    `_ASSIGNMENT`, the second was read as the command, and `echo` — with the leak behind it — was never
+    checked. Verified live in bash and zsh that the command really does run. That is not one spelling:
+    a quoted assignment value hides *every* wrapper this file recognises, so the fix belongs in the
+    tokenizer rather than in `_ASSIGNMENT`.
+
+    `comments=True`, because a `#` comment is text the shell never runs and this file used to read it
+    two ways, both fail-open. `env # note` and `set # note` really do dump the environment (verified in
+    both shells) while their tokens ended in a comment word that made `rest` non-empty, so the
+    dump-family shape tests saw an operand that does not exist. And a comment containing an apostrophe
+    (`python3 -c "…" # it's fine`) made the whole command unlexable, which the interpreter family
+    answered with an allow. Stripping the comment first fixes both at once.
+
+    One path, with no `str.split()` fast path beside it: `shlex` is ~40x slower per character, which
+    mattered only while `_env_reason` re-lexed the remaining text once per `env` layer (~18s at the
+    ceiling — see `_leading_of`). With the lexing done once per segment, the worst input
+    `MAX_COMMAND_CHARS` admits costs ~0.07s lexed either way, so a second tokenizer would buy ~0.01s at
+    the price of two code paths that have to agree.
+
+    None means the text is not lexable, which is a different answer from "no tokens" and each caller
+    decides it: `decision()` refuses the whole command, and `_leading_command` falls back to a naive
+    split for one segment, because the `;&|` segment split manufactures unbalanced quotes out of
+    balanced commands.
+    """
+    try:
+        return shlex.split(text, comments=True)
+    except ValueError:
+        return None
+
+
+def _skip_assignment_prefix(tokens: list[str], i: int) -> int:
+    """The index after the assignment prefix at `i`, or `i` itself when that token is not one.
+
+    One helper for both walks, since two copies of this rule is how `+=` came to be handled in one of
+    them only. It consumes an array-literal value's tokens too: `ARR=(a b) echo $VAR` runs `echo` in
+    both shells (verified live) and lexes as `ARR=(a` + `b)`, so stopping after the first token read
+    `b)` as the command and left the leak behind it unchecked. Consuming through the matching close
+    paren is correct rather than a new gap, because a `(...)` array literal cannot itself contain the
+    wrapped command: the shell parses it as this assignment's value, whatever words are inside it.
+
+    The paren balance is net over the tokens, so an ordinary value that merely carries parens
+    (`FOO=$(date)`, `FOO=a)`) never starts a scan: only an unclosed `(` does.
+    """
+    if not _ASSIGNMENT.fullmatch(tokens[i]):
+        return i
+    depth = tokens[i].count("(") - tokens[i].count(")")
+    i += 1
+    while depth > 0 and i < len(tokens):
+        depth += tokens[i].count("(") - tokens[i].count(")")
+        i += 1
+    return i
+
+
 def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     """The command a segment actually invokes and its remaining tokens, or None if it invokes nothing.
 
@@ -405,13 +490,40 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     tables are. A wrapper's flag set is still completed from its documented synopsis rather than from
     whatever this host has installed, and an unrecognised `-x` is skipped rather than treated as the
     command, since landing on the real command is what makes the deny reachable.
+
+    Tokens come from `_tokens`, which carries the tokenizer half of this same story: every arity table
+    above was already complete while a quoted assignment value still hid the command from this walk. A
+    segment `_tokens` cannot lex falls back to the naive split this used to do always, because the
+    `;&|` segment splitter cuts inside quoted arguments and so manufactures unbalanced quotes out of
+    balanced commands — an unlexable *segment* is ordinary rather than suspicious. An unlexable whole
+    *command* is refused in `decision()`, where the text is intact.
+
+    The walk itself is `_leading_of`, over tokens, so `_env_reason` can unwind a chain without lexing
+    each layer again: text is lexed once per segment, here.
     """
-    tokens = [t.strip("\"'") for t in segment.split()]
+    tokens = _tokens(segment)
+    if tokens is None:
+        tokens = [t.strip("\"'") for t in segment.split()]
+    return _leading_of(tokens)
+
+
+def _leading_of(tokens: list[str]) -> tuple[str, list[str]] | None:
+    """`_leading_command`'s walk over tokens that are already lexed — see its docstring for the rules.
+
+    Separate from the lexing so an `env` chain costs one lex for the whole segment rather than one per
+    layer. `_env_reason` used to re-join its remaining tokens into text and hand that back to
+    `_leading_command`, which lexed it again; with `shlex` in place of `str.split` that per-layer relex
+    took the worst input `MAX_COMMAND_CHARS` admits from ~0.6s to ~18s whenever a token's own content
+    carried a quote — the stall-shaped fail-open that ceiling exists to close, reintroduced by the fix
+    for the tokenizer. Re-lexing already-lexed words was also wrong on its own terms: quoting inside a
+    token's content would be processed twice.
+    """
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if _ASSIGNMENT.fullmatch(tok):
-            i += 1
+        skipped = _skip_assignment_prefix(tokens, i)
+        if skipped != i:
+            i = skipped
             continue
         base = tok.lstrip("\\").rsplit("/", 1)[-1]
         if base not in WRAPPERS:
@@ -548,6 +660,10 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
     `-n` nor an assignment carries a `p`. `export -np ACLI_TOKEN` denies for the same one-rule reason even
     though bash prints nothing for it and zsh rejects `-n` outright — an unrunnable or silent command
     denied is the deny-leaning direction, not a leak missed.
+
+    `declare`/`typeset` are the same family under the names bash documents `export` *by* (`export` is
+    "equivalent to `declare -x`"), so they are handled in `_declare_reason` rather than left as a
+    missing spelling of a family this file claims to close.
     """
     if cmd in {"env", "printenv"}:
         return _env_reason(cmd, rest)
@@ -558,10 +674,55 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
         prints_all = all(t.startswith("-") for t in rest)  # true of `[]`, i.e. bare `export`, too
         if prints_named or prints_all:
             return "`export -p`, or `export` with no name or assignment, prints an exported variable's value"
+    if cmd in {"declare", "typeset"}:
+        return _declare_reason(cmd, rest)
     if cmd in PRINTING_COMMANDS:
         for match in _VAR_REF.finditer(segment):
             if _looks_like_secret_name(match.group(1)):
                 return f"`{cmd}` of ${{{match.group(1)}}} prints a secret-shaped variable's value"
+    return None
+
+
+def _declare_reason(cmd: str, rest: list[str]) -> str | None:
+    """`declare`/`typeset` print modes, which are `export`'s own family under its documented synonym.
+
+    bash documents `export` as equivalent to `declare -x`, and both names accept the same print modes, so
+    leaving them out was a missing spelling inside a family this file already closes rather than new
+    scope. Each mode below was probed on this host with a sentinel value, in `bash -c` and `zsh -c`
+    separately, because the two shells do not agree and the spellings that print are not the ones the
+    family's `-x` name suggests:
+
+      no operand            `declare`, `typeset`, `declare -x`, `declare -p` dump every variable (bash
+                            prints `NAME=VALUE`, or `declare -x NAME="VALUE"` under `-x`; zsh prints
+                            `NAME=VALUE`) — the same leak as bare `env`/`set`, so it denies whatever the
+                            options are, exactly as bare `export` does.
+      `-p` with an operand  `declare -p NAME`, `typeset -p NAME`, `declare -px NAME`, `-xp` — all four
+                            print that variable's value in both shells.
+      a bare-name operand   `declare NAME` and `declare -- NAME` print `NAME=VALUE` in zsh, which is the
+                            shell Claude Code's Bash tool runs here; bash prints nothing for either.
+      prints nothing        an assignment operand (`declare -a arr=(1 2 3)`, `declare -x NAME=x`), and a
+                            bare name behind any *other* attribute option (`-x`, `-i`, `-r`, `-g`) —
+                            measured silent in both shells, so both stay allowed and are pinned as allow
+                            controls in the self-test.
+
+    Unlike `export`, a named print here is tested against `_looks_like_secret_name` rather than denied
+    outright, because the two commands print different amounts: bash's `export -p NAME` prints the whole
+    exported environment, while `declare -p NAME` prints only `NAME` in both shells. So this is
+    `printenv NAME`'s rule, not bare `export`'s, and `declare -p PATH` stays allowed for the same reason
+    `printenv PATH` does. Both rules already exist in this file; neither is new judgement.
+    """
+    options = [t for t in rest if t.startswith("-")]
+    operands = [t for t in rest if not t.startswith("-")]
+    if not operands:
+        return f"`{cmd}` with no name dumps every variable's value"
+    prints_named = any(t != "--" and "p" in t for t in options)
+    unflagged = all(t == "--" for t in options)  # zsh prints a bare name given no attribute option
+    if not (prints_named or unflagged):
+        return None
+    named = [t for t in operands if "=" not in t]  # an assignment sets, it does not print
+    secret_names = [n for n in named if _looks_like_secret_name(n)]
+    if secret_names:
+        return f"`{cmd} {' '.join(secret_names)}` prints a secret-shaped variable's value"
     return None
 
 
@@ -581,7 +742,10 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
 
     The chain unwinds in this loop rather than through `_segment_reason` again: `env env env … cmd` is
     legal, and recursing per layer put an unbounded stack depth behind an attacker-chosen token count
-    in a hook whose crash is read as no decision at all.
+    in a hook whose crash is read as no decision at all. It unwinds over *tokens* (`_leading_of`) rather
+    than re-joining them into text for `_leading_command` to lex again, which is a latency bound now that
+    the lexer is `shlex`: see `_leading_of`. The one join left feeds `_command_reason`'s `_VAR_REF` scan
+    and happens once, on the layer that terminates the chain.
     """
     while True:
         names: list[str] = []
@@ -589,8 +753,9 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
         i = 0
         while i < len(rest):
             tok = rest[i]
-            if _ASSIGNMENT.fullmatch(tok):
-                i += 1
+            skipped = _skip_assignment_prefix(rest, i)
+            if skipped != i:
+                i = skipped
                 continue
             if cmd == "env":
                 bare = tok.split("=", 1)[0]
@@ -609,14 +774,13 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
             i += 1
         if wrapped is None:
             break
-        segment = " ".join(wrapped)
-        leading = _leading_command(segment)
+        leading = _leading_of(wrapped)
         if leading is None:
             return None
         cmd, rest = leading
         if cmd in {"env", "printenv"}:
             continue  # another env layer: keep unwinding here instead of recursing
-        return _command_reason(cmd, rest, segment)
+        return _command_reason(cmd, rest, " ".join(wrapped))
     if cmd == "env":
         return "bare `env` dumps every environment variable's value"
     if not names:
@@ -627,12 +791,18 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
     return None
 
 
-def _interpreter_reason(command: str) -> str | None:
+def _interpreter_reason(tokens: list[str]) -> str | None:
     """`python -c "...print(os.environ['TOKEN'])..."` (or node/ruby/perl `-e`) is the same leak
     as `echo $TOKEN` in a different idiom, and it survives the `;&|` segment split used elsewhere
     because the code argument is itself one shell-quoted token that legitimately contains those
-    characters — so this parses the whole command with `shlex` instead, which keeps a quoted
-    argument intact regardless of what punctuation it contains.
+    characters — so this reads the *whole* command's tokens, which keep a quoted argument intact
+    regardless of what punctuation it contains.
+
+    Those tokens arrive from `decision()`'s single `_tokens` call rather than being lexed here, which is
+    what closed this function's own fail-open: `except ValueError: return None` allowed the whole family
+    whenever a trailing `# it's fine` comment left the command unlexable — verified live — and taking
+    the tokens as an argument puts that refusal in the one place that can answer it, ahead of every
+    matcher, instead of leaving an allow behind a bare `except`.
 
     Which token is the code flag is `_consumes_next`'s decision, the same arity matcher
     `_leading_command` and `_env_reason` already use, because a shell accepts more spellings of a code
@@ -658,10 +828,6 @@ def _interpreter_reason(command: str) -> str | None:
     (interpreter, later token) pair was the quadratic term measured at ~38s for 50000 `python` tokens,
     and `_code_argument`'s heavier work per pair would have made that ~38x worse still at the ceiling.
     The deny set is unchanged: a pair denies exactly when the flag's interpreter appeared before it."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None  # unbalanced quoting: not this hook's problem to parse
     # One linear pass, not one per (interpreter, token) pair: whether this invocation auto-prints is a
     # property of the token list. Accepted imprecision, in the deny-leaning direction a security hook
     # wants: the scan is the whole command's tokens, not just the interpreter's own argv, so a `-p`-shaped
@@ -1200,6 +1366,17 @@ def _self_test() -> None:
         # `NAME+=VALUE` is a real assignment prefix in both shells and is now stepped over as one, so the
         # widened `_ASSIGNMENT` must not deny the harmless commands behind it either.
         "FOO+=bar ls", "FOO+=bar git status", "env FOO+=bar ls", "sudo FOO+=bar ls",
+        # The tokenizer's own allow side: a quoted, indexed or array-literal assignment value must step
+        # the walk over the assignment and land it on a harmless command, not deny the command behind it.
+        'FOO="a b" ls', "FOO[1]=bar git status", "ARR=(a b) ls", "ARR=(a b) FOO='c d' git status",
+        "declare arr=(1 2 3)", "typeset -a arr", "declare -a arr=(1 2 3)", "declare -A m=([k]=v)",
+        # Measured silent in both shells: an assignment operand, and a bare name behind any attribute
+        # option other than `-p`. Allow controls, so the next widening of this family cannot sweep them in.
+        "declare -x ACLI_TOKEN", "typeset -x ACLI_TOKEN", "declare -i ACLI_TOKEN", "declare -r ACLI_TOKEN",
+        "declare -g ACLI_TOKEN", "declare ACLI_TOKEN=x", "typeset ACLI_TOKEN=x", "declare -x ACLI_TOKEN=x",
+        # `declare -p NAME` prints only that name in both shells, unlike bash's `export -p NAME`, so this
+        # family reads the name the way `printenv NAME` does.
+        "declare -p PATH", "typeset -p HOME", "declare PATH",
     ]
     deny_cases = [
         "env", "env | grep -i acli", "env | grep -i token",
@@ -1361,6 +1538,46 @@ def _self_test() -> None:
         # twins of the two stdout writers already matched are the same leak. Both verified live.
         '''python3 -c "import os, sys; sys.stderr.write(os.environ['ACLI_TOKEN'])"''',
         '''node -e "process.stderr.write(process.env.GITHUB_TOKEN)"''',
+        # `writelines` is the same stream method under its other name and reproduces the value
+        # identically (verified live); `\\.write\\s*\\(` needed the paren straight after `write`, so it
+        # matched neither this nor its stderr twin.
+        '''python3 -c "import os, sys; sys.stdout.writelines([os.environ['ACLI_TOKEN']])"''',
+        '''python3 -c "import os, sys; sys.stderr.writelines([os.getenv('ACLI_TOKEN')])"''',
+        # The tokenizer, which is where every case below actually failed: `segment.split()` cut a *quoted*
+        # assignment value into `FOO="a` + `b"`, the first matched `_ASSIGNMENT`, the second was read as
+        # the command, and the real one behind it was never checked at all. An indexed left-hand side and
+        # an array-literal value are the same miss in the other two shapes an assignment prefix has. All
+        # three verified live in bash and zsh to run the command behind them.
+        'FOO="a b" echo $ACLI_TOKEN', 'FOO="a b" env', 'FOO="a b" printenv ACLI_TOKEN',
+        'FOO="a b" set', 'sudo FOO="a b" echo $ACLI_TOKEN', 'env FOO="a b" printenv ACLI_TOKEN',
+        "FOO[1]=bar echo $ACLI_TOKEN", "FOO[1]=bar env", "ARR[0]+=x printenv ACLI_TOKEN",
+        "ARR=(a b) echo $ACLI_TOKEN", "ARR=(a b) env", "ARR=(a b) printenv ACLI_TOKEN",
+        "ARR=(a b) FOO=c echo $ACLI_TOKEN", "sudo ARR=(a b) env",
+        # A `#` comment is text the shell never runs, and this hook read it two ways, both fail-open. The
+        # dump family's shape tests saw the comment's words as operands, so `env # note` and `set # note`
+        # allowed while bare `env`/`set` denied — verified live that both really do dump. And a comment
+        # carrying an apostrophe left the whole command unlexable, which the interpreter family answered
+        # with `return None`: `python3 -c "…" # it's fine` allowed live, the plainest leak in this file.
+        "env # note", "set # note", "export # note", "printenv # note", "declare # note",
+        "env  # dont", "set # don't", "printenv ACLI_TOKEN # ok",
+        '''python3 -c "import os; print(os.environ['ACLI_TOKEN'])" # it's fine''',
+        '''node -e "console.log(process.env.GITHUB_TOKEN)" # don't worry''',
+        "echo $ACLI_TOKEN # it's fine",
+        # `declare`/`typeset` are `export`'s own family under the name bash documents it by, and every
+        # spelling here was probed with a sentinel in both shells: no operand dumps everything, `-p` with
+        # an operand prints that variable, and a bare name prints it in zsh. See `_declare_reason`.
+        "declare", "typeset", "declare -x", "typeset -x", "declare -p", "typeset -p",
+        "declare -p ACLI_TOKEN", "typeset -p ACLI_TOKEN", "declare -px ACLI_TOKEN",
+        "declare -xp GITHUB_TOKEN", "declare ACLI_TOKEN", "typeset ACLI_TOKEN",
+        "declare -- ACLI_TOKEN", "typeset -- ACLI_TOKEN", "sudo declare -p ACLI_TOKEN",
+        "FOO+=bar declare -p ACLI_TOKEN",
+        # Quoting this hook cannot lex at all is refused rather than scanned, the same rule a non-string
+        # command and unreadable stdin already get: an input this hook cannot read is not one it has
+        # cleared. The cost is named rather than discovered — `shlex` does not model heredocs, so a
+        # heredoc body carrying an odd apostrophe reads as unbalanced and is refused with it. That is
+        # deliberate: the alternative is the `except ValueError: return None` that allowed
+        # `python3 -c "…" # it's fine` live.
+        "echo 'unbalanced", 'echo "unbalanced', "cat <<'EOF'\nit's fine\nEOF",
     ]
     for command in allow:
         got = decision("Bash", {"command": command})
@@ -1451,6 +1668,24 @@ def _self_test() -> None:
         ("--print==", True), ("--printer", False),
     ):
         assert _prints_result(tok) is prints, f"{tok!r} auto-print should be {prints}"
+    # Pinned on the tokenizer itself, because every arity table above was already complete while a quoted
+    # assignment value still hid the command from the walk: the fault was the token boundaries, not the
+    # rules applied to them. `None` is its own answer and is not "no tokens" — `decision()` refuses it.
+    assert _tokens('FOO="a b" echo $X') == ["FOO=a b", "echo", "$X"], "a quoted value is one token"
+    assert _tokens("env # note") == ["env"], "a comment is text the shell never runs"
+    assert _tokens("env # it's fine") == ["env"], "including one whose apostrophe would break lexing"
+    assert _tokens("echo 'unbalanced") is None, "and text that cannot be lexed says so, rather than []"
+    assert _tokens("") == [] and _tokens("   ") == [], "no tokens is a different answer from unlexable"
+    assert decision("Bash", {"command": "echo 'unbalanced"}) == _UNEVALUABLE, (
+        "an unlexable command is refused, not allowed unchecked"
+    )
+    # An array-literal value is consumed whole: it is this assignment's value in the shell's own parse, so
+    # no command can hide inside it, and stopping at the first token read `b)` as the command instead.
+    assert _skip_assignment_prefix(["ARR=(a", "b)", "echo", "$X"], 0) == 2
+    assert _skip_assignment_prefix(["FOO[1]=bar", "echo"], 0) == 1, "an indexed left-hand side is one too"
+    assert _skip_assignment_prefix(["FOO=$(date)", "echo"], 0) == 1, "balanced parens start no scan"
+    assert _skip_assignment_prefix(["echo", "$X"], 0) == 0, "and a command is not an assignment"
+    assert _skip_assignment_prefix(["ARR=(a", "b"], 0) == 2, "an unclosed literal consumes what there is"
     # An attached spelling puts the flag and the code in one token, and a deny reason naming that token
     # would copy arbitrary code — the very thing this hook keeps out of transcript history — into the
     # transcript itself. Every reason names the flag alone.
@@ -1637,19 +1872,28 @@ def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
         assert oversized[:20] not in reason, "the reason must not echo the command back"
         # The refusal above does no scanning by construction, so timing it pins nothing about the
         # ceiling's own choice of number. The bound that matters is on the worst input the ceiling
-        # *admits*, and that is not the interpreter case: `_env_reason` re-joins and re-splits the
-        # remaining tokens per `env` layer, so a maximal `env` chain costs ~0.74s against ~0.01s for the
-        # same length in interpreter-shaped tokens. 5s is deliberately loose against that ~0.74s — the
-        # property is a latency budget that has to hold on slower hardware than whatever runs this, not a
-        # benchmark — and it is still well under the ~38s the ceiling replaced.
-        worst = "env " * (MAX_COMMAND_CHARS // 4)
-        assert len(worst) == MAX_COMMAND_CHARS, "the worst admitted case must sit right at the ceiling"
-        started = time.perf_counter()
-        reason = decision("Bash", {"command": worst})
-        elapsed = time.perf_counter() - started
-        assert reason is not None, "a maximal env chain still dumps the environment"
-        assert reason != _TOO_LONG, "and must be scanned, not refused: the ceiling is exclusive"
-        assert elapsed < 5.0, f"the worst input the ceiling admits took {elapsed:.2f}s"
+        # *admits*, and that is not the interpreter case: `_env_reason` walks and slices the remaining
+        # tokens per `env` layer, so a maximal `env` chain costs ~0.06s against ~0.01s for the same length
+        # in interpreter-shaped tokens. 5s is deliberately loose against that — the property is a latency
+        # budget that has to hold on slower hardware than whatever runs this, not a benchmark.
+        #
+        # Timed in the quote-carrying spelling too, because that is the one that regressed: with `shlex`
+        # as the tokenizer and a re-lex per layer, a chain whose tail token's *content* held an apostrophe
+        # took ~18s (the quote-free chain, ~0.6s, hid it — the re-joined text of every later layer had had
+        # its quotes consumed already). That is the stall this ceiling exists to prevent, reached from
+        # inside the fix for the tokenizer, so it is pinned rather than left to the next measurement.
+        quoted_tail = '''echo "$ACLI_TOKEN's"'''  # a quote in the token's own content, and still a leak
+        for label, worst in (
+            ("quote-free", "env " * (MAX_COMMAND_CHARS // 4)),
+            ("quoted tail", "env " * ((MAX_COMMAND_CHARS - len(quoted_tail)) // 4) + quoted_tail),
+        ):
+            assert len(worst) == MAX_COMMAND_CHARS, f"the {label} worst case must sit at the ceiling"
+            started = time.perf_counter()
+            reason = decision("Bash", {"command": worst})
+            elapsed = time.perf_counter() - started
+            assert reason is not None, f"a maximal {label} env chain still dumps the environment"
+            assert reason != _TOO_LONG, "and must be scanned, not refused: the ceiling is exclusive"
+            assert elapsed < 5.0, f"the worst {label} input the ceiling admits took {elapsed:.2f}s"
         assert decision("Bash", {"command": "x" * MAX_COMMAND_CHARS}) is None, (
             "the ceiling is exclusive: a command exactly at it is still evaluated normally"
         )

@@ -1551,13 +1551,44 @@ def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, 
     environment faults reached by different code paths: a git that cannot be run at all, and a working
     directory that can no longer be read under a long-lived server. Neither can come out differently on
     the next call, so both belong on the remembered side with it, and only the timeout on the retried
-    side. Re-raising the identical exception instance is the assertion — that is what memoizing means
-    here, and unlike a spawn count it also holds for the branch that never reaches git.
+    side. The property asserted is repeat-call consistency: the next call refuses with the same class and
+    the same message, and without resolving again — which, unlike a spawn count alone, also holds for the
+    branch that never reaches git, since each side counts its own attempts here.
+
+    Deliberately *not* object identity, which this used to assert. `raise` extends an exception's own
+    `__traceback__` in place, so re-raising one cached instance grew that chain by two frames per call —
+    ~400 frames and ~53KB of rendered traceback after 200 calls in a server that stays up refusing. The
+    frame count of the raised exception is therefore asserted constant across repeats, because the
+    cheapest way to be repeat-consistent is exactly the one that leaks.
 
     Each break is scoped to its own `monkeypatch.context()` because `fixture_repo`'s teardown resolves
     the configuration again, and a still-broken git or cwd fails that teardown rather than this test.
     """
+    def frames(exc: BaseException) -> int:
+        traceback, depth = exc.__traceback__, 0
+        while traceback is not None:
+            traceback, depth = traceback.tb_next, depth + 1
+        return depth
+
+    def repeats(first: config.ConfigError, attempts: list) -> None:
+        attempted = len(attempts)
+        counts = []
+        for _ in range(20):
+            with pytest.raises(config.ConfigError) as again:
+                config.repo_root()
+            counts.append(frames(again.value))
+        assert (type(again.value), str(again.value)) == (type(first), str(first)), (
+            f"a memoized refusal must repeat itself: {again.value!r} after {first!r}"
+        )
+        assert len(attempts) == attempted, f"and must not resolve again: {attempts}"
+        assert len(set(counts)) == 1, (
+            f"each refusal must be a fresh exception, or its traceback grows per call: {counts}"
+        )
+
+    attempts: list = []
+
     def unrunnable(cmd, **kwargs):
+        attempts.append(list(cmd))
         raise FileNotFoundError(2, "No such file or directory: 'git'")
 
     with monkeypatch.context() as mp:
@@ -1565,11 +1596,12 @@ def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, 
         config.reset_cache()
         with pytest.raises(config.ConfigError, match="git could not be run") as first:
             config.repo_root()
-        with pytest.raises(config.ConfigError) as again:
-            config.repo_root()
-        assert again.value is first.value, "an unrunnable git is settled, so it must not be re-attempted"
+        repeats(first.value, attempts)
+
+    reads: list = []
 
     def dead_cwd():
+        reads.append(1)
         raise FileNotFoundError(2, "the working directory no longer exists")
 
     with monkeypatch.context() as mp:
@@ -1577,9 +1609,7 @@ def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, 
         config.reset_cache()
         with pytest.raises(config.ConfigError, match="working directory could not be read") as first_cwd:
             config.repo_root()
-        with pytest.raises(config.ConfigError) as again_cwd:
-            config.repo_root()
-        assert again_cwd.value is first_cwd.value, "a dead working directory is settled too"
+        repeats(first_cwd.value, reads)
     config.reset_cache()
 
 

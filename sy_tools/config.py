@@ -71,7 +71,8 @@ class _TransientConfigError(ConfigError):
 
 
 _REPO_ROOT: Path | None = None
-_REPO_ROOT_REFUSAL: ConfigError | None = None
+_REPO_ROOT_REFUSAL: str | None = None
+"""A settled root refusal's *message*, not the exception that carried it — see `repo_root`."""
 
 
 def plugin_root() -> Path:
@@ -108,6 +109,14 @@ def repo_root() -> Path:
     than the single bound that constant documents. The sibling `scripts/sy_config.py::repo_root` memoizes its
     own `SystemExit` refusal for the same reason.
 
+    What is remembered is the refusal's *message*, and each call raises a freshly built `ConfigError` from
+    it. Re-raising the one cached instance appended two traceback frames to that instance every time it was
+    raised, because `raise` extends the exception's own `__traceback__` chain in place: measured at ~400
+    frames and ~53KB of rendered traceback after 200 calls, growing without bound for as long as a refused
+    server stays up — and every renderer of that exception (a client's error display, a log) pays for the
+    whole chain. Repeat-call consistency is what memoizing is for here, and an equal message on an equal
+    class is that; object identity was never the property anything needed, only the cheapest way to spell it.
+
     A `_TransientConfigError` is the exception, and it is where this parts company with that sibling: a git
     that timed out has said nothing about the repository, only that it did not answer in five seconds — a
     momentary index lock or a slow network filesystem — and this module backs a long-lived MCP server, not a
@@ -135,7 +144,7 @@ def repo_root() -> Path:
     """
     global _REPO_ROOT, _REPO_ROOT_REFUSAL
     if _REPO_ROOT_REFUSAL is not None:
-        raise _REPO_ROOT_REFUSAL
+        raise ConfigError(_REPO_ROOT_REFUSAL)
     if _REPO_ROOT is None:
         try:
             project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -160,7 +169,7 @@ def repo_root() -> Path:
         except _TransientConfigError:
             raise  # said nothing about the repository, so it is not an answer to remember
         except ConfigError as refusal:
-            _REPO_ROOT_REFUSAL = refusal
+            _REPO_ROOT_REFUSAL = str(refusal)
             raise
     return _REPO_ROOT
 

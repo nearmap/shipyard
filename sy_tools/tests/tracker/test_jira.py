@@ -939,8 +939,12 @@ async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blockin
 async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(credentials, monkeypatch):
     """A read carries one side of each link, so the other direction being empty is honest, not drift.
 
-    Only the *type* being unreadable fails the read. Raising here instead would fail every ordinary
-    read: a Blocks link arrives under exactly one of the two sides `_linked` is asked for.
+    "This direction does not apply" is what is guarded here, and it is the ordinary case: a Blocks link
+    arrives under exactly one of the two sides `_linked` is asked for, so raising on an absent side would
+    fail every real read. An `id`-only counterpart is legitimate too — Jira's spec documents `key` as
+    required only when `id` is not given, so that object is addressable, just not by the key this
+    returns. The distinct case, an object that is *present* and names no issue at all, is drift and the
+    test below refuses it; those two used to share one silent `continue`.
     """
     for entry, expected in (
         ({"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}, ["PROJ-5"]),
@@ -952,6 +956,34 @@ async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(c
         full = await adapter.JiraAdapter().get_issue("PROJ-7")
 
         assert full["dependencies"] == expected, f"{entry} read as {full['dependencies']}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "counterpart", [{}, {"summary": "Ship the thing"}, "PROJ-5", 5, []],
+    ids=["empty", "no-addressable-field", "string", "number", "list"],
+)
+async def test_a_blocks_link_whose_counterpart_names_no_issue_is_not_reported_as_unrelated(
+    credentials, monkeypatch, counterpart
+):
+    """A counterpart that is present and unaddressable is drift, not the absent side above.
+
+    `if key:` collapsed those two answers into one silent `continue`, so a Blocks link whose
+    `outwardIssue` carries neither `key` nor `id` came back as `dependencies: []` — indistinguishable
+    from a genuinely unblocked issue, in the one field a caller reads to decide whether it is blocked,
+    and with no truncation channel on `get_issue` to signal the drop. Jira's REST v3 spec documents
+    `key` on this object as required when `id` is not provided, the same specification the link-type
+    check cites, and `_keys` here plus github's `_refs` already raise on the equivalent per-entry drift.
+    """
+    entry = {"type": {"name": "Blocks"}, "outwardIssue": counterpart}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "issuelinks" in message and "entry 0" in message and "outwardIssue" in message, message
+    assert FAKE_TOKEN not in message, f"shapes only: {message}"
 
 
 @pytest.mark.anyio

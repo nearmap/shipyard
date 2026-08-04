@@ -47,6 +47,7 @@ is exported and missing when it is not.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 from typing import Annotated, Any, Literal
@@ -85,6 +86,59 @@ def _required(**fields: str) -> None:
             raise ToolError(f"{name!r} is required and must be a non-empty string")
 
 
+def _scrub_body(body: str) -> tuple[str, dict[str, Any]]:
+    """A caller-supplied body with every credential value this process holds replaced by a marker.
+
+    Returns the text to write and a report of what was redacted. The report names variables and
+    counts occurrences and nothing else, so a caller can see that something was stripped without the
+    result disclosing what: a redaction the caller cannot see is one nobody notices happened, and a
+    redaction the caller can read is the leak reintroduced in the reply.
+
+    Only `secrets.scrub_text`'s in-memory known-value pass runs here, never the scanner pass that
+    `secrets.sanitize` adds on top of it for attachments. That is a deliberate line: the scanner
+    shells out to an external binary over a *file*, and a body is a string composed in this process
+    that no file exists for. Routing every issue and comment write through a subprocess would make
+    the whole tracker write surface fail whenever that binary is missing, to gain a scan of text this
+    process wrote itself.
+
+    The `secret_env` names the selected adapter declares are forced in on top of auto-discovery,
+    because `discover_secret_vars` selects on a *name* word-heuristic and a value-length floor — so
+    the one credential this repo actually declares can be missed by either, which is exactly the
+    value that must never reach a tracker body.
+
+    A declared name absent from the environment is *reported*, not raised, which is the opposite of
+    `secrets.sanitize`'s `require=` and deliberately so. `sanitize` scrubs a file some other process
+    produced, which may hold a value this process never sees, so a clean zero-redaction run there is
+    a false all-clear worth failing on. A body is composed here, out of strings this process holds; a
+    value this process's environment does not have cannot be in it, so there is nothing missed to
+    warn about. Raising would instead refuse every tracker write for any user whose credential lives
+    outside the environment — a credential-shaped hard block on the entire write surface, in the name
+    of scrubbing a value that could not have been there.
+
+    Callers run this *before* `_validate_machine_log`, on the scrubbed text, because the body that is
+    validated has to be the body that is sent. A machine log is schema-validated JSON, and a scrub
+    rewrites values inside it; validating the original and writing the scrubbed text would ship a
+    body no check ever saw — the unvalidated-machine-log incident that gate exists to prevent, walked
+    back in through the scrubber. Scrubbing first can only turn an accepted body into a refusal,
+    which is the safe direction: a log whose numbers were a credential is not a log worth posting.
+    """
+    known = secrets.discover_secret_vars(extra_words=config.extra_secret_words())
+    absent: list[str] = []
+    for declared in config.adapter_map().get("secret_env", []):
+        name = str(declared)
+        value = os.environ.get(name, "")
+        if value:
+            known[name] = value
+        else:
+            absent.append(name)
+    scrubbed, counts = secrets.scrub_text(body, known)
+    return scrubbed, {
+        "scrubbed_vars": sorted(counts),  # names only, never a value
+        "redactions": sum(counts.values()),
+        "declared_absent_from_env": sorted(absent),
+    }
+
+
 @mcp.tool(name="create-issue")
 async def create_issue(
     issue_type: Annotated[str, Field(description="Kind of issue to create: `epic`, `task` or `bug`.")],
@@ -101,11 +155,14 @@ async def create_issue(
     there is deliberately no separate tool for a child, because it is this same write.
 
     A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
-    machine log written into a body cannot bypass that gate; every other body passes through unchanged.
+    machine log written into a body cannot bypass that gate; every other body passes through unchanged
+    apart from the credential scrub, whose `scrub` key reports the variable names it redacted.
     """
     _required(title=title)
+    body, scrub = _scrub_body(body)
     _validate_machine_log(body)
-    return await tracker.adapter().create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
+    created = await tracker.adapter().create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
+    return {**created, "scrub": scrub}
 
 
 @mcp.tool(name="get-issue")
@@ -134,11 +191,14 @@ async def update_issue(
     existing body, read it with `get-issue` first and send it back as part of `body`.
 
     A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
-    machine log written into a body cannot bypass that gate; every other body passes through unchanged.
+    machine log written into a body cannot bypass that gate; every other body passes through unchanged
+    apart from the credential scrub, whose `scrub` key reports the variable names it redacted.
     """
     _required(issue=issue)
+    body, scrub = _scrub_body(body)
     _validate_machine_log(body)
-    return await tracker.adapter().update_issue(issue, body)
+    updated = await tracker.adapter().update_issue(issue, body)
+    return {**updated, "scrub": scrub}
 
 
 @mcp.tool(name="find-issues")
@@ -267,11 +327,14 @@ async def post_comment(
     by carrying a block that parses as it — must carry exactly one fenced JSON block that validates
     against that schema, and must not name the id anywhere else: none, several, one that does not
     match, or a mention loose in the body or in a fence left unclosed, and nothing is posted. Every
-    other body passes through unchanged.
+    other body passes through unchanged apart from the credential scrub, whose `scrub` key reports the
+    variable names it redacted.
     """
     _required(issue=issue)
+    body, scrub = _scrub_body(body)
     _validate_machine_log(body)
-    return await tracker.adapter().post_comment(issue, body)
+    posted = await tracker.adapter().post_comment(issue, body)
+    return {**posted, "scrub": scrub}
 
 
 _FENCE_OPENER = re.compile(r"[ \t]*(?:`{3,}|~{3,})")

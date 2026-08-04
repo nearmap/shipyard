@@ -1059,3 +1059,112 @@ async def test_check_env_reads_an_empty_variable_as_unset(monkeypatch):
     async with mcp.Client(server.mcp) as client:
         result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
     assert _payload(result)["present"] is False, _payload(result)
+
+
+SCRUB_WRITES = [("post-comment", lambda body: {"issue": "PROJ-1", "body": body}), *BODY_WRITES]
+"""Every tool that takes a caller-supplied body, the comment write included.
+
+`BODY_WRITES` leaves `post-comment` out because the machine-log gate drives it separately, but the
+scrub is one shared helper serving all three writes — and a helper wired into two of the three sites
+is precisely the half-fixed duplicate this closes, so every write that takes a body is asserted.
+"""
+
+FAKE_SECRET_VAR = "SY_TEST_FAKE_TOKEN"
+"""A test-only variable name, credential-shaped by the same word heuristic discovery uses.
+
+Never the real declared credential: reading an actual token here would put it one failure message
+away from a permanent transcript, which is the leak the code under test exists to prevent.
+"""
+
+FAKE_SECRET = "sy-fake-token-3d91f7-not-a-credential"
+"""Past the 6-character discovery floor, and distinctive enough that grepping a whole result is sound."""
+
+
+def _body_sent(recorder: _Recorder) -> str:
+    """The body the adapter was actually handed, whether the tool passed it positionally or by name."""
+    _verb, args, kwargs = recorder.calls[0]
+    return str(kwargs["body"] if "body" in kwargs else args[-1])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), SCRUB_WRITES, ids=[t for t, _ in SCRUB_WRITES])
+async def test_a_known_credential_value_never_reaches_the_adapter_through_a_body(monkeypatch, tool, arguments):
+    """The gap this closes: three writes handed a caller's body to the tracker with no scrub at all.
+
+    Bodies are assembled out of command output and transcript text, so a credential landing in one is a
+    routine accident rather than an exotic one — and a posted comment is durable, visible to everyone
+    with issue access, and not made safe again by deleting it. The load-bearing assertion is the
+    value's *absence* from what the adapter received; the marker only proves the scrub ran.
+    """
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = f"TL;DR: the run exported {FAKE_SECRET} and then logged {FAKE_SECRET} again.\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is False, result.content
+    sent = _body_sent(recorder)
+    assert FAKE_SECRET not in sent, f"{tool} handed the credential straight to the tracker"
+    assert sent.count(f"<REDACTED:{FAKE_SECRET_VAR}>") == 2, f"{tool} redacted only part of the body: {sent}"
+    report = _payload(result)["scrub"]
+    assert report["scrubbed_vars"] == [FAKE_SECRET_VAR], report
+    assert report["redactions"] == 2, report
+    assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), SCRUB_WRITES, ids=[t for t, _ in SCRUB_WRITES])
+async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypatch, tool, arguments):
+    """Nearly every body is this one, so a scrub that finds nothing has to be invisible."""
+    monkeypatch.delenv(FAKE_SECRET_VAR, raising=False)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = "TL;DR: ordinary prose.\n\n```bash\ngit log -1\n```\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == body, f"{tool} rewrote a body holding nothing to redact"
+    assert _payload(result)["scrub"] == {
+        "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": []
+    }, _payload(result)
+
+
+@pytest.mark.anyio
+async def test_a_declared_credential_absent_from_the_environment_is_reported_not_refused(monkeypatch):
+    """`secrets.sanitize` raises on this and a body write must not, because the two cases differ.
+
+    `sanitize` scrubs a file another process produced, which can hold a value this process never sees,
+    so a clean zero-redaction run there is a false all-clear worth failing on. A body is composed here,
+    out of strings this process holds, so a value absent from this environment cannot be in it. Raising
+    would hard-block every tracker write for anyone whose credential is not exported — the default
+    configuration under CI among them, which exports none.
+    """
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_UNSET_TOKEN"]})
+    monkeypatch.delenv("SY_TEST_UNSET_TOKEN", raising=False)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: nothing secret.\n"})
+    assert result.is_error is False, result.content
+    assert _payload(result)["scrub"]["declared_absent_from_env"] == ["SY_TEST_UNSET_TOKEN"], _payload(result)
+
+
+@pytest.mark.anyio
+async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip_it(monkeypatch):
+    """Discovery selects on a name heuristic plus a length floor, and a declared name must outrank both.
+
+    This name holds no credential word and this value is under the floor, so auto-discovery alone would
+    post it verbatim — while the configuration says in as many words that it is the credential.
+    """
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
+    monkeypatch.setenv("SY_TEST_DECLARED", "q7z")
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: it said q7z.\n"})
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == "TL;DR: it said <REDACTED:SY_TEST_DECLARED>.\n", _body_sent(recorder)
+    assert _payload(result)["scrub"] == {
+        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 1, "declared_absent_from_env": []
+    }, _payload(result)

@@ -868,13 +868,17 @@ async def test_a_labels_field_that_is_not_a_list_of_strings_fails_the_read(crede
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "entry", [{"id": "10099"}, "PROJ-9", None], ids=["object-with-no-key", "bare-string", "null"],
+    "entry",
+    [{"id": "10099"}, "PROJ-9", None, {"key": {"nested": 1}}],
+    ids=["object-with-no-key", "bare-string", "null", "nested-key"],
 )
 async def test_a_child_entry_carrying_no_key_fails_instead_of_being_dropped(credentials, monkeypatch, entry):
     """A skipped entry returned a shorter list while `children_truncated` still reported `False`.
 
     That is a read claiming to be complete with a real child missing from it — the drift the per-comment
-    refusal already exists for, one field over.
+    refusal already exists for, one field over. `nested-key` is the case the refusal could not see while
+    `_field` read the key: a non-string `key` coerced into a truthy `"{'nested': 1}"`, so the guard passed
+    and a fabricated key landed in `children` — worse than the drop, because it names an issue nobody has.
     """
     drifted = {**ISSUE, "fields": {**ISSUE["fields"], "subtasks": [{"key": "PROJ-8"}, entry]}}
     _transport(monkeypatch, drifted, THREAD)
@@ -911,7 +915,9 @@ async def test_a_malformed_link_entry_fails_while_another_link_type_is_still_fil
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "link_type", ["notanobject", {}, {"name": None}, None], ids=["string", "empty", "null-name", "absent"],
+    "link_type",
+    ["notanobject", {}, {"name": None}, {"name": {"nested": 1}}, None],
+    ids=["string", "empty", "null-name", "nested-name", "absent"],
 )
 async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blocking_link(
     credentials, monkeypatch, link_type
@@ -923,6 +929,11 @@ async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blockin
     shape filtered out as if the link had been read and found irrelevant, and the issue came back with
     `dependencies: []` — indistinguishable from a genuinely unblocked one, which is exactly what this
     function's docstring refuses.
+
+    `nested-name` is the truthiness half of that same collapse, and it survived the first fix: `_field`
+    coerced a non-string `name` into a truthy `"{'nested': 1}"`, which walked straight past the gate and
+    lost the comparison instead, so a Blocks link whose type name drifted still read as unrelated.
+    `_str_field` is what reads the name now.
     """
     entry = {"type": link_type, "outwardIssue": {"key": "PROJ-5"}}
     _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
@@ -1277,10 +1288,11 @@ async def test_add_dependency_fails_when_the_direction_is_not_confirmed(credenti
     [
         {"type": {"name": "Blocks"}, "inwardIssue": {}},
         {"type": {"name": "Blocks"}, "inwardIssue": {"key": {"nested": 1}}},
+        {"type": {}},
         {"type": {"name": "Relates"}},
         "not a link object",
     ],
-    ids=["unaddressable", "nested-key", "unreadable-type", "not-an-object"],
+    ids=["unaddressable", "nested-key", "unreadable-type", "other-type", "not-an-object"],
 )
 async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(credentials, monkeypatch, unrelated):
     """The POST has already landed by the verification read, so drift in another link must not fail it.
@@ -1289,6 +1301,10 @@ async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(crede
     it existed — which invites a retry that creates a second one. The verification only needs the entry it
     just wrote, so an entry it cannot parse is simply not that entry. `get_issue`'s strict read of the
     same list is the test below, unchanged: there a skipped entry is a dependency silently missing.
+
+    `unreadable-type` and `other-type` are separate cases because they leave `_linked` by different
+    routes: a `type` object with no `name` in it reaches the strict unreadable-type gate, while a
+    well-formed `Relates` link exits through the ordinary Blocks filter and never gets there.
     """
     confirming = {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}
     _transport(monkeypatch, (201, None), {"fields": {"issuelinks": [unrelated, confirming]}})

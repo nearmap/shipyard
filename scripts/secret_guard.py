@@ -213,12 +213,13 @@ def main() -> None:
     """The hook entry point. Every way of failing to reach a decision here becomes a deny.
 
     Reading stdin is one of those ways and used to sit outside that rule: `json.load` also raises
-    `UnicodeDecodeError` on malformed bytes and `OSError` on a broken pipe, neither of which a
-    `JSONDecodeError`-only catch covers, so both escaped as an unhandled crash — and a crashed
-    `PreToolUse` hook writes nothing, which Claude Code reads as no decision, i.e. an allow. Even the
-    caught case returned silently, which is the same allow by a tidier route, as did an event that
-    parses into something other than a JSON object. All of them now emit `_UNEVALUABLE`, as does a
-    crash inside `decision()` itself.
+    `UnicodeDecodeError` on malformed bytes, `OSError` on a broken pipe, and `RecursionError` on deeply
+    nested JSON, none of which a `JSONDecodeError`-only catch covers, so each escaped as an unhandled
+    crash — and a crashed `PreToolUse` hook writes nothing, which Claude Code reads as no decision, i.e.
+    an allow. Even the caught case returned silently, which is the same allow by a tidier route, as did
+    an event that parses into something other than a JSON object. Enumerating the read's failure modes
+    kept missing one, so the catch is now `Exception`, the same fail-closed catch-all the `decision()`
+    call already uses: all of them emit `_UNEVALUABLE`.
     """
     if len(sys.argv) > 1 and sys.argv[1] == "self-test":
         _self_test()
@@ -226,7 +227,7 @@ def main() -> None:
         return
     try:
         event = json.load(sys.stdin)
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+    except Exception:  # every way of failing to read or parse the event is a deny, not a silent exit
         emit(_UNEVALUABLE, _CONFIG_WARNING)
         return
     if not isinstance(event, dict):
@@ -537,9 +538,11 @@ def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
     `_interpreter_reason` re-scans the remaining tokens once per interpreter-shaped token, so 50000
     `python` tokens took ~38s on every Bash call that shape reached — no output for long enough that
     Claude Code has nothing to act on. The ceiling in `decision()` refuses that input outright, so the
-    bound that matters is on the worst input the ceiling *admits*, not on the refusal, which scans
-    nothing at all by construction. 5s is deliberately loose against the ~0.14s measured here: the
-    property is a latency budget that has to hold on slower hardware, not a benchmark.
+    bound that matters is on an input the ceiling *admits*, not on the refusal, which scans nothing at
+    all by construction. The timed input below is a representative dense admitted shape rather than a
+    proven worst case — denser ones exist (`python -c ` or `perl -e ` repeated to the ceiling measure a
+    few times slower) and stay well inside the bound. 5s is deliberately loose against the ~0.14s
+    measured here: the property is a latency budget that has to hold on slower hardware, not a benchmark.
     """
     import time
 
@@ -554,12 +557,12 @@ def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
         assert reason == _TOO_LONG, f"an oversized command must be refused by the ceiling: {reason!r}"
         assert elapsed < 1.0, f"the ceiling must refuse before any scan, took {elapsed:.2f}s"
         assert oversized[:20] not in reason, "the reason must not echo the command back"
-        worst = "python " * (MAX_COMMAND_CHARS // 7)
-        assert len(worst) <= MAX_COMMAND_CHARS, "the worst admitted case must sit under the ceiling"
+        dense = "python " * (MAX_COMMAND_CHARS // 7)
+        assert len(dense) <= MAX_COMMAND_CHARS, "the timed case must sit under the ceiling to be admitted"
         started = time.perf_counter()
-        assert decision("Bash", {"command": worst}) != _TOO_LONG, "and must be scanned, not refused"
+        assert decision("Bash", {"command": dense}) != _TOO_LONG, "and must be scanned, not refused"
         elapsed = time.perf_counter() - started
-        assert elapsed < 5.0, f"the worst input the ceiling admits took {elapsed:.2f}s"
+        assert elapsed < 5.0, f"a dense input the ceiling admits took {elapsed:.2f}s"
         assert decision("Bash", {"command": "x" * MAX_COMMAND_CHARS}) is None, (
             "the ceiling is exclusive: a command exactly at it is still evaluated normally"
         )
@@ -577,13 +580,15 @@ def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
 def _test_an_input_that_cannot_be_read_or_evaluated_denies_rather_than_returning_silently() -> None:
     """Every way `main()` can fail to decide must deny, including the read that happens before the try.
 
-    `json.load(sys.stdin)` raises `UnicodeDecodeError` on malformed bytes and `OSError` on a broken
-    pipe, neither of which a `JSONDecodeError`-only catch covers — so both escaped as an unhandled
-    crash, and a `PreToolUse` hook that writes nothing is read as no decision, i.e. an allow. The
-    caught case returned silently, which is that same allow — and so did input that parsed into
-    something other than a JSON object. A crash inside `decision()` itself is the same rule, and is
-    reachable: `_env_reason` recurses once per `env` layer, so a long enough chain of them raises
-    `RecursionError` on an input short enough for `MAX_COMMAND_CHARS` to admit.
+    `json.load(sys.stdin)` raises `UnicodeDecodeError` on malformed bytes, `OSError` on a broken pipe,
+    and `RecursionError` on deeply nested JSON — none of which a `JSONDecodeError`-only catch covers, so
+    each escaped as an unhandled crash, and a `PreToolUse` hook that writes nothing is read as no
+    decision, i.e. an allow. Enumerating those failure modes kept missing one, which is why the read is
+    now guarded by the same catch-all `Exception` as the decision below. The caught case returned
+    silently, which is that same allow — and so did input that parsed into something other than a JSON
+    object. A crash inside `decision()` itself is the same rule, and is reachable: `_env_reason` recurses
+    once per `env` layer, so a long enough chain of them raises `RecursionError` on an input short enough
+    for `MAX_COMMAND_CHARS` to admit.
     """
     import contextlib
     import io
@@ -601,6 +606,7 @@ def _test_an_input_that_cannot_be_read_or_evaluated_denies_rather_than_returning
         ("malformed JSON", io.StringIO("{not json")),
         ("a broken pipe", _Unreadable()),
         ("undecodable bytes", _Undecodable()),
+        ("JSON nested past the recursion limit", io.StringIO("[" * 10_000 + "]" * 10_000)),
         ("a JSON list", io.StringIO("[]")),
         ("a JSON string", io.StringIO('"env"')),
         ("a JSON number", io.StringIO("5")),

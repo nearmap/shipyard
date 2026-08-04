@@ -905,10 +905,12 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
     acts on it and keeps the strict answer, because there a skipped entry is a dependency silently
     missing.
 
-    `_str_field`, not `_field`, for the counterpart: an addressability decision cannot rest on
-    truthiness, or a `{"key": {...}}` lands the string `"{'a': 1}"` in `dependencies` as if it were an
-    issue key, and an `id` of any truthy shape reads as "addressable, just not by key" and drops a real
-    link. Jira's spec makes both members strings.
+    `_str_field`, not `_field`, for both the type name and the counterpart: neither decision can rest on
+    truthiness. A `{"key": {...}}` lands the string `"{'a': 1}"` in `dependencies` as if it were an issue
+    key, an `id` of any truthy shape reads as "addressable, just not by key" and drops a real link, and a
+    `type.name` of any truthy shape coerces past the unreadable-type refusal below only to fail the
+    `Blocks` comparison — so a real Blocks link whose type name drifted vanished from the result as a
+    filtered non-blocking link instead of raising. Jira's spec makes all three members strings.
     """
     if links is None:
         return []
@@ -926,7 +928,7 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
                 f"entry {index} of the {field} field is not a link object but {_shape(link)}, so the "
                 "relations on this issue are unknown and it must not be reported as having none"
             )
-        type_name = _field(link.get("type"), "name")
+        type_name = _str_field(link.get("type"), "name")
         if type_name is None:
             if not strict:
                 continue
@@ -965,7 +967,9 @@ def _keys(value: object, field: str) -> list[str]:
     An entry that is not an issue object, or is one with no key, raises for that same reason one level
     down: skipping it returned a *shorter* list while `children_truncated` still reported `False`, so
     the read claimed to be complete while a real child was missing from it — the drift `_comments`
-    already refuses per entry.
+    already refuses per entry. `_str_field` reads the key so that refusal is reachable: `_field` coerces
+    a `{"key": {...}}` into a truthy fabricated string, which passed the guard below and put a made-up
+    key in `children`.
     """
     if value is None:
         return []
@@ -976,7 +980,7 @@ def _keys(value: object, field: str) -> list[str]:
         )
     keys: list[str] = []
     for index, entry in enumerate(value):
-        key = _field(entry, "key")
+        key = _str_field(entry, "key")
         if not key:
             raise TrackerError(
                 f"entry {index} of the {field} field carries no issue key, only {_shape(entry)}, so this "

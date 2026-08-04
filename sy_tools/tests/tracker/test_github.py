@@ -896,6 +896,35 @@ async def test_a_relation_node_that_names_no_issue_is_reported_truncated_not_rai
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
+    "relation",
+    [
+        {"nodes": [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}]},
+        [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}],
+    ],
+    ids=["wrapper-without-a-count", "bare-list"],
+)
+async def test_an_unreadable_relation_node_with_no_count_to_report_it_from_fails_the_read(
+    monkeypatch, board, relation
+):
+    """The tolerance above is bought with `totalCount`; without one there is nothing to signal the drop.
+
+    `dependencies_truncated` is how a skipped node stays honest, and `_relation` derives it from the count
+    the relation carries — so a shape that carries no count has no channel to report the shortfall through,
+    and skipping there would answer with a shorter `dependencies` list marked complete: a real blocker
+    silently gone from the one field a caller reads to decide whether an issue is blocked. Both countless
+    shapes are checked, the bare list and the wrapper that omits the key, because the tolerant branch keys
+    off the count's presence rather than the payload's nesting.
+    """
+    _install(monkeypatch, _json({**_issue_view(), "blockedBy": relation}), _json(_items()))
+
+    with pytest.raises(TrackerError, match="no totalCount") as failure:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert "entry 1" in str(failure.value), failure.value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
     "entry", ["shipyard", {"color": "ededed"}, {"name": ""}, None],
     ids=["bare-string", "no-name", "empty-name", "null"],
 )

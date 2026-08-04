@@ -7,7 +7,7 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 
 1. Edit the skills, agents, docs, or adapter files.
 2. Validate: `python scripts/validate.py` — checks frontmatter, the agent return contracts, the promises skills make to each other, and the script self-tests. It must pass.
-3. Run the MCP server's own test suite: `pixi run pytest`. It covers `sy_tools/` — the tool surface, both tracker adapters, config resolution, and the secret-scrub path — none of which `validate.py` looks at. Both must pass.
+3. Run the MCP server's own test suite: `pixi run pytest`. It covers `sy_tools/` — the tool surface, both tracker adapters, config resolution, and the secret-scrub path — none of which `validate.py` looks at. Lint and type-check the same tree: `pixi run ruff check sy_tools/` and `pixi run ty check sy_tools/`. CI enforces all four; run them locally rather than finding out from a failed check.
 4. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
 5. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 
@@ -45,7 +45,7 @@ Tests mirror the package they cover from one root: `sy_tools/tests/`, never co-l
 
 ## Before every PR
 
-- Run `python scripts/validate.py` and `pixi run pytest`, and make sure both pass.
+- Run `python scripts/validate.py`, `pixi run pytest`, `pixi run ruff check sy_tools/`, and `pixi run ty check sy_tools/`, and make sure all four pass.
 - `docs/smoke_mcp.py` exercises every canonical verb live, against whichever tracker `.shipyard/config.json` configures, through the real MCP server (it creates real issues on a real board — read its header first and point it at a scratch project).
 - Keep PR descriptions short: the diff shows *what* changed; the description explains *why*.
 - If the change is consumer-visible (anything under `skills/`, `agents/`, `hooks/`, `scripts/`, or `docs/`), bump `version` in `.claude-plugin/plugin.json`. `claude plugin update` gates entirely on that string, not on the git SHA — it will happily keep the marketplace clone fetched to the latest commit while reporting "already at the latest version" forever if the version never moves, and installed copies stay pinned to stale content at their old version-keyed cache path. After merging, tag the release with `claude plugin tag --push` so the tag and `plugin.json` agree.

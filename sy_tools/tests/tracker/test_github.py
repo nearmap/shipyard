@@ -931,6 +931,35 @@ async def test_a_malformed_comment_entry_fails_the_read_rather_than_leaving_the_
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("author", ["octocat", 7, []], ids=["bare-string", "number", "list"])
+async def test_a_comment_author_of_the_wrong_shape_raises_a_tracker_error_not_an_attribute_error(
+    monkeypatch, board, author
+):
+    """`(author or {}).get("login")` was a raw `AttributeError` for any non-dict author.
+
+    Every caller of this adapter guards `TrackerError`, so a bare `AttributeError` escapes as an
+    unhandled crash rather than the refusal this module promises — the same failure the entry and
+    field checks around it close, in the one field they left open.
+    """
+    first, *rest = _issue_view()["comments"]
+    drifted = {**_issue_view(), "comments": [{**first, "author": author}, *rest]}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match="author that read back as"):
+        await adapter.GithubAdapter().get_issue("7")
+
+
+@pytest.mark.anyio
+async def test_a_comment_with_no_author_reads_as_an_empty_author_rather_than_failing(monkeypatch, board):
+    """`gh` omits the author for a deleted account, which is absence, not shape drift."""
+    first, *rest = _issue_view()["comments"]
+    _install(monkeypatch, _json({**_issue_view(), "comments": [{**first, "author": None}, *rest]}), _json(_items()))
+
+    issue = await adapter.GithubAdapter().get_issue("7")
+    assert issue["comments"][0]["author"] == "", issue["comments"][0]
+
+
+@pytest.mark.anyio
 async def test_a_relation_gh_paged_reports_itself_clipped_rather_than_short(monkeypatch, board):
     """`gh` caps these relations at one page — 50 blocked-by — and reports `totalCount` beside the nodes.
 

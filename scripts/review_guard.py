@@ -35,6 +35,17 @@ MUTATING_GIT = {
     'merge', 'push', 'pull', 'restore', 'stash', 'apply', 'am', 'branch', 'tag',
     'worktree', 'rm', 'mv', 'revert', 'update-ref', 'filter-branch',
 }
+_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=.*')
+"""A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
+
+`+=` is here because `secret_guard.py` was found missing it and this file carried the same narrow
+pattern: both bash and zsh run `NAME+=VALUE cmd` as an assignment prefix (verified live in both,
+while `-=`/`*=`/`/=` are not assignment syntax to either), so the walk below stopped on `FOO+=bar`,
+read *that* as the command, matched it against nothing, and allowed whatever followed --
+`FOO+=bar rm -rf src` and `FOO+=bar git commit -m x` both went through this guard untouched
+(verified before the fix). A missed assignment prefix disarms the mutation check entirely rather
+than narrowing it, which is why it is worth fixing here rather than deferring with this file's other
+known gaps: this hook gates every `gate`/`hunt` review agent."""
 
 
 def deny(reason: str) -> None:
@@ -160,7 +171,7 @@ def _segment_reason(segment: str) -> str | None:
         tok = tokens[i]
         base = tok.lstrip('\\').rsplit('/', 1)[-1]
         if (
-            re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', tok)
+            _ASSIGNMENT.fullmatch(tok)
             or base in WRAPPERS
             or base.startswith('-')
             or re.fullmatch(r'\d+[smhd]?', base)
@@ -264,6 +275,15 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': 'git checkout main'}, True),
         ('gate', 'Bash', {'command': 'rm -rf src'}, True),
         ('gate', 'Bash', {'command': 'sudo rm -rf src'}, True),
+        # An assignment prefix names no command, so the walk must step over it and check what follows.
+        # Only `NAME=` was recognised, so `NAME+=` -- which both bash and zsh accept -- left the walk
+        # holding `FOO+=bar` as the apparent command and let the mutation behind it through.
+        ('gate', 'Bash', {'command': 'FOO=bar rm -rf src'}, True),
+        ('gate', 'Bash', {'command': 'FOO+=bar rm -rf src'}, True),
+        ('gate', 'Bash', {'command': 'FOO+=bar git commit -m x'}, True),
+        ('gate', 'Bash', {'command': 'FOO+=bar sudo rm -rf src'}, True),
+        ('gate', 'Bash', {'command': 'FOO+=bar ls'}, False),
+        ('gate', 'Bash', {'command': 'FOO+=bar git log --oneline -5'}, False),
         ('gate', 'Bash', {'command': 'xargs rm < list.txt'}, True),
         ('gate', 'Bash', {'command': '/bin/rm src/a.py'}, True),
         ('gate', 'Bash', {'command': "find . -name '*.pyc' -delete"}, True),

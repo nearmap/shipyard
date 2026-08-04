@@ -1135,7 +1135,7 @@ def _comments(data: dict[str, Any]) -> list[dict[str, str]]:
             )
         thread.append({
             "id": str(comment.get("id") or ""),
-            "author": str((comment.get("author") or {}).get("login") or ""),
+            "author": _login(comment.get("author"), index),
             "created": str(comment.get("createdAt") or ""),
             "body": str(comment.get("body") or ""),
         })
@@ -1179,6 +1179,28 @@ def _labels(data: dict[str, Any]) -> list[str]:
             )
         names.append(str(name))
     return names
+
+
+def _login(author: object, index: int) -> str:
+    """One comment author's login, refusing a shape this adapter cannot read.
+
+    `(author or {}).get("login")` raised a bare `AttributeError` the moment `author` came back as
+    anything dict-shaped it isn't — a plain login string, say — which escapes every caller's
+    `except TrackerError`. That is the same "read whose failure is not the failure this module
+    promises" that the entry and field checks above close, in the one field they left open, so it is
+    answered the same way instead of being the last raw traceback in a function that now raises
+    properly for everything else. An absent author stays honestly empty: `gh` omits it for a deleted
+    account, which is not a drift.
+    """
+    if author is None:
+        return ""
+    if not isinstance(author, dict):
+        raise TrackerError(
+            f"entry {index} of the comments field has an author that read back as "
+            f"{type(author).__name__}, not an author object, so this thread cannot be read. Check the "
+            "installed gh version against the fields this adapter requests."
+        )
+    return str(author.get("login") or "")
 
 
 def _ref(node: object) -> str | None:

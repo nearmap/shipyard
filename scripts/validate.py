@@ -517,6 +517,10 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
     if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
         fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)
+    if "never writes the Task body" not in spec:
+        fail("spec's post-approval step must state it never writes the Task body", errors)
+    if "Step 2 — after approval" not in spec:
+        fail("spec must keep the staged reveal: full plan posted only in Step 2, after approval", errors)
 
     if "undispositioned actionable finding" not in gate_ref:
         fail("immutable-gate fix cycle must state the stopping rule (no undispositioned actionable finding)", errors)

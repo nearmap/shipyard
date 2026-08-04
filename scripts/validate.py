@@ -259,12 +259,15 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     boundary the guard and the agent it guards would resolve two different ways.
 
     The directory's own presence fails too, not just references to it: with the `.gitignore` entry
-    gone it is one `git add -A` from being committed. That presence check is the *only* thing that
-    reports a leftover directory, so this returns immediately once it fires rather than also running
-    the content scan below: a leftover directory holds thousands of files that legitimately name
-    `.scratch/`, and scanning them anyway would both bury the single actionable "delete it" message
-    under one failure per file and walk the entire leftover tree for no reason (measured: ~170ms on a
-    real ~5,700-file leftover) once the presence check has already failed the run.
+    gone it is one `git add -A` from being committed. This check can only speak for Shipyard's own
+    code, though: it has no way to know whether some other, unrelated tool on this machine writes to
+    a directory that happens to share this name, so the failure names what it can actually verify —
+    Shipyard itself no longer writes here — rather than asserting nothing does. That presence check is
+    the *only* thing that reports a leftover directory, so this returns immediately once it fires
+    rather than also running the content scan below: a leftover directory can hold thousands of files
+    that legitimately name `.scratch/`, and scanning them anyway would both bury the single actionable
+    message under one failure per file and walk the entire leftover tree for no reason (measured:
+    ~170ms on a real ~5,700-file leftover) once the presence check has already failed the run.
 
     `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
     installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
@@ -274,8 +277,9 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     stale = ROOT / ".scratch"
     if stale.exists():
         fail(
-            ".scratch/ exists in the checkout; nothing writes there any more. Delete it and use "
-            f"{_SCRATCH_HINT}",
+            f"{stale} exists. Shipyard itself no longer writes there — everything moved to "
+            f"{_SCRATCH_HINT} — but this check cannot tell whether something else on this machine "
+            "still depends on the directory, so confirm that before deleting it.",
             errors,
         )
         return

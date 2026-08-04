@@ -1,44 +1,45 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: deny a Bash command that would print a secret-shaped env var's value.
+"""PreToolUse guard: a narrow, best-effort speed bump against printing a secret into a transcript.
 
-Once any command prints a secret, that value is a permanent, byte-for-byte part of this
-session's transcript from that point on — every later render (a HANDOFF attachment, an export)
-reproduces it, regardless of whether it was ever used or uploaded anywhere. `scrub_known_secrets.py`
-cleans this up after the fact, right before a rendered transcript is scanned and attached; this
-hook exists to stop the value from ever reaching a tool-call result in the first place.
+Once any command prints a secret, that value is a permanent, byte-for-byte part of this session's
+transcript from that point on — every later render (a HANDOFF attachment, an export) reproduces it,
+regardless of whether it was ever used or uploaded anywhere. `scrub_known_secrets.py` cleans this up
+after the fact, right before a rendered transcript is scanned and attached; this hook exists to make
+the most likely way of getting there awkward in the first place.
 
-It denies exactly the two anti-patterns this repo's own docs already warn against
-(docs/configuration.md, the tracker adapters' attachment references): dumping the environment
-(`env`, `printenv`, `set`, `export` with no args) and echoing a secret-shaped variable directly.
-It also covers the same leak in an interpreter idiom — a `python -c` / `node -e` one-liner that reads
-the environment and prints what it read — since that is a very plausible next move once the plain
-`echo`/`env` form is denied, not a deliberate sandbox escape. The denial message points at the safe
-alternatives that already exist: the `check_env` MCP tool, and for tracker credentials
-`sy_preflight.py check` / the tracker's own `preflight` verb, which name what is missing or dead
-without printing a value.
+Scope, stated plainly: this is best-effort defence in depth over a small named set of command shapes.
+It is not a soundness guarantee, not a completeness claim, and not a shell sandbox. What it covers is:
 
-Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this hook never reads
-the actual environment, only the command string, so it fires the same way whether or not a secret
-happens to be set right now.
+- the two anti-patterns this repo's own docs already warn against (docs/configuration.md, the tracker
+  adapters' attachment references) — dumping the environment (`env`, `printenv`, `set`, `export` with
+  no assignment) and echoing a secret-shaped variable directly;
+- the same leak in an interpreter idiom (`python -c "import os; print(os.environ['TOKEN'])"`,
+  `node -e "console.log(process.env.TOKEN)"`), since that is a plausible next move once the plain
+  `echo`/`env` form is denied, not a deliberate sandbox escape;
+- the argument arity of the wrappers named in `_WRAPPER_ARG_FLAGS` (`sudo`, `nice`, `ionice`,
+  `timeout` and `stdbuf` are the ones with value-taking flags), so a wrapped spelling of one of the
+  shapes above still lands the walk on the command actually being run;
+- `env`'s other role as a wrapper, whose wrapped command is re-checked as a segment of its own rather
+  than blanket-allowed.
 
-This hook is best-effort defense-in-depth over pattern-matching a command string. It is NOT a
-soundness guarantee and must not be read or relied on as one: it is a shell-shaped matcher, not a
-shell. Three categories of route to the same leak are out of scope BY DESIGN rather than tracked as
-bugs — wrappers this file does not recognise, encoded or nested indirection, and shell grouping and
-command substitution. They are stated as categories and never as spellings, on purpose: an enumerated
-list of working bypasses in a docstring that agents read is a bypass index rather than a control, so
-the enumeration this docstring used to carry is gone. (The self-test's deny cases are the opposite
-artefact — inputs this hook refuses — and stay.)
+The set of ways a shell can print a value is unbounded, so a command shape outside that named set is
+out of scope by construction rather than a defect to be closed by enumeration. The real boundary is
+therefore not this hook, and two controls that do not depend on classifying a command carry it:
 
-None of those categories can be closed by enumeration, because the set of things that can run another
-command, or encode one, is unbounded; widening a list buys one spelling at a time and never finishes.
-So the primary mitigation for a legitimate presence check is not a longer list here: it is the
-`check_env` MCP tool, a presence-only environment check that reports whether a variable is set and
-never its value. That gives the legitimate need a first-class answer which leaks nothing, so there is
-nothing left worth routing around this hook for. What this file does owe the shapes it recognises is
-being right about them: a recognised wrapper's or flag's argument arity is knowable and is accounted
-for below, and getting it wrong lands the walk on the wrong token and leaves the command behind it
-unchecked — a bug here, not a scope boundary.
+- to find out whether a credential is present, use the `check_env` MCP tool. It reports only whether a
+  variable is set, never its value, so there is nothing left worth printing;
+- any write of non-code text to an external system goes through the MCP tracker tools
+  (`create-issue`, `update-issue`, `post-comment`), which scrub known secret values out of what they
+  send.
+
+Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this hook never reads the
+actual environment, only the command string, so it fires the same way whether or not a secret happens
+to be set right now.
+
+Failing to reach a decision is a deny, never a silent return. A `PreToolUse` hook that writes nothing
+is read as no decision at all, which runs the command with the check skipped — so an input this hook
+cannot read in the shape it expects, cannot evaluate inside a Bash call's latency budget, or crashes
+it, is refused rather than allowed unchecked.
 
 Commands:
   (no args)   read Claude Code hook JSON from stdin; deny if the Bash command matches
@@ -55,82 +56,25 @@ import sys
 from secret_words import looks_like_secret_name as _base_looks_like_secret_name
 
 _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
-    # `-h` is deliberately absent: sudo declares it `h::` (optional_argument), so `sudo -h` is its own
-    # help flag and a hostname must be attached (`-hHOST`) rather than following as the next token —
-    # `sudo -h somehost echo $VAR` never consumes `somehost` as a value. Listing it stepped the walk
-    # past the real command. The long `--host` is required_argument and stays.
     "sudo": frozenset({
-        "-u", "-g", "-p", "-C", "-r", "-t", "-U", "-D", "-R", "-T", "-a", "-c",
+        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D",
         "--user", "--group", "--prompt", "--close-from", "--host", "--role", "--type",
-        "--other-user", "--chdir", "--chroot", "--command-timeout", "--auth-type", "--login-class",
+        "--other-user", "--chdir",
     }),
     "nice": frozenset({"-n", "--adjustment"}),
-    "ionice": frozenset({
-        "-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid",
-    }),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
     "nohup": frozenset(),
-    "time": frozenset({"-o", "-f", "--output", "--format"}),
+    "time": frozenset(),
     "command": frozenset(),
 }
 _WRAPPER_POSITIONALS = {"timeout": 1}  # timeout's mandatory DURATION, consumed after its flags
-_WRAPPER_EXACT_ONLY_FLAGS: dict[str, frozenset[str]] = {"sudo": frozenset({"--login"})}
-"""Long options that take no value and must not be read as an abbreviation of one that does.
-
-`getopt_long` resolves an exact match before it considers any abbreviation, so `sudo --login` is
-sudo's own boolean `-i` and never a short spelling of the `--login-class` listed above it. The
-prefix matching in `_consumes_next` cannot know that from `_WRAPPER_ARG_FLAGS` alone — every long
-option there takes a value — so the few value-less options that are a proper prefix of a listed one
-are named here. Without this, `sudo --login echo $VAR` consumed `echo` as a flag value and the leak
-behind it went unchecked: the same landing-miss as the bug prefix matching exists to fix, in the
-opposite direction."""
 WRAPPERS = frozenset(_WRAPPER_ARG_FLAGS)
 PRINTING_COMMANDS = {"echo", "printf", "print"}
-_ENV_ARG_FLAGS: frozenset[str] = frozenset({
-    "-u", "-C", "-S", "-a", "-P", "--unset", "--chdir", "--split-string", "--argv0",
-})
-"""`env`'s own options that take the *next* token as their value, which the walk must step over.
-
-The value is not the command `env` runs for any of them except `-S`/`--split-string`, whose value *is*
-a command: a whole shell-word-split command string, which this walk never lands on a token of. What
-that string then goes on to do is the nested-indirection category this module's own docstring puts out
-of scope by design, recorded here rather than closed. What the arity table owes it is being counted —
-so the walk steps over the string instead of reading it as `env`'s own command name, which is the
-under-consuming failure below.
-
-Completed from both implementations' documented synopses, because the hook cannot know which `env` is
-on the host: GNU coreutils contributes `-a ARG`/`--argv0=ARG` (sets `argv[0]`, and COMMAND still runs
-after it), BSD contributes `-P utilpath`, and `-u`/`-C`/`-S` are common to both. Missing any of them is
-the under-consuming failure `_leading_command` documents — the walk lands on the flag's value, reads
-that as the command, and the leak behind it goes unchecked. Every value-less option either side
-documents (`-i`, `-0`, `-v`/`--debug`, `--list-signal-handling`, the optional-argument `--*-signal`
-forms, `--help`, `--version`) is a proper prefix of none of the above, so `env` needs no
-`_WRAPPER_EXACT_ONLY_FLAGS`-style exception the way `sudo --login` does."""
-INTERPRETER_CODE_FLAGS: dict[str, frozenset[str]] = {
-    "python": frozenset({"-c"}),
-    "python3": frozenset({"-c"}),
-    "node": frozenset({"-e", "--eval", "-p", "--print"}),
-    "ruby": frozenset({"-e"}),
-    "perl": frozenset({"-e", "-E"}),
-}
-"""Each recognised interpreter's own flags that take a *code* argument, per its documented synopsis.
-
-Per interpreter rather than one shared set, because the same spelling is a different option depending
-on who reads it and a shared table gets both halves wrong. node's `-p`/`--print` evaluates and prints,
-the same leak as `-e`; perl's and ruby's `-p` is a boolean line-loop wrapper that takes no value, so a
-shared table would read the code argument of `ruby -pe CODE` as the cluster's attached `e` and miss the
-real one. perl's `-E` is `-e` with modern features enabled and takes code identically; python's own `-E`
-is a boolean (ignore `PYTHON*` env vars) and ruby's takes an encoding, so it too belongs to one
-interpreter only.
-
-Widening this is bounded in a way `WRAPPERS` is not: it completes the documented flag set of the five
-interpreters already named, rather than chasing the unbounded set of things that can run code."""
-_PYTHON_BASENAME = re.compile(r"python\d*(\.\d+)?t?")
-"""A versioned python basename (`python3.13`, `python2.7`, the free-threaded `python3.13t`).
-
-`INTERPRETER_CODE_FLAGS` is keyed by exact name, so lookup alone missed every alias a real installation
-ships and `python3.13 -c "...print(os.environ['ACLI_TOKEN'])"` — verified on this host — was allowed."""
+_ENV_ARG_FLAGS = {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+INTERPRETERS = {"python", "python3", "node", "ruby", "perl"}
+CODE_FLAGS = {"-c", "-e", "--eval"}
 _VAR_REF = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 _ENV_ACCESS = re.compile(
     r"os\.environ(?:\.get)?\s*[\[\(]\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
@@ -138,137 +82,8 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\.([A-Za-z_][A-Za-z0-9_]*)"
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
-_PRINT_CALL = re.compile(
-    r"\b(print"
-    r"|console\.(?:log|info|debug|warn|error|dir|dirxml|table|trace|groupCollapsed|group"
-    r"|countReset|count|assert|timeEnd|timeLog|time)"
-    r"|(?:sys|process)\.std(?:out|err)\.write(?:lines)?|puts|warn)\s*\("
-)
-"""A call that writes its argument out, so a one-liner that reads a secret without printing it allows.
-
-node's console methods are listed one by one rather than as `log` alone, because they are not aliases
-of it to a matcher that works by name: `console.info`, `console.dir`, `console.table` and
-`console.debug` each print the value exactly as `log` does, and with `log` alone every one of them was
-allowed. `console.warn` did deny, but only by coincidence — the bare `warn` alternative here is perl's
-and ruby's own function, so a `console.warn` deny rested on another language's name and would have
-vanished the moment that alternative was scoped per interpreter. Each console method now denies for its
-own reason.
-
-**How this list was built, since two rounds of hand-curating it each missed members.** node's `console`
-is a closed, fully documented surface, so it is enumerated rather than sampled: every method the
-`console` module documents (https://nodejs.org/api/console.html — the `Console` class, plus the
-inspector-only `profile`/`profileEnd`/`timeStamp`) was probed on this host with a sentinel argument,
-capturing stdout and stderr separately, including the argument-count and paired-call variants that
-change the answer. On node v24.11.1 the classification is:
-
-  prints the argument   log, info, debug (stdout) · warn, error, trace (stderr) · dir, dirxml, table,
-                        group, groupCollapsed, count (stdout) · assert (stderr, on the two-argument
-                        `assert(false, v)` form) · timeEnd, timeLog (stdout when the label is live,
-                        stderr as `No such label '<v>'` when it is not) · countReset (stderr as
-                        `Count for '<v>' does not exist`) · time (stderr as `Label '<v>' already
-                        exists`, on a second call with the same label)
-  prints nothing of it  groupEnd, clear (both ignore the argument entirely) · timeStamp, profile,
-                        profileEnd (inspector-only no-ops, which write to an attached inspector and
-                        never to this process's streams) · Console, context, createTask (not output
-                        calls at all)
-
-The three names this round added — `timeEnd`, `timeLog`, `countReset` — were live bypasses of exactly
-the family the previous round claimed to have closed, which is why the list is now derived from the
-documented API instead of from whichever spellings a review happened to notice.
-
-Absence from the alternation means measured-non-printing, never unexamined: `groupEnd` and `clear`
-discard what they are handed, and denying them would pin a leak that does not happen — the same false
-pin `_generated_code_spellings` refuses to generate for `--print=<code>`. Both, and `timeStamp`, are
-allow controls in the self-test so a future widening cannot quietly sweep them in. `time` sits on the
-deny side despite printing nothing on a first call, because its duplicate-label warning does echo the
-label verbatim: that is a leak that happens, and this file's standing rule is that a denied command
-which would have printed nothing is the direction to be wrong in.
-
-Longest-first ordering within a shared prefix (`groupCollapsed` before `group`, `countReset` before
-`count`, `timeEnd`/`timeLog` before `time`) is for legibility only; either order matches the same set,
-since `\\s*\\(` has to follow and the engine backtracks. That backtracking is also what keeps the
-non-printing `console.timeStamp` out: `time` matches its first four characters and then fails on `S`.
-
-stderr counts exactly as stdout does, so the writers are one `(?:sys|process)\\.std(?:out|err)\\.write`
-pattern instead of the two stdout spellings that were listed: a Bash tool call's result carries both
-streams into transcript history, and `sys.stderr.write(...)`/`process.stderr.write(...)` — verified live
-to reproduce a sentinel — were allowed by twin patterns that differed from the denied ones by four
-characters. `writelines` is the same stream method under its other name — `sys.stdout.writelines([v])`
-reproduces the value exactly as `write(v)` does — and `\\.write\\s*\\(` required the paren immediately
-after `write`, so it matched neither that spelling nor `sys.stderr.writelines`."""
-_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=.*")
-"""A leading `NAME=VALUE`, `NAME+=VALUE` or `NAME[idx]=VALUE` assignment prefix, naming no command.
-
-One named constant, deliberately, because the duplication was itself the bug: this pattern was also
-spelled out inline inside `_env_reason`'s chain-unwinding loop, so widening it to `+=` in one place
-left the other copy narrow, and `env FOO+=bar echo $VAR` still left `FOO+=bar` standing as the
-apparent command — a token that matches no rule below, which allowed the leak behind it. Missing an
-assignment prefix disarms the whole anti-pattern path rather than narrowing it, so both sites reach
-this one pattern through `_skip_assignment_prefix` now.
-
-`=` and `+=` are the only assignment-prefix *operators* there are to handle: both bash and zsh run
-`NAME+=VALUE cmd` (verified live in both), while `-=`, `*=` and `/=` are not assignment syntax to
-either — they come back as a command not found or a failed glob — so there is no third operator to
-chase. That is a complete claim about the operator set and it was mistaken for a complete claim about
-the *walk*, which it never was: an assignment prefix also varies in its left-hand side and in its
-value, and both variations disarmed this walk for as long as the tokenizer was `segment.split()`.
-`FOO[1]=bar echo $VAR` (bash, and zsh where the index is 1-based) has an indexed left-hand side, which
-the pattern now matches; `ARR=(a b) echo $VAR` has an array-literal value, which `_lex_source` removes
-from the text before lexing so that the assignment is one token here like any other. Both were verified
-live in both shells to run the command behind them, and both allowed that command unchecked. What
-guarantees the walk is reached at all is `_tokens`, not this pattern.
-
-Note that `env(1)` does not read `+=` as an append: it splits on the first `=`, so `env FOO+=bar` sets
-a variable literally named `FOO+` (verified). The `env` layer consumes the token as an assignment
-either way, which is all this walk needs from it."""
-_ARRAY_ASSIGNMENT_OPENER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\(")
-"""An unquoted `NAME=(` / `NAME+=(` / `NAME[idx]=(` array-literal opener, matched on *raw* text.
-
-Matched before lexing, against the whole word from its start, because after lexing the question cannot be
-answered at all: `shlex` consumes the quote characters that made a `(` literal, so `A="(" echo $VAR` — a
-perfectly ordinary command — arrives as the token `A=(`, indistinguishable from the array literal in
-`ARR=(a b) echo $VAR`. Reading that post-lex token as an array literal started a paren-balance scan that
-swallowed the rest of the command looking for a close paren, so `echo $VAR` was never recognised as the
-command and the leak behind a quoted paren was allowed — verified live in both shells for `A="("`,
-`A='('`, `A="a(b"`, `A=a\\(`, `MSG="feat("`, `FOO+="("` and `A="(("`. An unclosed `(` inside a quoted
-value is not exotic: it is any commit message, URL fragment or path carrying a literal paren.
-
-In real shell syntax an array literal's `(` immediately follows the `=`, with no quote and no space
-between them, so requiring the match to cover the raw word from its first character rules out every
-quoted spelling: a quote anywhere in `NAME=(`'s span makes this pattern fail. `_ASSIGNMENT` then steps
-over the assignment as the ordinary single token it lexes to."""
-_WORD_BREAKS = " \t\n\r;&|()<>"
-"""The unquoted characters after which a new shell word begins, which is what scopes a `#` comment.
-
-POSIX makes `#` a comment introducer only at the *start* of a word; mid-word it is a literal character.
-This set is what "start of a word" is tested against in `_lex_source` — whitespace plus the operators
-that end a word without any whitespace (`ls;#c` really is a comment in both shells, verified, and so is
-`echo x >#c`, which both shells then reject as a syntax error for the missing redirection target)."""
-_SHORT_CLUSTER = re.compile(r"-[A-Za-z0-9]+")
-"""A token shaped like a cluster of short options and nothing else — see `_is_short_cluster`."""
-_PRINTING_OPTION_LETTERS = frozenset("pm")
-"""The `export`/`declare`/`typeset` option letters that put the command in a variable-printing mode.
-
-`p` is the documented print option of all three. `m` is zsh's match-by-pattern mode, which prints every
-variable whose name matches an operand and is therefore the same leak under another letter — verified
-live in zsh for `typeset -m NAME`, `declare -m NAME`, `typeset -m 'NAME*'` and `typeset +m`, all of which
-this hook allowed while it tested for `p` alone.
-
-Both letters were established by sweeping every single option letter of all three commands, in `bash -c`
-and `zsh -c`, against a bare name, an assignment and no operand at all, rather than by reading which
-spellings a review happened to name. With an operand, `p` (both shells) and `m` (zsh) are the whole set;
-with no operand the command dumps everything whatever its options are, which is the rule above this one."""
-_PRINTING_OPTION_PAIRS = (frozenset("lu"),)
-"""Option letters that print only in combination, which no per-letter set can express.
-
-`typeset -lu NAME` and `-ul NAME` write `NAME=VALUE` in zsh (verified with a sentinel) while `-l` and
-`-u` alone are silent: zsh reports rather than sets when the two case attributes conflict. Found by
-sweeping all 676 two-letter clusters in both shells for one that prints with no `p` or `m` in it, so this
-tuple is a measured set and not an example — that sweep returned exactly this pair. Kept as a pair rather
-than folded into `_PRINTING_OPTION_LETTERS`, because adding `l` and `u` there would deny the two
-single-letter spellings that were measured silent."""
-_GLOB_CHARS = frozenset("*?[")
-"""The metacharacters that make an operand a pattern rather than a name — see `_declare_reason`."""
+_PRINT_CALL = re.compile(r"\b(print|console\.log|sys\.stdout\.write|process\.stdout\.write|puts|warn)\s*\(")
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _ADVICE = (
     "this can print a secret value into this command's own tool-call result, which becomes "
     "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
@@ -285,38 +100,31 @@ _TOO_LONG = (
 )
 """The ceiling on the command text every check below scales with, and the deny past it.
 
-The checks here are not all linear. `_interpreter_reason` re-scanned the remaining tokens once per
-interpreter-shaped token, so `"python " * 50000` took ~38s — a single pass now, since its answer never
-depended on the pair — and `_env_reason` still walks and slices the remaining tokens once per `env`
-layer, which is the term the ceiling is now standing in front of. This hook is a `PreToolUse` gate
-on every Bash call in every session, so either shape is a stall of the whole session, and a hook that has
-not written by the time anything gives up has written no decision at all — the same fail-open shape as a
-crash. A ceiling on the input closes that class whatever a matcher's shape turns out to be, which
-matters in a file whose matchers have each been found incomplete a round at a time.
+The checks here are not all linear: `_interpreter_reason` re-scans the remaining tokens once per
+interpreter-shaped token, and `_env_reason` re-walks the remaining tokens once per `env` layer. This
+hook is a `PreToolUse` gate on every Bash call in every session, so a slow enough input is a stall of
+the whole session, and a hook that has not written a decision by the time anything gives up has
+written no decision at all — the same fail-open shape as a crash. A ceiling on the input closes that
+class whatever a matcher's shape turns out to be, without needing each matcher to be linear.
 
 The number is far above any plausible single Bash call (a long `&&`-joined pipeline is hundreds of
-characters, not tens of thousands) and far below where the remaining quadratic term bites. The worst
-input measured among those the ceiling admits is the `env` chain, not the interpreter one: `"env " *
-5000` (20000 characters, 5000 layers) scans in ~0.06s, where the same length in interpreter-shaped
-tokens is ~0.01s. The chain used to cost ~0.6s, and ~18s once a token's content carried a quote, because
-each layer re-joined its remaining tokens and re-lexed them; `_leading_of` lexes once per segment
-instead. So the margin is ~600x against the ~38s this replaced, measured on the worst admitted case, and
-that case is what `_test_an_oversized_command_is_refused_instead_of_scanned` times — in both the
-quote-free and the quote-carrying spelling, since only the second one reached the relex. Timing the
-refusal instead would only show that refusing is cheap, which it is by construction, since it scans
-nothing at all."""
+characters, not tens of thousands) and far below where the quadratic terms bite: the worst
+interpreter-shaped input the ceiling admits (2857 `python ` tokens) scans in ~0.14s here, which is
+what `_test_an_oversized_command_is_refused_instead_of_scanned` bounds — timing the refusal instead
+would only show that refusing is cheap, which it is by construction, since it scans nothing at all."""
 _UNEVALUABLE = (
     "secret guard: this command could not be evaluated safely, so it is refused rather than allowed "
     "unchecked. Deeply nested wrapper or `env` layers are the known cause; flatten them and retry."
 )
-"""The deny a crash inside `decision()` becomes, since the alternative is an allow.
+"""The deny that an unreadable input or a crash inside `decision()` becomes, since the alternative
+is an allow.
 
 A `PreToolUse` hook blocks only by exit code 2 or a `permissionDecision: "deny"` payload, so a hook
 that dies mid-evaluation writes nothing and Claude Code reads that as no decision — the command runs
-with the check silently skipped. The one fail-open path actually found (unbounded recursion through
-`env` chains) is closed at its source in `_env_reason`; this is the backstop for the next one, and it
-names no command text and no exception message, because either could carry the very value this hook
-exists to keep out of the transcript."""
+with the check silently skipped. `_env_reason` recurses once per `env` layer, so a long enough chain
+of them raises `RecursionError` inside `decision()`; that, and whatever the next such input turns out
+to be, lands here. The text names no command and no exception message, because either could carry the
+very value this hook exists to keep out of the transcript."""
 _UNREADABLE_COMMAND = (
     "secret guard: this Bash call's `command` is not a string, so this hook cannot read what it would "
     "run and refuses it rather than allowing it unchecked. Pass the command as a single string."
@@ -371,24 +179,15 @@ def decision(tool: object, args: dict) -> str | None:
     `sed`/`perl` and with one of the printing or dumping commands `_segment_reason` denies — so it is
     gone rather than left wired up to fail open again the day that denied set grows.
 
-    Command text past `MAX_COMMAND_CHARS` is refused before any of those checks run, since all of them
-    scale with it and one of them scales worse than linearly.
-
-    Command text whose quoting `_tokens` cannot lex at all is refused for the same reason a
-    non-string one is: this hook cannot read what would run, and the interpreter family used to answer
-    that case with `return None`, i.e. an allow. The refusal is decided here, on the whole command, and
-    never per segment: the `;&|` split below cuts inside a quoted argument, so a perfectly balanced
-    command (`python -c "import x; f()"`) yields segments with manufactured unbalanced quotes, and
-    refusing those would deny most quoted commands. `_leading_command` therefore keeps a best-effort
-    fallback for its own segment, while the whole-command read fails closed here.
-
-    A `command` that is not a string is refused rather than coerced. `str()` on an unexpected shape does
-    not raise, so `main()`'s `except Exception` backstop never fired for it: a list-shaped
-    `{"command": ["echo $ACLI_TOKEN"]}` became the text `['echo $ACLI_TOKEN']`, whose bracket-and-quote
-    punctuation matches none of the patterns below, and the leak was allowed. An input this hook cannot
-    read in the shape it expects is not an input it has cleared. A `tool` of a non-string shape is refused
-    for the same reason: `tool != "Bash"` is an allow for every other tool, and was therefore an allow for
-    a malformed value too.
+    Two shapes are refused before any of that runs, for the same reason: an input this hook cannot
+    read in the shape it expects is not an input it has cleared. Command text past
+    `MAX_COMMAND_CHARS` is refused because every check below scales with it and not all of them
+    linearly. A `command` that is not a string is refused rather than coerced — `str()` on an
+    unexpected shape does not raise, so a list-shaped `{"command": ["echo $ACLI_TOKEN"]}` became the
+    text `['echo $ACLI_TOKEN']`, whose bracket-and-quote punctuation matches none of the patterns
+    below, and the leak was allowed. A non-string `tool` is refused for the same reason:
+    `tool != "Bash"` is a correct allow for every other tool, and was therefore an allow for a
+    malformed value too.
     """
     if not isinstance(tool, str):
         return _UNREADABLE_TOOL
@@ -400,10 +199,7 @@ def decision(tool: object, args: dict) -> str | None:
     command = raw or ""
     if len(command) > MAX_COMMAND_CHARS:
         return _TOO_LONG
-    tokens = _tokens(command)
-    if tokens is None:
-        return _UNEVALUABLE
-    reason = _interpreter_reason(tokens)
+    reason = _interpreter_reason(command)
     if reason:
         return f"secret guard: {reason} — {_ADVICE}"
     for segment in re.split(r"[;&|\n]+", command):
@@ -417,15 +213,12 @@ def main() -> None:
     """The hook entry point. Every way of failing to reach a decision here becomes a deny.
 
     Reading stdin is one of those ways and used to sit outside that rule: `json.load` also raises
-    `UnicodeDecodeError` on malformed bytes and `OSError` on a broken pipe, neither of which the
-    `JSONDecodeError` catch covered, so both escaped as an unhandled crash *before* the backstop around
-    `decision()` — and a crashed `PreToolUse` hook writes nothing, which Claude Code reads as no
-    decision, i.e. an allow. Even the caught case returned silently, which is the same allow by a
-    tidier route. Both now emit `_UNEVALUABLE`, for the same reason the `decision()` backstop does: an
-    input this hook cannot read is not an input it has cleared.
-
-    An event that parses but is not a JSON object is the same rule: it also used to `return` silently,
-    one line below this docstring, which is that same allow by the tidier route.
+    `UnicodeDecodeError` on malformed bytes and `OSError` on a broken pipe, neither of which a
+    `JSONDecodeError`-only catch covers, so both escaped as an unhandled crash — and a crashed
+    `PreToolUse` hook writes nothing, which Claude Code reads as no decision, i.e. an allow. Even the
+    caught case returned silently, which is the same allow by a tidier route, as did an event that
+    parses into something other than a JSON object. All of them now emit `_UNEVALUABLE`, as does a
+    crash inside `decision()` itself.
     """
     if len(sys.argv) > 1 and sys.argv[1] == "self-test":
         _self_test()
@@ -447,173 +240,6 @@ def main() -> None:
     emit(reason, _CONFIG_WARNING)
 
 
-def _tokens(text: str) -> list[str] | None:
-    """`text` split into words the way a shell splits it, or None when its quoting cannot be lexed.
-
-    The one tokenizer for this whole file, because every matcher below is only as good as the token
-    boundaries it is handed and this file has now been wrong about those in both directions.
-
-    `shlex`, not `str.split()`, because a *quoted assignment value* defeated the whole walk in
-    `_leading_command`: `FOO="a b" echo $ACLI_TOKEN` split into `FOO="a` and `b"`, the first matched
-    `_ASSIGNMENT`, the second was read as the command, and `echo` — with the leak behind it — was never
-    checked. Verified live in bash and zsh that the command really does run. That is not one spelling:
-    a quoted assignment value hides *every* wrapper this file recognises, so the fix belongs in the
-    tokenizer rather than in `_ASSIGNMENT`.
-
-    Comments and array-literal values are removed from the *raw* text first (`_lex_source`) rather than
-    handled after lexing, because both questions are only answerable while the quote characters are still
-    there. `shlex`'s own `comments=True` is not used for the same reason it is not enough: see
-    `_lex_source`.
-
-    One path, with no `str.split()` fast path beside it: `shlex` is ~40x slower per character, which
-    mattered only while `_env_reason` re-lexed the remaining text once per `env` layer (~18s at the
-    ceiling — see `_leading_of`). With the lexing done once per segment, the worst input
-    `MAX_COMMAND_CHARS` admits costs ~0.07s lexed either way, so a second tokenizer would buy ~0.01s at
-    the price of two code paths that have to agree.
-
-    None means the text is not lexable, which is a different answer from "no tokens" and each caller
-    decides it: `decision()` refuses the whole command, and `_leading_command` falls back to a naive
-    split for one segment, because the `;&|` segment split manufactures unbalanced quotes out of
-    balanced commands.
-    """
-    try:
-        return shlex.split(_lex_source(text))
-    except ValueError:
-        return None
-
-
-def _lex_source(text: str) -> str:
-    """`text` with the spans a shell turns into no command word at all replaced by one space.
-
-    Two of them, and both have to be decided here — on raw text, with the quoting still visible — rather
-    than on the tokens `shlex` produces, because lexing destroys the very evidence each one needs. This is
-    the same mistake in two places, each of which shipped a live bypass:
-
-    `#` comments. `shlex`'s `comments=True` strips from *any* unquoted `#`, but POSIX makes `#` a comment
-    introducer only where a word begins; mid-word it is an ordinary character. So `X=1#foo echo $VAR`
-    lexed to `['X=1']` — the real command vanished, the walk fell off the end of the tokens, and the leak
-    was allowed (verified live in both shells, as are the `printenv`/`env`/`set`/`python3 -c` shapes of
-    it). The same miscount denied harmless commands from the other side: `env COLOR=#ff0000 ls /tmp` and
-    `env HTTP_PROXY=http://p#1 ls /tmp` lost their assignment's value and read as bare `env`. A comment
-    is stripped to the end of its *line*, not to the end of the text, since a later line of a multi-line
-    command still runs — dropping the rest would hide an interpreter one-liner sitting behind a comment
-    line from `_interpreter_reason`, which is the only matcher that reads the whole command at once.
-
-    Array-literal values. `ARR=(a b) echo $VAR` runs `echo` in both shells (verified) and lexes as
-    `ARR=(a` + `b)`, so the walk read `b)` as the command; consuming through the close paren is correct,
-    because a `(...)` array literal cannot contain the wrapped command — the shell parses it as this
-    assignment's value, whatever words are inside it. Deciding that from the post-lex token instead is
-    what `_ARRAY_ASSIGNMENT_OPENER` documents: the quotes are gone by then, so an ordinary quoted paren
-    (`A="(" echo $VAR`) started a scan that swallowed the whole command and allowed the leak. Removing
-    the value here, from the text, leaves the `NAME=` head to lex as the ordinary assignment token it is,
-    so the token walks never see an array literal at all and need no rule for one.
-
-    Both replacements leave a space behind so that removing a span can never join two words into one.
-    An array-literal opener that is never closed removes nothing at all: its `(` stays in the text as an
-    ordinary character. Neither shell runs such a command — an unclosed `(` is a syntax error in both
-    (verified) — so there is no value there to remove, and swallowing the rest of the text as if there
-    were would hide a following interpreter one-liner from `_interpreter_reason`, the one matcher that
-    reads the whole command at once. Unbalanced *quoting* is likewise left exactly as it arrived, so
-    `_tokens` still reports it as unlexable rather than being quietly repaired here.
-    """
-    spans = _dropped_spans(text)
-    if not spans:
-        return text
-    out: list[str] = []
-    at = 0
-    for start, end in spans:
-        out.append(text[at:start])
-        out.append(" ")
-        at = end
-    out.append(text[at:])
-    return "".join(out)
-
-
-def _dropped_spans(text: str) -> list[tuple[int, int]]:
-    """The half-open spans `_lex_source` removes, in one left-to-right pass over the raw text.
-
-    One pass, with one place that tracks quoting, because the alternative measured as a stall: a lookahead
-    that scanned forward for an array literal's closing `)` re-scanned the remaining text once per opener,
-    and `"A=(" * 6666` — 20000 characters, which the `MAX_COMMAND_CHARS` ceiling admits — took ~17s here.
-    A hook that has not answered by the time anything gives up has allowed the command, so that is the
-    same fail-open the ceiling exists to prevent, reintroduced behind the fix for it. Carrying the paren
-    depth in this pass visits every character once and costs ~0.03s on that input. It also keeps the
-    quote state single-sourced: a scanner starting mid-text has to re-derive whether it began inside a
-    quote or a comment, and two state machines that must agree is how both of the last two tokenizer bugs
-    were built.
-
-    Nesting is counted for `$(...)`/`$((...))` inside a literal, whose own `)` must not close it. A bare
-    nested `(` is unreachable in a runnable command (`A=((x))` and `A=(a (b) c)` are syntax errors in both
-    shells, verified), so counting it costs nothing either way.
-
-    A literal that never closes leaves `depth` non-zero at the end, so no span is recorded and its text
-    survives untouched — what `_lex_source` documents as the right answer for an opener no shell accepts.
-    The comment rule does not run while a literal is open, so there is no half-applied state to undo.
-    """
-    spans: list[tuple[int, int]] = []
-    i = word_start = 0
-    quote = ""
-    depth = 0
-    opener = -1
-    while i < len(text):
-        char = text[i]
-        if quote:
-            if char == quote:
-                quote = ""
-            elif char == "\\" and quote == '"':
-                i += 1  # a backslash escapes the next character inside double quotes only
-            i += 1
-            continue
-        if char == "\\":  # the next character is literal, so it starts and ends nothing
-            i += 2
-            continue
-        if char in "'\"":
-            quote = char
-            i += 1
-            continue
-        if depth:  # inside an array-literal value, where only its own parens matter
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if not depth:
-                    spans.append((opener, i + 1))
-                    word_start = i + 1
-            i += 1
-            continue
-        if char == "#" and i == word_start:
-            newline = text.find("\n", i)
-            spans.append((i, len(text) if newline < 0 else newline))
-            if newline < 0:
-                break
-            i = newline  # the newline itself is the word break the tail of this loop records
-            continue
-        if (
-            char == "("
-            and i > word_start
-            and text[i - 1] == "="
-            and _ARRAY_ASSIGNMENT_OPENER.fullmatch(text, word_start, i + 1)
-        ):
-            depth, opener = 1, i
-            i += 1
-            continue
-        i += 1
-        if char in _WORD_BREAKS:
-            word_start = i
-    return spans
-
-
-def _skip_assignment_prefix(tokens: list[str], i: int) -> int:
-    """The index after the assignment prefix at `i`, or `i` itself when that token is not one.
-
-    One helper for both walks, since two copies of this rule is how `+=` came to be handled in one of
-    them only. It is one token per assignment, unconditionally: an array-literal value is already gone by
-    the time the tokens exist (`_lex_source` removes it from the text), so there is no paren scan here to
-    be fooled by a token whose `(` came out of a quoted value.
-    """
-    return i + 1 if _ASSIGNMENT.fullmatch(tokens[i]) else i
-
-
 def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     """The command a segment actually invokes and its remaining tokens, or None if it invokes nothing.
 
@@ -625,159 +251,35 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     it basenames what it lands on so `/bin/echo` reads as `echo`. A bare `--` ends that wrapper's
     option processing.
 
-    Both ways of miscounting can fail open, so neither direction is a safe default. Over-consuming —
-    treating a flag as value-taking when it isn't — steps past the real command onto its first
-    argument. Under-consuming lands the walk on the value of a value-taking flag it failed to
-    recognise, and if that value is an ordinary token rather than itself flag-shaped, the walk stops
-    there and reads it as the command: `sudo -T 5 echo $VAR` read `5` as the command and allowed the
-    leak until `-T` was listed. Only where the wrongly-treated token is itself flag-shaped does
-    under-consuming survive, because the flag loop keeps walking.
-
-    A complete flag table is necessary but not sufficient, because a shell does not require a flag to
-    be spelled the way the table spells it: `sudo -nu root echo $VAR` clusters the boolean `-n` with
-    the value-taking `-u`, and `sudo --us root echo $VAR` abbreviates `--user` the way `getopt_long`
-    permits. Testing a token for exact membership in the table saw neither, consumed one token, landed
-    on `root` and let the leak behind it run — with `-u` and `--user` both listed the whole time. So
-    the arity decision is `_consumes_next`, which recognises clustered short options and long-option
-    prefix abbreviation too; without that, this same landing-miss recurs no matter how complete the
-    tables are. A wrapper's flag set is still completed from its documented synopsis rather than from
-    whatever this host has installed, and an unrecognised `-x` is skipped rather than treated as the
-    command, since landing on the real command is what makes the deny reachable.
-
-    Tokens come from `_tokens`, which carries the tokenizer half of this same story: every arity table
-    above was already complete while a quoted assignment value still hid the command from this walk. A
-    segment `_tokens` cannot lex falls back to the naive split this used to do always, because the
-    `;&|` segment splitter cuts inside quoted arguments and so manufactures unbalanced quotes out of
-    balanced commands — an unlexable *segment* is ordinary rather than suspicious. An unlexable whole
-    *command* is refused in `decision()`, where the text is intact.
-
-    The walk itself is `_leading_of`, over tokens, so `_env_reason` can unwind a chain without lexing
-    each layer again: text is lexed once per segment, here.
+    The two ways this can miscount are not symmetric, and the tables err accordingly. Over-consuming
+    — treating a flag as value-taking when it isn't — steps past the real command onto its first
+    argument, which fails open; under-consuming leaves the walk on a flag, which is recoverable. So
+    only flags confirmed to take a separated value consume two tokens, and every other flag consumes
+    one: an unrecognised `-x` is skipped rather than treated as the command, because landing on the
+    real command is what makes the deny reachable. `--flag=value` and an attached short value (`-o0`)
+    are one token by construction.
     """
-    tokens = _tokens(segment)
-    if tokens is None:
-        tokens = [t.strip("\"'") for t in segment.split()]
-    return _leading_of(tokens)
-
-
-def _leading_of(tokens: list[str]) -> tuple[str, list[str]] | None:
-    """`_leading_command`'s walk over tokens that are already lexed — see its docstring for the rules.
-
-    Separate from the lexing so an `env` chain costs one lex for the whole segment rather than one per
-    layer. `_env_reason` used to re-join its remaining tokens into text and hand that back to
-    `_leading_command`, which lexed it again; with `shlex` in place of `str.split` that per-layer relex
-    took the worst input `MAX_COMMAND_CHARS` admits from ~0.6s to ~18s whenever a token's own content
-    carried a quote — the stall-shaped fail-open that ceiling exists to close, reintroduced by the fix
-    for the tokenizer. Re-lexing already-lexed words was also wrong on its own terms: quoting inside a
-    token's content would be processed twice.
-    """
+    tokens = [t.strip("\"'") for t in segment.split()]
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        skipped = _skip_assignment_prefix(tokens, i)
-        if skipped != i:
-            i = skipped
+        if _ASSIGNMENT.fullmatch(tok):
+            i += 1
             continue
         base = tok.lstrip("\\").rsplit("/", 1)[-1]
         if base not in WRAPPERS:
             break
         flags = _WRAPPER_ARG_FLAGS[base]
-        exact_only = _WRAPPER_EXACT_ONLY_FLAGS.get(base, frozenset())
         i += 1
         while i < len(tokens) and tokens[i].startswith("-"):
             if tokens[i] == "--":
                 i += 1
                 break
-            i += 2 if _consumes_next(tokens[i], flags, exact_only) else 1
+            i += 2 if tokens[i] in flags else 1
         i += _WRAPPER_POSITIONALS.get(base, 0)
     if i >= len(tokens):
         return None
     return tokens[i].lstrip("\\").rsplit("/", 1)[-1], tokens[i + 1:]
-
-
-def _consumes_next(
-    tok: str, flags: frozenset[str], exact_only: frozenset[str] = frozenset(), *, prefer_last: bool = False,
-) -> bool:
-    """Whether one option token takes the *next* token as its value, per `getopt`/`getopt_long` rules.
-
-    Exact membership in `flags` alone is not the question, because the same flag has more spellings
-    than the table lists and each one hides the command behind it from `_leading_command`'s walk:
-
-    - A cluster (`-nu`) is scanned left to right, because a value-taking short option ends the
-      cluster: whatever follows it in the same token *is* its value. So the next token is consumed
-      only when the first listed value-taking character is the cluster's last (`sudo -nu root`),
-      and never when something follows it (`stdbuf -o0`, `nice -n10` — attached values, one token).
-      A character the table does not list is a boolean as far as this walk is concerned and the scan
-      continues past it, which is the same "skip an unrecognised flag" the caller already does.
-    - `prefer_last` changes only that cluster scan, for the one kind of table where first-match-wins is
-      the wrong rule: `INTERPRETER_CODE_FLAGS["node"]` lists `-e` and `-p` as *interchangeable,
-      combinable* code carriers, so node parses `-pe CODE` as both flags active with CODE the next token
-      — not as `-p` with the attached value `e`. Stopping at the first match answered "attached value"
-      for `-pe` and `_code_argument` never looked at the real code, which allowed
-      `node -pe "process.env.ACLI_TOKEN"`. Scanning the whole cluster and asking whether the *last*
-      matching character is the token's last is right for both orderings, and inert for the wrapper
-      tables, where at most one listed character ever appears in a real cluster. It is off by default
-      because the opposite rule is the correct one for a table whose value-taking short options are not
-      interchangeable (`sudo`'s), where the rest of the token is the first match's own attached value.
-    - A long option is a match when it equals a listed flag or, per `getopt_long`, when it is a
-      prefix of one (`--us` for `--user`). An ambiguous prefix — one matching several listed flags —
-      still consumes: `getopt_long` refuses such a command outright, so nothing runs either way, and
-      under-consuming is the failure mode that already let real leaks through here. `--flag=value`
-      carries its value in the one token and consumes nothing further, and `exact_only` names the
-      value-less long options that must not be read as an abbreviation of a listed one.
-    - The bare `--` is excluded from that prefix rule by name. It is `getopt`'s universal
-      end-of-options marker, not an abbreviation of anything, but every long option starts with it, so
-      the prefix test matched any table with a single long flag in it and consumed the token after `--`
-      as its "value" — the over-consuming miss, on the one token guaranteed to be followed by the
-      command. `_leading_command`'s walk happens to test `== "--"` before asking, but `_env_reason`'s
-      does not, and there `env -- echo $ACLI_TOKEN` swallowed `echo`, left `$ACLI_TOKEN` as the
-      apparent command, and allowed the leak this hook's own docstring leads with. Fixed here, once,
-      rather than at each caller, since a matcher that is wrong about `--` is wrong for every table.
-    """
-    if tok in exact_only:
-        return False
-    if tok in flags:
-        return True
-    if tok.startswith("--"):
-        return tok != "--" and "=" not in tok and any(f.startswith(tok) for f in flags if f.startswith("--"))
-    last_match = -1
-    for position, char in enumerate(tok[1:], start=1):
-        if f"-{char}" in flags:
-            if not prefer_last:
-                return position == len(tok) - 1
-            last_match = position
-    return last_match == len(tok) - 1
-
-
-def _is_short_cluster(tok: str) -> bool:
-    """Whether `tok` could be a cluster of short options, which is what scopes `prefer_last` to it.
-
-    `prefer_last` is only ever the right rule for a token that really is a cluster of short options,
-    and `_consumes_next` cannot tell that on its own: its cluster scan reads any token's characters, so
-    the caller has to say. Applied unconditionally it regressed this file's headline interpreter deny.
-    `shlex` hands `python3 -c"<code>"` over as the single token `-c<code>`, and when that code happens
-    to end in a character the interpreter's table lists (`...; import gc` ends in `c`), scanning to the
-    *last* match answered "the value is the next token" — so `_code_argument` looked past the code it
-    was already holding, found no next token at all, and the command was allowed. Requiring every
-    character after the leading dash to be alphanumeric rejects that token, since real code carries
-    punctuation, while every legitimate cluster still passes.
-
-    That is a shape discriminator, not a heuristic, and it can lose no deny. For a token it rejects,
-    the cluster scan now falls through to `_code_argument`'s attached-short-option read, which is the
-    correct read for exactly that shape. For a token it accepts, behaviour is unchanged, and the read
-    that `prefer_last` costs there — the attached value `tok[position + 1:]` — is a substring of an
-    all-alphanumeric token and so is itself all-alphanumeric, which cannot be a leak: every
-    `_ENV_ACCESS` alternative needs a `.` and/or a `[`, and `_PRINT_CALL` needs a `(`. The self-test
-    asserts that property of both matchers rather than leaving it argued here, so adding an all-alnum
-    env-access or print idiom to either one fails loudly instead of quietly voiding this reasoning.
-
-    Deliberately no ceiling on the cluster's length: a bound would put an arbitrary cliff where a longer
-    but perfectly legitimate cluster (`python -uIsSBc CODE`) silently stopped being recognised, and the
-    all-alphanumeric argument closes the case without one. A `--`-prefixed token is not a cluster — its
-    second character is a dash — which is both correct and inert, since `_consumes_next` answers for
-    long options before its cluster scan ever runs.
-    """
-    return _SHORT_CLUSTER.fullmatch(tok) is not None
 
 
 def _segment_reason(segment: str) -> str | None:
@@ -785,52 +287,13 @@ def _segment_reason(segment: str) -> str | None:
     if leading is None:
         return None
     cmd, rest = leading
-    return _command_reason(cmd, rest, segment)
 
-
-def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
-    """The reason for one already-unwrapped command, split out so no call path here recurses.
-
-    `_env_reason` needs this dispatch for whatever an `env` layer wraps, and reaching it by calling
-    `_segment_reason` again made the `env` chain mutually recursive with no bound on its depth. A hook
-    that raises `RecursionError` writes nothing to stdout, and per Claude Code's `PreToolUse` contract
-    no output is no decision — so the guarded command ran. `_env_reason` unwinds its own chain
-    iteratively and lands here exactly once instead.
-
-    `export`'s print mode is mostly a *shape* test, not a list of flag spellings: it prints when it is
-    given no operand, whatever options precede that. Matching `[]` or `["-p"]` exactly missed `export --`,
-    `export -n`, `export -np` and `export -p -p`, each verified to print `declare -x NAME="VALUE"` for
-    every exported variable. An operand is exactly a token that `_is_option` says is not an option, since
-    every option this family takes is boolean — and `+p` is one of them, which is why that test is not
-    `startswith("-")`: `export +p` dumps the whole environment with values in zsh, verified live, and read
-    as an operand it made this shape test conclude the command had a name to print.
-
-    The one spelling that shape test alone still missed is `-p` *with* an operand, because "no operand"
-    is not the whole of print mode in every shell: zsh's `export -p ACLI_TOKEN` prints
-    `export ACLI_TOKEN=<value>` — verified live, as are `export -p -- ACLI_TOKEN` and
-    `export -p FOO ACLI_TOKEN` — while bash's own `-p` prints only when no operand follows. This hook
-    cannot know which shell runs the command (Claude Code's Bash tool runs zsh on this host), and denying
-    is the safe direction for either, so `-p` anywhere among the options forces print mode here with or
-    without an operand. It costs nothing on the allow side: `export FOO=bar` is not all-dash and neither
-    `-n` nor an assignment carries a `p`. `export -np ACLI_TOKEN` denies for the same one-rule reason even
-    though bash prints nothing for it and zsh rejects `-n` outright — an unrunnable or silent command
-    denied is the deny-leaning direction, not a leak missed.
-
-    `declare`/`typeset` are the same family under the names bash documents `export` *by* (`export` is
-    "equivalent to `declare -x`"), so they are handled in `_declare_reason` rather than left as a
-    missing spelling of a family this file claims to close.
-    """
     if cmd in {"env", "printenv"}:
         return _env_reason(cmd, rest)
     if cmd == "set":
         return "bare `set` dumps every shell variable's value" if not rest else None
-    if cmd == "export":
-        prints_named = any(_is_option(t) and _prints_variables(t) for t in rest)
-        prints_all = all(_is_option(t) for t in rest)  # true of `[]`, i.e. bare `export`, too
-        if prints_named or prints_all:
-            return "`export -p`, or `export` with no name or assignment, prints an exported variable's value"
-    if cmd in {"declare", "typeset"}:
-        return _declare_reason(cmd, rest)
+    if cmd == "export" and (not rest or rest == ["-p"]):
+        return "`export` with no assignment prints every exported variable's value"
     if cmd in PRINTING_COMMANDS:
         for match in _VAR_REF.finditer(segment):
             if _looks_like_secret_name(match.group(1)):
@@ -838,158 +301,35 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
     return None
 
 
-def _is_option(tok: str) -> bool:
-    """Whether one `export`/`declare`/`typeset` token is an option rather than a variable operand.
-
-    `+` as well as `-`, because that is the shell's own syntax for turning an attribute *off* (`+x` is the
-    exact mirror of `-x`), and every option in this family is boolean either way. Read as an operand
-    instead, a `+`-prefixed option made the family's "no operand at all means dump everything" rule
-    unreachable: `declare +p`, `typeset +p`, `typeset +m` and `export +p` each dump every variable with its
-    value — verified live, in bash or zsh or both — while this walk believed they had been handed a name.
-    """
-    return tok.startswith(("-", "+"))
-
-
-def _prints_variables(tok: str) -> bool:
-    """Whether one option token of that family puts it in a mode that prints variables.
-
-    A character test over the token's cluster, like `_prints_result`'s, since the letters combine freely
-    with attribute options (`-px`, `-xp`) and with the `+` spelling. `m` sits beside `p` because zsh's `-m`
-    is a printing mode too — it matches variables by pattern and prints each one — and `typeset -m NAME`,
-    `declare -m NAME` and `typeset +m` all leaked live in zsh while only `p` was tested for. The bare `--`
-    is not an option token in this sense: it ends option processing and names no mode.
-
-    `_PRINTING_OPTION_PAIRS` is the same question for letters that print only together (zsh's `-lu`), which
-    a per-letter test cannot answer in either direction without being wrong about one of the spellings.
-    """
-    if tok == "--":
-        return False
-    letters = set(tok[1:])
-    return bool(_PRINTING_OPTION_LETTERS & letters) or any(pair <= letters for pair in _PRINTING_OPTION_PAIRS)
-
-
-def _declare_reason(cmd: str, rest: list[str]) -> str | None:
-    """`declare`/`typeset` print modes, which are `export`'s own family under its documented synonym.
-
-    bash documents `export` as equivalent to `declare -x`, and both names accept the same print modes, so
-    leaving them out was a missing spelling inside a family this file already closes rather than new
-    scope. Each mode below was probed on this host with a sentinel value, in `bash -c` and `zsh -c`
-    separately, because the two shells do not agree and the spellings that print are not the ones the
-    family's `-x` name suggests:
-
-      no operand            `declare`, `typeset`, `declare -x`, `declare -p` dump every variable (bash
-                            prints `NAME=VALUE`, or `declare -x NAME="VALUE"` under `-x`; zsh prints
-                            `NAME=VALUE`) — the same leak as bare `env`/`set`, so it denies whatever the
-                            options are, exactly as bare `export` does.
-      `-p`/`-m` + operand   `declare -p NAME`, `typeset -p NAME`, `declare -px NAME`, `-xp` — all four
-                            print that variable's value in both shells. zsh's `-m` reads its operands as
-                            *patterns* and prints every variable matching them (`typeset -m NAME`,
-                            `declare -m NAME`, `typeset -m 'NAME*'`), which is the same print mode under a
-                            letter `p` alone did not cover.
-      a bare-name operand   `declare NAME` and `declare -- NAME` print `NAME=VALUE` in zsh, which is the
-                            shell Claude Code's Bash tool runs here; bash prints nothing for either.
-      prints nothing        an assignment operand behind no print option (`declare -a arr=(1 2 3)`,
-                            `declare -x NAME=x`), and a bare name behind any *other* attribute option
-                            (`-x`, `-i`, `-r`, `-g`, and the `+x` that removes one) — measured silent in
-                            both shells, so both stay allowed and are pinned as allow controls in the
-                            self-test. An assignment operand *with* a print option is not in this row:
-                            zsh prints for `typeset -p NAME=x` too.
-
-    An option is `_is_option`'s question rather than `startswith("-")`, because `+` toggles an attribute
-    off exactly as `-` toggles it on: `declare +p`, `typeset +p` and `typeset +m` were verified live to
-    dump every variable with its value, and reading `+p` as an *operand* meant the no-operand rule above
-    never fired for any of them.
-
-    Unlike `export`, a named print here is tested against `_looks_like_secret_name` rather than denied
-    outright, because the two commands print different amounts: bash's `export -p NAME` prints the whole
-    exported environment, while `declare -p NAME` prints only `NAME` in both shells. So this is
-    `printenv NAME`'s rule, not bare `export`'s, and `declare -p PATH` stays allowed for the same reason
-    `printenv PATH` does. Both rules already exist in this file; neither is new judgement.
-
-    A glob operand is the one place that name test does not fit, and it arrives only with `-m`, whose
-    operands are patterns: `typeset -m 'ACLI_*'` prints `ACLI_TOKEN`'s value while the pattern's own words
-    (`ACLI`, and nothing else) are not credential-shaped. A pattern that could match any name is therefore
-    read as naming a secret, which denies `typeset -m 'PA*'` too — a command that prints only `PATH`. That
-    is this file's standing direction to be wrong in, and it costs no literal name: without a glob
-    metacharacter an `-m` operand is just a name and reads as one. Not conditioned on `-m` being present,
-    because a glob operand outside it names no real variable in either shell, so there is no allow to lose.
-    """
-    options = [t for t in rest if _is_option(t)]
-    operands = [t for t in rest if not _is_option(t)]
-    if not operands:
-        return f"`{cmd}` with no name dumps every variable's value"
-    prints_named = any(_prints_variables(t) for t in options)
-    unflagged = all(t == "--" for t in options)  # zsh prints a bare name given no attribute option
-    if not (prints_named or unflagged):
-        return None
-    if prints_named:
-        # An assignment operand does not stop a print mode from printing: zsh's `typeset -p NAME=x` writes
-        # `NAME=<old value>` (verified with a sentinel; bash writes nothing for it), so the variable this
-        # assigns to is still named, and reading only the bare operands dropped every `-p NAME=x` spelling.
-        named = [t.split("=", 1)[0] for t in operands]
-    else:
-        named = [t for t in operands if "=" not in t]  # with no print option, an assignment only sets
-    secret_names = [n for n in named if _looks_like_secret_name(n) or _GLOB_CHARS & set(n)]
-    if secret_names:
-        return f"`{cmd} {' '.join(secret_names)}` prints a secret-shaped variable's value"
-    return None
-
-
 def _env_reason(cmd: str, rest: list[str]) -> str | None:
     """`env`/`printenv` reasons. `env` also runs a command with a modified environment
-    (`env FOO=bar somecmd`) — that usage is a wrapper, not a dump, so what it wraps is re-checked
-    rather than blanket-allowed: `env echo $VAR` and `env printenv VAR` deny for exactly the reasons
-    their unwrapped forms do, and a genuine wrapper use stays allowed because the wrapped command is.
-
-    `env`'s own value-taking flags (`_ENV_ARG_FLAGS`) have to be counted for the same reason a
-    wrapper's do, and for the same reason as there, exact membership in that table is not the test:
-    `env --uns ACLI_SITE` is the `getopt_long` prefix abbreviation of `--unset` and `env -vu ACLI_SITE`
-    clusters the boolean `-v` ahead of the value-taking `-u` — both verified to run. Testing membership
-    saw neither, landed the walk on `ACLI_SITE`, read it as the command `env` runs, and allowed a
-    command that still dumps the whole environment. So the arity decision is `_consumes_next`, shared
-    with `_leading_command`, which recognises both spellings.
-
-    The chain unwinds in this loop rather than through `_segment_reason` again: `env env env … cmd` is
-    legal, and recursing per layer put an unbounded stack depth behind an attacker-chosen token count
-    in a hook whose crash is read as no decision at all. It unwinds over *tokens* (`_leading_of`) rather
-    than re-joining them into text for `_leading_command` to lex again, which is a latency bound now that
-    the lexer is `shlex`: see `_leading_of`. The one join left feeds `_command_reason`'s `_VAR_REF` scan
-    and happens once, on the layer that terminates the chain.
-    """
-    while True:
-        names: list[str] = []
-        wrapped: list[str] | None = None
-        i = 0
-        while i < len(rest):
-            tok = rest[i]
-            skipped = _skip_assignment_prefix(rest, i)
-            if skipped != i:
-                i = skipped
+    (`env FOO=bar somecmd`) — that usage is a wrapper, not a dump, so what it wraps is re-checked as a
+    segment of its own rather than blanket-allowed: `env echo $VAR` and `env printenv VAR` deny for
+    exactly the reasons their unwrapped forms do, and a genuine wrapper use stays allowed because the
+    wrapped command is allowed. A few `env` flags (`-u`/`-C`/`-S` and long forms) consume the *next*
+    token as their own argument rather than naming the command to run — `env -u ACLI_SITE` alone still
+    dumps the environment."""
+    names: list[str] = []
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok):
+            i += 1
+            continue
+        if cmd == "env":
+            bare = tok.split("=", 1)[0]
+            if bare in _ENV_ARG_FLAGS:
+                i += 1 if "=" in tok else 2
                 continue
-            if cmd == "env":
-                bare = tok.split("=", 1)[0]
-                if _consumes_next(bare, _ENV_ARG_FLAGS):
-                    i += 1 if "=" in tok else 2
-                    continue
-                if tok.startswith("-"):
-                    i += 1
-                    continue
-                wrapped = rest[i:]  # the command env runs — check it, don't excuse it
-                break
             if tok.startswith("-"):
                 i += 1
                 continue
-            names.append(tok)
+            return _segment_reason(" ".join(rest[i:]))  # the command env runs — check it, don't excuse it
+        if tok.startswith("-"):
             i += 1
-        if wrapped is None:
-            break
-        leading = _leading_of(wrapped)
-        if leading is None:
-            return None
-        cmd, rest = leading
-        if cmd in {"env", "printenv"}:
-            continue  # another env layer: keep unwinding here instead of recursing
-        return _command_reason(cmd, rest, " ".join(wrapped))
+            continue
+        names.append(tok)
+        i += 1
     if cmd == "env":
         return "bare `env` dumps every environment variable's value"
     if not names:
@@ -1000,155 +340,32 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
     return None
 
 
-def _interpreter_reason(tokens: list[str]) -> str | None:
+def _interpreter_reason(command: str) -> str | None:
     """`python -c "...print(os.environ['TOKEN'])..."` (or node/ruby/perl `-e`) is the same leak
     as `echo $TOKEN` in a different idiom, and it survives the `;&|` segment split used elsewhere
     because the code argument is itself one shell-quoted token that legitimately contains those
-    characters — so this reads the *whole* command's tokens, which keep a quoted argument intact
-    regardless of what punctuation it contains.
-
-    Those tokens arrive from `decision()`'s single `_tokens` call rather than being lexed here, which is
-    what closed this function's own fail-open: `except ValueError: return None` allowed the whole family
-    whenever a trailing `# it's fine` comment left the command unlexable — verified live — and taking
-    the tokens as an argument puts that refusal in the one place that can answer it, ahead of every
-    matcher, instead of leaving an allow behind a bare `except`.
-
-    Which token is the code flag is `_consumes_next`'s decision, the same arity matcher
-    `_leading_command` and `_env_reason` already use, because a shell accepts more spellings of a code
-    flag than a table lists and exact membership saw none of them: `python -uc CODE` clusters the
-    boolean `-u` ahead of the value-taking `-c`, `python -Ic CODE` and `-Sc`/`-Bc` do the same, and
-    `node --eval=CODE` attaches its value in the one token. All were verified to run on this host and
-    all were allowed. This was the last exact-membership arity site in this file.
-
-    Where the code lives depends on the spelling, so `_code_argument` reads it rather than assuming
-    `tokens[j + 1]` — that assumption also needed the loop to stop one token early, which is why an
-    attached-value flag in final position could not even be reached.
-
-    Whether the result gets printed is asked of the invocation (`_prints_result` over every token), not of
-    the flag that carried the code. node auto-prints when `-p`/`--print` is anywhere in its own argv, so
-    asking the carrying flag allowed `node --print --eval CODE`: `--eval` is not a printing flag and the
-    code holds no `console.log`, and the check concluded nothing was printed with `--print` sitting in the
-    same command.
-
-    One pass, not the nested one this used to be: whether a token carries leaking code depends on the
-    token and on the *flag set* it is read against, never on which particular earlier token named that
-    interpreter, so it is enough to remember which interpreters have been seen so far — at most the five
-    entries in `INTERPRETER_CODE_FLAGS` — and ask each token once per set. Re-deciding it for every
-    (interpreter, later token) pair was the quadratic term measured at ~38s for 50000 `python` tokens,
-    and `_code_argument`'s heavier work per pair would have made that ~38x worse still at the ceiling.
-    The deny set is unchanged: a pair denies exactly when the flag's interpreter appeared before it."""
-    # One linear pass, not one per (interpreter, token) pair: whether this invocation auto-prints is a
-    # property of the token list. Accepted imprecision, in the deny-leaning direction a security hook
-    # wants: the scan is the whole command's tokens, not just the interpreter's own argv, so a `-p`-shaped
-    # token belonging to something else in a compound command can deny an otherwise-non-printing `-c`/`-e`
-    # one-liner that names a secret variable. A false deny of a command that reads a secret without
-    # printing it is the side to be wrong on.
-    has_print_flag = any(_prints_result(t) for t in tokens)
-    seen: dict[str, str] = {}
-    for j, tok in enumerate(tokens):
+    characters — so this parses the whole command with `shlex` instead, which keeps a quoted
+    argument intact regardless of what punctuation it contains."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None  # unbalanced quoting: not this hook's problem to parse
+    for i, tok in enumerate(tokens):
         base = tok.lstrip("\\").rsplit("/", 1)[-1]
-        for key, spelled_as in seen.items():
-            carried = _code_argument(tokens, j, INTERPRETER_CODE_FLAGS[key])
-            if carried is None:
+        if base not in INTERPRETERS:
+            continue
+        for j in range(i + 1, len(tokens) - 1):
+            if tokens[j] not in CODE_FLAGS:
                 continue
-            flag, code = carried
-            if not has_print_flag and not _PRINT_CALL.search(code):
+            code = tokens[j + 1]
+            if not _PRINT_CALL.search(code):
                 continue
             match = _ENV_ACCESS.search(code)
             if not match:
                 continue
             name = next(g for g in match.groups() if g)
             if _looks_like_secret_name(name):
-                return f"`{spelled_as} {flag}` prints ${{{name}}} via an env-access-plus-print one-liner"
-        key = _interpreter_key(base)
-        if key is not None:
-            seen.setdefault(key, base)
-    return None
-
-
-def _interpreter_key(base: str) -> str | None:
-    """The `INTERPRETER_CODE_FLAGS` entry a command basename resolves to, or None if it resolves to none.
-
-    A versioned python basename resolves to python's own entry, so `python3.13`/`python2.7` are the same
-    interpreter to this hook as the exact names are.
-    """
-    if base in INTERPRETER_CODE_FLAGS:
-        return base
-    return "python" if _PYTHON_BASENAME.fullmatch(base) else None
-
-
-def _prints_result(tok: str) -> bool:
-    """Whether this token, on its own, asks an interpreter to auto-print the result of its code.
-
-    node's `-p`/`--print` prints that result with no `console.log` in the code at all, and it arrives
-    standalone, clustered with `-e` (`-pe`, verified to run), or as its own long token beside a separately
-    spelled `--eval` — so whether *this invocation* auto-prints is a property of the whole token list, not
-    of whichever flag happened to carry the code. Asking only the carrying flag allowed
-    `node --print --eval "process.env.ACLI_TOKEN"`, where `--eval` carries the code and is not itself a
-    printing flag.
-
-    A plain character test rather than `_consumes_next`, because the question here is whether `p` appears
-    in this token's own cluster, not whether the token consumes a separate value — different questions for
-    a flag that is only sometimes the one carrying the code.
-
-    The long spelling is tested on its `=`-split head rather than for equality with `--print`, because
-    `--print` also takes an attached value and every such spelling reported "does not auto-print" while
-    the invocation printed. The value is not worth parsing: `--print=0` and `--print=false` auto-print
-    exactly as `--print=1` does (all verified live on node 24), because node reads an attached value as
-    present-and-therefore-on. `--eval` alone prints nothing, which is the control that keeps this test
-    from collapsing into "any long option with a value".
-    """
-    if not tok.startswith("-"):
-        return False
-    if tok.startswith("--"):
-        return tok.split("=", 1)[0] == "--print"
-    return "p" in tok[1:]
-
-
-def _code_argument(tokens: list[str], j: int, flags: frozenset[str]) -> tuple[str, str] | None:
-    """One option token's flag and the code it carries, or None when it carries no code.
-
-    Three shapes, and `_consumes_next` alone answers only the first: separated (`-c CODE`, `-uc CODE`,
-    `--eval CODE`), attached to a long option (`--eval=CODE`, one token by construction — the same case
-    `_env_reason` splits on `=` before asking), and attached to a short option (`-cCODE`, `-ucCODE`,
-    which `_consumes_next` reports as consuming nothing because the value is in the token already —
-    true for its callers, where only the arity matters, and not enough here, where the value is the
-    thing being scanned). Bounds-checked rather than assumed: a separated flag can be the last token,
-    which carries no code at all.
-
-    The flag is returned apart from the code because the caller names it in a deny reason, and for the
-    two attached shapes the flag and the code share a token: reporting that whole token would put
-    arbitrary code into the deny reason, which is transcript history and is exactly what this hook
-    exists to keep a value out of.
-
-    Only an option-shaped token is asked about, which is `_consumes_next`'s own unstated precondition —
-    its cluster scan reads any token's characters, so `foo.c` "clusters" a `-c` at its end and answered
-    yes for a filename.
-
-    The arity question goes to `_consumes_next` with `prefer_last` on, but only for a token that is
-    actually cluster-shaped (`_is_short_cluster`), which is the whole of that rule's scope. It is needed
-    because a code-flag table lists interchangeable carriers: node runs `-pe CODE` as `-p` and `-e` both
-    active with CODE the next token, and first-match-wins read that as `-p` with the attached value `e`
-    and never examined the real code. It must be scoped because an attached spelling arrives as one token
-    whose tail is the code, and a code string ending in a listed flag character made an unscoped scan
-    report "the value is the next token" — past the code, onto a token that need not even exist. Both
-    halves are pinned in the self-test, since the two spellings of that same miss were found one at a
-    time, in opposite directions. The attached-short-option fallback below stays first-match-wins, which
-    is the correct rule for the shape it is for (`-cCODE`, where the rest of the token really is the
-    value).
-    """
-    tok = tokens[j]
-    if not tok.startswith("-"):
-        return None
-    head, separator, attached = tok.partition("=")
-    if separator and _consumes_next(head, flags, prefer_last=_is_short_cluster(head)):
-        return head, attached
-    if _consumes_next(tok, flags, prefer_last=_is_short_cluster(tok)):
-        return (tok, tokens[j + 1]) if j + 1 < len(tokens) else None
-    if not tok.startswith("--"):
-        for position, char in enumerate(tok[1:], start=1):
-            if f"-{char}" in flags:
-                return (tok[:position + 1], tok[position + 1:]) if position + 1 < len(tok) else None
+                return f"`{base} {tokens[j]}` prints ${{{name}}} via an env-access-plus-print one-liner"
     return None
 
 
@@ -1198,314 +415,6 @@ def _looks_like_secret_name(name: str) -> bool:
     return _base_looks_like_secret_name(name, extra=_extra_words())
 
 
-_GENERATED_LEAKS = ("echo $ACLI_TOKEN", "printenv ACLI_TOKEN", "env")
-"""The leaks a generated wrapper/`env` spelling is put in front of: one per anti-pattern this hook denies.
-
-Three rather than one, because a spelling that lands the walk on the wrong token hides whatever is behind
-it, and which of these three commands is behind it decides *which* matcher would have fired. `env` is here
-as the wrapped command (`env -u VAL env`), not as a bare trailing option list, so every generated command
-is one a real `env` actually runs."""
-_GENERATED_HARMLESS = ("ls", "git status")
-"""The allow side of the same spellings. A generator that only asserted denies would pass against a hook
-that denied everything, which is a failure mode this file has come close to more than once (the `--`
-prefix bug denied `env -- ls`), so every spelling is generated twice."""
-_GENERATED_VALUE = "VAL"
-"""The flag value a generated spelling carries: an ordinary token, deliberately not option-shaped.
-
-That is the shape that makes an arity miss reachable — `_leading_command`'s own docstring: under-consuming
-survives only where the wrongly-treated token is itself flag-shaped, because then the flag loop keeps
-walking. `VAL` also carries no character that any table below lists as a short option, so the cluster scan
-cannot accidentally read the value as more flags."""
-_GENERATED_BOOLEAN_POOL = "vnfibqwz"
-"""Preference order for the leading character of a generated short-option cluster (`-vu VAL`).
-
-The character only has to be one the table under test does not list, because that is exactly the class of
-character `_consumes_next`'s cluster scan must walk past ("a character the table does not list is a boolean
-as far as this walk is concerned"). It is a preference order rather than a per-tool list of real booleans so
-that no hand-curated table is introduced here; the order simply puts letters first that really are boolean
-options of several of these tools (`sudo -v`, `env -v`, `python -v`, `timeout -v`, `time -v`), so most
-generated clusters are literally runnable. Where a particular build rejects one, an unrunnable command
-denied is the deny-leaning direction this module already accepts elsewhere (`export -np`)."""
-_GENERATED_CODE_BASES: dict[str, dict[str, str]] = {
-    "python": {
-        "leak_print": "import os; print(os.environ['ACLI_TOKEN'])",
-        "leak_silent": "import os; os.environ['ACLI_TOKEN']",
-        "harmless": "print(1)",
-    },
-    "node": {
-        "leak_print": "console.log(process.env.ACLI_TOKEN)",
-        "leak_silent": "process.env.ACLI_TOKEN",
-        "harmless": "console.log(1)",
-    },
-}
-"""The three code payloads a generated interpreter spelling carries, per `_ENV_ACCESS`-recognised language.
-
-`leak_silent` reads the environment without printing it, which is the control that keeps the generated deny
-side from collapsing into "any one-liner naming a secret": node's `-e`/`--eval` alone evaluates without
-printing (verified), so it legitimately allows, and denies only once the invocation asks for auto-print.
-
-python and node only, because `_ENV_ACCESS` recognises python's `os.environ`/`os.getenv` and node's
-`process.env` and nothing else. perl's `$ENV{X}` and ruby's `ENV['X']` are a recorded, still-open gap in
-that matcher — see the `_code_argument` assertions in `_self_test`, which pin perl's and ruby's *arity* for
-when it is closed — so generating a DENY for them would fail at every commit including this one. Excluded
-deliberately, not forgotten."""
-_GENERATED_CODE_SUFFIXES: dict[str, tuple[str, ...]] = {
-    "python": ("  # {ch}", "; import g{ch}"),
-    "node": (" // {ch}", "; typeof {ch}"),
-}
-"""Trailing payload variants whose last character is a character the interpreter's own flag table lists.
-
-This is the half of generation that a flag-spelling matrix alone does not reach, and the reason it is here
-is a measured regression: `python3 -c"<code>"` arrives from `shlex.split` as the single token `-c<code>`, so
-when `<code>` ends in a listed flag character (`...; import gc` ends in `c`) an unscoped `prefer_last` cluster
-scan answered "the value is the next token", `_code_argument` looked past the code it was already holding,
-found no next token, and the plainest interpreter leak there is was ALLOWED. The ordinary attached spelling
-denied correctly throughout, so a generator that varied only the spelling would have shipped that
-regression exactly as the hand-curated deny list did. One comment form and one statement form per listed
-character, so the collision is reached both with and without the code being syntactically complete."""
-
-
-def _generated_spelling_cases() -> list[tuple[str, bool]]:
-    """`(command, expect_deny)` pairs generated from this module's own tables, in place of a curated list.
-
-    Every option-token classifier here has been found incomplete one spelling at a time, over seven review
-    rounds, and round 6's own fix shipped a regression its hand-curated self-test did not catch — because
-    the author who missed a spelling in the matcher is the same author who then wrote the case list. Hand
-    curation cannot cover its author's blind spot. Generating the spellings from the tables the matchers
-    read can: adding a flag to `_WRAPPER_ARG_FLAGS`, `_ENV_ARG_FLAGS` or `INTERPRETER_CODE_FLAGS`
-    immediately produces every spelling a shell accepts for it, on both the allow and the deny side, with
-    no list to remember to update.
-
-    Three families, each generated against the table that drives it:
-
-    - `WRAPPERS`/`_WRAPPER_ARG_FLAGS`: separated, attached-short, cluster-ending-in-the-value-taking-flag,
-      long separated, long `=`-attached, and a `getopt_long` prefix abbreviation, times a leaking command
-      behind it and a harmless one. `_WRAPPER_POSITIONALS` is honoured (`timeout`'s DURATION) and
-      `_WRAPPER_EXACT_ONLY_FLAGS` is generated as its own *rule*: a value-less long option leaves the next
-      token as the command, so `sudo --login VAL echo $ACLI_TOKEN` legitimately ALLOWS (the leak is behind
-      `VAL`, which runs nothing) while `sudo --login echo $ACLI_TOKEN` denies.
-    - `_ENV_ARG_FLAGS`: the same matrix, minus `-S`/`--split-string`, whose value is itself a command
-      string — the nested-indirection gap this module documents as out of scope by design.
-    - `INTERPRETER_CODE_FLAGS`: the same matrix for python and node, crossed with the payload variants in
-      `_GENERATED_CODE_SUFFIXES`, which is what makes this generator a regression detector rather than a
-      restatement of the deny list — see `_test_generated_option_spellings_deny_whenever_the_tool_prints`
-      for the two historical commits this list is shown to fail against.
-
-    1149 cases at the time of writing (667 deny, 482 allow); the self-test asserts a floor rather than an
-    exact number, so widening a table is a pass and emptying the generator is a loud failure. The floors are
-    asserted per family, not only in aggregate — see `_generated_case_families`.
-
-    Module-level and importable on purpose, so a probe can import the case list from one version of this
-    file and drive another version's hook as a subprocess, which is how that cross-commit check runs."""
-    return [case for cases in _generated_case_families().values() for case in cases]
-
-
-def _generated_case_families() -> dict[str, list[tuple[str, bool]]]:
-    """The generated cases keyed by which table produced them, so each family can be counted on its own.
-
-    An aggregate floor cannot see a missing family. `_generated_interpreter_cases` skips a language whose
-    idioms `_ENV_ACCESS` does not know by `continue`-ing past it, and that same skip has already swallowed a
-    whole language's matrix once (python3's, silently — see the comment there); the interpreter family is
-    also the only one carrying the payload-suffix collision this generator exists to detect, and it is the
-    smallest of the three. So with `len(cases) > 900` and friends asserted over the total, the wrapper and
-    `env` families alone satisfied every floor and the freeze precondition was satisfiable with zero
-    interpreter coverage. Split here rather than counted in the test, so there is one source of truth for
-    what the families are and `_generated_spelling_cases` cannot drift from what gets floored."""
-    return {
-        "wrapper": _generated_wrapper_cases(),
-        "env": _generated_env_cases(),
-        "interpreter": _generated_interpreter_cases(),
-    }
-
-
-def _generated_cluster_prefix(flags: frozenset[str]) -> str | None:
-    """A character to lead a generated short-option cluster with: the first pool letter this table omits."""
-    return next((ch for ch in _GENERATED_BOOLEAN_POOL if f"-{ch}" not in flags), None)
-
-
-def _generated_abbreviation(flag: str, longs: frozenset[str], exact_only: frozenset[str]) -> str | None:
-    """The shortest `getopt_long` prefix abbreviation of `flag` unambiguous within this module's own tables.
-
-    Unambiguous against `longs` and never a prefix of an `exact_only` flag, because both of those are what a
-    real `getopt_long` refuses outright: `sudo --clas` is ambiguous and `sudo --log` matches the value-less
-    `--login` too, so neither command runs and neither is a spelling to assert anything about. This is the
-    same rule `_WRAPPER_EXACT_ONLY_FLAGS` exists for, applied from the generator's side.
-
-    `longs` is the value-taking subset this module models plus `exact_only`, not the tool's real full option
-    set, which the hook has no listing of — so an abbreviation generated here can still be ambiguous to the
-    real tool (`sudo --a`/`--h`/`--p`/`--r` each match several of sudo's own options). That direction is
-    harmless: such a command is one a real `getopt_long` refuses, so nothing runs, and asserting a deny for
-    a command that cannot run is the deny-leaning imprecision `_GENERATED_BOOLEAN_POOL` already documents.
-    The direction that would matter — abbreviating so *little* that a real tool reads the value as something
-    else — is what the `exact_only` check closes."""
-    for size in range(3, len(flag)):
-        prefix = flag[:size]
-        if any(f.startswith(prefix) for f in exact_only):
-            continue
-        if sum(1 for f in longs if f.startswith(prefix)) == 1:
-            return prefix
-    return None
-
-
-def _generated_flag_spellings(flag: str, flags: frozenset[str], exact_only: frozenset[str]) -> list[str]:
-    """Every spelling a shell accepts for one value-taking `flag` plus `_GENERATED_VALUE`.
-
-    Short: separated, attached, and clustered behind a boolean — the three the walk must count as one
-    consumed value, one consumed token, and one consumed value respectively. Long: separated, `=`-attached
-    (which consumes nothing further), and a prefix abbreviation."""
-    if flag.startswith("--"):
-        longs = frozenset(f for f in flags if f.startswith("--"))
-        abbreviated = _generated_abbreviation(flag, longs, exact_only)
-        spellings = [f"{flag} {_GENERATED_VALUE}", f"{flag}={_GENERATED_VALUE}"]
-        return spellings + ([f"{abbreviated} {_GENERATED_VALUE}"] if abbreviated else [])
-    spellings = [f"{flag} {_GENERATED_VALUE}", f"{flag}{_GENERATED_VALUE}"]
-    boolean = _generated_cluster_prefix(flags)
-    return spellings + ([f"-{boolean}{flag[1]} {_GENERATED_VALUE}"] if boolean else [])
-
-
-def _generated_option_prefixes(
-    carried: frozenset[str], table: frozenset[str], exact_only: frozenset[str] = frozenset(),
-) -> list[str]:
-    """Every generated option run for one table, including the empty one: the bare command takes cases too.
-
-    `carried` is the flags to spell out and `table` the whole option set they are spelled *against*, which
-    are the same thing for a wrapper and not for `env`, where `-S`/`--split-string` is excluded from the
-    former but still decides what a cluster or an abbreviation is ambiguous with in the latter."""
-    prefixes = [""]
-    for flag in sorted(carried):
-        prefixes.extend(_generated_flag_spellings(flag, table, exact_only))
-    return prefixes
-
-
-def _generated_wrapper_cases() -> list[tuple[str, bool]]:
-    """`WRAPPERS` × its own flag spellings × a leaking and a harmless command behind them."""
-    cases: list[tuple[str, bool]] = []
-    for wrapper in sorted(WRAPPERS):
-        flags = _WRAPPER_ARG_FLAGS[wrapper]
-        exact_only = _WRAPPER_EXACT_ONLY_FLAGS.get(wrapper, frozenset())
-        positional = " ".join(["5"] * _WRAPPER_POSITIONALS.get(wrapper, 0))  # timeout's DURATION
-        for prefix in _generated_option_prefixes(flags, flags, exact_only):
-            head = " ".join(part for part in (wrapper, prefix, positional) if part)
-            cases += [(f"{head} {leak}", True) for leak in _GENERATED_LEAKS]
-            cases += [(f"{head} {ok}", False) for ok in _GENERATED_HARMLESS]
-        # A value-less long option consumes no value, so the token after it *is* the command: the leak
-        # behind `sudo --login VAL echo $ACLI_TOKEN` never runs, and asserting a deny for it would pin the
-        # very over-consuming miss `_WRAPPER_EXACT_ONLY_FLAGS` exists to prevent. Without the value it is
-        # an ordinary deny, so both directions are generated from the one table.
-        for flag in sorted(exact_only):
-            head = " ".join(part for part in (wrapper, flag, positional) if part)
-            cases += [(f"{head} {leak}", True) for leak in _GENERATED_LEAKS]
-            cases += [(f"{head} {_GENERATED_VALUE} {leak}", False) for leak in _GENERATED_LEAKS]
-    return cases
-
-
-def _generated_env_cases() -> list[tuple[str, bool]]:
-    """`_ENV_ARG_FLAGS` × the same spelling matrix × the same commands behind it.
-
-    `-S`/`--split-string` is excluded: its value is itself a whole command string, which is the nested
-    indirection this module's own docstring puts out of scope by design and `_ENV_ARG_FLAGS` records rather
-    than closes. Its arity is still counted by the walk, and the walk never lands on a token of it, so there
-    is no spelling here to assert a deny for. Ambiguity and clustering are still computed against the full
-    table, since that is what a real `env` parses against."""
-    carried = frozenset(f for f in _ENV_ARG_FLAGS if f not in {"-S", "--split-string"})
-    cases: list[tuple[str, bool]] = []
-    for prefix in _generated_option_prefixes(carried, _ENV_ARG_FLAGS):
-        head = " ".join(part for part in ("env", prefix) if part)
-        cases += [(f"{head} {leak}", True) for leak in _GENERATED_LEAKS]
-        cases += [(f"{head} {ok}", False) for ok in _GENERATED_HARMLESS]
-    return cases
-
-
-def _generated_code_spellings(name: str, flags: frozenset[str]) -> list[tuple[str, bool, bool]]:
-    """Every spelling that hands `{code}` to one interpreter, with whether it auto-prints and where the code
-    lands.
-
-    The second element is whether the invocation asks the interpreter to print its result, which for node is
-    the difference between a deny and a legitimate allow. It is read off the flag tokens with
-    `_prints_result` — the only matcher this generator consults, and one the curated table in `_self_test`
-    pins spelling by spelling — never off the arity walk, which is the part every round of review has found
-    broken. It also decides which long options carry code at all: an auto-print flag's attached value is a
-    boolean to node rather than a payload, so `--print="<code>"` is not generated as a spelling of anything
-    (see below), while `--print` separated from its code is.
-
-    The third element is whether the code shares a token with the flag (`-e<code>`). That shape is where an
-    attached payload's own characters are read as more flags, which is deliberate and deny-leaning in
-    `_interpreter_reason` ("a `-p`-shaped token belonging to something else … can deny an otherwise
-    non-printing one-liner"), so the caller keeps its non-printing payloads out of it rather than asserting
-    an allow the module intentionally does not give."""
-    shorts = sorted(f for f in flags if not f.startswith("--"))
-    longs = sorted(f for f in flags if f.startswith("--"))
-    spellings: list[tuple[str, bool, bool]] = []
-    boolean = _generated_cluster_prefix(flags)
-    for flag in shorts:
-        spellings.append((f'{name} {flag} "{{code}}"', _prints_result(flag), False))
-        spellings.append((f'{name} {flag}"{{code}}"', _prints_result(flag), True))
-        if boolean:
-            cluster = f"-{boolean}{flag[1]}"
-            spellings.append((f'{name} {cluster} "{{code}}"', _prints_result(cluster), False))
-    for flag in longs:
-        spellings.append((f'{name} {flag} "{{code}}"', _prints_result(flag), False))
-        # Only for a long option that really carries a value. An auto-print flag's *attached* value is not
-        # code to node: it reads any value there as present-and-therefore-on (which is why
-        # `_prints_result` does not parse it), so `node --print="<code>"` prints the literal `undefined`
-        # and never evaluates the payload at all — measured on node v24.11.1. Generating a deny for it
-        # pinned a leak that does not happen, and inflated this generator's own detection counts with a
-        # case that carries nothing. The separated `--print "<code>"` spelling above is the real one, and
-        # `--print=<value> --eval "<code>"` below is how an attached value legitimately reaches a deny.
-        if not _prints_result(flag):
-            spellings.append((f'{name} {flag}="{{code}}"', False, False))
-    # A table that lists several *interchangeable* code carriers accepts a cluster of them, and the print
-    # flag leads it: node runs `-pe CODE` as both flags with CODE the next token and rejects the reverse
-    # `-ep` outright, so the ordering is generated from which carrier prints rather than from both orders.
-    # The same two flags spelled apart, and with `--print`'s own attached value, are the spellings that
-    # made auto-print a property of the invocation instead of the carrying flag.
-    for printer in (f for f in shorts if _prints_result(f)):
-        for carrier in (f for f in shorts if not _prints_result(f)):
-            spellings.append((f'{name} -{printer[1]}{carrier[1]} "{{code}}"', True, False))
-    for printer in (f for f in longs if _prints_result(f)):
-        for carrier in (f for f in longs if not _prints_result(f)):
-            spellings.append((f'{name} {printer} {carrier} "{{code}}"', True, False))
-            # node reads any attached value as present-and-therefore-on, so the value is not parsed and a
-            # falsy one prints exactly as `1` does (verified live).
-            for value in ("1", "false"):
-                spellings.append((f'{name} {printer}={value} {carrier} "{{code}}"', True, False))
-    return spellings
-
-
-def _generated_interpreter_cases() -> list[tuple[str, bool]]:
-    """`INTERPRETER_CODE_FLAGS` × every code spelling × every payload variant, for python and node.
-
-    The expectation is a rule, not a list: a case denies exactly when the payload reads a secret-shaped
-    variable *and* something prints it — a print call in the code, or an auto-print flag anywhere in the
-    invocation. That is what each real interpreter does, and it is why `node -e "process.env.ACLI_TOKEN"`
-    is generated as an ALLOW while `node -p` on the same payload is a DENY."""
-    cases: list[tuple[str, bool]] = []
-    for name, flags in sorted(INTERPRETER_CODE_FLAGS.items()):
-        # Which *language* an entry's payloads come from, resolved through `_PYTHON_BASENAME` rather than
-        # `_interpreter_key`: that returns the table's own key, so `python3` — a separate entry, and the
-        # spelling this module's headline regression was measured in — resolved to `"python3"` and its whole
-        # matrix was skipped without a word. Found by dumping the generated list, not by reading it.
-        key = "python" if _PYTHON_BASENAME.fullmatch(name) else name
-        if key not in _GENERATED_CODE_BASES:
-            continue  # perl/ruby: `_ENV_ACCESS` knows neither idiom — see `_GENERATED_CODE_BASES`
-        characters = sorted(flag[1] for flag in flags if len(flag) == 2)
-        payloads: list[tuple[str, str]] = []
-        for kind, base in sorted(_GENERATED_CODE_BASES[key].items()):
-            payloads.append((kind, base))
-            payloads += [
-                (kind, base + suffix.format(ch=ch))
-                for suffix in _GENERATED_CODE_SUFFIXES[key]
-                for ch in characters
-            ]
-        for template, auto_prints, code_shares_the_flag_token in _generated_code_spellings(name, flags):
-            for kind, code in payloads:
-                if kind == "leak_silent" and code_shares_the_flag_token:
-                    continue  # deliberately deny-leaning there — see `_generated_code_spellings`
-                prints = kind == "leak_print" or auto_prints
-                cases.append((template.format(code=code), kind.startswith("leak") and prints))
-    return cases
-
-
 def _self_test() -> None:
     # Pinned rather than live: a consuming repo's real redaction.extra_words could overlap one of
     # the allow-cases below (e.g. a repo adding "SITE" or "HOME"), turning this self-test flaky
@@ -1517,31 +426,15 @@ def _self_test() -> None:
     allow = [
         "git status", "ls -la", "pytest -q",
         "set -euo pipefail", "set -x", "set -- a b c",
-        # An operand — an assignment or a bare name — is what makes `export` not print mode. Both
-        # spellings print nothing at all, verified in bash and zsh.
-        "export FOO=bar", "export PATH=$PATH:/usr/local/bin", "export FOO", "export -n FOO",
+        "export FOO=bar", "export PATH=$PATH:/usr/local/bin",
         "env FOO=bar python script.py", "env -i FOO=bar somecmd",
         "env -u ACLI_SITE python script.py", "env --unset=ACLI_SITE somecmd",
         "env FOO=bar echo hello", "sudo env FOO=bar python script.py",
         "printenv PATH", "printenv HOME SHELL",
         "timeout 5 ls", "timeout --signal SIGKILL 5 ls", "timeout -k 1 5 pytest -q",
         "nice -n 10 git status", "ionice -c 3 pytest -q",
-        # ionice's other two value-taking selectors, per its synopsis: -p PID / -P PGRP / -u UID.
-        "ionice -u 1000 ls", "ionice -P 500 ls", "ionice --uid 1000 ls",
-        # env's own value-taking flags in both implementations' spellings, wrapping a harmless command.
-        "env -a login /bin/sh -c true", "env --argv0=login /bin/sh -c true",
-        "env -P /usr/bin ls", "env -vu ACLI_SITE ls", "env --uns ACLI_SITE ls",
-        # `--` ends env's options and names no value, so what follows it is the command env runs, not a
-        # flag value: reading it as one dumped the remaining tokens and denied this harmless wrapper.
-        "env -- ls", "env -u ACLI_SITE -- ls",
         "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
-        "sudo -h ls", "sudo --host somehost ls",
-        "sudo -T 5 ls", "sudo -R /some/root ls", "time -o /tmp/x pytest -q", "time -f %e ls",
         "sudo timeout 5 git status", "nohup python script.py",
-        # Clustered and abbreviated spellings of the same wrapper flags, on the allow side: the arity
-        # matcher must not over-consume its way past a harmless command either.
-        "sudo -nu root ls", "sudo --us root ls", "sudo --login ls",
-        "timeout -fs KILL 5 ls", "time -ao /tmp/x pytest -q", "nice -n10 git status",
         "echo hello", "echo $HOME", 'echo "path is $PATH"',
         '[ -n "$ACLI_TOKEN" ]', "[ -z \"$GITHUB_TOKEN\" ] && echo missing",
         'python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN',
@@ -1549,95 +442,19 @@ def _self_test() -> None:
         "python script.py --flag value",
         '''python -c "import requests; requests.get(u, headers={'Authorization': os.environ['ACLI_TOKEN']})"''',
         '''node -e "console.log(42)"''',
-        # The clustered, attached and versioned interpreter spellings on the allow side: reading the code
-        # argument out of a spelling the table did not list must not deny a one-liner that leaks nothing.
-        '''python -uc "print(1)"''', '''python3 -Ic "print(1)"''', '''python3.13 -c "print(1)"''',
-        '''python -c"print(1)"''', '''node --eval="console.log(42)"''', '''node -p "1 + 1"''',
-        # `node -e`/`--eval` alone evaluates without printing — verified: `node -e "process.env.FOO"`
-        # writes nothing — so a one-liner that reads a secret and neither prints it nor asks for
-        # auto-print leaks nothing. The invocation-wide print test must not widen the gate to this.
-        '''node --eval="process.env.ACLI_TOKEN"''', '''node -e "process.env.ACLI_TOKEN"''',
-        # The measured-non-printing members of node's console API, which must stay out of `_PRINT_CALL`:
-        # `groupEnd` and `clear` discard the argument entirely, and `timeStamp` is an inspector-only
-        # no-op that writes to an attached inspector and never to this process's streams (all probed on
-        # node v24.11.1 with a sentinel, stdout and stderr captured apart). These are the controls that
-        # keep the next widening of that alternation from sweeping in a leak that does not happen —
-        # `timeStamp` especially, since `time` is now on the deny side and shares its first four
-        # characters. `profile`/`profileEnd` are the same no-op class as `timeStamp`, pinned once here.
-        '''node -e "console.groupEnd(process.env.ACLI_TOKEN)"''',
-        '''node -e "console.clear(process.env.ACLI_TOKEN)"''',
-        '''node -e "console.timeStamp(process.env.ACLI_TOKEN)"''',
-        '''node -e "console.profileEnd(process.env.ACLI_TOKEN)"''',
-        # `-p` is node's print-and-evaluate flag, but perl's and ruby's own `-p` is a boolean line loop
-        # whose `-e` still carries the code: a shared code-flag table read the cluster's `e` as the code
-        # and skipped the real argument, so the flags are per interpreter.
-        "perl -pi -e s/a/b/ f", "ruby -pe 'puts $_' f", '''perl -E "say 1"''',
-        # `NAME+=VALUE` is a real assignment prefix in both shells and is now stepped over as one, so the
-        # widened `_ASSIGNMENT` must not deny the harmless commands behind it either.
-        "FOO+=bar ls", "FOO+=bar git status", "env FOO+=bar ls", "sudo FOO+=bar ls",
-        # The tokenizer's own allow side: a quoted, indexed or array-literal assignment value must step
-        # the walk over the assignment and land it on a harmless command, not deny the command behind it.
-        'FOO="a b" ls', "FOO[1]=bar git status", "ARR=(a b) ls", "ARR=(a b) FOO='c d' git status",
-        "declare arr=(1 2 3)", "typeset -a arr", "declare -a arr=(1 2 3)", "declare -A m=([k]=v)",
-        # Measured silent in both shells: an assignment operand, and a bare name behind any attribute
-        # option other than `-p`. Allow controls, so the next widening of this family cannot sweep them in.
-        "declare -x ACLI_TOKEN", "typeset -x ACLI_TOKEN", "declare -i ACLI_TOKEN", "declare -r ACLI_TOKEN",
-        "declare -g ACLI_TOKEN", "declare ACLI_TOKEN=x", "typeset ACLI_TOKEN=x", "declare -x ACLI_TOKEN=x",
-        # `declare -p NAME` prints only that name in both shells, unlike bash's `export -p NAME`, so this
-        # family reads the name the way `printenv NAME` does.
-        "declare -p PATH", "typeset -p HOME", "declare PATH",
-        # `+p` is an option, not an operand, but `+x`/`+i` are the attribute-removing mirror of `-x`/`-i`
-        # and print nothing at all (measured silent in both shells), so counting `+` as an option must not
-        # sweep those in. `-m` reads a literal operand as the name it is, exactly as `-p` does.
-        "declare +x ACLI_TOKEN", "typeset +x ACLI_TOKEN", "declare +i ACLI_TOKEN", "typeset -m PATH",
-        # `-l` and `-u` alone are silent in both shells; only the conflicting pair prints, so the pair test
-        # must not degrade into a per-letter one. `-x NAME=x` is the assignment operand with no print
-        # option, which prints nothing in either shell.
-        "typeset -l ACLI_TOKEN", "typeset -u ACLI_TOKEN", "declare -x ACLI_TOKEN=x",
-        # An unquoted `#` mid-word is a literal character, not a comment: cutting the text there lost this
-        # assignment's value and made both of these read as a bare `env` dumping the environment.
-        "env COLOR=#ff0000 ls /tmp", "env HTTP_PROXY=http://p#1 ls /tmp", "COLOR=#ff0000 ls",
-        "git commit -m 'fix the thing #123'", "ARR=(a '#b') ls",
-        # A quoted or escaped paren in an assignment value is ordinary text — a commit message, a URL
-        # fragment, a path — and reading it as an array-literal opener consumed the rest of the command.
-        'MSG="feat(" git status', "A='(' ls", 'A="a(b" ls', "A=a\\( ls", 'FOO+="(" ls', 'A="((" ls',
     ]
     deny_cases = [
         "env", "env | grep -i acli", "env | grep -i token",
         "printenv", "printenv -0",
         "printenv ACLI_TOKEN", "printenv HOME ACLI_TOKEN",
         "set", "set;",
-        # `export` prints when it is given no operand, whatever options come first. Exact list equality
-        # against `[]`/`["-p"]` allowed every one of these, each verified to print `declare -x
-        # NAME="VALUE"` for every exported variable in bash (`-n` is not a zsh option, the rest are).
-        "export", "export -p", "export --", "export -n", "export -np", "export -p -p",
-        # And `-p` prints the *named* variable in zsh — which is the shell Claude Code's Bash tool runs
-        # here — where bash's `-p` prints only with no operand: `export -p ACLI_TOKEN` writes
-        # `export ACLI_TOKEN=<value>`, verified live, as do the `--` and multi-operand forms. So `-p`
-        # anywhere in the options is print mode, operand or not, since deny is safe for either shell.
-        # `-np` is in that one rule too, though bash prints nothing for it and zsh rejects `-n` outright.
-        "export -p ACLI_TOKEN", "export -p -- ACLI_TOKEN", "export -p FOO ACLI_TOKEN",
-        "export -np ACLI_TOKEN",
+        "export", "export -p",
         "echo $ACLI_TOKEN", 'echo "$ACLI_TOKEN"', "echo ${ACLI_TOKEN}",
         "echo $GITHUB_TOKEN", "echo $AWS_SECRET_ACCESS_KEY",
         "printf '%s\\n' \"$ACLI_TOKEN\"",
         "cd /tmp && env",
         "echo $ACLI_TOKEN > /dev/null",
         "env -u ACLI_SITE", "env -u ACLI_SITE -u ACLI_EMAIL",
-        # env's own flag arity, missed the same two ways `_leading_command`'s was before `_consumes_next`:
-        # a value-taking flag absent from the table (`-a`/`--argv0`, GNU; `-P`, BSD), and a spelling the
-        # table does not carry — `--uns`/`--u` abbreviate `--unset` per `getopt_long`, and `-vu` clusters
-        # the boolean `-v` ahead of `-u`. Each landed the walk on the flag's value, read that as the
-        # command env runs, and allowed a command that still dumps the environment behind it. Verified
-        # live that the trailing option really does eat the next argv: `env -vu FOO true` unsets FOO and
-        # runs `true`, and `env -P /usr/bin true` resolves `true` under /usr/bin.
-        "env -a x echo $ACLI_TOKEN", "env --argv0 x printenv ACLI_TOKEN",
-        "env --argv0=x echo $ACLI_TOKEN", "env -P /usr/bin echo $ACLI_TOKEN",
-        "env --uns ACLI_SITE", "env --u ACLI_SITE", "env -vu ACLI_SITE",
-        "env -vu ACLI_SITE echo $ACLI_TOKEN", "env --uns=ACLI_SITE printenv ACLI_TOKEN",
-        # sudo's `-h` is `optional_argument` (`sudo -h` alone prints usage), so it never eats the next
-        # token; listing it as value-taking stepped the walk over `echo` onto `$ACLI_TOKEN`.
-        "sudo -h echo $ACLI_TOKEN",
         "timeout 5 echo $ACLI_TOKEN", "timeout --signal SIGKILL 5 echo $ACLI_TOKEN",
         "timeout --signal=SIGKILL 5 printenv ACLI_TOKEN", "timeout -k 1 5 env",
         "nice -n 10 echo $ACLI_TOKEN", "nice -n10 echo $ACLI_TOKEN",
@@ -1645,199 +462,12 @@ def _self_test() -> None:
         "stdbuf -o0 echo $ACLI_TOKEN", "stdbuf -o 0 echo $ACLI_TOKEN",
         "sudo -u root echo $ACLI_TOKEN", "sudo --user=root echo $ACLI_TOKEN",
         "sudo -- echo $ACLI_TOKEN", "sudo -n printenv ACLI_TOKEN",
-        # Separated values whose own token is not flag-shaped: an unlisted flag here left the walk
-        # holding "5"/"/some/root"/"/tmp/x" as the command, which allowed the leak behind it.
-        "sudo -T 5 echo $ACLI_TOKEN", "sudo --command-timeout 5 echo $ACLI_TOKEN",
-        "sudo -R /some/root echo $ACLI_TOKEN", "sudo --chroot /some/root printenv ACLI_TOKEN",
-        # The same flags spelled the ways a shell also accepts: a cluster ending in a value-taking
-        # short option, and a `getopt_long` prefix abbreviation. Exact-membership arity saw neither,
-        # landed on `root`/`KILL`/`/tmp/x` and let the command behind it run unchecked. Verified live
-        # that the trailing option really does eat the next argv: `sudo -nu NOSUCHUSER_XYZ true` and
-        # `sudo -n --us NOSUCHUSER_XYZ true` both fail with "sudo: unknown user NOSUCHUSER_XYZ".
-        "sudo -nu root echo $ACLI_TOKEN", "sudo --us root echo $ACLI_TOKEN",
-        "sudo -nu root printenv ACLI_TOKEN", "sudo -nu root env",
-        "timeout -fs KILL 5 echo $ACLI_TOKEN", "time -ao /tmp/x echo $ACLI_TOKEN",
-        # The opposite miss the prefix rule can introduce: sudo's own value-less `--login` is a prefix
-        # of the listed `--login-class`, and consuming a value for it steps over `echo`.
-        "sudo --login echo $ACLI_TOKEN", "sudo -i echo $ACLI_TOKEN",
-        "/usr/bin/time -o /tmp/x echo $ACLI_TOKEN", "time -f %e echo $ACLI_TOKEN",
-        "time --output /tmp/x printenv ACLI_TOKEN", "time --output=/tmp/x echo $ACLI_TOKEN",
-        # The bare `--` is getopt's end-of-options marker, but every long option starts with it, so the
-        # prefix rule in `_consumes_next` matched it against any table and consumed the token after it —
-        # here `echo`, leaving `$ACLI_TOKEN` as the apparent command, which matches nothing. That
-        # allowed this file's own headline anti-pattern. `_leading_command`'s walk tests `== "--"` first
-        # and so never reached the bug; `_env_reason`'s does not, and did.
-        "env -- echo $ACLI_TOKEN", "env -- printenv ACLI_TOKEN", "env -- env",
-        "env -u ACLI_SITE -- echo $ACLI_TOKEN", "env FOO=bar -- printenv GITHUB_TOKEN",
         "env echo $ACLI_TOKEN", "env printenv ACLI_TOKEN", "env FOO=bar echo $ACLI_TOKEN",
         "sudo env echo $ACLI_TOKEN", "sudo timeout 5 env",
         '''python -c "import os; print(os.environ['ACLI_TOKEN'])"''',
         '''node -e "console.log(process.env.GITHUB_TOKEN)"''',
         '''node -e "console.log(process.env['GITHUB_TOKEN'])"''',
         '''python3 -c "import os, sys; sys.stdout.write(os.getenv('ACLI_TOKEN'))"''',
-        # The code flag's other spellings, all verified to execute on this host (Python 3.13, node 24,
-        # perl 5.34, ruby 2.6): a cluster ending in `-c`, a long option carrying its value after `=`, and
-        # a short option carrying it attached. Exact membership in the flag table recognised none of them,
-        # and the loop that read `tokens[j + 1]` stopped one token early so a trailing attached-value flag
-        # was never even reached.
-        '''python -uc "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''python3 -Ic "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''python -Sc "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''python -Bc "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''node --eval="console.log(process.env.GITHUB_TOKEN)"''',
-        '''python -c"import os; print(os.environ['ACLI_TOKEN'])"''',
-        # Completions of the named interpreters' own documented flag sets: node's `-p`/`--print` prints its
-        # result with no print call in the code at all, and a versioned python basename is the same
-        # interpreter under a name exact membership never matched. perl's `-E` is pinned on the matcher
-        # below instead, for the reason given there.
-        '''node -p "process.env.GITHUB_TOKEN"''', '''node --print "process.env.GITHUB_TOKEN"''',
-        # Auto-print is a property of the invocation, not of the flag carrying the code, and each of these
-        # was allowed while the bare `-p` above denied. `-pe CODE` runs both flags with CODE as the *next*
-        # token (verified: `node -pe "process.env.FOO"` prints the value), which first-match cluster arity
-        # read as `-p` with the attached value `e`, so the real code was never scanned. `--print --eval`
-        # spells the two flags apart, and `--eval` is not itself a printing flag. The reversed cluster
-        # `-ep` needs no case: node rejects it outright ("node: bad option: -ep", verified), so nothing
-        # runs — though the arity rule below handles it anyway.
-        '''node -pe "process.env.GITHUB_TOKEN"''',
-        '''node --print --eval "process.env.GITHUB_TOKEN"''',
-        '''python3.13 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''python2.7 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''python3.13t -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        # The regression an unscoped `prefer_last` caused, and its siblings. `shlex` hands the attached
-        # spelling over as the single token `-c<code>`; when that code ends in a character the table lists
-        # (`...; import gc` ends in `c`), scanning to the last match reported "the code is the next token",
-        # there was no next token, and this — the plainest interpreter leak there is — was allowed. The
-        # third case denied throughout (its code ends in `)`), which is exactly why the first two shipped
-        # past a self-test that had a case for the attached spelling. The fourth carries an `=` as well, so
-        # it also exercises the `=`-split branch ahead of the cluster scan.
-        '''python3 -c"import os; print(os.environ['ACLI_TOKEN']); import gc"''',
-        '''python -c"import os; print(os.environ['ACLI_TOKEN']); import gc"''',
-        '''python3 -c"import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''python3 -c"import os; x=os.environ['ACLI_TOKEN']; print(x); import gc"''',
-        # An unrecognised assignment prefix does not narrow `_segment_reason`, it disarms its whole
-        # anti-pattern path: the walk stops on `FOO+=bar`, reads that as the command, and matches nothing.
-        # `NAME+=VALUE cmd` runs in both bash and zsh (verified live), and the pattern was spelled out
-        # twice, so `+=` reached one copy and not the other.
-        "FOO+=bar echo $ACLI_TOKEN", "FOO+=bar env", "FOO+=bar printenv ACLI_TOKEN",
-        "FOO+=bar set", "FOO+=bar export",
-        "env FOO+=bar printenv ACLI_TOKEN", "env FOO+=bar echo $ACLI_TOKEN",
-        "sudo FOO+=bar echo $ACLI_TOKEN",
-        # `--print` takes an attached value too, and every such spelling reported "does not auto-print"
-        # while node printed: `--print=0` and `--print=false` auto-print exactly as `--print=1` does
-        # (verified live), since node reads an attached value as present-and-therefore-on.
-        '''node --print=1 --eval "process.env.GITHUB_TOKEN"''',
-        '''node --print=false --eval "process.env.GITHUB_TOKEN"''',
-        # node's other console methods print the value exactly as `log` does (verified live), and were all
-        # allowed while `_PRINT_CALL` listed `log` alone. `console.warn` denied, but only via the bare
-        # `warn` alternative that belongs to perl and ruby — a deny resting on another language's name.
-        '''node -e "console.info(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.dir(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.table(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.debug(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.warn(process.env.GITHUB_TOKEN)"''',
-        # The rest of that same family, each measured on node v24.11.1 to reproduce a sentinel value and
-        # each allowed by a matcher that had closed the four spellings its docstring named instead of the
-        # class they belong to. `console.error` is the plainest of them and was the one still open.
-        '''node -e "console.error(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.trace(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.group(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.groupCollapsed(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.count(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.assert(false, process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.dirxml(process.env.GITHUB_TOKEN)"''',
-        # And the members that a hand-curated list missed twice over, which is why the alternation is now
-        # derived from node's documented console API with every method probed rather than from the
-        # spellings a review noticed. Each of these was live-verified to echo the label verbatim on
-        # v24.11.1: `timeEnd`/`timeLog` write `<v>: 0.04ms` on stdout for a live label and
-        # `Warning: No such label '<v>'` on stderr for a dead one, `countReset` writes
-        # `Warning: Count for '<v>' does not exist`, and a repeated `time` label writes
-        # `Warning: Label '<v>' already exists`. A tool call's result carries stderr too, so the warning
-        # path is the same leak as the timing line.
-        '''node -e "console.timeEnd(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.timeLog(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.countReset(process.env.GITHUB_TOKEN)"''',
-        '''node -e "const v = process.env.GITHUB_TOKEN; console.time(v); console.time(v)"''',
-        '''node -e "const v = process.env.GITHUB_TOKEN; console.time(v); console.timeEnd(v)"''',
-        # A tool call's result carries stderr as well as stdout into transcript history, so the stderr
-        # twins of the two stdout writers already matched are the same leak. Both verified live.
-        '''python3 -c "import os, sys; sys.stderr.write(os.environ['ACLI_TOKEN'])"''',
-        '''node -e "process.stderr.write(process.env.GITHUB_TOKEN)"''',
-        # `writelines` is the same stream method under its other name and reproduces the value
-        # identically (verified live); `\\.write\\s*\\(` needed the paren straight after `write`, so it
-        # matched neither this nor its stderr twin.
-        '''python3 -c "import os, sys; sys.stdout.writelines([os.environ['ACLI_TOKEN']])"''',
-        '''python3 -c "import os, sys; sys.stderr.writelines([os.getenv('ACLI_TOKEN')])"''',
-        # The tokenizer, which is where every case below actually failed: `segment.split()` cut a *quoted*
-        # assignment value into `FOO="a` + `b"`, the first matched `_ASSIGNMENT`, the second was read as
-        # the command, and the real one behind it was never checked at all. An indexed left-hand side and
-        # an array-literal value are the same miss in the other two shapes an assignment prefix has. All
-        # three verified live in bash and zsh to run the command behind them.
-        'FOO="a b" echo $ACLI_TOKEN', 'FOO="a b" env', 'FOO="a b" printenv ACLI_TOKEN',
-        'FOO="a b" set', 'sudo FOO="a b" echo $ACLI_TOKEN', 'env FOO="a b" printenv ACLI_TOKEN',
-        "FOO[1]=bar echo $ACLI_TOKEN", "FOO[1]=bar env", "ARR[0]+=x printenv ACLI_TOKEN",
-        "ARR=(a b) echo $ACLI_TOKEN", "ARR=(a b) env", "ARR=(a b) printenv ACLI_TOKEN",
-        "ARR=(a b) FOO=c echo $ACLI_TOKEN", "sudo ARR=(a b) env",
-        # A `#` comment is text the shell never runs, and this hook read it two ways, both fail-open. The
-        # dump family's shape tests saw the comment's words as operands, so `env # note` and `set # note`
-        # allowed while bare `env`/`set` denied — verified live that both really do dump. And a comment
-        # carrying an apostrophe left the whole command unlexable, which the interpreter family answered
-        # with `return None`: `python3 -c "…" # it's fine` allowed live, the plainest leak in this file.
-        "env # note", "set # note", "export # note", "printenv # note", "declare # note",
-        "env  # dont", "set # don't", "printenv ACLI_TOKEN # ok",
-        '''python3 -c "import os; print(os.environ['ACLI_TOKEN'])" # it's fine''',
-        '''node -e "console.log(process.env.GITHUB_TOKEN)" # don't worry''',
-        "echo $ACLI_TOKEN # it's fine",
-        # `declare`/`typeset` are `export`'s own family under the name bash documents it by, and every
-        # spelling here was probed with a sentinel in both shells: no operand dumps everything, `-p` with
-        # an operand prints that variable, and a bare name prints it in zsh. See `_declare_reason`.
-        "declare", "typeset", "declare -x", "typeset -x", "declare -p", "typeset -p",
-        "declare -p ACLI_TOKEN", "typeset -p ACLI_TOKEN", "declare -px ACLI_TOKEN",
-        "declare -xp GITHUB_TOKEN", "declare ACLI_TOKEN", "typeset ACLI_TOKEN",
-        "declare -- ACLI_TOKEN", "typeset -- ACLI_TOKEN", "sudo declare -p ACLI_TOKEN",
-        "FOO+=bar declare -p ACLI_TOKEN",
-        # `+` toggles an attribute off exactly as `-` toggles it on, so a `+`-prefixed token is an option
-        # and never the operand this family's dump rule looks for. Each of these was verified live to dump
-        # every variable with its value (bash for `+p`, zsh for `+m` and `export +p`, both for `declare +p`)
-        # while being allowed, because `+p` read as a name to print.
-        "declare +p", "typeset +p", "typeset +m", "declare +m", "export +p", "declare +p ACLI_TOKEN",
-        # zsh's `-m` is a printing mode under a letter that `"p" in t` did not cover: it matches variables
-        # by pattern and prints each one, verified live for a literal name and for a glob.
-        "typeset -m ACLI_TOKEN", "declare -m ACLI_TOKEN", "typeset -m 'ACLI_*'", "declare -pm 'ACLI_*'",
-        "export -m ACLI_TOKEN", "typeset -m '*'",
-        # Two more spellings of the same family, both found by sweeping every option letter and every
-        # two-letter cluster of all three commands in both shells rather than by adding what a review
-        # named. zsh prints `NAME=<old value>` for a print option with an *assignment* operand, which the
-        # "an assignment sets, it does not print" filter dropped wholesale; and `-lu`/`-ul` print while
-        # neither letter alone does, because zsh reports instead of setting when the two conflict.
-        "declare -p ACLI_TOKEN=x", "typeset -p ACLI_TOKEN=x", "declare +p ACLI_TOKEN=x",
-        "declare -px ACLI_TOKEN=x", "declare -p -- ACLI_TOKEN=x",
-        "typeset -lu ACLI_TOKEN", "typeset -ul ACLI_TOKEN", "declare -lu ACLI_TOKEN",
-        # The mid-word `#`: `shlex`'s `comments=True` cut the text at any unquoted `#`, so the real command
-        # behind an assignment carrying one vanished from the token list, the walk fell off the end and
-        # every one of these was allowed. All verified live in both shells to run and to print the value.
-        "X=1#foo echo $ACLI_TOKEN", "X=a#b printenv ACLI_TOKEN", "X=a#b env", "X=a#b set",
-        '''A=v#c python3 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        "env X=a#b echo $ACLI_TOKEN", "sudo X=a#b env",
-        # A comment ends at its line, so a later line still runs — including the interpreter one-liner that
-        # only the whole-command token list can see.
-        '''ls # note\npython3 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        # A quoted paren is literal content, not an array-literal opener, and scanning the tokens for a
-        # matching `)` swallowed the whole command instead — so nothing was checked at all. Every shape
-        # verified live in both shells.
-        'A="(" echo $ACLI_TOKEN', "A='(' echo $ACLI_TOKEN", 'A="a(b" echo $ACLI_TOKEN',
-        "A=a\\( echo $ACLI_TOKEN", 'MSG="feat(" echo $ACLI_TOKEN', 'FOO+="(" echo $ACLI_TOKEN',
-        'A="((" echo $ACLI_TOKEN', 'A="(" printenv ACLI_TOKEN', 'A="(" set', 'A="(" env',
-        '''MSG="feat(" python3 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        # And the genuine array literal still denies, which is the fix the quoted-paren regression rode in
-        # on: the literal is removed from the *text*, so the walk lands on the command behind it.
-        "ARR+=(a b) echo $ACLI_TOKEN", "ARR=(a 'b )c') echo $ACLI_TOKEN", "ARR=($(date)) env",
-        # Quoting this hook cannot lex at all is refused rather than scanned, the same rule a non-string
-        # command and unreadable stdin already get: an input this hook cannot read is not one it has
-        # cleared. The cost is named rather than discovered — `shlex` does not model heredocs, so a
-        # heredoc body carrying an odd apostrophe reads as unbalanced and is refused with it. That is
-        # deliberate: the alternative is the `except ValueError: return None` that allowed
-        # `python3 -c "…" # it's fine` live.
-        "echo 'unbalanced", 'echo "unbalanced', "cat <<'EOF'\nit's fine\nEOF",
     ]
     for command in allow:
         got = decision("Bash", {"command": command})
@@ -1850,424 +480,14 @@ def _self_test() -> None:
     assert _looks_like_secret_name("GITHUB_TOKEN")
     assert not _looks_like_secret_name("ACLI_SITE")
     assert not _looks_like_secret_name("PATH")
-    # Pinned on the matcher itself, not only through the commands above: the `--` bug shipped past a
-    # self-test that had command-level cases for every other spelling, because none of them put a bare
-    # `--` in front of `env`. Both tables, since the fault was that the flags argument never mattered.
-    for table in (_ENV_ARG_FLAGS, _WRAPPER_ARG_FLAGS["sudo"], _WRAPPER_ARG_FLAGS["timeout"]):
-        assert not _consumes_next("--", table), (
-            "`--` ends option processing and names no value, whatever the table holds"
-        )
-    assert _consumes_next("--unset", _ENV_ARG_FLAGS), "and the prefix rule it rides on still works"
-    assert _consumes_next("--uns", _ENV_ARG_FLAGS)
-    # Pinned on the matcher for the same reason: which token carries code, in each spelling, and per
-    # interpreter. perl's `-E` and ruby's `-e` reach no command-level deny case above, because
-    # `_ENV_ACCESS` recognises python's and node's env-access syntax only and neither perl's `$ENV{...}`
-    # nor ruby's `ENV[...]` is in it — a separate, still-open gap in a different matcher. `-E` is
-    # completed here anyway so the arity half is not the thing missing when that one is closed.
-    perl, ruby = INTERPRETER_CODE_FLAGS["perl"], INTERPRETER_CODE_FLAGS["ruby"]
-    python, node = INTERPRETER_CODE_FLAGS["python"], INTERPRETER_CODE_FLAGS["node"]
-    assert _code_argument(["perl", "-E", "CODE"], 1, perl) == ("-E", "CODE"), "perl's -E takes code like -e"
-    assert _code_argument(["ruby", "-E", "utf-8", "-e", "CODE"], 1, ruby) is None, (
-        "ruby's own -E is an encoding, not code: a shared flag table would read the encoding as the code"
-    )
-    assert _code_argument(["ruby", "-pe", "CODE"], 1, ruby) == ("-pe", "CODE"), (
-        "and `-p` must stay out of ruby's table, or this cluster's code argument is read as `e`"
-    )
-    assert _code_argument(["python", "-uc", "CODE"], 1, python) == ("-uc", "CODE")
-    assert _code_argument(["python", "-cCODE"], 1, python) == ("-c", "CODE"), "attached to a short option"
-    assert _code_argument(["node", "--eval=CODE"], 1, node) == ("--eval", "CODE"), "and to a long one"
-    assert _code_argument(["python", "-c"], 1, python) is None, (
-        "a separated code flag in final position carries no code, and must not index past the tokens"
-    )
-    assert _interpreter_key("python3.13") == "python", "a versioned alias is the same interpreter"
-    assert _interpreter_key("pythonista") is None, "a versioned alias, not any name that starts so"
-    assert _code_argument(["python", "foo.c", "CODE"], 1, python) is None, (
-        "`_consumes_next` reads any token as a cluster, so only an option-shaped one may be asked"
-    )
-    # A code-flag table lists interchangeable carriers, so the cluster scan has to run to the end of the
-    # token: node's `-pe CODE` is both flags with CODE as the next token, and first-match-wins returned
-    # `-p` with the attached value `e` instead. Pinned on the matcher as well as through the command above,
-    # because the two spellings of the same bypass were found one at a time.
-    assert _code_argument(["node", "-pe", "CODE"], 1, node) == ("-pe", "CODE"), "both flags, code follows"
-    assert _consumes_next("-pe", node, prefer_last=True), "the last listed character is the token's last"
-    assert not _consumes_next("-pe", node), (
-        "and the default stays first-match-wins, which is the right rule for `sudo`-style tables"
-    )
-    assert _consumes_next("-nu", _WRAPPER_ARG_FLAGS["sudo"]), "unchanged for every existing call site"
-    # And the other direction, which the `-pe` fix above regressed: `prefer_last` belongs to a token that
-    # is actually a short-option cluster, not to an attached code string whose last character happens to
-    # name a listed flag. Pinned on the discriminator itself, because every command-level case for the
-    # attached spelling carried code ending in `)` and so never reached it.
-    assert _is_short_cluster("-pe") and _is_short_cluster("-uIsSBc") and _is_short_cluster("-c")
-    assert not _is_short_cluster("-cimport os; print(os.environ['X']); import gc")
-    assert not _is_short_cluster("--print") and not _is_short_cluster("--") and not _is_short_cluster("-")
-    assert not _is_short_cluster("foo.c"), "and it is not the option-shape test, which is the caller's"
-    # The proof that discriminator rests on: for a token it accepts, the read `prefer_last` costs is an
-    # all-alphanumeric substring, and no all-alphanumeric string can access the environment or print —
-    # every `_ENV_ACCESS` alternative needs a `.` and/or a `[`, and `_PRINT_CALL` needs a `(`. Checked, not
-    # just argued, so an all-alnum env-access or print idiom added to either matcher fails here rather than
-    # silently voiding the reasoning.
-    import itertools
-
-    alnum_samples = [
-        *("".join(p) for n in (1, 2, 3) for p in itertools.product("acepnEV0", repeat=n)),
-        "print", "consolelog", "osenviron", "osenvironget", "osgetenv", "processenv",
-        "processenvACLITOKEN", "sysstdoutwrite", "puts", "warn", "ACLITOKEN",
-    ]
-    for sample in alnum_samples:
-        assert sample.isalnum(), sample
-        assert not _ENV_ACCESS.search(sample), f"an all-alnum string must not read as env access: {sample!r}"
-        assert not _PRINT_CALL.search(sample), f"an all-alnum string must not read as a print call: {sample!r}"
-    for tok, prints in (
-        ("-p", True), ("--print", True), ("-pe", True), ("-ep", True), ("-np", True),
-        ("-e", False), ("--eval", False), ("--", False), ("--eval=CODE", False), ("code", False),
-        # `--print` carries an attached value too, and node treats any attached value as on: `--print=0`
-        # and `--print=false` print (verified live), so the value is not parsed. `--printer` keeps the
-        # `=`-split head from degrading into a prefix test.
-        ("--print=1", True), ("--print=0", True), ("--print=true", True), ("--print=false", True),
-        ("--print==", True), ("--printer", False),
-    ):
-        assert _prints_result(tok) is prints, f"{tok!r} auto-print should be {prints}"
-    # Pinned on the tokenizer itself, because every arity table above was already complete while a quoted
-    # assignment value still hid the command from the walk: the fault was the token boundaries, not the
-    # rules applied to them. `None` is its own answer and is not "no tokens" — `decision()` refuses it.
-    assert _tokens('FOO="a b" echo $X') == ["FOO=a b", "echo", "$X"], "a quoted value is one token"
-    assert _tokens("env # note") == ["env"], "a comment is text the shell never runs"
-    assert _tokens("env # it's fine") == ["env"], "including one whose apostrophe would break lexing"
-    assert _tokens("echo 'unbalanced") is None, "and text that cannot be lexed says so, rather than []"
-    assert _tokens("") == [] and _tokens("   ") == [], "no tokens is a different answer from unlexable"
-    assert decision("Bash", {"command": "echo 'unbalanced"}) == _UNEVALUABLE, (
-        "an unlexable command is refused, not allowed unchecked"
-    )
-    # A `#` introduces a comment only where a word begins. `shlex`'s own `comments=True` cut at any
-    # unquoted `#`, which deleted the real command from `X=1#foo echo $X` (allowing the leak) and deleted
-    # an assignment's value from `env COLOR=#ff0000 ls` (denying a harmless command). Both directions are
-    # pinned, on the tokenizer, because the token list is where each of them actually went wrong.
-    assert _tokens("X=1#foo echo $X") == ["X=1#foo", "echo", "$X"], "a mid-word `#` is a literal character"
-    assert _tokens("env COLOR=#ff0000 ls") == ["env", "COLOR=#ff0000", "ls"], "so is one after an `=`"
-    assert _tokens("ls;#note") == ["ls;"], "and an operator ends a word, so a `#` after one does introduce"
-    assert _tokens("ls # note\nprintenv X") == ["ls", "printenv", "X"], "a comment ends at its own line"
-    assert _tokens('python3 -c "# note\nimport os"') == ["python3", "-c", "# note\nimport os"], (
-        "a `#` inside quotes belongs to the code, and dropping the token it starts hid the whole one-liner"
-    )
-    # An array-literal value is removed from the text, because it is this assignment's value in the shell's
-    # own parse and no command can hide inside it. Deciding that from the *token* cannot work: `shlex` has
-    # already eaten the quotes that made `A="("`'s paren literal, and the balance scan that followed
-    # swallowed the rest of the command and allowed every leak behind a quoted paren.
-    assert _tokens("ARR=(a b) echo $X") == ["ARR=", "echo", "$X"], "the literal is the value, not a command"
-    assert _tokens("ARR=(a 'b )c' $(date)) echo $X") == ["ARR=", "echo", "$X"], "quoted, nested parens too"
-    assert _tokens('A="(" echo $X') == ["A=(", "echo", "$X"], "a quoted paren opens no array literal"
-    assert _tokens("A=a\\( echo $X") == ["A=a(", "echo", "$X"], "nor does an escaped one"
-    assert _tokens('"ARR"=(a b) echo $X') == ["ARR=(a", "b)", "echo", "$X"], "nor a quoted name"
-    assert _tokens('ARR=( python3 -c "code"') == ["ARR=(", "python3", "-c", "code"], (
-        "an opener nothing closes removes nothing: swallowing to the end hid the command behind it"
-    )
-    assert _skip_assignment_prefix(["ARR=(a", "b)", "echo", "$X"], 0) == 1, "one token per assignment"
-    assert _skip_assignment_prefix(["FOO[1]=bar", "echo"], 0) == 1, "an indexed left-hand side is one too"
-    assert _skip_assignment_prefix(["FOO=$(date)", "echo"], 0) == 1, "and parens in a value change nothing"
-    assert _skip_assignment_prefix(["echo", "$X"], 0) == 0, "and a command is not an assignment"
-    # An attached spelling puts the flag and the code in one token, and a deny reason naming that token
-    # would copy arbitrary code — the very thing this hook keeps out of transcript history — into the
-    # transcript itself. Every reason names the flag alone.
-    for command in (
-        '''python -c"import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''node --eval="console.log(process.env.GITHUB_TOKEN)"''',
-        # Scoping `prefer_last` sends this one to the attached-short-option read, which narrows the reason
-        # from the whole token to `-c` alone — so the hygiene half of that fix is pinned here too.
-        '''python3 -c"import os; print(os.environ['ACLI_TOKEN']); import gc"''',
-    ):
-        reason = decision("Bash", {"command": command})
-        assert reason is not None, command
-        assert "os.environ" not in reason and "process.env" not in reason, (
-            f"the reason must name the flag, not echo the code back: {reason!r}"
-        )
     _EXTRA_WORDS = saved_extra_words
 
-    _test_generated_option_spellings_deny_whenever_the_tool_prints()
-    _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies()
-    _test_an_oversized_command_is_refused_instead_of_scanned()
-    _test_stdin_that_cannot_be_read_denies_rather_than_returning_silently()
-    _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced()
     _test_an_in_place_edit_excuses_no_segment_and_denies_none()
+    _test_an_oversized_command_is_refused_instead_of_scanned()
+    _test_an_input_that_cannot_be_read_or_evaluated_denies_rather_than_returning_silently()
+    _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced()
     _test_extra_words_from_config()
     _test_unresolvable_config_warns_rather_than_dropping_silently()
-
-
-def _test_generated_option_spellings_deny_whenever_the_tool_prints() -> None:
-    """The structural check: option spellings generated from the tables, not curated by hand.
-
-    Deliberately its own test rather than more entries in the curated `allow`/`deny_cases` lists above,
-    because the two artefacts prove different things. Those lists are a record of spellings review has
-    already found; this one asks the tables what spellings exist. Seven rounds of review found exactly one
-    more hand-missed spelling each, and round 6's own fix regressed the headline interpreter deny — an
-    unscoped `prefer_last` made `python3 -c"...; import gc"` allow — past a curated list that already had a
-    case for the attached spelling. That regression is why the payload varies here too and not only the
-    flag spelling: the collision is between the *code's last character* and a listed flag character (see
-    `_GENERATED_CODE_SUFFIXES`), so a flags-only matrix would have shipped it as well.
-
-    Verified to be a real detector rather than a restatement of current behaviour, by driving this same
-    generated list against two historical commits as real hook subprocesses: of 1149 cases it fails 22
-    against `a0add099` — the regressed commit, on the payload-suffix and attached-code cases plus
-    `--print=<value> --eval` — and 25 against `ff78dcf`, the pre-regression commit, on node's `-pe`,
-    `--print --eval` and `--print=<value>` spellings that round 6 closed. It passes here with no
-    crash-denies. Neither historical failure set is a subset of the other — `a0add099` fails
-    `python -c"…  # c"` where `ff78dcf` passes it, and `ff78dcf` fails `node -pe` where `a0add099` passes —
-    which is the property a curated list kept failing to have: each round's list covered the round before
-    it.
-
-    Both sides are asserted, and both are asserted to be non-trivially populated: a deny-only list would
-    pass against a hook that denied everything, which is a real failure mode this file has flirted with
-    (`env -- ls` was denied by the fix for `env -- echo $ACLI_TOKEN`), and the count assertions mean a
-    refactor that silently empties the generator fails loudly instead of passing vacuously.
-
-    The counts are floored per family and not only in aggregate, because an aggregate floor is blind to a
-    missing family: the interpreter family is the smallest of the three (233 of 1149) and the only one
-    carrying the S3-shape payload collision, and `_generated_interpreter_cases` reaches it through a
-    `continue` that has already dropped a whole language's matrix once — so wrapper and `env` alone cleared
-    every aggregate floor while interpreter coverage was zero. Each payload in `_GENERATED_CODE_BASES` is
-    asserted to appear in a generated command as well as counted, since that is the dict the skip selects
-    on: a language dropped from generation then fails by name rather than by an arithmetic near-miss.
-    """
-    global _EXTRA_WORDS
-    saved = _EXTRA_WORDS
-    _EXTRA_WORDS = frozenset()  # built-in words only, for the reason the curated lists are pinned so
-    try:
-        families = _generated_case_families()
-        # `(total, deny, allow)` floors as measured today, per family. Widening a table stays a pass; losing
-        # one is the failure this replaced an aggregate-only floor to catch.
-        for family, (total, deny, allow) in (
-            ("wrapper", (806, 483, 323)), ("env", (110, 66, 44)), ("interpreter", (233, 118, 115)),
-        ):
-            produced = families[family]
-            denied = sum(1 for _, expect_deny in produced if expect_deny)
-            assert len(produced) >= total, f"the {family} family produced only {len(produced)} cases"
-            assert denied >= deny, f"the {family} family produced only {denied} deny cases"
-            assert len(produced) - denied >= allow, f"the {family} family produced only {len(produced) - denied} allows"
-        interpreter = [command for command, _ in families["interpreter"]]
-        for language, bases in _GENERATED_CODE_BASES.items():
-            for kind, base in bases.items():
-                assert any(base in command for command in interpreter), (
-                    f"no generated case carries {language}'s {kind} payload, so the family-selection "
-                    "`continue` in `_generated_interpreter_cases` dropped it: the counts above cannot see "
-                    "that, and this payload is the leak shape the whole matrix exists to exercise"
-                )
-        # The S3 detector rests entirely on this: `_generated_interpreter_cases` substitutes a listed flag
-        # character into each template, and the collision it detects is between the *code's last character*
-        # and that flag. A template with anything after the placeholder — `"  # {ch} ok"` — still generates
-        # cases, still passes every floor above, and detects nothing at all.
-        for language, suffixes in _GENERATED_CODE_SUFFIXES.items():
-            for suffix in suffixes:
-                assert suffix.endswith("{ch}"), (
-                    f"{language}'s payload suffix {suffix!r} must end in the substituted flag character, or "
-                    "the attached-code collision it exists to reach is never spelled"
-                )
-        cases = _generated_spelling_cases()
-        denies = sum(1 for _, expect_deny in cases if expect_deny)
-        assert len(cases) > 900, f"the generator produced only {len(cases)} cases: something emptied it"
-        assert denies > 500, f"only {denies} generated deny cases"
-        assert len(cases) - denies > 200, f"only {len(cases) - denies} generated allow cases"
-        for command, expect_deny in cases:
-            got = decision("Bash", {"command": command})
-            assert (got is not None) is expect_deny, (
-                f"generated case expected {'deny' if expect_deny else 'allow'}: {command!r} got {got!r}"
-            )
-    finally:
-        _EXTRA_WORDS = saved
-
-
-def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> None:
-    """A crash in this hook is an allow, so the depth `env env env …` reaches must not be the stack's.
-
-    `env`-unwrapping used to recurse per layer, so a command carrying a few hundred `env` tokens raised
-    `RecursionError` out of `main()`: nothing on stdout, which Claude Code's `PreToolUse` contract reads
-    as no decision, so the command ran with the guard skipped entirely. The chain is unwound in
-    `_env_reason`'s own loop now, and `main()` turns any remaining unexpected crash into a deny rather
-    than into that silence — checked here by forcing one, since the whole point is that no input is
-    supposed to produce it.
-
-    The layer counts are chosen to stay under `MAX_COMMAND_CHARS`, so the harmless case here proves the
-    loop terminates rather than proving the length ceiling fires — 2000 layers is already twice the
-    default recursion limit the old per-layer recursion died at.
-    """
-    import contextlib
-    import io
-
-    global _EXTRA_WORDS
-    saved = _EXTRA_WORDS
-    _EXTRA_WORDS = frozenset()
-    try:
-        chain = "env " * 2000
-        assert len(f"{chain}echo $ACLI_TOKEN") < MAX_COMMAND_CHARS, "must test the loop, not the ceiling"
-        assert decision("Bash", {"command": chain.strip()}) is not None, "a bare env chain still dumps"
-        assert decision("Bash", {"command": f"{chain}echo $ACLI_TOKEN"}) is not None, (
-            "a leak behind any number of env layers is still the leak"
-        )
-        assert decision("Bash", {"command": f"{chain}ls"}) is None, "and a harmless one is still harmless"
-        assert decision("Bash", {"command": "env -u A " * 2000 + "printenv ACLI_TOKEN"}) is not None
-    finally:
-        _EXTRA_WORDS = saved
-
-    def _raise(tool: object, args: dict) -> str | None:
-        raise RecursionError("forced")
-
-    saved_decision, saved_stdin, saved_argv = globals()["decision"], sys.stdin, sys.argv
-    globals()["decision"] = _raise
-    captured = io.StringIO()
-    try:
-        sys.argv = [saved_argv[0]]  # the hook's own stdin path, not the self-test this runs inside
-        sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}))
-        with contextlib.redirect_stdout(captured):
-            main()
-    finally:
-        globals()["decision"], sys.stdin, sys.argv = saved_decision, saved_stdin, saved_argv
-    payload = json.loads(captured.getvalue())
-    decided = payload["hookSpecificOutput"]
-    assert decided["permissionDecision"] == "deny", f"a crash must not fall through as an allow: {payload}"
-    assert "forced" not in decided["permissionDecisionReason"], (
-        f"the reason must carry no exception text, which could echo the command: {decided}"
-    )
-
-
-def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
-    """A hook slow enough to stall a session is the same fail-open shape as one that crashes.
-
-    `_interpreter_reason` re-scanned the remaining tokens once per interpreter-shaped token, so 50000
-    `python` tokens took ~38s on every Bash call that shape reached — no output for long enough that
-    Claude Code has nothing to act on. The ceiling in `decision()` refuses that input outright, so the
-    timing is part of the claim here, not just the verdict — and it is timed on the worst input the
-    ceiling *admits*, since timing the refusal only proves that refusing is cheap.
-    """
-    import time
-
-    global _EXTRA_WORDS
-    saved = _EXTRA_WORDS
-    _EXTRA_WORDS = frozenset()
-    try:
-        oversized = "python " * 50_000
-        started = time.perf_counter()
-        reason = decision("Bash", {"command": oversized})
-        elapsed = time.perf_counter() - started
-        assert reason == _TOO_LONG, f"an oversized command must be refused by the ceiling: {reason!r}"
-        assert elapsed < 1.0, f"the ceiling must refuse before any scan, took {elapsed:.2f}s"
-        assert oversized[:20] not in reason, "the reason must not echo the command back"
-        # The refusal above does no scanning by construction, so timing it pins nothing about the
-        # ceiling's own choice of number. The bound that matters is on the worst input the ceiling
-        # *admits*, and that is not the interpreter case: `_env_reason` walks and slices the remaining
-        # tokens per `env` layer, so a maximal `env` chain costs ~0.06s against ~0.01s for the same length
-        # in interpreter-shaped tokens. 5s is deliberately loose against that — the property is a latency
-        # budget that has to hold on slower hardware than whatever runs this, not a benchmark.
-        #
-        # Timed in the quote-carrying spelling too, because that is the one that regressed: with `shlex`
-        # as the tokenizer and a re-lex per layer, a chain whose tail token's *content* held an apostrophe
-        # took ~18s (the quote-free chain, ~0.6s, hid it — the re-joined text of every later layer had had
-        # its quotes consumed already). That is the stall this ceiling exists to prevent, reached from
-        # inside the fix for the tokenizer, so it is pinned rather than left to the next measurement.
-        quoted_tail = '''echo "$ACLI_TOKEN's"'''  # a quote in the token's own content, and still a leak
-        for label, worst in (
-            ("quote-free", "env " * (MAX_COMMAND_CHARS // 4)),
-            ("quoted tail", "env " * ((MAX_COMMAND_CHARS - len(quoted_tail)) // 4) + quoted_tail),
-        ):
-            assert len(worst) == MAX_COMMAND_CHARS, f"the {label} worst case must sit at the ceiling"
-            started = time.perf_counter()
-            reason = decision("Bash", {"command": worst})
-            elapsed = time.perf_counter() - started
-            assert reason is not None, f"a maximal {label} env chain still dumps the environment"
-            assert reason != _TOO_LONG, "and must be scanned, not refused: the ceiling is exclusive"
-            assert elapsed < 5.0, f"the worst {label} input the ceiling admits took {elapsed:.2f}s"
-        assert decision("Bash", {"command": "x" * MAX_COMMAND_CHARS}) is None, (
-            "the ceiling is exclusive: a command exactly at it is still evaluated normally"
-        )
-        # The tokenizer's own worst shape, timed for the same reason the quoted tail above is: an
-        # array-literal opener that nothing closes. Looking ahead for the matching `)` once per opener
-        # re-scanned the whole remaining text each time, so this input — where every character starts
-        # another opener — took ~17s, the stall reached from inside the fix for the previous stall.
-        # `_dropped_spans` carries the depth in its single pass and costs ~0.03s. The decision itself is an
-        # allow, correctly: no shell runs an unclosed `(`, so there is no command here to deny.
-        openers = ("A=(" * (MAX_COMMAND_CHARS // 3 + 1))[:MAX_COMMAND_CHARS]
-        started = time.perf_counter()
-        decision("Bash", {"command": openers})
-        elapsed = time.perf_counter() - started
-        assert elapsed < 5.0, f"a command of nothing but array-literal openers took {elapsed:.2f}s"
-        # Nothing a human writes in one Bash call comes near this, including a long compound one.
-        compound = " && ".join(["git status", "pytest -q -k something_fairly_long", "ruff check ."] * 40)
-        assert len(compound) < MAX_COMMAND_CHARS // 4, f"a real compound command is small: {len(compound)}"
-        assert decision("Bash", {"command": compound}) is None, "and must not trip the ceiling"
-    finally:
-        _EXTRA_WORDS = saved
-
-
-def _test_stdin_that_cannot_be_read_denies_rather_than_returning_silently() -> None:
-    """Every way `main()` can fail to decide must deny, including the read that happens before the try.
-
-    `json.load(sys.stdin)` raises `UnicodeDecodeError` on malformed bytes and `OSError` on a broken
-    pipe, neither of which the `JSONDecodeError` catch covered — so both escaped as an unhandled crash
-    ahead of the backstop around `decision()`, and a `PreToolUse` hook that writes nothing is read as no
-    decision, i.e. an allow. The caught case returned silently, which is that same allow — and so did
-    input that parsed into something other than a JSON object, one line further down.
-    """
-    import contextlib
-    import io
-
-    class _Unreadable(io.TextIOBase):
-        def read(self, *_args) -> str:
-            raise OSError("broken pipe")
-
-    class _Undecodable(io.TextIOBase):
-        def read(self, *_args) -> str:
-            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-
-    saved_stdin, saved_argv = sys.stdin, sys.argv
-    for label, stream in (
-        ("malformed JSON", io.StringIO("{not json")),
-        ("a broken pipe", _Unreadable()),
-        ("undecodable bytes", _Undecodable()),
-        ("a JSON list", io.StringIO("[]")),
-        ("a JSON string", io.StringIO('"env"')),
-        ("a JSON number", io.StringIO("5")),
-        ("JSON null", io.StringIO("null")),
-    ):
-        captured = io.StringIO()
-        try:
-            sys.argv = [saved_argv[0]]  # the hook's stdin path, not the self-test this runs inside
-            sys.stdin = stream  # type: ignore[assignment]
-            with contextlib.redirect_stdout(captured):
-                main()
-        finally:
-            sys.stdin, sys.argv = saved_stdin, saved_argv
-        output = captured.getvalue()
-        assert output.strip(), f"{label} on stdin emitted nothing, which Claude Code reads as an allow"
-        decided = json.loads(output)["hookSpecificOutput"]
-        assert decided["permissionDecision"] == "deny", f"{label} must deny: {output!r}"
-        assert decided["permissionDecisionReason"] == _UNEVALUABLE, output
-
-
-def _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced() -> None:
-    """`str()` on an unexpected shape does not raise, so the crash backstop never covered this one.
-
-    `{"command": ["echo $ACLI_TOKEN"]}` stringified to `['echo $ACLI_TOKEN']`, and the bracket-and-quote
-    punctuation around the text means none of the deny patterns matched what is plainly the leak — an
-    allow reached without any exception for `main()` to catch. An absent `command` is a different thing
-    and still allows: a Bash call with nothing to run has nothing to leak.
-
-    `tool_name` is the same family: `tool != "Bash"` is a correct allow for every other tool and was
-    therefore also an allow for a shape this hook cannot read, like `["Bash"]`.
-    """
-    global _EXTRA_WORDS
-    saved = _EXTRA_WORDS
-    _EXTRA_WORDS = frozenset()
-    try:
-        for shape in (["echo $ACLI_TOKEN"], {"cmd": "env"}, 5, True, ["env"]):
-            got = decision("Bash", {"command": shape})
-            assert got == _UNREADABLE_COMMAND, f"a {type(shape).__name__}-shaped command must deny: {got!r}"
-        assert decision("Bash", {}) is None, "an absent command has nothing to run and nothing to leak"
-        assert decision("Bash", {"command": None}) is None
-        assert decision("Bash", {"command": ""}) is None
-        for tool in (["Bash"], {"name": "Bash"}, 5, None, True):
-            got = decision(tool, {"command": "env"})
-            assert got == _UNREADABLE_TOOL, f"a {type(tool).__name__}-shaped tool_name must deny: {got!r}"
-        assert decision("Write", {"command": "env"}) is None, "a string naming another tool still allows"
-    finally:
-        _EXTRA_WORDS = saved
 
 
 def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:
@@ -2307,6 +527,128 @@ def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:
             assert decision("Bash", {"command": command}) is None, (
                 f"an in-place edit carrying no secret name is not this hook's to deny: {command!r}"
             )
+    finally:
+        _EXTRA_WORDS = saved
+
+
+def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
+    """A hook slow enough to stall a session is the same fail-open shape as one that crashes.
+
+    `_interpreter_reason` re-scans the remaining tokens once per interpreter-shaped token, so 50000
+    `python` tokens took ~38s on every Bash call that shape reached — no output for long enough that
+    Claude Code has nothing to act on. The ceiling in `decision()` refuses that input outright, so the
+    bound that matters is on the worst input the ceiling *admits*, not on the refusal, which scans
+    nothing at all by construction. 5s is deliberately loose against the ~0.14s measured here: the
+    property is a latency budget that has to hold on slower hardware, not a benchmark.
+    """
+    import time
+
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
+    try:
+        oversized = "python " * 50_000
+        started = time.perf_counter()
+        reason = decision("Bash", {"command": oversized})
+        elapsed = time.perf_counter() - started
+        assert reason == _TOO_LONG, f"an oversized command must be refused by the ceiling: {reason!r}"
+        assert elapsed < 1.0, f"the ceiling must refuse before any scan, took {elapsed:.2f}s"
+        assert oversized[:20] not in reason, "the reason must not echo the command back"
+        worst = "python " * (MAX_COMMAND_CHARS // 7)
+        assert len(worst) <= MAX_COMMAND_CHARS, "the worst admitted case must sit under the ceiling"
+        started = time.perf_counter()
+        assert decision("Bash", {"command": worst}) != _TOO_LONG, "and must be scanned, not refused"
+        elapsed = time.perf_counter() - started
+        assert elapsed < 5.0, f"the worst input the ceiling admits took {elapsed:.2f}s"
+        assert decision("Bash", {"command": "x" * MAX_COMMAND_CHARS}) is None, (
+            "the ceiling is exclusive: a command exactly at it is still evaluated normally"
+        )
+        # Nothing a human writes in one Bash call comes near this, including a long compound one.
+        compound = " && ".join(["git status", "pytest -q -k something_fairly_long", "ruff check ."] * 40)
+        assert len(compound) < MAX_COMMAND_CHARS // 4, f"a real compound command is small: {len(compound)}"
+        assert decision("Bash", {"command": compound}) is None, "and must not trip the ceiling"
+        assert decision("Bash", {"command": f"{compound} && echo $ACLI_TOKEN"}) is not None, (
+            "a leak in a long-but-admitted command is still scanned and still denied"
+        )
+    finally:
+        _EXTRA_WORDS = saved
+
+
+def _test_an_input_that_cannot_be_read_or_evaluated_denies_rather_than_returning_silently() -> None:
+    """Every way `main()` can fail to decide must deny, including the read that happens before the try.
+
+    `json.load(sys.stdin)` raises `UnicodeDecodeError` on malformed bytes and `OSError` on a broken
+    pipe, neither of which a `JSONDecodeError`-only catch covers — so both escaped as an unhandled
+    crash, and a `PreToolUse` hook that writes nothing is read as no decision, i.e. an allow. The
+    caught case returned silently, which is that same allow — and so did input that parsed into
+    something other than a JSON object. A crash inside `decision()` itself is the same rule, and is
+    reachable: `_env_reason` recurses once per `env` layer, so a long enough chain of them raises
+    `RecursionError` on an input short enough for `MAX_COMMAND_CHARS` to admit.
+    """
+    import contextlib
+    import io
+
+    class _Unreadable(io.TextIOBase):
+        def read(self, *_args) -> str:
+            raise OSError("broken pipe")
+
+    class _Undecodable(io.TextIOBase):
+        def read(self, *_args) -> str:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    saved_stdin, saved_argv = sys.stdin, sys.argv
+    for label, stream in (
+        ("malformed JSON", io.StringIO("{not json")),
+        ("a broken pipe", _Unreadable()),
+        ("undecodable bytes", _Undecodable()),
+        ("a JSON list", io.StringIO("[]")),
+        ("a JSON string", io.StringIO('"env"')),
+        ("a JSON number", io.StringIO("5")),
+        ("JSON null", io.StringIO("null")),
+        ("a command that crashes the walk", io.StringIO(json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "env " * 5000}},
+        ))),
+    ):
+        captured = io.StringIO()
+        try:
+            sys.argv = [saved_argv[0]]  # the hook's stdin path, not the self-test this runs inside
+            sys.stdin = stream  # type: ignore[assignment]
+            with contextlib.redirect_stdout(captured):
+                main()
+        finally:
+            sys.stdin, sys.argv = saved_stdin, saved_argv
+        output = captured.getvalue()
+        assert output.strip(), f"{label} on stdin emitted nothing, which Claude Code reads as an allow"
+        decided = json.loads(output)["hookSpecificOutput"]
+        assert decided["permissionDecision"] == "deny", f"{label} must deny: {output!r}"
+        assert decided["permissionDecisionReason"] == _UNEVALUABLE, output
+
+
+def _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced() -> None:
+    """`str()` on an unexpected shape does not raise, so a crash backstop never covered this one.
+
+    `{"command": ["echo $ACLI_TOKEN"]}` stringified to `['echo $ACLI_TOKEN']`, and the bracket-and-quote
+    punctuation around the text means none of the deny patterns matched what is plainly the leak — an
+    allow reached without any exception for `main()` to catch. An absent `command` is a different thing
+    and still allows: a Bash call with nothing to run has nothing to leak.
+
+    `tool_name` is the same family: `tool != "Bash"` is a correct allow for every other tool and was
+    therefore also an allow for a shape this hook cannot read, like `["Bash"]`.
+    """
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
+    try:
+        for shape in (["echo $ACLI_TOKEN"], {"cmd": "env"}, 5, True, ["env"]):
+            got = decision("Bash", {"command": shape})
+            assert got == _UNREADABLE_COMMAND, f"a {type(shape).__name__}-shaped command must deny: {got!r}"
+        assert decision("Bash", {}) is None, "an absent command has nothing to run and nothing to leak"
+        assert decision("Bash", {"command": None}) is None
+        assert decision("Bash", {"command": ""}) is None
+        for tool in (["Bash"], {"name": "Bash"}, 5, None, True):
+            got = decision(tool, {"command": "env"})
+            assert got == _UNREADABLE_TOOL, f"a {type(tool).__name__}-shaped tool_name must deny: {got!r}"
+        assert decision("Write", {"command": "env"}) is None, "a string naming another tool still allows"
     finally:
         _EXTRA_WORDS = saved
 

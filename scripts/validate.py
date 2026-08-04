@@ -260,9 +260,10 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
 
     The directory's own presence fails too, not just references to it: with the `.gitignore` entry
     gone it is one `git add -A` from being committed. That presence check is the *only* thing that
-    reports a leftover directory, so the content scan below skips `.scratch/` for the same reason
-    `check_config_seam` does: a leftover directory holds thousands of files that legitimately name
-    `.scratch/`, and one failure each would bury the single actionable "delete it" message.
+    reports a leftover directory, so the content scan below returns immediately once it fires rather
+    than also walking `.scratch/`'s content: a leftover directory holds thousands of files that
+    legitimately name `.scratch/`, so scanning them would both bury the single actionable "delete it"
+    message under one failure per file and make the walk itself slow enough to look like a hang.
 
     `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
     installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
@@ -276,6 +277,7 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
             f"{_SCRATCH_HINT}",
             errors,
         )
+        return
     for p in sorted(ROOT.rglob("*")):
         if not p.is_file() or (p.suffix not in _SCRATCH_REF_SUFFIXES and p.name != ".gitignore"):
             continue

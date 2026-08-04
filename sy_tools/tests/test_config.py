@@ -526,12 +526,24 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
     only constrains the *identifier* relative to the root, not the root itself, so a repo-committed
     `.shipyard/config.json` pointing `scratch.dir` at (or above) its own checkout would otherwise hand
     `review_guard.py`'s hunt-mode write sandbox the checkout's own source.
+
+    A literal, already-canonical parent path is the vacuous spelling of this exploit -- pytest's own
+    `tmp_path` is already resolved, so that spelling alone would pass even without comparing resolved
+    paths. Both a `..`-suffixed spelling and a spelling through a symlinked ancestor are exercised too,
+    since either is indistinguishable from an ordinary absolute value and must still be caught.
     """
-    layer = {**FIXTURE_LAYER, "scratch": {"dir": str(fixture_repo.parent)}}
-    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
-    config.reload()
-    with pytest.raises(config.ConfigError, match="contains this repository's own checkout"):
-        config.repo_scratch_dir(fixture_repo)
+    literal_parent = str(fixture_repo.parent)
+    dotdot_spelling = str(fixture_repo / "..")
+    symlinked_dir = fixture_repo.parent / "symlinked-ancestor"
+    symlinked_dir.symlink_to(fixture_repo.parent, target_is_directory=True)
+    symlink_spelling = str(symlinked_dir)
+
+    for spelling in (literal_parent, dotdot_spelling, symlink_spelling):
+        layer = {**FIXTURE_LAYER, "scratch": {"dir": spelling}}
+        (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+        config.reload()
+        with pytest.raises(config.ConfigError, match="contains this repository's own checkout"):
+            config.repo_scratch_dir(fixture_repo)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

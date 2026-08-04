@@ -235,7 +235,8 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
         )
     logical = _logical_repo(origin)
     directory = scratch_dir(logical.name)
-    if directory == logical or directory in logical.parents:
+    resolved = directory.resolve()
+    if resolved == logical or resolved in logical.parents:
         raise SystemExit(
             f"sy_config: the resolved scratch directory {directory} contains this repository's own "
             f"checkout ({logical}). scratch.dir must not resolve to the checkout itself or an ancestor "

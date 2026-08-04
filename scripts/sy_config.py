@@ -225,6 +225,10 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
     repo-committed `.shipyard/config.json` can set: `scratch_dir()` already refuses a non-absolute
     root, but nothing stops an absolute value that happens to equal or contain the checkout being
     reviewed, which would hand `review_guard.py`'s hunt-mode write sandbox the checkout's own source.
+    The comparison is by device and inode, not by resolved spelling: `Path.resolve()` normalizes
+    symlinks, `.` and `..`, but not case, and a case-insensitive filesystem (APFS's default) lets a
+    differently-cased spelling of the same ancestor stay string-unequal to `logical` while being the
+    identical directory on disk.
     """
     origin = Path(start) if start is not None else repo_root()
     common = _git_common_dir(origin)
@@ -235,14 +239,15 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
         )
     logical = _logical_repo(origin)
     directory = scratch_dir(logical.name)
-    resolved = directory.resolve()
-    if resolved == logical or resolved in logical.parents:
+    if _same_directory(directory, logical) or any(
+        _same_directory(directory, parent) for parent in logical.parents
+    ):
         raise SystemExit(
-            f"sy_config: the resolved scratch directory {directory} contains this repository's own "
-            f"checkout ({logical}). scratch.dir must not resolve to the checkout itself or an ancestor "
-            "of it — every file inside the checkout would then satisfy the containment check that is "
-            "supposed to keep hunt out of it; check for a misconfigured scratch.dir in a committed "
-            "or local .shipyard/config.json."
+            f"sy_config: the resolved scratch directory {directory.resolve()} contains this "
+            f"repository's own checkout ({logical}). scratch.dir must not resolve to the checkout "
+            "itself or an ancestor of it — every file inside the checkout would then satisfy the "
+            "containment check that is supposed to keep hunt out of it; check for a misconfigured "
+            "scratch.dir in a committed or local .shipyard/config.json."
         )
     return directory
 
@@ -647,6 +652,23 @@ def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
     if proc.returncode != 0 or proc.stdout.strip() != "true":
         return False
     return _git_common_dir(candidate) == common
+
+
+def _same_directory(a: Path, b: Path) -> bool:
+    """Whether `a` and `b` name the same directory on disk, by device and inode rather than spelling.
+
+    `repo_scratch_dir`'s checkout-overlap guard cannot compare resolved paths as strings: a
+    case-insensitive filesystem (APFS's default) resolves a differently-cased spelling of the same
+    ancestor to a string that is unequal to the checkout's own canonical spelling, even though it
+    names the identical directory — the exact gap a resolved-path comparison alone left open. A
+    missing or unreadable directory can never be "the same" as one that exists.
+    """
+    try:
+        stat_a = a.stat()
+        stat_b = b.stat()
+    except OSError:
+        return False
+    return (stat_a.st_dev, stat_a.st_ino) == (stat_b.st_dev, stat_b.st_ino)
 
 
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:

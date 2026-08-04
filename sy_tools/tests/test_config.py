@@ -529,16 +529,26 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
 
     A literal, already-canonical parent path is the vacuous spelling of this exploit -- pytest's own
     `tmp_path` is already resolved, so that spelling alone would pass even without comparing resolved
-    paths. Both a `..`-suffixed spelling and a spelling through a symlinked ancestor are exercised too,
-    since either is indistinguishable from an ordinary absolute value and must still be caught.
+    paths. A `..`-suffixed spelling, a spelling through a symlinked ancestor, and -- on a
+    case-insensitive filesystem, probed rather than assumed -- a differently-cased spelling of the
+    same ancestor are exercised too, since each is indistinguishable from an ordinary absolute value
+    and `Path.resolve()` alone normalizes none of them the way a device+inode comparison does.
     """
     literal_parent = str(fixture_repo.parent)
     dotdot_spelling = str(fixture_repo / "..")
     symlinked_dir = fixture_repo.parent / "symlinked-ancestor"
     symlinked_dir.symlink_to(fixture_repo.parent, target_is_directory=True)
     symlink_spelling = str(symlinked_dir)
+    spellings = [literal_parent, dotdot_spelling, symlink_spelling]
 
-    for spelling in (literal_parent, dotdot_spelling, symlink_spelling):
+    probe_dir = fixture_repo.parent / "CaseProbeDir"
+    probe_dir.mkdir()
+    case_variant_probe = probe_dir.parent / "caseprobedir"
+    if case_variant_probe.is_dir() and config._same_directory(case_variant_probe, probe_dir):
+        case_variant_ancestor = fixture_repo.parent.parent / fixture_repo.parent.name.swapcase()
+        spellings.append(str(case_variant_ancestor))
+
+    for spelling in spellings:
         layer = {**FIXTURE_LAYER, "scratch": {"dir": spelling}}
         (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
         config.reload()

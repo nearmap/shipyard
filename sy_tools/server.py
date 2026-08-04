@@ -738,15 +738,20 @@ def validate_config() -> dict[str, Any]:
     # The canonical status vocabulary refuses to resolve on a column-name collision, and nothing here
     # asked it: a config with two statuses under one column name validated clean and then broke on the
     # first `canonical_status`/`native_status` call instead, which is the one fault this tool exists to
-    # name. `TrackerError` is what that refusal is, so it becomes an error like any other. A config that
-    # will not resolve at all reaches this as `ConfigError` and is dropped, because `config.validate()`
-    # above has already reported that same failure and reporting it twice names one fault as two.
+    # name. `column_collisions()` reports that instead of raising, and reports only that: asking
+    # `column_names()` for the same answer added its own "missing required column name(s)" line for
+    # every key `config.validate()` had already reported unset, naming one fault twice on the state of
+    # any unconfigured repo. A `ConfigError` raised while reading those keys is a reason no tracker verb
+    # can use this config — a credential-shaped key, a `config-map.json` that will not parse — and
+    # `config.validate()` does not reach it, so it is reported here; dropping it answered `valid: true`
+    # for a config that cannot resolve at all. It is reported only when it is not already in the list,
+    # because a config that will not resolve raises the *same* message out of both calls, and naming one
+    # fault twice is the other half of what this wiring got wrong.
     try:
-        tracker.column_names()
-    except tracker.TrackerError as exc:
-        errors.append(str(exc))
-    except config.ConfigError:
-        pass
+        errors.extend(tracker.column_collisions())
+    except config.ConfigError as exc:
+        if str(exc) not in errors:
+            errors.append(str(exc))
     report: dict[str, Any] = {"valid": not errors, "errors": errors}
     try:
         report["tracker"] = config.get("tracker")

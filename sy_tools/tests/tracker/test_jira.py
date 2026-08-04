@@ -842,6 +842,74 @@ async def test_a_relational_field_jira_omits_still_reads_as_no_relations(credent
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "labels",
+    ["needs-spec", [{"name": "needs-spec"}, "ok"], 5],
+    ids=["string-not-a-list", "object-entry", "number"],
+)
+async def test_a_labels_field_that_is_not_a_list_of_strings_fails_the_read(credentials, monkeypatch, labels):
+    """Filtering the field to the strings in it invented labels, dropped labels, or crashed outright.
+
+    A bare string was iterated into its own characters, an entry that was an object vanished from a
+    list that still looked plausible, and a number raised a `TypeError` past every `TrackerError` this
+    module promises. `add_label` already refuses this exact shape rather than writing it back, so the
+    read that feeds it has to refuse it too — otherwise the two disagree about the same field.
+    """
+    drifted = {**ISSUE, "fields": {**ISSUE["fields"], "labels": labels}}
+    _transport(monkeypatch, drifted, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "labels" in message and "not a list of strings" in message, message
+    assert "needs-spec" not in message and FAKE_TOKEN not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "entry", [{"id": "10099"}, "PROJ-9", None], ids=["object-with-no-key", "bare-string", "null"],
+)
+async def test_a_child_entry_carrying_no_key_fails_instead_of_being_dropped(credentials, monkeypatch, entry):
+    """A skipped entry returned a shorter list while `children_truncated` still reported `False`.
+
+    That is a read claiming to be complete with a real child missing from it — the drift the per-comment
+    refusal already exists for, one field over.
+    """
+    drifted = {**ISSUE, "fields": {**ISSUE["fields"], "subtasks": [{"key": "PROJ-8"}, entry]}}
+    _transport(monkeypatch, drifted, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "subtasks" in message and "entry 1" in message, message
+    assert "PROJ-8" not in message and "PROJ-9" not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_malformed_link_entry_fails_while_another_link_type_is_still_filtered(credentials, monkeypatch):
+    """One silent `continue` covered two different things, and only one of them is correct.
+
+    Skipping a well-formed link of some other type is what this parse is for; skipping an entry it
+    cannot read at all reported "nothing is blocking this issue", which is what a caller acts on.
+    """
+    for entry in ("PROJ-5", None):
+        drifted = {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}
+        _transport(monkeypatch, drifted, THREAD)
+        with pytest.raises(TrackerError) as failure:
+            await adapter.JiraAdapter().get_issue("PROJ-7")
+        assert "issuelinks" in str(failure.value) and "entry 0" in str(failure.value), failure.value
+
+    other_type = {"type": {"name": "Relates"}, "outwardIssue": {"key": "PROJ-4"}}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [other_type]}}, THREAD)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    assert full["dependencies"] == [], f"a non-blocking link is filtered, not a failure: {full}"
+
+
+@pytest.mark.anyio
 async def test_a_dependency_read_back_through_a_drifted_field_is_not_reported_as_verified(
     credentials, monkeypatch
 ):

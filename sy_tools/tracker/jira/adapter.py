@@ -761,14 +761,26 @@ def _summary(base: str, key: str, fields: dict) -> dict:
 
     Both verbs build their common half here so the two can never drift into reporting the same issue
     under different key names or with one side canonicalised and the other native.
+
+    `labels` is refused rather than filtered when it is not a list of strings, exactly as `add_label`
+    refuses to write such a field back. Filtering was worse than either: a string `"needs-spec"` came
+    back as its own characters, an entry that was an object was dropped from an otherwise plausible
+    list, and a number raised a bare `TypeError` past every `TrackerError` this module promises. Absent
+    is `[]`, honestly — Jira omits the field on an issue with no labels.
     """
+    labels = fields.get("labels")
+    if labels is not None and (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)):
+        raise TrackerError(
+            f"{key} returned a labels field that is not a list of strings but {_shape(labels)}; refusing "
+            "to report labels this read cannot parse, since a filtered list reads as the issue's real ones"
+        )
     return {
         "id": key,
         "title": str(fields.get("summary") or ""),
         "status": canonical_status(_field(fields.get("status"), "name")),
         "type": canonical_type(_field(fields.get("issuetype"), "name")),
         "parent": _field(fields.get("parent"), "key"),
-        "labels": [x for x in fields.get("labels") or [] if isinstance(x, str)],
+        "labels": labels or [],
         "url": _browse(base, key),
     }
 
@@ -819,6 +831,11 @@ def _linked(links: object, side: str, field: str) -> list[str]:
     being read. So on a read of X, a counterpart under `BLOCKER_SIDE` blocks X, and one under
     `BLOCKED_SIDE` is blocked by X.
 
+    A well-formed link naming some other type is skipped — that filter is what this function is for — but
+    an entry that is not a link object at all fails the read, for the same reason a whole field of the
+    wrong shape does. One silent `continue` used to cover both, so malformed and irrelevant were
+    indistinguishable and a link this could not parse reported as no link.
+
     This was measured, not assumed, because getting it backwards is silent and inverts every
     dependency: a link posted as "AM-1245 blocks AM-1246" reads back on AM-1246 with AM-1245 under
     `outwardIssue`, and on AM-1245 with AM-1246 under `inwardIssue`. Confirmed against real linked
@@ -839,8 +856,13 @@ def _linked(links: object, side: str, field: str) -> list[str]:
             "this issue are unknown and it must not be reported as having none"
         )
     found = []
-    for link in links:
-        if not isinstance(link, dict) or (_field(link.get("type"), "name") or "").lower() != BLOCKS.lower():
+    for index, link in enumerate(links):
+        if not isinstance(link, dict):
+            raise TrackerError(
+                f"entry {index} of the {field} field is not a link object but {_shape(link)}, so the "
+                "relations on this issue are unknown and it must not be reported as having none"
+            )
+        if (_field(link.get("type"), "name") or "").lower() != BLOCKS.lower():
             continue
         key = _field(link.get(side), "key")
         if key:
@@ -849,11 +871,16 @@ def _linked(links: object, side: str, field: str) -> list[str]:
 
 
 def _keys(value: object, field: str) -> list[str]:
-    """Every issue key in a list-of-issues field, ignoring entries that carry none.
+    """Every issue key in a list-of-issues field. An entry carrying none fails the read.
 
     Absent is empty, for the same reason as `_linked`: Jira omits a relation field an issue has none
     of. Present but not a list raises instead, naming `field` — a child list that cannot be parsed
     reads as a bare, undecomposed issue, which is precisely the answer a caller acts on.
+
+    An entry that is not an issue object, or is one with no key, raises for that same reason one level
+    down: skipping it returned a *shorter* list while `children_truncated` still reported `False`, so
+    the read claimed to be complete while a real child was missing from it — the drift `_comments`
+    already refuses per entry.
     """
     if value is None:
         return []
@@ -862,7 +889,16 @@ def _keys(value: object, field: str) -> list[str]:
             f"the {field} field read back as {_shape(value)}, not a list of issues, so the related "
             "issues on this issue are unknown and it must not be reported as having none"
         )
-    return [key for entry in value if (key := _field(entry, "key"))]
+    keys: list[str] = []
+    for index, entry in enumerate(value):
+        key = _field(entry, "key")
+        if not key:
+            raise TrackerError(
+                f"entry {index} of the {field} field carries no issue key, only {_shape(entry)}, so this "
+                "list cannot be read whole; it must not come back one issue short of what Jira returned"
+            )
+        keys.append(key)
+    return keys
 
 
 def _field(value: object, key: str) -> str | None:

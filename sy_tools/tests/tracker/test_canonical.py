@@ -83,6 +83,34 @@ def test_two_statuses_sharing_one_column_name_is_refused_rather_than_first_match
     assert "In Progress" in message or "in progress" in message, f"and the name they share: {message}"
 
 
+def test_column_collisions_reports_the_same_collision_without_reporting_a_missing_column(monkeypatch):
+    """What a validator needs and `column_names()` cannot give it: the collision, reported not raised.
+
+    Same sentence as the refusal, because both come from one grouping — a validator quoting a different
+    wording than the failure a session actually hits is worse than not checking. And a column that is
+    simply unset is not this function's finding: the required-key check already reports it, and having
+    this report it too named one fault twice for every unconfigured repo.
+    """
+    shared = {**COLUMNS, "columns.done": "created"}
+    monkeypatch.setattr(tracker.config, "get", lambda key, *, default=None: shared.get(key, default))
+    with pytest.raises(tracker.TrackerError) as failure:
+        tracker.column_names()
+    assert tracker.column_collisions() == [str(failure.value)], tracker.column_collisions()
+
+    monkeypatch.setattr(tracker.config, "get", lambda key, *, default=None: {}.get(key, default))
+    assert tracker.column_collisions() == [], "an unset column is the required-key check's to report"
+
+
+def test_column_collisions_lets_a_refusing_config_read_propagate(monkeypatch):
+    """A config that will not answer at all must not read as "no collisions" to the validator."""
+    def refuses(key, *, default=None):
+        raise tracker.config.ConfigError(f"config key {key!r} could not be read")
+
+    monkeypatch.setattr(tracker.config, "get", refuses)
+    with pytest.raises(tracker.config.ConfigError):
+        tracker.column_collisions()
+
+
 def test_a_collision_fails_every_caller_not_just_the_one_that_reads_the_column(monkeypatch):
     """Detection sits in `column_names`, so the whole vocabulary refuses to resolve, not one lookup."""
     monkeypatch.setattr(

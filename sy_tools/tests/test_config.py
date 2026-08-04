@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from sy_tools import config, server
+from sy_tools import config, server, tracker
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
@@ -1080,6 +1080,48 @@ def _size_limited_migrate_probe(cwd: Path, out: Path, *, limit: int) -> subproce
     )
 
 
+def test_both_validators_report_two_columns_configured_under_one_name(fixture_repo):
+    """The collision the canonical vocabulary refuses on, which only the MCP validator used to name.
+
+    The CLI's `validate` and the `validate_config` tool are one contract read two ways, so the CLI
+    reporting a config the tool refuses would send a repo into a session that breaks on its first
+    status read. Compared line for line against `column_collisions()` rather than against a copy of the
+    wording, like every other parity assertion in this file: two hand-maintained mirrors of one message
+    are exactly what drifts.
+    """
+    colliding = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "fixture in progress"}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(colliding), encoding="utf-8")
+    config.reload()
+
+    proc = _validate_probe(fixture_repo)
+
+    assert proc.returncode == 0, f"validate() must return its errors, not exit: {proc.stderr}"
+    reported = [line for line in proc.stdout.splitlines() if "shared by more than one" in line]
+    assert len(reported) == 1, f"one collision must be one line: {proc.stdout!r}"
+    assert reported == tracker.column_collisions(), "both validators must report the same sentence"
+    assert "columns.ready" in reported[0] and "columns.in_progress" in reported[0], reported[0]
+
+
+def test_an_unset_column_is_reported_once_by_the_tool_not_twice(fixture_repo):
+    """An unconfigured repo is the commonest input there is, and it named each fault twice.
+
+    Asking `column_names()` for the collision check made it so: the required-key loop already reports
+    every unset `columns.*` key, and that call added its own "missing required column name(s)" line
+    naming the same five. `column_collisions()` answers the collision question alone, so a column that
+    is merely unset is reported by the one check whose business it is.
+    """
+    (fixture_repo / ".shipyard" / "config.json").write_text(
+        json.dumps({**FIXTURE_LAYER, "columns": {}}), encoding="utf-8",
+    )
+    config.reload()
+
+    errors = server.validate_config()["errors"]
+
+    for key in (f"columns.{name}" for name in ("backlog", "ready", "in_progress", "in_review", "done")):
+        assert sum(key in error for error in errors) == 1, f"{key} is named twice: {errors}"
+    assert not any("missing required column name(s)" in error for error in errors), errors
+
+
 def test_both_validators_refuse_a_tracker_that_only_resolves_as_a_path(fixture_repo):
     """`tracker` must be checked against the enumerated adapter names, not by joining it onto a path.
 
@@ -1374,3 +1416,13 @@ def test_env_present_reports_presence_and_reads_an_empty_variable_as_absent(monk
     assert config.env_present("SY_ENV_PRESENT_PROBE") is False, "an empty variable holds no credential"
     monkeypatch.delenv("SY_ENV_PRESENT_PROBE")
     assert config.env_present("SY_ENV_PRESENT_PROBE") is False
+
+
+def test_a_name_the_environment_cannot_encode_is_absent_rather_than_a_crash():
+    """`os.environ.get("\\ud800")` raises `UnicodeEncodeError`, which reached `check_env` as a crash.
+
+    A refusal is fine and a `False` is fine; an internal error out of a tool whose whole job is a
+    presence answer is not. Nothing can export an unpaired surrogate, so absent is also the true answer.
+    """
+    assert config.env_present("\ud800") is False
+    assert config.env_present("ACLI_\udfff_TOKEN") is False

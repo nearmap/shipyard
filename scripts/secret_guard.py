@@ -52,9 +52,9 @@ from secret_words import looks_like_secret_name as _base_looks_like_secret_name
 
 _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
     "sudo": frozenset({
-        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D", "-R", "-T",
+        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D", "-R", "-T", "-a", "-c",
         "--user", "--group", "--prompt", "--close-from", "--host", "--role", "--type",
-        "--other-user", "--chdir", "--chroot", "--command-timeout",
+        "--other-user", "--chdir", "--chroot", "--command-timeout", "--auth-type", "--login-class",
     }),
     "nice": frozenset({"-n", "--adjustment"}),
     "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
@@ -65,6 +65,16 @@ _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
     "command": frozenset(),
 }
 _WRAPPER_POSITIONALS = {"timeout": 1}  # timeout's mandatory DURATION, consumed after its flags
+_WRAPPER_EXACT_ONLY_FLAGS: dict[str, frozenset[str]] = {"sudo": frozenset({"--login"})}
+"""Long options that take no value and must not be read as an abbreviation of one that does.
+
+`getopt_long` resolves an exact match before it considers any abbreviation, so `sudo --login` is
+sudo's own boolean `-i` and never a short spelling of the `--login-class` listed above it. The
+prefix matching in `_consumes_next` cannot know that from `_WRAPPER_ARG_FLAGS` alone — every long
+option there takes a value — so the few value-less options that are a proper prefix of a listed one
+are named here. Without this, `sudo --login echo $VAR` consumed `echo` as a flag value and the leak
+behind it went unchecked: the same landing-miss as the bug prefix matching exists to fix, in the
+opposite direction."""
 WRAPPERS = frozenset(_WRAPPER_ARG_FLAGS)
 PRINTING_COMMANDS = {"echo", "printf", "print"}
 _ENV_ARG_FLAGS = {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
@@ -82,8 +92,10 @@ _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _ADVICE = (
     "this can print a secret value into this command's own tool-call result, which becomes "
     "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
-    "variable is set, never its value — or for the tracker: `sy_preflight.py check` / the adapter's "
-    "`preflight` command, which names what's missing or dead without ever printing a value."
+    "variable is set, never its value — or, with no MCP session available, the shell equivalent "
+    '`[ -n "$THE_VAR" ]`, which tests presence without printing anything. For the tracker: '
+    "`sy_preflight.py check` / the adapter's `preflight` command, which names what's missing or dead "
+    "without ever printing a value."
 )
 
 
@@ -161,18 +173,24 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     it basenames what it lands on so `/bin/echo` reads as `echo`. A bare `--` ends that wrapper's
     option processing.
 
-    Both ways of miscounting can fail open, so neither direction is a safe default and the tables are
-    kept complete for exactly that reason. Over-consuming — treating a flag as value-taking when it
-    isn't — steps past the real command onto its first argument. Under-consuming lands the walk on the
-    value of a value-taking flag this file failed to list, and if that value is an ordinary token
-    rather than itself flag-shaped, the walk stops there and reads it as the command: `sudo -T 5 echo
-    $VAR` read `5` as the command and allowed the leak until `-T` was listed. Only where the
-    wrongly-treated token is itself flag-shaped does under-consuming survive, because the flag loop
-    keeps walking. So a flag confirmed to take a separated value consumes two tokens and every other
-    flag consumes one — an unrecognised `-x` is skipped rather than treated as the command, since
-    landing on the real command is what makes the deny reachable — and a wrapper's flag set is
-    completed from its documented synopsis, not from whatever this host happens to have installed.
-    `--flag=value` and an attached short value (`-o0`) are one token by construction.
+    Both ways of miscounting can fail open, so neither direction is a safe default. Over-consuming —
+    treating a flag as value-taking when it isn't — steps past the real command onto its first
+    argument. Under-consuming lands the walk on the value of a value-taking flag it failed to
+    recognise, and if that value is an ordinary token rather than itself flag-shaped, the walk stops
+    there and reads it as the command: `sudo -T 5 echo $VAR` read `5` as the command and allowed the
+    leak until `-T` was listed. Only where the wrongly-treated token is itself flag-shaped does
+    under-consuming survive, because the flag loop keeps walking.
+
+    A complete flag table is necessary but not sufficient, because a shell does not require a flag to
+    be spelled the way the table spells it: `sudo -nu root echo $VAR` clusters the boolean `-n` with
+    the value-taking `-u`, and `sudo --us root echo $VAR` abbreviates `--user` the way `getopt_long`
+    permits. Testing a token for exact membership in the table saw neither, consumed one token, landed
+    on `root` and let the leak behind it run — with `-u` and `--user` both listed the whole time. So
+    the arity decision is `_consumes_next`, which recognises clustered short options and long-option
+    prefix abbreviation too; without that, this same landing-miss recurs no matter how complete the
+    tables are. A wrapper's flag set is still completed from its documented synopsis rather than from
+    whatever this host has installed, and an unrecognised `-x` is skipped rather than treated as the
+    command, since landing on the real command is what makes the deny reachable.
     """
     tokens = [t.strip("\"'") for t in segment.split()]
     i = 0
@@ -185,16 +203,48 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
         if base not in WRAPPERS:
             break
         flags = _WRAPPER_ARG_FLAGS[base]
+        exact_only = _WRAPPER_EXACT_ONLY_FLAGS.get(base, frozenset())
         i += 1
         while i < len(tokens) and tokens[i].startswith("-"):
             if tokens[i] == "--":
                 i += 1
                 break
-            i += 2 if tokens[i] in flags else 1
+            i += 2 if _consumes_next(tokens[i], flags, exact_only) else 1
         i += _WRAPPER_POSITIONALS.get(base, 0)
     if i >= len(tokens):
         return None
     return tokens[i].lstrip("\\").rsplit("/", 1)[-1], tokens[i + 1:]
+
+
+def _consumes_next(tok: str, flags: frozenset[str], exact_only: frozenset[str] = frozenset()) -> bool:
+    """Whether one option token takes the *next* token as its value, per `getopt`/`getopt_long` rules.
+
+    Exact membership in `flags` alone is not the question, because the same flag has more spellings
+    than the table lists and each one hides the command behind it from `_leading_command`'s walk:
+
+    - A cluster (`-nu`) is scanned left to right, because a value-taking short option ends the
+      cluster: whatever follows it in the same token *is* its value. So the next token is consumed
+      only when the first listed value-taking character is the cluster's last (`sudo -nu root`),
+      and never when something follows it (`stdbuf -o0`, `nice -n10` — attached values, one token).
+      A character the table does not list is a boolean as far as this walk is concerned and the scan
+      continues past it, which is the same "skip an unrecognised flag" the caller already does.
+    - A long option is a match when it equals a listed flag or, per `getopt_long`, when it is a
+      prefix of one (`--us` for `--user`). An ambiguous prefix — one matching several listed flags —
+      still consumes: `getopt_long` refuses such a command outright, so nothing runs either way, and
+      under-consuming is the failure mode that already let real leaks through here. `--flag=value`
+      carries its value in the one token and consumes nothing further, and `exact_only` names the
+      value-less long options that must not be read as an abbreviation of a listed one.
+    """
+    if tok in exact_only:
+        return False
+    if tok in flags:
+        return True
+    if tok.startswith("--"):
+        return "=" not in tok and any(f.startswith(tok) for f in flags if f.startswith("--"))
+    for position, char in enumerate(tok[1:], start=1):
+        if f"-{char}" in flags:
+            return position == len(tok) - 1
+    return False
 
 
 def _segment_reason(segment: str) -> str | None:
@@ -351,6 +401,10 @@ def _self_test() -> None:
         "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
         "sudo -T 5 ls", "sudo -R /some/root ls", "time -o /tmp/x pytest -q", "time -f %e ls",
         "sudo timeout 5 git status", "nohup python script.py",
+        # Clustered and abbreviated spellings of the same wrapper flags, on the allow side: the arity
+        # matcher must not over-consume its way past a harmless command either.
+        "sudo -nu root ls", "sudo --us root ls", "sudo --login ls",
+        "timeout -fs KILL 5 ls", "time -ao /tmp/x pytest -q", "nice -n10 git status",
         "echo hello", "echo $HOME", 'echo "path is $PATH"',
         '[ -n "$ACLI_TOKEN" ]', "[ -z \"$GITHUB_TOKEN\" ] && echo missing",
         'python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN',
@@ -382,6 +436,17 @@ def _self_test() -> None:
         # holding "5"/"/some/root"/"/tmp/x" as the command, which allowed the leak behind it.
         "sudo -T 5 echo $ACLI_TOKEN", "sudo --command-timeout 5 echo $ACLI_TOKEN",
         "sudo -R /some/root echo $ACLI_TOKEN", "sudo --chroot /some/root printenv ACLI_TOKEN",
+        # The same flags spelled the ways a shell also accepts: a cluster ending in a value-taking
+        # short option, and a `getopt_long` prefix abbreviation. Exact-membership arity saw neither,
+        # landed on `root`/`KILL`/`/tmp/x` and let the command behind it run unchecked. Verified live
+        # that the trailing option really does eat the next argv: `sudo -nu NOSUCHUSER_XYZ true` and
+        # `sudo -n --us NOSUCHUSER_XYZ true` both fail with "sudo: unknown user NOSUCHUSER_XYZ".
+        "sudo -nu root echo $ACLI_TOKEN", "sudo --us root echo $ACLI_TOKEN",
+        "sudo -nu root printenv ACLI_TOKEN", "sudo -nu root env",
+        "timeout -fs KILL 5 echo $ACLI_TOKEN", "time -ao /tmp/x echo $ACLI_TOKEN",
+        # The opposite miss the prefix rule can introduce: sudo's own value-less `--login` is a prefix
+        # of the listed `--login-class`, and consuming a value for it steps over `echo`.
+        "sudo --login echo $ACLI_TOKEN", "sudo -i echo $ACLI_TOKEN",
         "/usr/bin/time -o /tmp/x echo $ACLI_TOKEN", "time -f %e echo $ACLI_TOKEN",
         "time --output /tmp/x printenv ACLI_TOKEN", "time --output=/tmp/x echo $ACLI_TOKEN",
         "env echo $ACLI_TOKEN", "env printenv ACLI_TOKEN", "env FOO=bar echo $ACLI_TOKEN",

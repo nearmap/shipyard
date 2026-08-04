@@ -470,6 +470,7 @@ def validate() -> list[str]:
             errors.append(
                 f"{path} is required and unset. Set it in {root / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
+    errors.extend(_column_collisions(flat))
     # A presence check only: the env var's name is reported, its value never read into a variable
     # or a message. `os.environ.get(name)` here is used solely for its truthiness.
     for name in _adapter_map().get("secret_env", []):
@@ -480,6 +481,36 @@ def validate() -> list[str]:
             )
     errors.extend(_validate_models(values, provenance))
     return errors
+
+
+def _column_collisions(flat: dict) -> list[str]:
+    """Every column name more than one canonical status is configured under, as one error line.
+
+    Mirrors `sy_tools/tracker/__init__.py::column_collisions()` — including its message wording, minus
+    that module's `TrackerError` framing — because the CLI's `validate` and the `validate_config` tool
+    are one contract read two ways, and this script deliberately imports nothing from `sy_tools`. The
+    fault it names is silent otherwise: the canonical vocabulary matches a column name ignoring case
+    and returns its first hit, so two statuses under one name leave an issue in that column reporting
+    as only one of them for every reader.
+
+    A column that is missing or blank is skipped rather than reported here, so this never restates the
+    `REQUIRED_PATHS` loop above: one fault, one line.
+    """
+    sharing: dict[str, tuple[str, list[str]]] = {}
+    for column in CANONICAL_COLUMNS:
+        key = f"columns.{column}"
+        name = str(flat.get(key) or "").strip()
+        if name:
+            sharing.setdefault(name.lower(), (name, []))[1].append(key)
+    collisions = sorted((name, keys) for name, keys in sharing.values() if len(keys) > 1)
+    if not collisions:
+        return []
+    return [
+        "column name(s) shared by more than one canonical status: "
+        + "; ".join(f"{', '.join(sorted(keys))} all name {name!r}" for name, keys in collisions)
+        + ". Each status needs its own column, or an issue in that column reports as only one of "
+        "them and the others become unreachable. Names are compared ignoring case."
+    ]
 
 
 def env_conflicts() -> list[str]:

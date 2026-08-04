@@ -682,8 +682,16 @@ def env_present(name: str) -> bool:
     that has no value to leak: the value is never read into a variable, returned, or logged — only
     whether the variable is set at all. An empty string counts as absent, exactly as that loop reads
     it, since a variable exported empty is indistinguishable in effect from one never exported.
+
+    A name the environment cannot even encode — an unpaired surrogate such as `"\\ud800"` — is absent,
+    not a crash: `os.environ.get` raises `UnicodeEncodeError` on one, which reached `check_env`'s caller
+    as an internal server error instead of an answer. Nothing can export such a name, so "not present"
+    is both the safe answer and the true one.
     """
-    return bool(os.environ.get(name))
+    try:
+        return bool(os.environ.get(name))
+    except UnicodeEncodeError:
+        return False
 
 
 def resolved_root() -> Path:

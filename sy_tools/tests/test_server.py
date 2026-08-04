@@ -250,6 +250,23 @@ def test_validate_config_reports_two_columns_configured_under_one_name(monkeypat
     assert any("columns.ready" in e and "columns.in_progress" in e for e in report["errors"]), report
 
 
+def test_validate_config_reports_a_column_read_that_refuses_rather_than_answering_valid(monkeypatch):
+    """A `ConfigError` raised while reading the column keys is a reason no tracker verb can run.
+
+    `config.validate()` does not reach every one of them — a credential-shaped key, an adapter map that
+    parses for the selected tracker and not for another — and swallowing this one answered
+    `valid: true, errors: []` for a config the very next tool call would refuse. The tool's contract is
+    every reason, so the refusal is a reason like any other.
+    """
+    def refuses(key: str, *, default: Any = None) -> None:
+        raise server.config.ConfigError(f"config key {key!r} is credential-shaped and is never read")
+
+    monkeypatch.setattr(server.tracker.config, "get", refuses)
+    report = server.validate_config()
+    assert report["valid"] is False, report
+    assert any("credential-shaped" in e for e in report["errors"]), report
+
+
 @pytest.mark.anyio
 async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
     """The distinction the MCP spec draws: the call reached the server and produced an answer.

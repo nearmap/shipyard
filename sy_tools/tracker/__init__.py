@@ -192,6 +192,39 @@ def column_names() -> dict[str, str]:
     module rather than a per-repo setting, so no configuration can make two of them collide and
     `canonical_type` is deliberately left alone.
     """
+    resolved, missing = _configured_columns()
+    if missing:
+        raise TrackerError(
+            "missing required column name(s): " + ", ".join(missing)
+            + ". Set them in the repo's .shipyard/config.json; see docs/configuration.md."
+        )
+    collisions = _collision_messages(resolved)
+    if collisions:
+        raise TrackerError(collisions[0])
+    return resolved
+
+
+def column_collisions() -> list[str]:
+    """Every column-name collision among the columns that *are* configured, reported not raised.
+
+    What `validate_config` needs and `column_names()` cannot give it. A diagnosis tool has to report a
+    collision — the fault that validates clean and then breaks the first `canonical_status` call — but
+    calling `column_names()` for that answer named one fault twice on the far commoner input: an
+    unconfigured repo, where `config.validate()`'s own REQUIRED_PATHS check already reports each unset
+    `columns.*` key and `column_names()` then adds its own "missing required column name(s)" line for
+    the same keys. So a missing column is simply absent from the collision check here, not an error:
+    whether a column is configured at all belongs to that check, and collisions among whatever is
+    present belong to this one.
+
+    A `ConfigError` from `config.get` propagates — a credential-shaped key, a layer that will not
+    parse. Swallowing it let a config no tracker verb can use report `valid: true`.
+    """
+    resolved, _ = _configured_columns()
+    return _collision_messages(resolved)
+
+
+def _configured_columns() -> tuple[dict[str, str], list[str]]:
+    """Each canonical status's configured column name, plus the config keys left unset or blank."""
     resolved: dict[str, str] = {}
     missing: list[str] = []
     for canonical, key in STATUS_CONFIG_KEYS.items():
@@ -200,23 +233,27 @@ def column_names() -> dict[str, str]:
             resolved[canonical] = value
         else:
             missing.append(key)
-    if missing:
-        raise TrackerError(
-            "missing required column name(s): " + ", ".join(missing)
-            + ". Set them in the repo's .shipyard/config.json; see docs/configuration.md."
-        )
+    return resolved, missing
+
+
+def _collision_messages(resolved: dict[str, str]) -> list[str]:
+    """One message naming every column name more than one canonical status claims, or nothing.
+
+    Shared so `column_names()`'s refusal and `column_collisions()`'s report are the same sentence about
+    the same grouping: case-insensitive, because that is how `canonical_status` compares names.
+    """
     sharing: dict[str, tuple[str, list[str]]] = {}
     for canonical, name in resolved.items():
         sharing.setdefault(name.lower(), (name, []))[1].append(STATUS_CONFIG_KEYS[canonical])
     collisions = sorted((name, keys) for name, keys in sharing.values() if len(keys) > 1)
-    if collisions:
-        raise TrackerError(
-            "column name(s) shared by more than one canonical status: "
-            + "; ".join(f"{', '.join(sorted(keys))} all name {name!r}" for name, keys in collisions)
-            + ". Each status needs its own column, or an issue in that column reports as only one of "
-            "them and the others become unreachable. Names are compared ignoring case."
-        )
-    return resolved
+    if not collisions:
+        return []
+    return [
+        "column name(s) shared by more than one canonical status: "
+        + "; ".join(f"{', '.join(sorted(keys))} all name {name!r}" for name, keys in collisions)
+        + ". Each status needs its own column, or an issue in that column reports as only one of "
+        "them and the others become unreachable. Names are compared ignoring case."
+    ]
 
 
 def canonical_status(native: str | None) -> str | None:
@@ -283,6 +320,7 @@ __all__ = [
     "adapter",
     "canonical_status",
     "canonical_type",
+    "column_collisions",
     "column_names",
     "native_status",
     "native_type",

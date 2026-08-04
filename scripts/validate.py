@@ -512,13 +512,26 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate agent restates an axis definition; cite spec-gate.md instead of copying it", errors)
     if axis_phrase in spec:
         fail("spec restates a spec-gate axis definition; cite spec-gate.md instead of copying it", errors)
-    tools_value = _frontmatter_field(spec_gate, "tools")
-    if re.search(r"\b(?:Agent|Skill)\b", tools_value):
+    tools_value = _frontmatter_field(spec_gate, "tools").strip()
+    if not tools_value:
+        fail(
+            "spec-gate must declare an explicit tools: list; an absent tools field inherits every tool "
+            "including Agent/Skill, which is the violation this pin exists to block",
+            errors,
+        )
+    elif re.search(r"\b(?:Agent|Skill)\b", tools_value):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
     if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
         fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)
-    if "never writes the Task body" not in spec:
-        fail("spec's post-approval step must state it never writes the Task body", errors)
+    # Section-scoped on purpose: §2 legitimately permits a research-phase body edit, so a whole-file
+    # check passes on §2's prose alone after the guarantee is dropped from the post-approval procedure.
+    # The guarantee is asserted in Step 2 (where the writes happen) rather than across all of §7,
+    # where Step 1's consent sentence would satisfy it on its own.
+    spec_s7 = spec.partition("## 7.")[2].partition("## 8.")[0]
+    if "update-issue" in spec_s7:
+        fail("spec §7 must not reach for update-issue; after approval it posts comments and sets status only", errors)
+    if "never writes the Task body" not in spec_s7.partition("### Step 2")[2]:
+        fail("spec §7's Step 2 procedure must state it never writes the Task body", errors)
     if "Step 2 — after approval" not in spec:
         fail("spec must keep the staged reveal: full plan posted only in Step 2, after approval", errors)
 

@@ -43,7 +43,7 @@ Draft Summary, Context/constraints, and Out of scope. Write the body as short na
 
 ### Existing Task
 
-Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing — that governs research-phase edits; §7 Step 2 never writes the Task body at all, and posts its summary as a comment instead. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
+Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing, and then as a deliberate full rewrite authored from scratch — never a merge around body content read back from the tracker, and it does not carry over rich text a description read cannot represent (see the selected adapter's `ADAPTER.md` on what that read does not guarantee). That governs research-phase edits; §7 Step 2 never writes the Task body at all, and posts its summary as a comment instead. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
 
 ## 3. Resolve standards and deep research
 

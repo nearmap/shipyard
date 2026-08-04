@@ -851,11 +851,47 @@ async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencie
     with pytest.raises(TrackerError, match="not a list of issues"):
         await adapter.GithubAdapter().get_issue("7")
 
+    unaddressable_wrapper = {**_issue_view(), "blockedBy": {"edges": [{"node": {"url": BLOCKER_URL}}]}}
+    _install(monkeypatch, _json(unaddressable_wrapper), _json(_items()))
+    with pytest.raises(TrackerError, match="no nodes list"):
+        await adapter.GithubAdapter().get_issue("7")
+
     absent = {key: value for key, value in _issue_view().items() if key != "blockedBy"}
     _install(monkeypatch, _json(absent), _json(_items()))
     assert (await adapter.GithubAdapter().get_issue("7"))["dependencies"] == [], (
         "an issue gh reports no blockedBy for really has no dependencies"
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("total", [2, 1], ids=["count-sees-the-shortfall", "count-agrees-with-the-short-list"])
+async def test_a_relation_node_that_names_no_issue_is_reported_truncated_not_raised(monkeypatch, board, total):
+    """Found by review: raising per entry here failed `get_issue` whole over one unreadable relation node.
+
+    `_item_index` already settled this trade for the board — a card the credential may not view is skipped,
+    because raising broke every read of every issue over one invisible card — and `_refs` sits inside
+    `get_issue` on two *optional* relations, so a raise there costs the whole issue read as well. What the
+    relation has that the board page did not is `totalCount`, so the node can be skipped and the shortfall
+    reported instead of traded away: the invariant is that no dropped node is claimed complete, not that
+    reading one must fail.
+
+    Both counts are parametrised because the drop is reported from `_refs`'s own tally, not inferred from
+    the lengths: a `totalCount` that drifts down to agree with the shortened list is precisely the silent
+    completeness this guards, and length arithmetic alone would call it complete.
+    """
+    nodes = [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}]
+    _install(
+        monkeypatch,
+        _json({**_issue_view(), "blockedBy": {"nodes": nodes, "totalCount": total}}),
+        _json(_items()),
+    )
+
+    issue = await adapter.GithubAdapter().get_issue("7")
+
+    assert issue["dependencies"] == [BLOCKER_URL], f"the blocker gh did name must still come back: {issue}"
+    assert issue["dependencies_truncated"] is True, f"a dropped node must not read as a whole relation: {issue}"
+    assert issue["title"] == TITLE, "and one unreadable relation node must not fail the whole issue read"
+    assert issue["children_truncated"] is False, "the untouched relation on the same read must not be tainted"
 
 
 @pytest.mark.anyio

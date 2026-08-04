@@ -383,7 +383,7 @@ class GithubAdapter:
     def _sync_add_dependency(self, issue: str, blocked_by: str) -> dict:
         """Add the `blocked by` relation and prove it took by reading the relation back."""
         url = _edit(issue, "--add-blocked-by", blocked_by)
-        found = _refs(_view(url, "blockedBy").get("blockedBy"))
+        found, _ = _refs(_view(url, "blockedBy").get("blockedBy"))
         if not any(_same_ref(ref, blocked_by) for ref in found):
             raise TrackerError(
                 f"{issue} does not read back as blocked by {blocked_by}; the relation was not recorded "
@@ -1237,26 +1237,57 @@ def _ref(node: object) -> str | None:
     return str(node.get("url") or node.get("number") or "") or None
 
 
-def _refs(payload: object) -> list[str]:
-    """Every related issue in a `{nodes: [...]}` relation, tolerating a bare list.
+def _refs(payload: object) -> tuple[list[str], int]:
+    """Every related issue in a `{nodes: [...]}` relation, plus how many entries it could not name.
 
     Tolerant of both wrappers because `subIssues` and `blockedBy` are recent `gh` fields whose shape
     has changed once already, and of an absent relation, which honestly means no related issues.
 
     A relation that is present but not a list is a failure, not an empty one: `dependencies` is what a
     caller reads to decide whether an issue is blocked, and a shape this cannot parse must not come
-    back as "nothing is blocking it" — that reads identically to a genuinely unblocked issue.
+    back as "nothing is blocking it" — that reads identically to a genuinely unblocked issue. A dict
+    carrying no `nodes` key at all is that same failure, not an empty relation: `nodes` is read with no
+    default, because `.get("nodes", [])` admitted any object and answered "no related issues" for the
+    one drift most worth catching — an unrecognised wrapper — which is exactly the "admit any dict, get
+    `[]` back" hole `_read_list` was written to refuse for `labels` and `comments`.
 
-    An entry inside the list that names no issue is the same failure one level down, and it raises here
-    for the reason jira's `_keys` raises on its own equivalent: filtering returned a *shorter* list of
-    relations with nothing saying one was dropped, and unlike a comment thread there is no `totalCount`
-    on the bare-list shape to cross-check it against. One protocol, one behaviour — a drift one adapter
-    refuses must not be the other's quiet shortening. `_ref` itself stays tolerant, because its other
-    caller reads an optional `parent`, where "no node" really does mean unparented.
+    An entry inside the list that names no issue is where this reconciles two rules that pull opposite
+    ways, both of them load-bearing here:
+
+    - jira's `_keys` raises on its own equivalent entry, and one protocol must not have two behaviours:
+      a caller cannot see which tracker replied, so a drift one adapter refuses must not be the other's
+      quiet shortening.
+    - `_item_index` deliberately *skips* a board card the credential may not view instead of raising,
+      because raising failed every read of the whole board over one card nobody can see. `_refs` runs
+      inside `get_issue` on two optional relations, so a raise here has the same blast radius: one
+      unaddressable node would fail the entire issue read, relations a caller did not even ask about
+      included.
+
+    Both are satisfiable at once, because the actual invariant is narrower than "raise": no dropped node
+    may be silently claimed complete. So an entry that names no issue is skipped and counted whenever the
+    relation carries a `totalCount` for `_relation` to report the shortfall from, and raises only when
+    there is no count to report it with — the bare-list shape, or a wrapper that omits the count. That
+    keeps the invariant where it can be signalled and keeps the refusal where it cannot, rather than
+    trading one for the other. `_ref` itself stays tolerant, because its other caller reads an optional
+    `parent`, where "no node" really does mean unparented.
+
+    The count is returned rather than inferred from the lengths, so `_relation` reports a drop even when
+    a drifting `totalCount` happens to agree with the shortened list. `_sync_add_dependency` ignores it,
+    correctly: it searches the relation for the one reference it just wrote rather than reporting the set.
     """
     if payload is None:
-        return []
-    nodes = payload.get("nodes", []) if isinstance(payload, dict) else payload
+        return [], 0
+    if isinstance(payload, dict):
+        if "nodes" not in payload:
+            raise TrackerError(
+                f"a related-issue relation read back as {_shape(payload)}, with no nodes list to read the "
+                "related issues out of, so the relations on this issue are unknown; it must not be reported "
+                "as having none. Check the installed gh version against the fields this adapter requests."
+            )
+        nodes = payload.get("nodes")  # only after the membership check above: absent is a refusal, not []
+        countable = payload.get("totalCount") is not None
+    else:
+        nodes, countable = payload, False
     if not isinstance(nodes, list):
         raise TrackerError(
             f"a related-issue relation read back as {_shape(nodes)}, not a list of issues, so the "
@@ -1264,17 +1295,22 @@ def _refs(payload: object) -> list[str]:
             "installed gh version against the fields this adapter requests."
         )
     refs: list[str] = []
+    dropped = 0
     for index, node in enumerate(nodes):
         ref = _ref(node)
         if ref is None:
-            raise TrackerError(
-                f"entry {index} of a related-issue relation read back as {_shape(node)}, with no url or "
-                "number to name the issue by, so this relation cannot be read whole; it must not come back "
-                "one issue short of what gh returned. Check the installed gh version against the fields "
-                "this adapter requests."
-            )
+            if not countable:
+                raise TrackerError(
+                    f"entry {index} of a related-issue relation read back as {_shape(node)}, with no url or "
+                    "number to name the issue by, and the relation carries no totalCount to report the "
+                    "shortfall from, so it cannot be read whole and must not come back one issue short of "
+                    "what gh returned. Check the installed gh version against the fields this adapter "
+                    "requests."
+                )
+            dropped += 1
+            continue
         refs.append(ref)
-    return refs
+    return refs, dropped
 
 
 def _relation(payload: object) -> tuple[list[str], bool]:
@@ -1292,16 +1328,19 @@ def _relation(payload: object) -> tuple[list[str], bool]:
     truncated instead — a `totalCount` of `"60"` must not skip the check the way a clean `int` comparison
     silently would, which is how false completeness has been reintroduced one type away before.
 
-    The comparison is against the refs rather than the raw nodes, which is now belt and braces: `_refs`
-    raises on a node it cannot address instead of dropping it, so the two lengths can no longer disagree
-    for that reason. Counting the refs keeps this honest if that ever loosens again — a related issue that
-    cannot be named is one this read did not return.
+    A node `_refs` could not name is reported here too, and that is what lets `_refs` skip one instead of
+    failing the whole `get_issue` read over it (see its docstring for why raising there has the blast
+    radius `_item_index` already refuses to accept). It is taken from `_refs`'s own count rather than
+    inferred from `len(found)`, because a shortfall the count cannot see — a `totalCount` that drifts down
+    to agree with the shortened list — is exactly the silent completeness this pair exists to prevent. A
+    drop can only reach here with a count present, since `_refs` raises otherwise, so the early return
+    above cannot hide one.
     """
-    found = _refs(payload)
+    found, dropped = _refs(payload)
     total = payload.get("totalCount") if isinstance(payload, dict) else None
     if total is None:
         return found, False
-    return found, not isinstance(total, int) or isinstance(total, bool) or total > len(found)
+    return found, bool(dropped) or not isinstance(total, int) or isinstance(total, bool) or total > len(found)
 
 
 def _same_ref(ref: str | None, other: str | None) -> bool:

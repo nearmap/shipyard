@@ -1520,10 +1520,13 @@ def test_a_git_timeout_is_retried_on_the_next_call_rather_than_refusing_the_sess
 
     A timeout says nothing about the repository — only that git did not answer inside five seconds, which a
     momentary index lock or a slow filesystem produces — and memoizing that verdict turned one hiccup into a
-    server that refused every later tool call for the rest of its uptime, with `reset_cache()` reachable
-    from no tool an MCP client can call. The CLI twin in `scripts/sy_config.py` keeps memoizing its own,
-    correctly: its process ends with the command. A settled refusal is still memoized here — the case above
-    covers that — so this pins the distinction, not a blanket un-memoizing.
+    server that refused every later tool call for the rest of its uptime. `reset_cache()` *is* reachable
+    without a restart — the `reload_config` tool reaches it through `config.reload()`, and that is the
+    recovery path for the settled refusal which is memoized — but nothing tells a client that a five-second
+    git hiccup is what it is now stuck on, so clearing it would depend on someone guessing to reload the
+    configuration, where the retry needs no client to know anything. The CLI twin in `scripts/sy_config.py`
+    keeps memoizing its own, correctly: its process ends with the command. A settled refusal is still
+    memoized here — the case above covers that — so this pins the distinction, not a blanket un-memoizing.
     """
     real_run = subprocess.run
     wedged = [True]
@@ -1539,6 +1542,45 @@ def test_a_git_timeout_is_retried_on_the_next_call_rather_than_refusing_the_sess
         config.repo_root()
     wedged[0] = False
     assert config.repo_root() == fixture_repo, "a timeout must not be remembered: the next call must retry"
+
+
+def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, monkeypatch):
+    """Memoization is decided by exception class, so all three settled refusals must behave alike.
+
+    The case above pins only the `CLAUDE_PROJECT_DIR`-is-not-a-checkout branch, and the other two are
+    environment faults reached by different code paths: a git that cannot be run at all, and a working
+    directory that can no longer be read under a long-lived server. Neither can come out differently on
+    the next call, so both belong on the remembered side with it, and only the timeout on the retried
+    side. Re-raising the identical exception instance is the assertion — that is what memoizing means
+    here, and unlike a spawn count it also holds for the branch that never reaches git.
+
+    Each break is scoped to its own `monkeypatch.context()` because `fixture_repo`'s teardown resolves
+    the configuration again, and a still-broken git or cwd fails that teardown rather than this test.
+    """
+    def unrunnable(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(config.subprocess, "run", unrunnable)
+        config.reset_cache()
+        with pytest.raises(config.ConfigError, match="git could not be run") as first:
+            config.repo_root()
+        with pytest.raises(config.ConfigError) as again:
+            config.repo_root()
+        assert again.value is first.value, "an unrunnable git is settled, so it must not be re-attempted"
+
+    def dead_cwd():
+        raise FileNotFoundError(2, "the working directory no longer exists")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(config.Path, "cwd", staticmethod(dead_cwd))
+        config.reset_cache()
+        with pytest.raises(config.ConfigError, match="working directory could not be read") as first_cwd:
+            config.repo_root()
+        with pytest.raises(config.ConfigError) as again_cwd:
+            config.repo_root()
+        assert again_cwd.value is first_cwd.value, "a dead working directory is settled too"
+    config.reset_cache()
 
 
 def test_env_present_reports_presence_and_reads_an_empty_variable_as_absent(monkeypatch):

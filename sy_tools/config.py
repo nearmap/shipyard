@@ -103,22 +103,35 @@ def repo_root() -> Path:
 
     A *settled* refusal is memoized alongside an answer, so root resolution runs git at most once per
     process, the same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without
-    it this resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, and
-    one failed `get()` asks for the root twice: the credential-shape gate resolves first and the value's own
-    `resolve()` asks again, so the wait a caller actually sat through was twice `GIT_TIMEOUT_SECONDS`, not
-    the one bound that constant documents. The sibling `scripts/sy_config.py::repo_root` memoizes its own
-    `SystemExit` refusal for the same reason.
+    it this resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, so
+    the wait a caller actually sat through under a wedged git was a multiple of `GIT_TIMEOUT_SECONDS` rather
+    than the single bound that constant documents. The sibling `scripts/sy_config.py::repo_root` memoizes its
+    own `SystemExit` refusal for the same reason.
 
     A `_TransientConfigError` is the exception, and it is where this parts company with that sibling: a git
     that timed out has said nothing about the repository, only that it did not answer in five seconds — a
     momentary index lock or a slow network filesystem — and this module backs a long-lived MCP server, not a
     one-shot CLI process. Memoizing that verdict turned one hiccup into a server that refused every
-    subsequent tool call for the rest of its uptime, with `reset_cache()` reachable from no tool a client can
-    call: recovery meant restarting the server. So a timeout is retried on the next call, and the cost is
-    paid back where it was measured — a genuinely wedged git makes a failing `get()` wait twice the bound
-    again. That is the right trade for this side: a bounded, self-clearing slowness against an unbounded,
-    unrecoverable refusal. The CLI twin keeps memoizing, correctly, because its process ends with the
-    command.
+    subsequent tool call for the rest of its uptime. `reset_cache()` *is* reachable without a restart —
+    the `reload_config` tool calls `reload()`, which clears all three caches, and that is the documented
+    recovery from the non-transient refusal this function does memoize — but nothing tells a client that a
+    five-second git hiccup is what it is now stuck on, so recovery would depend on someone guessing to
+    reload the configuration. Retrying instead needs no client to know anything: a timeout costs the one
+    call it happened on. That is the right trade for this side, a bounded, self-clearing slowness against a
+    refusal that clears only on request. The CLI twin keeps memoizing, correctly, because its process ends
+    with the command.
+
+    The bill for that retry is unmemoized repetition *within* one tool call, and it is larger than one
+    extra wait: each attempt pays a fresh `GIT_TIMEOUT_SECONDS`, and a single call can resolve the root
+    several times. Counted against a `_git_toplevel` stubbed to time out: `get()` attempts it twice (the
+    credential-shape gate consults `extra_secret_words()`, which resolves, before the value's own
+    `resolve()` does), and the `validate_config` tool five times — one in `config.validate()`, two in the
+    first `config.get` inside `tracker.column_collisions()`, two in its own `config.get("tracker")` — so
+    that tool's worst case is 5x `GIT_TIMEOUT_SECONDS`, not the 2x this docstring used to claim. A
+    request-scoped cache would collapse it and is deliberately not added: it would be a second cache with
+    a lifetime this module has nowhere else, needing every tool entry point to bracket its own call before
+    it bought anything, against one module-level memo cleared in exactly one place. The number is recorded
+    rather than designed around, so a call path that reaches the root more times than this moves it again.
     """
     global _REPO_ROOT, _REPO_ROOT_REFUSAL
     if _REPO_ROOT_REFUSAL is not None:
@@ -762,13 +775,14 @@ def extra_secret_words() -> frozenset[str]:
 
 
 def env_present(name: str) -> bool:
-    """Whether an environment variable is set and non-empty. The value itself is never read.
+    """Whether an environment variable is set and non-empty. The value itself is never returned or logged.
 
     The presence-only idiom `_post_resolution_violations` already applies to each declared
     `secret_env` name, lifted out so a caller diagnosing a missing credential has something to ask
-    that has no value to leak: the value is never read into a variable, returned, or logged — only
-    whether the variable is set at all. An empty string counts as absent, exactly as that loop reads
-    it, since a variable exported empty is indistinguishable in effect from one never exported.
+    that has no value to leak: `os.environ.get` reads it only to test truthiness — it is never
+    returned or logged — only whether the variable is set at all. An empty string counts as absent,
+    exactly as that loop reads it, since a variable exported empty is indistinguishable in effect
+    from one never exported.
 
     A name the environment cannot even encode — an unpaired surrogate such as `"\\ud800"` — is absent,
     not a crash: `os.environ.get` raises `UnicodeEncodeError` on one, which reached `check_env`'s caller

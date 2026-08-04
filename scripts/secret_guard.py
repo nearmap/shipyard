@@ -139,29 +139,55 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
 _PRINT_CALL = re.compile(
-    r"\b(print|console\.(?:log|info|dir|dirxml|table|debug|warn|error|trace|groupCollapsed|group"
-    r"|count|assert)|(?:sys|process)\.std(?:out|err)\.write|puts|warn)\s*\("
+    r"\b(print"
+    r"|console\.(?:log|info|debug|warn|error|dir|dirxml|table|trace|groupCollapsed|group"
+    r"|countReset|count|assert|timeEnd|timeLog|time)"
+    r"|(?:sys|process)\.std(?:out|err)\.write|puts|warn)\s*\("
 )
 """A call that writes its argument out, so a one-liner that reads a secret without printing it allows.
 
 node's console methods are listed one by one rather than as `log` alone, because they are not aliases
 of it to a matcher that works by name: `console.info`, `console.dir`, `console.table` and
-`console.debug` each print the value exactly as `log` does (verified live on node 24), and with `log`
-alone every one of them was allowed. `console.warn` did deny, but only by coincidence — the bare
-`warn` alternative here is perl's and ruby's own function, so a `console.warn` deny rested on another
-language's name and would have vanished the moment that alternative was scoped per interpreter. Each
-console method now denies for its own reason.
+`console.debug` each print the value exactly as `log` does, and with `log` alone every one of them was
+allowed. `console.warn` did deny, but only by coincidence — the bare `warn` alternative here is perl's
+and ruby's own function, so a `console.warn` deny rested on another language's name and would have
+vanished the moment that alternative was scoped per interpreter. Each console method now denies for its
+own reason.
 
-The list is the whole printing half of node's `console` API rather than the four spellings a previous
-round happened to name, because naming spellings one at a time is what left `console.error` — the
-plainest of them all — allowed after a fix whose own docstring claimed the class was closed. Every
-method here was measured to write the value it is handed (node v24.11.1: `error`, `trace`, `group`,
-`groupCollapsed`, `count`, `assert(false, v)` and `dirxml` all reproduce a sentinel on stdout or
-stderr). `console.groupEnd` is the one member of that family deliberately absent: it ignores its
-argument and prints nothing at all (measured the same way), so denying it would pin a leak that does
-not happen — the same false pin `_generated_code_spellings` refuses to generate for `--print=<code>`.
-`console.groupCollapsed` precedes `console.group` in the alternation only for legibility; either order
-matches both, since `\\s*\\(` has to follow and the engine backtracks.
+**How this list was built, since two rounds of hand-curating it each missed members.** node's `console`
+is a closed, fully documented surface, so it is enumerated rather than sampled: every method the
+`console` module documents (https://nodejs.org/api/console.html — the `Console` class, plus the
+inspector-only `profile`/`profileEnd`/`timeStamp`) was probed on this host with a sentinel argument,
+capturing stdout and stderr separately, including the argument-count and paired-call variants that
+change the answer. On node v24.11.1 the classification is:
+
+  prints the argument   log, info, debug (stdout) · warn, error, trace (stderr) · dir, dirxml, table,
+                        group, groupCollapsed, count (stdout) · assert (stderr, on the two-argument
+                        `assert(false, v)` form) · timeEnd, timeLog (stdout when the label is live,
+                        stderr as `No such label '<v>'` when it is not) · countReset (stderr as
+                        `Count for '<v>' does not exist`) · time (stderr as `Label '<v>' already
+                        exists`, on a second call with the same label)
+  prints nothing of it  groupEnd, clear (both ignore the argument entirely) · timeStamp, profile,
+                        profileEnd (inspector-only no-ops, which write to an attached inspector and
+                        never to this process's streams) · Console, context, createTask (not output
+                        calls at all)
+
+The three names this round added — `timeEnd`, `timeLog`, `countReset` — were live bypasses of exactly
+the family the previous round claimed to have closed, which is why the list is now derived from the
+documented API instead of from whichever spellings a review happened to notice.
+
+Absence from the alternation means measured-non-printing, never unexamined: `groupEnd` and `clear`
+discard what they are handed, and denying them would pin a leak that does not happen — the same false
+pin `_generated_code_spellings` refuses to generate for `--print=<code>`. Both, and `timeStamp`, are
+allow controls in the self-test so a future widening cannot quietly sweep them in. `time` sits on the
+deny side despite printing nothing on a first call, because its duplicate-label warning does echo the
+label verbatim: that is a leak that happens, and this file's standing rule is that a denied command
+which would have printed nothing is the direction to be wrong in.
+
+Longest-first ordering within a shared prefix (`groupCollapsed` before `group`, `countReset` before
+`count`, `timeEnd`/`timeLog` before `time`) is for legibility only; either order matches the same set,
+since `\\s*\\(` has to follow and the engine backtracks. That backtracking is also what keeps the
+non-printing `console.timeStamp` out: `time` matches its first four characters and then fails on `S`.
 
 stderr counts exactly as stdout does, so the writers are one `(?:sys|process)\\.std(?:out|err)\\.write`
 pattern instead of the two stdout spellings that were listed: a Bash tool call's result carries both
@@ -1156,10 +1182,17 @@ def _self_test() -> None:
         # writes nothing — so a one-liner that reads a secret and neither prints it nor asks for
         # auto-print leaks nothing. The invocation-wide print test must not widen the gate to this.
         '''node --eval="process.env.ACLI_TOKEN"''', '''node -e "process.env.ACLI_TOKEN"''',
-        # `console.groupEnd` takes no argument: it closes an indentation group and prints nothing at all,
-        # whatever it is handed (measured on node v24.11.1). It is the one member of the console family
-        # that must stay out of `_PRINT_CALL`, and this case is what keeps it out on the next widening.
+        # The measured-non-printing members of node's console API, which must stay out of `_PRINT_CALL`:
+        # `groupEnd` and `clear` discard the argument entirely, and `timeStamp` is an inspector-only
+        # no-op that writes to an attached inspector and never to this process's streams (all probed on
+        # node v24.11.1 with a sentinel, stdout and stderr captured apart). These are the controls that
+        # keep the next widening of that alternation from sweeping in a leak that does not happen —
+        # `timeStamp` especially, since `time` is now on the deny side and shares its first four
+        # characters. `profile`/`profileEnd` are the same no-op class as `timeStamp`, pinned once here.
         '''node -e "console.groupEnd(process.env.ACLI_TOKEN)"''',
+        '''node -e "console.clear(process.env.ACLI_TOKEN)"''',
+        '''node -e "console.timeStamp(process.env.ACLI_TOKEN)"''',
+        '''node -e "console.profileEnd(process.env.ACLI_TOKEN)"''',
         # `-p` is node's print-and-evaluate flag, but perl's and ruby's own `-p` is a boolean line loop
         # whose `-e` still carries the code: a shared code-flag table read the cluster's `e` as the code
         # and skipped the real argument, so the flags are per interpreter.
@@ -1311,6 +1344,19 @@ def _self_test() -> None:
         '''node -e "console.count(process.env.GITHUB_TOKEN)"''',
         '''node -e "console.assert(false, process.env.GITHUB_TOKEN)"''',
         '''node -e "console.dirxml(process.env.GITHUB_TOKEN)"''',
+        # And the members that a hand-curated list missed twice over, which is why the alternation is now
+        # derived from node's documented console API with every method probed rather than from the
+        # spellings a review noticed. Each of these was live-verified to echo the label verbatim on
+        # v24.11.1: `timeEnd`/`timeLog` write `<v>: 0.04ms` on stdout for a live label and
+        # `Warning: No such label '<v>'` on stderr for a dead one, `countReset` writes
+        # `Warning: Count for '<v>' does not exist`, and a repeated `time` label writes
+        # `Warning: Label '<v>' already exists`. A tool call's result carries stderr too, so the warning
+        # path is the same leak as the timing line.
+        '''node -e "console.timeEnd(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.timeLog(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.countReset(process.env.GITHUB_TOKEN)"''',
+        '''node -e "const v = process.env.GITHUB_TOKEN; console.time(v); console.time(v)"''',
+        '''node -e "const v = process.env.GITHUB_TOKEN; console.time(v); console.timeEnd(v)"''',
         # A tool call's result carries stderr as well as stdout into transcript history, so the stderr
         # twins of the two stdout writers already matched are the same leak. Both verified live.
         '''python3 -c "import os, sys; sys.stderr.write(os.environ['ACLI_TOKEN'])"''',

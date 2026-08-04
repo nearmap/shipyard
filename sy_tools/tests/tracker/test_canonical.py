@@ -220,6 +220,11 @@ def test_neither_adapter_drops_a_related_issue_it_cannot_name():
     `_keys` raised on the equivalent entry. A caller reads these to decide whether an issue is blocked or
     already decomposed, and cannot see which tracker replied, so a list that is quietly one issue short is
     the same fault the field-level guards either side already refuse.
+
+    The shape asserted here is the countless one, on purpose. Where github's relation does carry a
+    `totalCount`, `_refs` skips the entry and `_relation` reports the shortfall as truncated instead of
+    failing the whole issue read (see `test_github.py`): the same invariant reached another way, by a
+    signal a bare list does not have, which is why refusing alike is what these two owe each other here.
     """
     from sy_tools.tracker.github import adapter as github
     from sy_tools.tracker.jira import adapter as jira
@@ -228,7 +233,7 @@ def test_neither_adapter_drops_a_related_issue_it_cannot_name():
         github._refs([{"url": "https://github.com/o/r/issues/1"}, "junk"])
     with pytest.raises(tracker.TrackerError, match="entry 1"):
         jira._keys([{"key": "AM-1"}, "junk"], "subtasks")
-    assert github._refs([{"url": "https://github.com/o/r/issues/1"}]) == ["https://github.com/o/r/issues/1"]
+    assert github._refs([{"url": "https://github.com/o/r/issues/1"}]) == (["https://github.com/o/r/issues/1"], 0)
     assert jira._keys([{"key": "AM-1"}], "subtasks") == ["AM-1"], "and a well-formed list still reads"
 
 

@@ -794,18 +794,19 @@ def check_env(
         str,
         Field(
             description="Name of the environment variable to check, e.g. a credential the configured "
-            "tracker needs. Only its presence is reported; its value is never read."
+            "tracker needs. Only its presence is reported; its value is never returned or logged."
         ),
     ],
 ) -> dict[str, Any]:
-    """Report whether an environment variable is set, without ever reading its value.
+    """Report whether an environment variable is set, without ever returning or logging its value.
 
     For diagnosing a missing credential without printing one. Dumping the environment or echoing a
     variable prints the value into that command's own tool-call result, which is permanent transcript
     history from that point on; the `PreToolUse` guard in `scripts/secret_guard.py` denies those
     commands and names this tool as the safe alternative, and this is it. Neither the result nor any
-    error it raises can carry the value, because the value is never read at all — only whether the
-    variable is set and non-empty. A variable exported empty reports as unset.
+    error it raises can carry the value: `config.env_present` reads it only to test truthiness, never
+    returns it, and never logs it — only whether the variable is set and non-empty. A variable exported
+    empty reports as unset.
     """
     _required(name=name)
     return {"name": name, "present": config.env_present(name)}

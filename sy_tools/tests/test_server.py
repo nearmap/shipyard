@@ -1164,6 +1164,7 @@ async def test_every_caller_supplied_field_is_scrubbed_not_only_the_body(monkeyp
 async def test_one_scrub_report_counts_every_field_of_a_write_not_just_the_body(monkeypatch):
     """A count covering some of a write's fields is worse than none: it is read as covering all of them."""
     monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:

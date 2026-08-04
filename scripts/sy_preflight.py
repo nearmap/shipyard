@@ -29,7 +29,6 @@ import subprocess
 import sys
 import time
 
-CACHE_PATH = Path(".scratch/sy/preflight-cache.json")
 DEFAULT_TTL_HOURS = 24.0
 
 
@@ -110,18 +109,37 @@ def _split_vars(raw: str) -> list[str]:
     return [v.strip() for v in raw.split(",") if v.strip()]
 
 
+def cache_path() -> Path:
+    """Where the cache lives: this repository's own resolved scratch directory.
+
+    Repo-qualified rather than machine-global so two repos never share one liveness verdict, and
+    resolved outside the checkout rather than beside it so it outlives a `/sy:ship` worktree — the
+    old repo-relative path meant every ship threw the cache away with the worktree it was built in.
+
+    A function rather than a module constant because resolution shells out to git and reads the config
+    layers, which no import of this module should pay for.
+    """
+    # Imported here, not at module scope: sy_config imports plugin_build from this module, so a
+    # top-level import either way is circular.
+    from sy_config import repo_scratch_dir
+
+    return repo_scratch_dir() / "sy" / "preflight-cache.json"
+
+
 def _load_cache() -> dict:
-    if not CACHE_PATH.is_file():
+    path = cache_path()
+    if not path.is_file():
         return {}
     try:
-        return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
 
 
 def _save_cache(cache: dict) -> None:
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path = cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -141,13 +159,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def _self_test() -> None:
     """Offline round-trip with placeholder tracker/var names — this script has no notion of
     what a "tracker" is beyond an opaque cache-key string, so the test never needs a real one."""
-    global CACHE_PATH
-    original = CACHE_PATH
+    original = globals()["cache_path"]
     saved_env = {k: os.environ.get(k) for k in ("SY_TEST_VAR_A", "SY_TEST_VAR_B", "CLAUDE_PLUGIN_ROOT")}
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        CACHE_PATH = Path(tmp) / "sy" / "preflight-cache.json"
+        globals()["cache_path"] = lambda: Path(tmp) / "sy" / "preflight-cache.json"
         os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
         try:
             assert plugin_build() == "unknown", "no CLAUDE_PLUGIN_ROOT must resolve to a stable placeholder"
@@ -167,7 +184,7 @@ def _self_test() -> None:
             fp_b = fingerprint("trackerA", list(reversed(v)))
             assert fp_a == fp_b, "var order must not affect the fingerprint"
         finally:
-            CACHE_PATH = original
+            globals()["cache_path"] = original
             for k, v in saved_env.items():
                 if v is None:
                     os.environ.pop(k, None)

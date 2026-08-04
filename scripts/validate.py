@@ -232,7 +232,7 @@ def check_config_seam(errors: list[str]) -> None:
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
             continue
         rel = str(p.relative_to(ROOT))
-        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/")):
+        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".shipyard/", ".git/")):
             continue
         text = p.read_text(encoding="utf-8")
         for var in sorted(LEGACY_CONFIG_ENV):
@@ -244,6 +244,41 @@ def check_config_seam(errors: list[str]) -> None:
                     errors,
                 )
                 break
+
+
+def check_no_repo_scratch_refs(errors: list[str]) -> None:
+    """Nothing may name a repo-relative scratch directory, and none may exist in the checkout.
+
+    Scratch lives under the resolved `scratch.dir` now, keyed per identifier. A reintroduced
+    repo-relative path is not cosmetic: it is fragile exactly where it is used most, discarded with
+    every `/sy:ship` worktree it was written in, and — for `review_guard.py`'s hunt sandbox — a
+    boundary the guard and the agent it guards would resolve two different ways.
+
+    The directory's own presence fails too, not just references to it. `check_config_seam` above no
+    longer excludes it, so a leftover directory would otherwise turn into unrelated seam failures over
+    scratch content, and with the `.gitignore` entry gone it is one `git add -A` from being committed.
+    """
+    stale = ROOT / ".scratch"
+    if stale.exists():
+        fail(
+            f".scratch/ exists in the checkout; nothing writes there any more. Delete it and use "
+            f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" scratch-dir <identifier>`",
+            errors,
+        )
+    for p in sorted(ROOT.rglob("*")):
+        if not p.is_file() or (p.suffix not in {".md", ".py", ".sh", ".json"} and p.name != ".gitignore"):
+            continue
+        rel = str(p.relative_to(ROOT))
+        if rel == "scripts/validate.py" or rel.startswith((".shipyard/", ".git/")):
+            continue
+        text = p.read_text(encoding="utf-8")
+        if ".scratch/" in text:
+            line = text[: text.index(".scratch/")].count("\n") + 1
+            fail(
+                f"SCRATCH SEAM: {rel}:{line}: names a repo-relative .scratch/; resolve the path with "
+                f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" scratch-dir <identifier>` instead",
+                errors,
+            )
 
 
 def check_agent_floors(errors: list[str]) -> None:
@@ -703,6 +738,7 @@ def main() -> int:
     check_no_home_paths(errors)
     check_seam(errors)
     check_config_seam(errors)
+    check_no_repo_scratch_refs(errors)
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
     check_contract_completeness(errors)

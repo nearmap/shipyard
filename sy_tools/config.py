@@ -462,13 +462,14 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
     file as a path relative to `<common>/worktrees/<id>/` itself, not to `common` or to any process's
     cwd, so a relative record is resolved against the entry's own directory before use — resolving it
     against the wrong base, or leaving it relative and comparing it as-is, would silently stat the
-    guard process's own cwd instead of the worktree. Every gitdir record git itself writes ends in the
-    literal `.git`, naming the worktree's own `.git` file — so `.parent` is applied only after that is
-    confirmed, never unconditionally, because a truncated or otherwise corrupted record would
-    otherwise still produce *some* directory (most often `<common>/worktrees` itself) and silently
-    guard the wrong one instead of the real worktree. A `gitdir` file that is missing, unreadable, or
-    does not end in `.git` after resolution means this cannot determine part of the guarded set at
-    all, which fails closed (raises) rather than silently guarding fewer worktrees than exist.
+    guard process's own cwd instead of the worktree. A record git itself writes always ends in the
+    literal `.git`, naming the worktree's own `.git` file, but git's own reader (`git-worktree(1)`'s
+    DETAILS section) accepts the bare directory form too — it's the documented spelling for hand
+    repairing a relocated worktree's `gitdir` file after moving it outside `git worktree move` — so
+    only the optional `.git` suffix is stripped, the same way git strips it, rather than requiring it
+    and refusing a form git itself accepts. A blank `gitdir` file, or one that is missing or
+    unreadable, means this cannot determine part of the guarded set at all, which fails closed
+    (raises) rather than silently guarding fewer worktrees than exist.
     """
     worktrees = [logical]
     worktrees_dir = common / "worktrees"
@@ -483,22 +484,25 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
                 "without `git worktree remove`, or `git worktree repair` if it was relocated."
             )
         try:
-            pointed = Path(gitdir_file.read_text(encoding="utf-8").strip())
+            raw = gitdir_file.read_text(encoding="utf-8").strip()
         except OSError as exc:
             raise ConfigError(
                 f"{str(gitdir_file)!r} could not be read ({exc}), so this worktree's own location "
                 "cannot be determined and so cannot be guarded."
             ) from None
+        if not raw:
+            raise ConfigError(
+                f"{str(gitdir_file)!r} is blank, so this worktree's own location cannot be determined "
+                "and so cannot be guarded — most likely a truncated or otherwise corrupted gitdir file."
+            )
+        pointed = Path(raw)
         if not pointed.is_absolute():
             pointed = (entry / pointed).resolve()
-        if pointed.name != ".git":
-            raise ConfigError(
-                f"{str(gitdir_file)!r} names {str(pointed)!r}, which does not end in '.git' as every "
-                "gitdir record git itself writes does, so this worktree's own location cannot be "
-                "determined and so cannot be guarded — most likely a truncated or otherwise corrupted "
-                "gitdir file."
-            )
-        worktrees.append(pointed.parent)
+        # Git's own reader strips an optional trailing "/.git" (git-worktree(1) documents writing the
+        # bare directory path directly when hand-repairing a relocated worktree, e.g. after `mv`), so
+        # both spellings name the worktree; requiring the suffix would refuse a git-accepted record.
+        worktree = pointed.parent if pointed.name == ".git" else pointed
+        worktrees.append(worktree)
     return worktrees
 
 

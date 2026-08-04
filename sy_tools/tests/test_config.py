@@ -758,6 +758,41 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     )
 
 
+def test_all_worktrees_accepts_the_bare_directory_form_but_refuses_a_blank_record(fixture_repo):
+    """`git-worktree(1)`'s DETAILS section documents writing a linked worktree's `gitdir` record as
+    the bare directory path (no trailing `.git`) when hand-repairing it after moving the worktree
+    outside `git worktree move` -- a form git's own reader accepts by stripping an *optional* `.git`
+    suffix, not a form it requires. Refusing that form (an earlier version of this fix did) would deny
+    every `sy:hunt` write, including into its own sandbox, for a repository git itself considers
+    healthy. A genuinely blank record -- unambiguous corruption, not a git-documented spelling -- must
+    still refuse rather than silently resolve to `entry` itself.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    linked = fixture_repo.parent / "bare-form-linked"
+    subprocess.run(
+        [*git, "-C", str(fixture_repo), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True
+    )
+    common = config._git_common_dir(fixture_repo)
+    assert common is not None
+    gitdir_files = list((common / "worktrees").glob("*/gitdir"))
+    assert len(gitdir_files) == 1
+    gitdir_file = gitdir_files[0]
+
+    # The bare directory form (hand-repair spelling): accepted, resolves to the worktree itself.
+    gitdir_file.write_text(str(linked.resolve()), encoding="utf-8")
+    result = config._all_worktrees(common, fixture_repo)
+    assert any(config._same_directory(w, linked) for w in result), (
+        "the bare-directory gitdir form must resolve to the worktree, not raise"
+    )
+
+    # A blank record: unambiguous corruption, must refuse.
+    gitdir_file.write_text("", encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="blank"):
+        config._all_worktrees(common, fixture_repo)
+
+
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):
     for agent in ("sweep", "gate", "ship-build", "img-inspector"):
         assert config.agent_binding(agent) == _cli(fixture_repo, "agent", agent, "--json"), agent

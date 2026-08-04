@@ -910,6 +910,51 @@ async def test_a_malformed_link_entry_fails_while_another_link_type_is_still_fil
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "link_type", ["notanobject", {}, {"name": None}, None], ids=["string", "empty", "null-name", "absent"],
+)
+async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blocking_link(
+    credentials, monkeypatch, link_type
+):
+    """"No type name to compare" and "compared, and it is not Blocks" are different answers.
+
+    `(_field(link.get("type"), "name") or "").lower() != BLOCKS` collapsed them into one: Jira's own spec
+    marks `type` required on an `IssueLink` without guaranteeing a `name` inside it, so a drifted type
+    shape filtered out as if the link had been read and found irrelevant, and the issue came back with
+    `dependencies: []` — indistinguishable from a genuinely unblocked one, which is exactly what this
+    function's docstring refuses.
+    """
+    entry = {"type": link_type, "outwardIssue": {"key": "PROJ-5"}}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "issuelinks" in message and "entry 0" in message and "link type" in message, message
+    assert FAKE_TOKEN not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(credentials, monkeypatch):
+    """A read carries one side of each link, so the other direction being empty is honest, not drift.
+
+    Only the *type* being unreadable fails the read. Raising here instead would fail every ordinary
+    read: a Blocks link arrives under exactly one of the two sides `_linked` is asked for.
+    """
+    for entry, expected in (
+        ({"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}, ["PROJ-5"]),
+        ({"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-6"}}, []),
+        ({"type": {"name": "Blocks"}, "outwardIssue": {"id": "10099"}}, []),
+    ):
+        _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
+
+        full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+        assert full["dependencies"] == expected, f"{entry} read as {full['dependencies']}"
+
+
+@pytest.mark.anyio
 async def test_a_dependency_read_back_through_a_drifted_field_is_not_reported_as_verified(
     credentials, monkeypatch
 ):

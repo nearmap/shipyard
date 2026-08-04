@@ -859,6 +859,29 @@ async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencie
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "entry", ["shipyard", {"color": "ededed"}, {"name": ""}, None],
+    ids=["bare-string", "no-name", "empty-name", "null"],
+)
+async def test_a_label_entry_with_no_readable_name_fails_the_read_rather_than_dropping_out(
+    monkeypatch, board, entry
+):
+    """Parity with jira's `_summary`, which refuses this same shape drift on its own `labels` field.
+
+    Both adapters answer one protocol, so an entry one of them refuses cannot be the other's silent
+    shortening: a filtered list reads as the issue's real labels, which is what a caller checks to decide
+    whether an issue is already decomposed or already shipped.
+    """
+    drifted = {**_issue_view(), "labels": [{"name": "shipyard"}, entry]}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match="labels field") as failure:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert "entry 1" in str(failure.value), failure.value
+
+
+@pytest.mark.anyio
 async def test_a_relation_gh_paged_reports_itself_clipped_rather_than_short(monkeypatch, board):
     """`gh` caps these relations at one page — 50 blocked-by — and reports `totalCount` beside the nodes.
 

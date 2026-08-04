@@ -1102,6 +1102,31 @@ def test_both_validators_report_two_columns_configured_under_one_name(fixture_re
     assert "columns.ready" in reported[0] and "columns.in_progress" in reported[0], reported[0]
 
 
+def test_both_validators_report_a_whitespace_only_column_as_unset(fixture_repo):
+    """`"   "` is schema-valid and reads as absent everywhere else, so calling it configured is the fault.
+
+    `columns.*` is `["string", "null"]` with no `minLength`, and `tracker.column_names()` treats a value
+    as unset via `str(value or "").strip()`. Both validators tested emptiness as `in (None, "")`, so a
+    whitespace-only column passed as present and the session then failed its very first status read with
+    "missing required column name(s): columns.ready" — the same "validates clean, breaks on first use"
+    fault `column_collisions()` exists to prevent, reached through the other predicate.
+    """
+    blank = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "   "}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(blank), encoding="utf-8")
+    config.reload()
+
+    with pytest.raises(tracker.TrackerError, match=r"columns\.ready"):
+        tracker.column_names()  # the first real use, which is what makes a clean report a lie
+
+    errors = server.validate_config()["errors"]
+    assert [e for e in errors if e.startswith("columns.ready is required and unset")], errors
+
+    proc = _validate_probe(fixture_repo)
+    assert proc.returncode == 0, f"validate() must return its errors, not exit: {proc.stderr}"
+    reported = [line for line in proc.stdout.splitlines() if line.startswith("columns.ready is required")]
+    assert len(reported) == 1, f"the CLI must name it too, once: {proc.stdout!r}"
+
+
 def test_an_unset_column_is_reported_once_by_the_tool_not_twice(fixture_repo):
     """An unconfigured repo is the commonest input there is, and it named each fault twice.
 

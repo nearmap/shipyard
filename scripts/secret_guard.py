@@ -51,13 +51,19 @@ import sys
 from secret_words import looks_like_secret_name as _base_looks_like_secret_name
 
 _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
+    # `-h` is deliberately absent: sudo declares it `h::` (optional_argument), so `sudo -h` is its own
+    # help flag and a hostname must be attached (`-hHOST`) rather than following as the next token —
+    # `sudo -h somehost echo $VAR` never consumes `somehost` as a value. Listing it stepped the walk
+    # past the real command. The long `--host` is required_argument and stays.
     "sudo": frozenset({
-        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D", "-R", "-T", "-a", "-c",
+        "-u", "-g", "-p", "-C", "-r", "-t", "-U", "-D", "-R", "-T", "-a", "-c",
         "--user", "--group", "--prompt", "--close-from", "--host", "--role", "--type",
         "--other-user", "--chdir", "--chroot", "--command-timeout", "--auth-type", "--login-class",
     }),
     "nice": frozenset({"-n", "--adjustment"}),
-    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
+    "ionice": frozenset({
+        "-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid",
+    }),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
     "nohup": frozenset(),
@@ -77,7 +83,19 @@ behind it went unchecked: the same landing-miss as the bug prefix matching exist
 opposite direction."""
 WRAPPERS = frozenset(_WRAPPER_ARG_FLAGS)
 PRINTING_COMMANDS = {"echo", "printf", "print"}
-_ENV_ARG_FLAGS = {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+_ENV_ARG_FLAGS: frozenset[str] = frozenset({
+    "-u", "-C", "-S", "-a", "-P", "--unset", "--chdir", "--split-string", "--argv0",
+})
+"""`env`'s own options that take the *next* token as their value rather than naming the command to run.
+
+Completed from both implementations' documented synopses, because the hook cannot know which `env` is
+on the host: GNU coreutils contributes `-a ARG`/`--argv0=ARG` (sets `argv[0]`, and COMMAND still runs
+after it), BSD contributes `-P utilpath`, and `-u`/`-C`/`-S` are common to both. Missing any of them is
+the under-consuming failure `_leading_command` documents — the walk lands on the flag's value, reads
+that as the command, and the leak behind it goes unchecked. Every value-less option either side
+documents (`-i`, `-0`, `-v`/`--debug`, `--list-signal-handling`, the optional-argument `--*-signal`
+forms, `--help`, `--version`) is a proper prefix of none of the above, so `env` needs no
+`_WRAPPER_EXACT_ONLY_FLAGS`-style exception the way `sudo --login` does."""
 INTERPRETERS = {"python", "python3", "node", "ruby", "perl"}
 CODE_FLAGS = {"-c", "-e", "--eval"}
 _VAR_REF = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
@@ -97,6 +115,18 @@ _ADVICE = (
     "`sy_preflight.py check` / the adapter's `preflight` command, which names what's missing or dead "
     "without ever printing a value."
 )
+_UNEVALUABLE = (
+    "secret guard: this command could not be evaluated safely, so it is refused rather than allowed "
+    "unchecked. Deeply nested wrapper or `env` layers are the known cause; flatten them and retry."
+)
+"""The deny a crash inside `decision()` becomes, since the alternative is an allow.
+
+A `PreToolUse` hook blocks only by exit code 2 or a `permissionDecision: "deny"` payload, so a hook
+that dies mid-evaluation writes nothing and Claude Code reads that as no decision — the command runs
+with the check silently skipped. The one fail-open path actually found (unbounded recursion through
+`env` chains) is closed at its source in `_env_reason`; this is the backstop for the next one, and it
+names no command text and no exception message, because either could carry the very value this hook
+exists to keep out of the transcript."""
 
 
 def emit(reason: str | None, warning: str | None) -> None:
@@ -158,7 +188,11 @@ def main() -> None:
         return
     if not isinstance(event, dict):
         return
-    reason = decision(event.get("tool_name", ""), event.get("tool_input") or {})
+    try:
+        reason = decision(event.get("tool_name", ""), event.get("tool_input") or {})
+    except Exception:  # a crash here is read as no decision, i.e. an allow, so it becomes a deny
+        emit(_UNEVALUABLE, _CONFIG_WARNING)
+        return
     emit(reason, _CONFIG_WARNING)
 
 
@@ -252,7 +286,18 @@ def _segment_reason(segment: str) -> str | None:
     if leading is None:
         return None
     cmd, rest = leading
+    return _command_reason(cmd, rest, segment)
 
+
+def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
+    """The reason for one already-unwrapped command, split out so no call path here recurses.
+
+    `_env_reason` needs this dispatch for whatever an `env` layer wraps, and reaching it by calling
+    `_segment_reason` again made the `env` chain mutually recursive with no bound on its depth. A hook
+    that raises `RecursionError` writes nothing to stdout, and per Claude Code's `PreToolUse` contract
+    no output is no decision — so the guarded command ran. `_env_reason` unwinds its own chain
+    iteratively and lands here exactly once instead.
+    """
     if cmd in {"env", "printenv"}:
         return _env_reason(cmd, rest)
     if cmd == "set":
@@ -268,33 +313,56 @@ def _segment_reason(segment: str) -> str | None:
 
 def _env_reason(cmd: str, rest: list[str]) -> str | None:
     """`env`/`printenv` reasons. `env` also runs a command with a modified environment
-    (`env FOO=bar somecmd`) — that usage is a wrapper, not a dump, so what it wraps is re-checked as a
-    segment of its own rather than blanket-allowed: `env echo $VAR` and `env printenv VAR` deny for
-    exactly the reasons their unwrapped forms do, and a genuine wrapper use stays allowed because the
-    wrapped command is allowed. A few `env` flags (`-u`/`-C`/`-S` and long forms) consume the *next*
-    token as their own argument rather than naming the command to run — `env -u ACLI_SITE` alone still
-    dumps the environment."""
-    names: list[str] = []
-    i = 0
-    while i < len(rest):
-        tok = rest[i]
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok):
-            i += 1
-            continue
-        if cmd == "env":
-            bare = tok.split("=", 1)[0]
-            if bare in _ENV_ARG_FLAGS:
-                i += 1 if "=" in tok else 2
+    (`env FOO=bar somecmd`) — that usage is a wrapper, not a dump, so what it wraps is re-checked
+    rather than blanket-allowed: `env echo $VAR` and `env printenv VAR` deny for exactly the reasons
+    their unwrapped forms do, and a genuine wrapper use stays allowed because the wrapped command is.
+
+    `env`'s own value-taking flags (`_ENV_ARG_FLAGS`) have to be counted for the same reason a
+    wrapper's do, and for the same reason as there, exact membership in that table is not the test:
+    `env --uns ACLI_SITE` is the `getopt_long` prefix abbreviation of `--unset` and `env -vu ACLI_SITE`
+    clusters the boolean `-v` ahead of the value-taking `-u` — both verified to run. Testing membership
+    saw neither, landed the walk on `ACLI_SITE`, read it as the command `env` runs, and allowed a
+    command that still dumps the whole environment. So the arity decision is `_consumes_next`, shared
+    with `_leading_command`, which recognises both spellings.
+
+    The chain unwinds in this loop rather than through `_segment_reason` again: `env env env … cmd` is
+    legal, and recursing per layer put an unbounded stack depth behind an attacker-chosen token count
+    in a hook whose crash is read as no decision at all.
+    """
+    while True:
+        names: list[str] = []
+        wrapped: list[str] | None = None
+        i = 0
+        while i < len(rest):
+            tok = rest[i]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok):
+                i += 1
                 continue
+            if cmd == "env":
+                bare = tok.split("=", 1)[0]
+                if _consumes_next(bare, _ENV_ARG_FLAGS):
+                    i += 1 if "=" in tok else 2
+                    continue
+                if tok.startswith("-"):
+                    i += 1
+                    continue
+                wrapped = rest[i:]  # the command env runs — check it, don't excuse it
+                break
             if tok.startswith("-"):
                 i += 1
                 continue
-            return _segment_reason(" ".join(rest[i:]))  # the command env runs — check it, don't excuse it
-        if tok.startswith("-"):
+            names.append(tok)
             i += 1
-            continue
-        names.append(tok)
-        i += 1
+        if wrapped is None:
+            break
+        segment = " ".join(wrapped)
+        leading = _leading_command(segment)
+        if leading is None:
+            return None
+        cmd, rest = leading
+        if cmd in {"env", "printenv"}:
+            continue  # another env layer: keep unwinding here instead of recursing
+        return _command_reason(cmd, rest, segment)
     if cmd == "env":
         return "bare `env` dumps every environment variable's value"
     if not names:
@@ -398,7 +466,13 @@ def _self_test() -> None:
         "printenv PATH", "printenv HOME SHELL",
         "timeout 5 ls", "timeout --signal SIGKILL 5 ls", "timeout -k 1 5 pytest -q",
         "nice -n 10 git status", "ionice -c 3 pytest -q",
+        # ionice's other two value-taking selectors, per its synopsis: -p PID / -P PGRP / -u UID.
+        "ionice -u 1000 ls", "ionice -P 500 ls", "ionice --uid 1000 ls",
+        # env's own value-taking flags in both implementations' spellings, wrapping a harmless command.
+        "env -a login /bin/sh -c true", "env --argv0=login /bin/sh -c true",
+        "env -P /usr/bin ls", "env -vu ACLI_SITE ls", "env --uns ACLI_SITE ls",
         "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
+        "sudo -h ls", "sudo --host somehost ls",
         "sudo -T 5 ls", "sudo -R /some/root ls", "time -o /tmp/x pytest -q", "time -f %e ls",
         "sudo timeout 5 git status", "nohup python script.py",
         # Clustered and abbreviated spellings of the same wrapper flags, on the allow side: the arity
@@ -425,6 +499,20 @@ def _self_test() -> None:
         "cd /tmp && env",
         "echo $ACLI_TOKEN > /dev/null",
         "env -u ACLI_SITE", "env -u ACLI_SITE -u ACLI_EMAIL",
+        # env's own flag arity, missed the same two ways `_leading_command`'s was before `_consumes_next`:
+        # a value-taking flag absent from the table (`-a`/`--argv0`, GNU; `-P`, BSD), and a spelling the
+        # table does not carry — `--uns`/`--u` abbreviate `--unset` per `getopt_long`, and `-vu` clusters
+        # the boolean `-v` ahead of `-u`. Each landed the walk on the flag's value, read that as the
+        # command env runs, and allowed a command that still dumps the environment behind it. Verified
+        # live that the trailing option really does eat the next argv: `env -vu FOO true` unsets FOO and
+        # runs `true`, and `env -P /usr/bin true` resolves `true` under /usr/bin.
+        "env -a x echo $ACLI_TOKEN", "env --argv0 x printenv ACLI_TOKEN",
+        "env --argv0=x echo $ACLI_TOKEN", "env -P /usr/bin echo $ACLI_TOKEN",
+        "env --uns ACLI_SITE", "env --u ACLI_SITE", "env -vu ACLI_SITE",
+        "env -vu ACLI_SITE echo $ACLI_TOKEN", "env --uns=ACLI_SITE printenv ACLI_TOKEN",
+        # sudo's `-h` is `optional_argument` (`sudo -h` alone prints usage), so it never eats the next
+        # token; listing it as value-taking stepped the walk over `echo` onto `$ACLI_TOKEN`.
+        "sudo -h echo $ACLI_TOKEN",
         "timeout 5 echo $ACLI_TOKEN", "timeout --signal SIGKILL 5 echo $ACLI_TOKEN",
         "timeout --signal=SIGKILL 5 printenv ACLI_TOKEN", "timeout -k 1 5 env",
         "nice -n 10 echo $ACLI_TOKEN", "nice -n10 echo $ACLI_TOKEN",
@@ -469,9 +557,58 @@ def _self_test() -> None:
     assert not _looks_like_secret_name("PATH")
     _EXTRA_WORDS = saved_extra_words
 
+    _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies()
     _test_an_in_place_edit_excuses_no_segment_and_denies_none()
     _test_extra_words_from_config()
     _test_unresolvable_config_warns_rather_than_dropping_silently()
+
+
+def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> None:
+    """A crash in this hook is an allow, so the depth `env env env …` reaches must not be the stack's.
+
+    `env`-unwrapping used to recurse per layer, so a command carrying a few hundred `env` tokens raised
+    `RecursionError` out of `main()`: nothing on stdout, which Claude Code's `PreToolUse` contract reads
+    as no decision, so the command ran with the guard skipped entirely. The chain is unwound in
+    `_env_reason`'s own loop now, and `main()` turns any remaining unexpected crash into a deny rather
+    than into that silence — checked here by forcing one, since the whole point is that no input is
+    supposed to produce it.
+    """
+    import contextlib
+    import io
+
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
+    try:
+        chain = "env " * 5000
+        assert decision("Bash", {"command": chain.strip()}) is not None, "a bare env chain still dumps"
+        assert decision("Bash", {"command": f"{chain}echo $ACLI_TOKEN"}) is not None, (
+            "a leak behind any number of env layers is still the leak"
+        )
+        assert decision("Bash", {"command": f"{chain}ls"}) is None, "and a harmless one is still harmless"
+        assert decision("Bash", {"command": "env -u A " * 5000 + "printenv ACLI_TOKEN"}) is not None
+    finally:
+        _EXTRA_WORDS = saved
+
+    def _raise(tool: str, args: dict) -> str | None:
+        raise RecursionError("forced")
+
+    saved_decision, saved_stdin, saved_argv = globals()["decision"], sys.stdin, sys.argv
+    globals()["decision"] = _raise
+    captured = io.StringIO()
+    try:
+        sys.argv = [saved_argv[0]]  # the hook's own stdin path, not the self-test this runs inside
+        sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}))
+        with contextlib.redirect_stdout(captured):
+            main()
+    finally:
+        globals()["decision"], sys.stdin, sys.argv = saved_decision, saved_stdin, saved_argv
+    payload = json.loads(captured.getvalue())
+    decided = payload["hookSpecificOutput"]
+    assert decided["permissionDecision"] == "deny", f"a crash must not fall through as an allow: {payload}"
+    assert "forced" not in decided["permissionDecisionReason"], (
+        f"the reason must carry no exception text, which could echo the command: {decided}"
+    )
 
 
 def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:

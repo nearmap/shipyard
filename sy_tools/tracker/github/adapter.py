@@ -1117,9 +1117,26 @@ def _comments(data: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _labels(data: dict[str, Any]) -> list[str]:
-    """Label names only: the ids and colours `gh` also returns are noise to every caller."""
+    """Label names only: the ids and colours `gh` also returns are noise to every caller.
+
+    An entry no name can be read out of fails the read instead of dropping out of the list, the same
+    refusal jira's `_summary` makes for its own `labels` field — the two adapters answer one protocol,
+    so a shape drift one of them refuses cannot be the other's silent shortening. A filtered list reads
+    as the issue's real labels, and `labels` is what a caller reads to decide whether an issue is
+    already decomposed or already shipped.
+    """
     labels = _as_list(data.get("labels"), "labels")
-    return [str(label["name"]) for label in labels if isinstance(label, dict) and label.get("name")]
+    names: list[str] = []
+    for index, label in enumerate(labels):
+        name = label.get("name") if isinstance(label, dict) else None
+        if not name:
+            raise TrackerError(
+                f"entry {index} of the labels field read back as {type(label).__name__} with no readable "
+                "name, so the labels on this issue cannot be reported whole and a filtered list would read "
+                "as its real ones. Check the installed gh version against the fields this adapter requests."
+            )
+        names.append(str(name))
+    return names
 
 
 def _ref(node: object) -> str | None:

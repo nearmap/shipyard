@@ -466,7 +466,11 @@ def validate() -> list[str]:
         )
     required = list(REQUIRED_PATHS) + list(_adapter_map().get("required", []))
     for path in required:
-        if flat.get(path) in (None, ""):
+        # Whitespace-only counts as unset, matching `sy_tools/config.py` and, more to the point, the way
+        # `tracker.column_names()` reads the same value (`str(value or "").strip()`). `in (None, "")`
+        # passed `columns.ready: "   "` as configured — schema-valid, no `minLength` on `columns.*` —
+        # and the first status read then failed on a column this had just called present.
+        if not str(flat.get(path) or "").strip():
             errors.append(
                 f"{path} is required and unset. Set it in {root / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )

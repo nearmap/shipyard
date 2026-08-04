@@ -834,7 +834,12 @@ def _linked(links: object, side: str, field: str) -> list[str]:
     A well-formed link naming some other type is skipped — that filter is what this function is for — but
     an entry that is not a link object at all fails the read, for the same reason a whole field of the
     wrong shape does. One silent `continue` used to cover both, so malformed and irrelevant were
-    indistinguishable and a link this could not parse reported as no link.
+    indistinguishable and a link this could not parse reported as no link. A link whose `type` is
+    present but unreadable is the same fault one level in: Jira's own spec marks `type` required on an
+    `IssueLink` without guaranteeing a `name` inside it, and `(_field(...) or "") != BLOCKS` collapsed
+    "no name to compare" into "compared, and it is not Blocks". Only the type is refused this way —
+    a Blocks link whose *counterpart* is absent is a real "nothing in this direction", since each read
+    carries only one side.
 
     This was measured, not assumed, because getting it backwards is silent and inverts every
     dependency: a link posted as "AM-1245 blocks AM-1246" reads back on AM-1246 with AM-1245 under
@@ -862,7 +867,13 @@ def _linked(links: object, side: str, field: str) -> list[str]:
                 f"entry {index} of the {field} field is not a link object but {_shape(link)}, so the "
                 "relations on this issue are unknown and it must not be reported as having none"
             )
-        if (_field(link.get("type"), "name") or "").lower() != BLOCKS.lower():
+        type_name = _field(link.get("type"), "name")
+        if type_name is None:
+            raise TrackerError(
+                f"entry {index} of the {field} field has an unreadable link type ({_shape(link.get('type'))}), "
+                "so whether it is a Blocks link is unknown and it must not be reported as unrelated"
+            )
+        if type_name.lower() != BLOCKS.lower():
             continue
         key = _field(link.get(side), "key")
         if key:

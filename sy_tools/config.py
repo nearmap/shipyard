@@ -629,7 +629,12 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
             f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
         )
     for path_key in (*REQUIRED_PATHS, *adapter_map().get("required", [])):
-        if flat.get(path_key) in (None, ""):
+        # Whitespace-only counts as unset, because that is how the resolved value's own consumers read
+        # it: `tracker.column_names()` treats `str(value or "").strip()` as absent. Testing `in (None,
+        # "")` here reported `columns.ready: "   "` as configured — schema-valid, since `columns.*` is
+        # `["string", "null"]` with no `minLength` — and the session then failed its first status read
+        # with "missing required column name(s)". Validation clean, broken on first use.
+        if not str(flat.get(path_key) or "").strip():
             errors.append(f"{path_key} is required and unset.")
     # Presence only: the name is reported, the value is never read into a variable or a message.
     for name in adapter_map().get("secret_env", []):

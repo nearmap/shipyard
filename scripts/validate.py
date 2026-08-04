@@ -260,10 +260,11 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
 
     The directory's own presence fails too, not just references to it: with the `.gitignore` entry
     gone it is one `git add -A` from being committed. That presence check is the *only* thing that
-    reports a leftover directory, so the content scan below returns immediately once it fires rather
-    than also walking `.scratch/`'s content: a leftover directory holds thousands of files that
-    legitimately name `.scratch/`, so scanning them would both bury the single actionable "delete it"
-    message under one failure per file and make the walk itself slow enough to look like a hang.
+    reports a leftover directory, so this returns immediately once it fires rather than also running
+    the content scan below: a leftover directory holds thousands of files that legitimately name
+    `.scratch/`, and scanning them anyway would both bury the single actionable "delete it" message
+    under one failure per file and walk the entire leftover tree for no reason (measured: ~170ms on a
+    real ~5,700-file leftover) once the presence check has already failed the run.
 
     `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
     installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
@@ -282,7 +283,9 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
         if not p.is_file() or (p.suffix not in _SCRATCH_REF_SUFFIXES and p.name != ".gitignore"):
             continue
         rel = str(p.relative_to(ROOT))
-        if rel == "scripts/validate.py" or rel.startswith((".scratch/", ".shipyard/", ".git/", ".pixi/")):
+        # .scratch/ is not excluded here: reaching this loop already means stale.exists() was False
+        # (the branch above returns otherwise), so no path under .scratch/ can ever be yielded.
+        if rel == "scripts/validate.py" or rel.startswith((".shipyard/", ".git/", ".pixi/")):
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
         m = _SCRATCH_REF_PATTERN.search(text)

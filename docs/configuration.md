@@ -44,9 +44,9 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
 | `columns.in_review` | **yes** | Board column name for `in-review`. |
 | `columns.done` | **yes** | Board column name for `done`. |
 | `tracker_config.*` | adapter-specific | The selected adapter's own settings. Each adapter declares its required keys in its `config-map.json` and its `ADAPTER.md`. |
-| `worktree.root` | no | Where `/sy:ship` builds worktrees. Unset derives a sibling `<repo>-worktrees/` directory beside the repo. Absolute paths only — a literal `~` is not expanded. |
+| `worktree.root` | no | Where `/sy:ship` builds worktrees. Unset derives a sibling `<repo>-worktrees/` directory beside the *main checkout*, resolved from the shared git directory so a build worktree cannot nest a second worktrees directory inside the first. Absolute paths only — a literal `~` is not expanded. |
 | `memory.dir` | no | Cross-session memory store. Unset derives a directory under `~/.claude/shipyard/`. |
-| `scratch.dir` | no | Root for per-identifier ephemeral working directories (verbose command output, throwaway artefacts). Unset derives a directory under `~/.claude/shipyard/`. |
+| `scratch.dir` | no | Root for per-identifier ephemeral working directories (verbose command output, throwaway artefacts, `/sy:ship` state). Resolve one identifier's with `scratch-dir <identifier>`, or the repository's own with `scratch-dir --repo`. Unset derives a directory under `~/.claude/shipyard/`. |
 | `debug.evals` | no | Write the trigger/trace event log. |
 | `ci.poll_timeout` | no | Seconds before the CI poller gives up. Raise it for matrices that routinely run longer, so one poll call spans the wait. |
 | `ci.poll_interval` | no | Seconds between CI poll attempts. |

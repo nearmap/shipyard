@@ -780,6 +780,279 @@ def _looks_like_secret_name(name: str) -> bool:
     return _base_looks_like_secret_name(name, extra=_extra_words())
 
 
+_GENERATED_LEAKS = ("echo $ACLI_TOKEN", "printenv ACLI_TOKEN", "env")
+"""The leaks a generated wrapper/`env` spelling is put in front of: one per anti-pattern this hook denies.
+
+Three rather than one, because a spelling that lands the walk on the wrong token hides whatever is behind
+it, and which of these three commands is behind it decides *which* matcher would have fired. `env` is here
+as the wrapped command (`env -u VAL env`), not as a bare trailing option list, so every generated command
+is one a real `env` actually runs."""
+_GENERATED_HARMLESS = ("ls", "git status")
+"""The allow side of the same spellings. A generator that only asserted denies would pass against a hook
+that denied everything, which is a failure mode this file has come close to more than once (the `--`
+prefix bug denied `env -- ls`), so every spelling is generated twice."""
+_GENERATED_VALUE = "VAL"
+"""The flag value a generated spelling carries: an ordinary token, deliberately not option-shaped.
+
+That is the shape that makes an arity miss reachable — `_leading_command`'s own docstring: under-consuming
+survives only where the wrongly-treated token is itself flag-shaped, because then the flag loop keeps
+walking. `VAL` also carries no character that any table below lists as a short option, so the cluster scan
+cannot accidentally read the value as more flags."""
+_GENERATED_BOOLEAN_POOL = "vnfibqwz"
+"""Preference order for the leading character of a generated short-option cluster (`-vu VAL`).
+
+The character only has to be one the table under test does not list, because that is exactly the class of
+character `_consumes_next`'s cluster scan must walk past ("a character the table does not list is a boolean
+as far as this walk is concerned"). It is a preference order rather than a per-tool list of real booleans so
+that no hand-curated table is introduced here; the order simply puts letters first that really are boolean
+options of several of these tools (`sudo -v`, `env -v`, `python -v`, `timeout -v`, `time -v`), so most
+generated clusters are literally runnable. Where a particular build rejects one, an unrunnable command
+denied is the deny-leaning direction this module already accepts elsewhere (`export -np`)."""
+_GENERATED_CODE_BASES: dict[str, dict[str, str]] = {
+    "python": {
+        "leak_print": "import os; print(os.environ['ACLI_TOKEN'])",
+        "leak_silent": "import os; os.environ['ACLI_TOKEN']",
+        "harmless": "print(1)",
+    },
+    "node": {
+        "leak_print": "console.log(process.env.ACLI_TOKEN)",
+        "leak_silent": "process.env.ACLI_TOKEN",
+        "harmless": "console.log(1)",
+    },
+}
+"""The three code payloads a generated interpreter spelling carries, per `_ENV_ACCESS`-recognised language.
+
+`leak_silent` reads the environment without printing it, which is the control that keeps the generated deny
+side from collapsing into "any one-liner naming a secret": node's `-e`/`--eval` alone evaluates without
+printing (verified), so it legitimately allows, and denies only once the invocation asks for auto-print.
+
+python and node only, because `_ENV_ACCESS` recognises python's `os.environ`/`os.getenv` and node's
+`process.env` and nothing else. perl's `$ENV{X}` and ruby's `ENV['X']` are a recorded, still-open gap in
+that matcher — see the `_code_argument` assertions in `_self_test`, which pin perl's and ruby's *arity* for
+when it is closed — so generating a DENY for them would fail at every commit including this one. Excluded
+deliberately, not forgotten."""
+_GENERATED_CODE_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "python": ("  # {ch}", "; import g{ch}"),
+    "node": (" // {ch}", "; typeof {ch}"),
+}
+"""Trailing payload variants whose last character is a character the interpreter's own flag table lists.
+
+This is the half of generation that a flag-spelling matrix alone does not reach, and the reason it is here
+is a measured regression: `python3 -c"<code>"` arrives from `shlex.split` as the single token `-c<code>`, so
+when `<code>` ends in a listed flag character (`...; import gc` ends in `c`) an unscoped `prefer_last` cluster
+scan answered "the value is the next token", `_code_argument` looked past the code it was already holding,
+found no next token, and the plainest interpreter leak there is was ALLOWED. The ordinary attached spelling
+denied correctly throughout, so a generator that varied only the spelling would have shipped that
+regression exactly as the hand-curated deny list did. One comment form and one statement form per listed
+character, so the collision is reached both with and without the code being syntactically complete."""
+
+
+def _generated_spelling_cases() -> list[tuple[str, bool]]:
+    """`(command, expect_deny)` pairs generated from this module's own tables, in place of a curated list.
+
+    Every option-token classifier here has been found incomplete one spelling at a time, over seven review
+    rounds, and round 6's own fix shipped a regression its hand-curated self-test did not catch — because
+    the author who missed a spelling in the matcher is the same author who then wrote the case list. Hand
+    curation cannot cover its author's blind spot. Generating the spellings from the tables the matchers
+    read can: adding a flag to `_WRAPPER_ARG_FLAGS`, `_ENV_ARG_FLAGS` or `INTERPRETER_CODE_FLAGS`
+    immediately produces every spelling a shell accepts for it, on both the allow and the deny side, with
+    no list to remember to update.
+
+    Three families, each generated against the table that drives it:
+
+    - `WRAPPERS`/`_WRAPPER_ARG_FLAGS`: separated, attached-short, cluster-ending-in-the-value-taking-flag,
+      long separated, long `=`-attached, and a `getopt_long` prefix abbreviation, times a leaking command
+      behind it and a harmless one. `_WRAPPER_POSITIONALS` is honoured (`timeout`'s DURATION) and
+      `_WRAPPER_EXACT_ONLY_FLAGS` is generated as its own *rule*: a value-less long option leaves the next
+      token as the command, so `sudo --login VAL echo $ACLI_TOKEN` legitimately ALLOWS (the leak is behind
+      `VAL`, which runs nothing) while `sudo --login echo $ACLI_TOKEN` denies.
+    - `_ENV_ARG_FLAGS`: the same matrix, minus `-S`/`--split-string`, whose value is itself a command
+      string — the nested-indirection gap this module documents as out of scope by design.
+    - `INTERPRETER_CODE_FLAGS`: the same matrix for python and node, crossed with the payload variants in
+      `_GENERATED_CODE_SUFFIXES`, which is what makes this generator a regression detector rather than a
+      restatement of the deny list — see `_test_generated_option_spellings_deny_whenever_the_tool_prints`
+      for the two historical commits this list is shown to fail against.
+
+    1164 cases at the time of writing (677 deny, 487 allow); the self-test asserts a floor rather than an
+    exact number, so widening a table is a pass and emptying the generator is a loud failure.
+
+    Module-level and importable on purpose, so a probe can import the case list from one version of this
+    file and drive another version's hook as a subprocess, which is how that cross-commit check runs."""
+    return _generated_wrapper_cases() + _generated_env_cases() + _generated_interpreter_cases()
+
+
+def _generated_cluster_prefix(flags: frozenset[str]) -> str | None:
+    """A character to lead a generated short-option cluster with: the first pool letter this table omits."""
+    return next((ch for ch in _GENERATED_BOOLEAN_POOL if f"-{ch}" not in flags), None)
+
+
+def _generated_abbreviation(flag: str, longs: frozenset[str], exact_only: frozenset[str]) -> str | None:
+    """The shortest unambiguous `getopt_long` prefix abbreviation of `flag`, or None if it has none.
+
+    Unambiguous against the *whole* long-option set, and never a prefix of an `exact_only` flag, because
+    both of those are what a real `getopt_long` refuses outright: `sudo --clas` is ambiguous and `sudo --log`
+    matches the value-less `--login` too, so neither command runs and neither is a spelling to assert
+    anything about. This is the same rule `_WRAPPER_EXACT_ONLY_FLAGS` exists for, applied from the
+    generator's side."""
+    for size in range(3, len(flag)):
+        prefix = flag[:size]
+        if any(f.startswith(prefix) for f in exact_only):
+            continue
+        if sum(1 for f in longs if f.startswith(prefix)) == 1:
+            return prefix
+    return None
+
+
+def _generated_flag_spellings(flag: str, flags: frozenset[str], exact_only: frozenset[str]) -> list[str]:
+    """Every spelling a shell accepts for one value-taking `flag` plus `_GENERATED_VALUE`.
+
+    Short: separated, attached, and clustered behind a boolean — the three the walk must count as one
+    consumed value, one consumed token, and one consumed value respectively. Long: separated, `=`-attached
+    (which consumes nothing further), and a prefix abbreviation."""
+    if flag.startswith("--"):
+        longs = frozenset(f for f in flags if f.startswith("--"))
+        abbreviated = _generated_abbreviation(flag, longs, exact_only)
+        spellings = [f"{flag} {_GENERATED_VALUE}", f"{flag}={_GENERATED_VALUE}"]
+        return spellings + ([f"{abbreviated} {_GENERATED_VALUE}"] if abbreviated else [])
+    spellings = [f"{flag} {_GENERATED_VALUE}", f"{flag}{_GENERATED_VALUE}"]
+    boolean = _generated_cluster_prefix(flags)
+    return spellings + ([f"-{boolean}{flag[1]} {_GENERATED_VALUE}"] if boolean else [])
+
+
+def _generated_option_prefixes(
+    carried: frozenset[str], table: frozenset[str], exact_only: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Every generated option run for one table, including the empty one: the bare command takes cases too.
+
+    `carried` is the flags to spell out and `table` the whole option set they are spelled *against*, which
+    are the same thing for a wrapper and not for `env`, where `-S`/`--split-string` is excluded from the
+    former but still decides what a cluster or an abbreviation is ambiguous with in the latter."""
+    prefixes = [""]
+    for flag in sorted(carried):
+        prefixes.extend(_generated_flag_spellings(flag, table, exact_only))
+    return prefixes
+
+
+def _generated_wrapper_cases() -> list[tuple[str, bool]]:
+    """`WRAPPERS` × its own flag spellings × a leaking and a harmless command behind them."""
+    cases: list[tuple[str, bool]] = []
+    for wrapper in sorted(WRAPPERS):
+        flags = _WRAPPER_ARG_FLAGS[wrapper]
+        exact_only = _WRAPPER_EXACT_ONLY_FLAGS.get(wrapper, frozenset())
+        positional = " ".join(["5"] * _WRAPPER_POSITIONALS.get(wrapper, 0))  # timeout's DURATION
+        for prefix in _generated_option_prefixes(flags, flags, exact_only):
+            head = " ".join(part for part in (wrapper, prefix, positional) if part)
+            cases += [(f"{head} {leak}", True) for leak in _GENERATED_LEAKS]
+            cases += [(f"{head} {ok}", False) for ok in _GENERATED_HARMLESS]
+        # A value-less long option consumes no value, so the token after it *is* the command: the leak
+        # behind `sudo --login VAL echo $ACLI_TOKEN` never runs, and asserting a deny for it would pin the
+        # very over-consuming miss `_WRAPPER_EXACT_ONLY_FLAGS` exists to prevent. Without the value it is
+        # an ordinary deny, so both directions are generated from the one table.
+        for flag in sorted(exact_only):
+            head = " ".join(part for part in (wrapper, flag, positional) if part)
+            cases += [(f"{head} {leak}", True) for leak in _GENERATED_LEAKS]
+            cases += [(f"{head} {_GENERATED_VALUE} {leak}", False) for leak in _GENERATED_LEAKS]
+    return cases
+
+
+def _generated_env_cases() -> list[tuple[str, bool]]:
+    """`_ENV_ARG_FLAGS` × the same spelling matrix × the same commands behind it.
+
+    `-S`/`--split-string` is excluded: its value is itself a whole command string, which is the nested
+    indirection this module's own docstring puts out of scope by design and `_ENV_ARG_FLAGS` records rather
+    than closes. Its arity is still counted by the walk, and the walk never lands on a token of it, so there
+    is no spelling here to assert a deny for. Ambiguity and clustering are still computed against the full
+    table, since that is what a real `env` parses against."""
+    carried = frozenset(f for f in _ENV_ARG_FLAGS if f not in {"-S", "--split-string"})
+    cases: list[tuple[str, bool]] = []
+    for prefix in _generated_option_prefixes(carried, _ENV_ARG_FLAGS):
+        head = " ".join(part for part in ("env", prefix) if part)
+        cases += [(f"{head} {leak}", True) for leak in _GENERATED_LEAKS]
+        cases += [(f"{head} {ok}", False) for ok in _GENERATED_HARMLESS]
+    return cases
+
+
+def _generated_code_spellings(name: str, flags: frozenset[str]) -> list[tuple[str, bool, bool]]:
+    """Every spelling that hands `{code}` to one interpreter, with whether it auto-prints and where the code
+    lands.
+
+    The second element is whether the invocation asks the interpreter to print its result, which for node is
+    the difference between a deny and a legitimate allow. It is read off the flag tokens with
+    `_prints_result` — the only matcher this generator consults, and one the curated table in `_self_test`
+    pins spelling by spelling — never off the arity walk, which is the part every round of review has found
+    broken. It is exact for the cases where it matters, because `_prints_result` answers on a long option's
+    `=`-split head, so `--print=<code>` and `--print` agree.
+
+    The third element is whether the code shares a token with the flag (`-e<code>`). That shape is where an
+    attached payload's own characters are read as more flags, which is deliberate and deny-leaning in
+    `_interpreter_reason` ("a `-p`-shaped token belonging to something else … can deny an otherwise
+    non-printing one-liner"), so the caller keeps its non-printing payloads out of it rather than asserting
+    an allow the module intentionally does not give."""
+    shorts = sorted(f for f in flags if not f.startswith("--"))
+    longs = sorted(f for f in flags if f.startswith("--"))
+    spellings: list[tuple[str, bool, bool]] = []
+    boolean = _generated_cluster_prefix(flags)
+    for flag in shorts:
+        spellings.append((f'{name} {flag} "{{code}}"', _prints_result(flag), False))
+        spellings.append((f'{name} {flag}"{{code}}"', _prints_result(flag), True))
+        if boolean:
+            cluster = f"-{boolean}{flag[1]}"
+            spellings.append((f'{name} {cluster} "{{code}}"', _prints_result(cluster), False))
+    for flag in longs:
+        spellings.append((f'{name} {flag} "{{code}}"', _prints_result(flag), False))
+        spellings.append((f'{name} {flag}="{{code}}"', _prints_result(flag), False))
+    # A table that lists several *interchangeable* code carriers accepts a cluster of them, and the print
+    # flag leads it: node runs `-pe CODE` as both flags with CODE the next token and rejects the reverse
+    # `-ep` outright, so the ordering is generated from which carrier prints rather than from both orders.
+    # The same two flags spelled apart, and with `--print`'s own attached value, are the spellings that
+    # made auto-print a property of the invocation instead of the carrying flag.
+    for printer in (f for f in shorts if _prints_result(f)):
+        for carrier in (f for f in shorts if not _prints_result(f)):
+            spellings.append((f'{name} -{printer[1]}{carrier[1]} "{{code}}"', True, False))
+    for printer in (f for f in longs if _prints_result(f)):
+        for carrier in (f for f in longs if not _prints_result(f)):
+            spellings.append((f'{name} {printer} {carrier} "{{code}}"', True, False))
+            # node reads any attached value as present-and-therefore-on, so the value is not parsed and a
+            # falsy one prints exactly as `1` does (verified live).
+            for value in ("1", "false"):
+                spellings.append((f'{name} {printer}={value} {carrier} "{{code}}"', True, False))
+    return spellings
+
+
+def _generated_interpreter_cases() -> list[tuple[str, bool]]:
+    """`INTERPRETER_CODE_FLAGS` × every code spelling × every payload variant, for python and node.
+
+    The expectation is a rule, not a list: a case denies exactly when the payload reads a secret-shaped
+    variable *and* something prints it — a print call in the code, or an auto-print flag anywhere in the
+    invocation. That is what each real interpreter does, and it is why `node -e "process.env.ACLI_TOKEN"`
+    is generated as an ALLOW while `node -p` on the same payload is a DENY."""
+    cases: list[tuple[str, bool]] = []
+    for name, flags in sorted(INTERPRETER_CODE_FLAGS.items()):
+        # Which *language* an entry's payloads come from, resolved through `_PYTHON_BASENAME` rather than
+        # `_interpreter_key`: that returns the table's own key, so `python3` — a separate entry, and the
+        # spelling this module's headline regression was measured in — resolved to `"python3"` and its whole
+        # matrix was skipped without a word. Found by dumping the generated list, not by reading it.
+        key = "python" if _PYTHON_BASENAME.fullmatch(name) else name
+        if key not in _GENERATED_CODE_BASES:
+            continue  # perl/ruby: `_ENV_ACCESS` knows neither idiom — see `_GENERATED_CODE_BASES`
+        characters = sorted(flag[1] for flag in flags if len(flag) == 2)
+        payloads: list[tuple[str, str]] = []
+        for kind, base in sorted(_GENERATED_CODE_BASES[key].items()):
+            payloads.append((kind, base))
+            payloads += [
+                (kind, base + suffix.format(ch=ch))
+                for suffix in _GENERATED_CODE_SUFFIXES[key]
+                for ch in characters
+            ]
+        for template, auto_prints, code_shares_the_flag_token in _generated_code_spellings(name, flags):
+            for kind, code in payloads:
+                if kind == "leak_silent" and code_shares_the_flag_token:
+                    continue  # deliberately deny-leaning there — see `_generated_code_spellings`
+                prints = kind == "leak_print" or auto_prints
+                cases.append((template.format(code=code), kind.startswith("leak") and prints))
+    return cases
+
+
 def _self_test() -> None:
     # Pinned rather than live: a consuming repo's real redaction.extra_words could overlap one of
     # the allow-cases below (e.g. a repo adding "SITE" or "HOME"), turning this self-test flaky
@@ -1079,6 +1352,7 @@ def _self_test() -> None:
         )
     _EXTRA_WORDS = saved_extra_words
 
+    _test_generated_option_spellings_deny_whenever_the_tool_prints()
     _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies()
     _test_an_oversized_command_is_refused_instead_of_scanned()
     _test_stdin_that_cannot_be_read_denies_rather_than_returning_silently()
@@ -1086,6 +1360,49 @@ def _self_test() -> None:
     _test_an_in_place_edit_excuses_no_segment_and_denies_none()
     _test_extra_words_from_config()
     _test_unresolvable_config_warns_rather_than_dropping_silently()
+
+
+def _test_generated_option_spellings_deny_whenever_the_tool_prints() -> None:
+    """The structural check: option spellings generated from the tables, not curated by hand.
+
+    Deliberately its own test rather than more entries in the curated `allow`/`deny_cases` lists above,
+    because the two artefacts prove different things. Those lists are a record of spellings review has
+    already found; this one asks the tables what spellings exist. Seven rounds of review found exactly one
+    more hand-missed spelling each, and round 6's own fix regressed the headline interpreter deny — an
+    unscoped `prefer_last` made `python3 -c"...; import gc"` allow — past a curated list that already had a
+    case for the attached spelling. That regression is why the payload varies here too and not only the
+    flag spelling: the collision is between the *code's last character* and a listed flag character (see
+    `_GENERATED_CODE_SUFFIXES`), so a flags-only matrix would have shipped it as well.
+
+    Verified to be a real detector rather than a restatement of current behaviour, by driving this same
+    generated list against two historical commits as real hook subprocesses: of 1164 cases it fails 27
+    against `a0add099` — the regressed commit, every one of them a payload-suffix or attached-code case —
+    and 25 against `ff78dcf`, the pre-regression commit, on node's `-pe`, `--print --eval` and
+    `--print=<value>` spellings that round 6 closed. It passes here with no crash-denies. Neither
+    historical failure set is a subset of the other, which is the property a curated list kept failing to
+    have: each round's list covered the round before it.
+
+    Both sides are asserted, and both are asserted to be non-trivially populated: a deny-only list would
+    pass against a hook that denied everything, which is a real failure mode this file has flirted with
+    (`env -- ls` was denied by the fix for `env -- echo $ACLI_TOKEN`), and the count assertions mean a
+    refactor that silently empties the generator fails loudly instead of passing vacuously.
+    """
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()  # built-in words only, for the reason the curated lists are pinned so
+    try:
+        cases = _generated_spelling_cases()
+        denies = sum(1 for _, expect_deny in cases if expect_deny)
+        assert len(cases) > 900, f"the generator produced only {len(cases)} cases: something emptied it"
+        assert denies > 500, f"only {denies} generated deny cases"
+        assert len(cases) - denies > 200, f"only {len(cases) - denies} generated allow cases"
+        for command, expect_deny in cases:
+            got = decision("Bash", {"command": command})
+            assert (got is not None) is expect_deny, (
+                f"generated case expected {'deny' if expect_deny else 'allow'}: {command!r} got {got!r}"
+            )
+    finally:
+        _EXTRA_WORDS = saved
 
 
 def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> None:

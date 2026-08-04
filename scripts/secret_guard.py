@@ -52,16 +52,16 @@ from secret_words import looks_like_secret_name as _base_looks_like_secret_name
 
 _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
     "sudo": frozenset({
-        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D",
+        "-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D", "-R", "-T",
         "--user", "--group", "--prompt", "--close-from", "--host", "--role", "--type",
-        "--other-user", "--chdir",
+        "--other-user", "--chdir", "--chroot", "--command-timeout",
     }),
     "nice": frozenset({"-n", "--adjustment"}),
     "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
     "nohup": frozenset(),
-    "time": frozenset(),
+    "time": frozenset({"-o", "-f", "--output", "--format"}),
     "command": frozenset(),
 }
 _WRAPPER_POSITIONALS = {"timeout": 1}  # timeout's mandatory DURATION, consumed after its flags
@@ -161,13 +161,18 @@ def _leading_command(segment: str) -> tuple[str, list[str]] | None:
     it basenames what it lands on so `/bin/echo` reads as `echo`. A bare `--` ends that wrapper's
     option processing.
 
-    The two ways this can miscount are not symmetric, and the tables err accordingly. Over-consuming
-    — treating a flag as value-taking when it isn't — steps past the real command onto its first
-    argument, which fails open; under-consuming leaves the walk on a flag, which is recoverable. So
-    only flags confirmed to take a separated value consume two tokens, and every other flag consumes
-    one: an unrecognised `-x` is skipped rather than treated as the command, because landing on the
-    real command is what makes the deny reachable. `--flag=value` and an attached short value (`-o0`)
-    are one token by construction.
+    Both ways of miscounting can fail open, so neither direction is a safe default and the tables are
+    kept complete for exactly that reason. Over-consuming — treating a flag as value-taking when it
+    isn't — steps past the real command onto its first argument. Under-consuming lands the walk on the
+    value of a value-taking flag this file failed to list, and if that value is an ordinary token
+    rather than itself flag-shaped, the walk stops there and reads it as the command: `sudo -T 5 echo
+    $VAR` read `5` as the command and allowed the leak until `-T` was listed. Only where the
+    wrongly-treated token is itself flag-shaped does under-consuming survive, because the flag loop
+    keeps walking. So a flag confirmed to take a separated value consumes two tokens and every other
+    flag consumes one — an unrecognised `-x` is skipped rather than treated as the command, since
+    landing on the real command is what makes the deny reachable — and a wrapper's flag set is
+    completed from its documented synopsis, not from whatever this host happens to have installed.
+    `--flag=value` and an attached short value (`-o0`) are one token by construction.
     """
     tokens = [t.strip("\"'") for t in segment.split()]
     i = 0
@@ -344,6 +349,7 @@ def _self_test() -> None:
         "timeout 5 ls", "timeout --signal SIGKILL 5 ls", "timeout -k 1 5 pytest -q",
         "nice -n 10 git status", "ionice -c 3 pytest -q",
         "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
+        "sudo -T 5 ls", "sudo -R /some/root ls", "time -o /tmp/x pytest -q", "time -f %e ls",
         "sudo timeout 5 git status", "nohup python script.py",
         "echo hello", "echo $HOME", 'echo "path is $PATH"',
         '[ -n "$ACLI_TOKEN" ]', "[ -z \"$GITHUB_TOKEN\" ] && echo missing",
@@ -372,6 +378,12 @@ def _self_test() -> None:
         "stdbuf -o0 echo $ACLI_TOKEN", "stdbuf -o 0 echo $ACLI_TOKEN",
         "sudo -u root echo $ACLI_TOKEN", "sudo --user=root echo $ACLI_TOKEN",
         "sudo -- echo $ACLI_TOKEN", "sudo -n printenv ACLI_TOKEN",
+        # Separated values whose own token is not flag-shaped: an unlisted flag here left the walk
+        # holding "5"/"/some/root"/"/tmp/x" as the command, which allowed the leak behind it.
+        "sudo -T 5 echo $ACLI_TOKEN", "sudo --command-timeout 5 echo $ACLI_TOKEN",
+        "sudo -R /some/root echo $ACLI_TOKEN", "sudo --chroot /some/root printenv ACLI_TOKEN",
+        "/usr/bin/time -o /tmp/x echo $ACLI_TOKEN", "time -f %e echo $ACLI_TOKEN",
+        "time --output /tmp/x printenv ACLI_TOKEN", "time --output=/tmp/x echo $ACLI_TOKEN",
         "env echo $ACLI_TOKEN", "env printenv ACLI_TOKEN", "env FOO=bar echo $ACLI_TOKEN",
         "sudo env echo $ACLI_TOKEN", "sudo timeout 5 env",
         '''python -c "import os; print(os.environ['ACLI_TOKEN'])"''',

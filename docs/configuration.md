@@ -66,7 +66,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
 | `transcript.truncation_limits.thinking` | no | Character limit per thinking block. |
 | `redaction.extra_words` | no | Org-specific credential-name fragments merged into the built-in secret-word list (`scripts/secret_words.py`) that `scripts/secret_guard.py` and `scripts/scrub_known_secrets.py` both match against. Each entry must be a single alphanumeric word — the matcher compares whole split words, never substrings, so a multi-word entry like `"ID_RSA"` is refused rather than silently never matching. |
 
-The five column names are matched case-insensitively against the real board. `blocked` is deliberately not a column: blocking is a dependency relationship, not a lifecycle state.
+The five column names are matched case-insensitively against the real board, and must be distinct under that same case-insensitive comparison — two statuses sharing one name would leave one of them unreachable through the canonical vocabulary, so `validate_config` names both offending keys instead of letting the first match win. `blocked` is deliberately not a column: blocking is a dependency relationship, not a lifecycle state.
 
 ## Example: a committed repo config
 

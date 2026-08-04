@@ -412,7 +412,10 @@ def _claims_within(parsed: object) -> bool:
 
 
 def _validate_machine_log(body: str) -> None:
-    """Reject a malformed `shipyard.ship_metrics.v1` block before the comment is posted.
+    """Reject a malformed `shipyard.ship_metrics.v1` block before the body it sits in is written.
+
+    Every caller that accepts a body runs this — `post-comment`, `create-issue`, `update-issue` — so
+    its refusals name the body, not a comment: an issue body is gated identically to a comment's.
 
     Naming the schema id anywhere in the body arms this check, and so does carrying a fenced block
     that parses as this schema however it spelled the id; a body that does either must then carry
@@ -509,21 +512,21 @@ def _validate_machine_log(body: str) -> None:
     blocks = len(records) + unread
     if blocks + stray > 1:
         raise ToolError(
-            f"this comment claims {SCHEMA_ID} in {blocks + stray} places, so it was not posted: "
+            f"this body claims {SCHEMA_ID} in {blocks + stray} places, so it was refused: "
             f"{blocks} in a properly closed fenced block"
             + (", and once outside any such block" if stray else "")
-            + ". Which one is the machine log is ambiguous, and validating one of them would post the "
-            "others unchecked. A machine log is always its own comment carrying exactly one such block: "
-            "post the log on its own, and when quoting earlier numbers as prose, leave the literal id "
-            "out — say `the ship metrics log` instead, because naming the id arms this check."
+            + ". Which one is the machine log is ambiguous, and validating one of them would write the "
+            "others unchecked. A machine log carries exactly one such block and nothing else: post it "
+            "on its own, as its own comment, and when quoting earlier numbers as prose, leave the "
+            "literal id out — say `the ship metrics log` instead, because naming the id arms this check."
         )
     if records:
         try:
             ShipMetricsV1.model_validate(records[0])
         except ValidationError as exc:
             raise ToolError(
-                f"this comment carries a {SCHEMA_ID} block that does not match the schema, so it was "
-                f"not posted: {exc.error_count()} problem(s): "
+                f"this body carries a {SCHEMA_ID} block that does not match the schema, so it was "
+                f"refused: {exc.error_count()} problem(s): "
                 + "; ".join(f"{'.'.join(str(p) for p in e['loc']) or '<root>'}: {e['msg']}" for e in exc.errors())
                 + ". The field definitions are in skills/ship/references/handoff-accounting.md."
             ) from None
@@ -532,10 +535,10 @@ def _validate_machine_log(body: str) -> None:
     # parsed as something else, or a mention outside every block. Zero claims cannot arrive here — a
     # named id sits either in some block's content, which makes that block a claim, or outside them all.
     raise ToolError(
-        f"this comment claims {SCHEMA_ID} but carries no fenced block that parses as one, so it was not "
-        "posted. A machine log is a fenced JSON object whose `schema` key is that id: check the JSON "
+        f"this body claims {SCHEMA_ID} but carries no fenced block that parses as one, so it was "
+        "refused. A machine log is a fenced JSON object whose `schema` key is that id: check the JSON "
         "parses (a trailing comma is the usual culprit), that the closing fence is on a line of its own "
-        "with nothing after it and Unix line endings, and that the block is fenced at all. If the comment "
+        "with nothing after it and Unix line endings, and that the block is fenced at all. If the body "
         "is prose that merely mentions the schema, say `the ship metrics log` instead — the id arms this "
         "check. The "
         "field definitions are in skills/ship/references/handoff-accounting.md."
@@ -719,7 +722,7 @@ def check_env(
     variable is set and non-empty. A variable exported empty reports as unset.
     """
     _required(name=name)
-    return {"name": name, "set": config.env_present(name)}
+    return {"name": name, "present": config.env_present(name)}
 
 
 @mcp.tool(name="validate_config")
@@ -727,10 +730,23 @@ def validate_config() -> dict[str, Any]:
     """Report every reason the resolved configuration would be rejected.
 
     Covers schema violations, missing required keys, an unknown tracker, a required credential absent
-    from the environment, an environment variable that outranks the resolved per-agent models, and
-    model-floor breaches. Side-effect-free, and never prints a secret value.
+    from the environment, an environment variable that outranks the resolved per-agent models,
+    model-floor breaches, and two board columns configured under one name. Side-effect-free, and
+    never prints a secret value.
     """
     errors = config.validate()
+    # The canonical status vocabulary refuses to resolve on a column-name collision, and nothing here
+    # asked it: a config with two statuses under one column name validated clean and then broke on the
+    # first `canonical_status`/`native_status` call instead, which is the one fault this tool exists to
+    # name. `TrackerError` is what that refusal is, so it becomes an error like any other. A config that
+    # will not resolve at all reaches this as `ConfigError` and is dropped, because `config.validate()`
+    # above has already reported that same failure and reporting it twice names one fault as two.
+    try:
+        tracker.column_names()
+    except tracker.TrackerError as exc:
+        errors.append(str(exc))
+    except config.ConfigError:
+        pass
     report: dict[str, Any] = {"valid": not errors, "errors": errors}
     try:
         report["tracker"] = config.get("tracker")

@@ -228,6 +228,28 @@ def test_validate_config_reports_an_unresolvable_config_rather_than_crashing(mon
     assert "tracker" not in report, "an unresolvable config has no resolved values to report"
 
 
+def test_validate_config_reports_two_columns_configured_under_one_name(monkeypatch):
+    """The collision refusal lives in `column_names()`, which nothing asked during validation.
+
+    A config mapping two lifecycle statuses to one column passed `validate_config` clean and then broke
+    on the first `canonical_status`/`native_status` call — the diagnosis tool silently disagreeing with
+    the vocabulary. The tool has to ask.
+    """
+    colliding = {
+        "columns.backlog": "Created",
+        "columns.ready": "In Progress",
+        "columns.in_progress": "in progress",
+        "columns.in_review": "In Review",
+        "columns.done": "Closed",
+    }
+    monkeypatch.setattr(
+        server.tracker.config, "get", lambda key, *, default=None: colliding.get(key, default)
+    )
+    report = server.validate_config()
+    assert report["valid"] is False, report
+    assert any("columns.ready" in e and "columns.in_progress" in e for e in report["errors"]), report
+
+
 @pytest.mark.anyio
 async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
     """The distinction the MCP spec draws: the call reached the server and produced an answer.
@@ -999,7 +1021,7 @@ async def test_check_env_reports_presence_and_never_the_value(monkeypatch, prese
     async with mcp.Client(server.mcp) as client:
         result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
     assert result.is_error is False, result.content
-    assert _payload(result) == {"name": "SY_CHECK_ENV_PROBE", "set": present}, _payload(result)
+    assert _payload(result) == {"name": "SY_CHECK_ENV_PROBE", "present": present}, _payload(result)
     assert SENTINEL not in str(result), f"the variable's value reached the tool result: {result}"
 
 
@@ -1019,4 +1041,4 @@ async def test_check_env_reads_an_empty_variable_as_unset(monkeypatch):
     monkeypatch.setenv("SY_CHECK_ENV_PROBE", "")
     async with mcp.Client(server.mcp) as client:
         result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
-    assert _payload(result)["set"] is False, _payload(result)
+    assert _payload(result)["present"] is False, _payload(result)

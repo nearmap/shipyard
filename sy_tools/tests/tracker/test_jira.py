@@ -916,7 +916,7 @@ async def test_a_malformed_link_entry_fails_while_another_link_type_is_still_fil
 async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blocking_link(
     credentials, monkeypatch, link_type
 ):
-    """"No type name to compare" and "compared, and it is not Blocks" are different answers.
+    """ "No type name to compare" and "compared, and it is not Blocks" are different answers.
 
     `(_field(link.get("type"), "name") or "").lower() != BLOCKS` collapsed them into one: Jira's own spec
     marks `type` required on an `IssueLink` without guaranteeing a `name` inside it, so a drifted type

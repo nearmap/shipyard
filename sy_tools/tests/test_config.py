@@ -491,6 +491,7 @@ def test_logical_repo_resolves_a_plain_separate_git_dir_checkout_without_raising
     subprocess.run([*git, "-C", str(detached_work), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
 
     common = config._git_common_dir(detached_work)
+    assert common is not None
     assert common == detached_gitdir.resolve()
     assert config._configured_worktree(common) is None, "a plain --separate-git-dir checkout never sets core.worktree"
     assert config._is_resolved_working_tree(common.parent, common) is False, (
@@ -661,7 +662,7 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
     subprocess.run([*git, "-C", str(detached_work), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
 
     common = config._git_common_dir(detached_work)
-    assert common == detached_gitdir.resolve()
+    assert common is not None and common == detached_gitdir.resolve()
     assert config._configured_worktree(common) is None
     assert not config._is_resolved_working_tree(common.parent, common), (
         "the directory holding the detached gitdir must not be mistaken for the checkout"
@@ -727,6 +728,7 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
         check=True,
     )
     common = config._git_common_dir(fixture_repo)
+    assert common is not None
     gitdir_files = list((common / "worktrees").glob("*/gitdir"))
     assert len(gitdir_files) == 1
     recorded = gitdir_files[0].read_text(encoding="utf-8").strip()

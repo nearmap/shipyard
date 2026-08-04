@@ -152,8 +152,11 @@ def test_every_adapter_implements_the_whole_protocol():
 
 @pytest.mark.parametrize(
     "drift",
-    ["field", "entry"],
-    ids=["whole-field-of-the-wrong-shape", "one-malformed-entry"],
+    ["field", "entry", "wrapper", "value"],
+    ids=[
+        "whole-field-of-the-wrong-shape", "one-malformed-entry",
+        "a-relation-wrapper-neither-adapter-unwraps", "an-entry-whose-name-is-not-a-string",
+    ],
 )
 @pytest.mark.parametrize("field", ["labels", "comments"])
 def test_neither_adapter_shortens_a_labels_or_comments_field_it_cannot_read(field, drift):
@@ -170,13 +173,31 @@ def test_neither_adapter_shortens_a_labels_or_comments_field_it_cannot_read(fiel
     per-adapter in `test_github.py` and `test_jira.py`, where the end-to-end cases live, and duplicating
     either fake here would test the fake. What has to be asserted in one place is that the refusal is
     common to both.
+
+    Four drifts, because field-and-entry shape was not the whole of the asymmetry. `{"nodes": [...]}` is
+    the wrapper `gh` uses for its own relation lists, and a field-level guard that admitted any `dict`
+    handed it to a parser that answers `[]` for a wrapper it cannot address — so the most plausible drift
+    of all reported "no labels"/"no comments" through the guard written to make that impossible. And the
+    two adapters disagreed on a non-string *value* in opposite directions: github coerced a label whose
+    `name` was `3` into `"3"` while jira refused it, and github refused a string-shaped comment author
+    while jira reported it as an absent one. Both are aligned on refusing, which is the direction the rest
+    of these readers already take; a comment carries no name of its own, so the author is the field that
+    drift is asserted on there.
     """
     from sy_tools.tracker.github import adapter as github
     from sy_tools.tracker.jira import adapter as jira
 
     base = "https://example.atlassian.net"
-    gh_value: object = "not-a-list" if drift == "field" else [{"name": "shipyard"}, 7]
-    jira_value: object = "not-a-list" if drift == "field" else ["shipyard", 7]
+    gh_value, jira_value = {
+        ("labels", "field"): ("not-a-list", "not-a-list"),
+        ("labels", "entry"): ([{"name": "shipyard"}, 7], ["shipyard", 7]),
+        ("labels", "wrapper"): ({"nodes": [{"name": "shipyard"}]}, {"nodes": ["shipyard"]}),
+        ("labels", "value"): ([{"name": 3}], ["shipyard", 3]),
+        ("comments", "field"): ("not-a-list", "not-a-list"),
+        ("comments", "entry"): ([{"id": "1", "body": "x"}, 7], [{"id": "1"}, 7]),
+        ("comments", "wrapper"): ({"nodes": [{"id": "1"}]}, {"nodes": [{"id": "1"}]}),
+        ("comments", "value"): ([{"id": "1", "author": "alice"}], [{"id": "1", "author": "alice"}]),
+    }[(field, drift)]
     readers = {
         ("labels", "github"): lambda: github._labels({"labels": gh_value}),
         ("labels", "jira"): lambda: jira._summary(base, "AM-1", {"labels": jira_value}),
@@ -189,6 +210,26 @@ def test_neither_adapter_shortens_a_labels_or_comments_field_it_cannot_read(fiel
         assert field.removesuffix("s") in str(failure.value), (
             f"{name}'s refusal must name what it could not read: {failure.value}"
         )
+
+
+def test_neither_adapter_drops_a_related_issue_it_cannot_name():
+    """`dependencies` and `children` are relational lists on both sides, so one refusal is both refusals.
+
+    github's `_refs` filtered a malformed entry out and returned the rest, with nothing saying one was
+    dropped and — on the bare-list shape — no `totalCount` to cross-check the length against, while jira's
+    `_keys` raised on the equivalent entry. A caller reads these to decide whether an issue is blocked or
+    already decomposed, and cannot see which tracker replied, so a list that is quietly one issue short is
+    the same fault the field-level guards either side already refuse.
+    """
+    from sy_tools.tracker.github import adapter as github
+    from sy_tools.tracker.jira import adapter as jira
+
+    with pytest.raises(tracker.TrackerError, match="entry 1"):
+        github._refs([{"url": "https://github.com/o/r/issues/1"}, "junk"])
+    with pytest.raises(tracker.TrackerError, match="entry 1"):
+        jira._keys([{"key": "AM-1"}, "junk"], "subtasks")
+    assert github._refs([{"url": "https://github.com/o/r/issues/1"}]) == ["https://github.com/o/r/issues/1"]
+    assert jira._keys([{"key": "AM-1"}], "subtasks") == ["AM-1"], "and a well-formed list still reads"
 
 
 def test_an_unknown_canonical_token_is_refused(columns):

@@ -811,7 +811,7 @@ def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
             )
         items.append({
             "id": _field(entry, "id") or "",
-            "author": _field(entry.get("author"), "displayName") or "",
+            "author": _author(entry.get("author"), issue, index),
             "created": _field(entry, "created") or "",
             "body": adf.adf_to_markdown(entry.get("body")),
         })
@@ -821,6 +821,29 @@ def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
         seen = (start if isinstance(start, int) and not isinstance(start, bool) else 0) + len(entries)
         return items, seen < total
     return items, len(entries) >= COMMENT_PAGE
+
+
+def _author(author: object, issue: str, index: int) -> str:
+    """One comment author's display name, refusing a shape this adapter cannot read.
+
+    The twin of github's `_login`, and here for the same parity reason the field and entry checks either
+    side already answer: `_field` returns None for anything that is not an object, so a string-shaped
+    author — `"author": "alice"` — came back as `""`, reading exactly like the genuinely absent author of a
+    deleted account, while the github adapter raised on that identical drift. One protocol, one behaviour.
+
+    Fixed at this call site rather than by tightening `_field`, whose tolerance is load-bearing: every
+    other caller reaches into an optional nested object where absent legitimately means absent (`parent` on
+    an orphan, `type` on a link). An absent author still stays honestly empty for the same reason github's
+    does: Jira omits it for a deleted account, which is not a drift.
+    """
+    if author is None:
+        return ""
+    if not isinstance(author, dict):
+        raise TrackerError(
+            f"comment {index} of {issue} has an author that is not an author object but {_shape(author)}, "
+            "so this thread cannot be read; an unreadable author must not report as an absent one"
+        )
+    return _field(author, "displayName") or ""
 
 
 def _linked(links: object, side: str, field: str) -> list[str]:

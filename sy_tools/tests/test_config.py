@@ -1515,6 +1515,32 @@ def test_the_repo_root_resolves_once_per_process_refusal_included(fixture_repo, 
     assert calls, "reload() must clear the root too, or it re-reads the layers of the previous repo"
 
 
+def test_a_git_timeout_is_retried_on_the_next_call_rather_than_refusing_the_session(fixture_repo, monkeypatch):
+    """This module backs a long-lived server, so a transient refusal must not outlive the transient fault.
+
+    A timeout says nothing about the repository — only that git did not answer inside five seconds, which a
+    momentary index lock or a slow filesystem produces — and memoizing that verdict turned one hiccup into a
+    server that refused every later tool call for the rest of its uptime, with `reset_cache()` reachable
+    from no tool an MCP client can call. The CLI twin in `scripts/sy_config.py` keeps memoizing its own,
+    correctly: its process ends with the command. A settled refusal is still memoized here — the case above
+    covers that — so this pins the distinction, not a blanket un-memoizing.
+    """
+    real_run = subprocess.run
+    wedged = [True]
+
+    def hang(cmd, **kwargs):
+        if wedged[0]:
+            raise subprocess.TimeoutExpired(cmd, config.GIT_TIMEOUT_SECONDS)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(config.subprocess, "run", hang)
+    config.reset_cache()
+    with pytest.raises(config.ConfigError, match="did not resolve the repository root"):
+        config.repo_root()
+    wedged[0] = False
+    assert config.repo_root() == fixture_repo, "a timeout must not be remembered: the next call must retry"
+
+
 def test_env_present_reports_presence_and_reads_an_empty_variable_as_absent(monkeypatch):
     """The presence-only primitive `check_env` serves, pinned where it lives rather than only at the tool.
 

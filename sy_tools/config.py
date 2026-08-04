@@ -61,6 +61,15 @@ class ConfigError(RuntimeError):
     """The configuration could not be resolved, or a caller asked for something it may not have."""
 
 
+class _TransientConfigError(ConfigError):
+    """A resolution failure a later attempt can still succeed at, so it is never memoized.
+
+    A `ConfigError` to every caller — nothing above this module needs to tell the two apart — and
+    subclassed only so `repo_root` can decline to remember one. See its docstring for why that
+    distinction exists here and not in the CLI-side twin.
+    """
+
+
 _REPO_ROOT: Path | None = None
 _REPO_ROOT_REFUSAL: ConfigError | None = None
 
@@ -92,13 +101,24 @@ def repo_root() -> Path:
     server process — is a fourth named `ConfigError`, so it reaches `validate()` as a reportable fault
     rather than a raw `FileNotFoundError` out of whichever tool call resolved first.
 
-    A refusal is memoized alongside an answer, so root resolution runs git at most once per process, the
-    same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without it this
-    resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, and one
-    failed `get()` asks for the root twice: the credential-shape gate resolves first and the value's own
-    `resolve()` asks again, so the wait a caller actually sat through on a wedged git was twice
-    `GIT_TIMEOUT_SECONDS`, not the one bound that constant documents. The sibling
-    `scripts/sy_config.py::repo_root` memoizes its own `SystemExit` refusal for the same reason.
+    A *settled* refusal is memoized alongside an answer, so root resolution runs git at most once per
+    process, the same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without
+    it this resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, and
+    one failed `get()` asks for the root twice: the credential-shape gate resolves first and the value's own
+    `resolve()` asks again, so the wait a caller actually sat through was twice `GIT_TIMEOUT_SECONDS`, not
+    the one bound that constant documents. The sibling `scripts/sy_config.py::repo_root` memoizes its own
+    `SystemExit` refusal for the same reason.
+
+    A `_TransientConfigError` is the exception, and it is where this parts company with that sibling: a git
+    that timed out has said nothing about the repository, only that it did not answer in five seconds — a
+    momentary index lock or a slow network filesystem — and this module backs a long-lived MCP server, not a
+    one-shot CLI process. Memoizing that verdict turned one hiccup into a server that refused every
+    subsequent tool call for the rest of its uptime, with `reset_cache()` reachable from no tool a client can
+    call: recovery meant restarting the server. So a timeout is retried on the next call, and the cost is
+    paid back where it was measured — a genuinely wedged git makes a failing `get()` wait twice the bound
+    again. That is the right trade for this side: a bounded, self-clearing slowness against an unbounded,
+    unrecoverable refusal. The CLI twin keeps memoizing, correctly, because its process ends with the
+    command.
     """
     global _REPO_ROOT, _REPO_ROOT_REFUSAL
     if _REPO_ROOT_REFUSAL is not None:
@@ -124,6 +144,8 @@ def repo_root() -> Path:
                         "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a "
                         "directory that still exists."
                     ) from None
+        except _TransientConfigError:
+            raise  # said nothing about the repository, so it is not an answer to remember
         except ConfigError as refusal:
             _REPO_ROOT_REFUSAL = refusal
             raise
@@ -148,7 +170,9 @@ def _git_toplevel(start: Path) -> Path | None:
     is the twin of `scripts/sy_config.py::_git_toplevel`, which was bounded first because the secret
     gate's fail-open reaches it, but this is the hotter of the two — it runs on every tool call, not once
     per CLI process — so the same bound belongs here, degrading to this module's own `ConfigError`
-    exactly as the unrunnable-binary case does.
+    exactly as the unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
+    the missing binary does not, because only one of the two can come out differently on the next call and
+    `repo_root` memoizes accordingly.
 
     `stdin` is closed for the same reason the tracker adapters close it on their own subprocesses: this
     runs inside the MCP server, whose stdin is the JSON-RPC transport, and a child that inherits it can
@@ -163,10 +187,11 @@ def _git_toplevel(start: Path) -> Path | None:
             stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        raise ConfigError(
+        raise _TransientConfigError(
             f"git did not resolve the repository root from {start} within {GIT_TIMEOUT_SECONDS}s and "
             "was killed. A wedged git binary cannot be waited out on the path every tool call takes to "
-            "a resolved value, so resolution refuses instead."
+            "a resolved value, so resolution refuses instead. This refusal is not remembered: the next "
+            "call tries again, so a momentary index lock costs one failed call rather than the session."
         ) from None
     except OSError as exc:
         raise ConfigError(

@@ -1131,6 +1131,55 @@ async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypat
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments", "field"),
+    [
+        ("create-issue", lambda v: {"issue_type": "task", "title": f"TL;DR: {v} leaked", "body": "b"}, "title"),
+        ("add-label", lambda v: {"issue": "PROJ-1", "label": v}, "label"),
+    ],
+    ids=["create-issue-title", "add-label-label"],
+)
+async def test_every_caller_supplied_field_is_scrubbed_not_only_the_body(monkeypatch, tool, arguments, field):
+    """A write's other caller-supplied strings are the same class of value as its body.
+
+    The scrub was wired to `body` alone, so a credential pasted into `create-issue`'s `title` reached the
+    adapter verbatim — while the report beside it said `redactions: 1` for the body, which reads as full
+    coverage of the write. A title is durable, echoed by every search result and every failed write, and
+    not made safe again by editing it. `add-label`'s `label` is the same shape at lower volume.
+    """
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(FAKE_SECRET))
+    assert result.is_error is False, result.content
+    _verb, args, kwargs = recorder.calls[0]
+    sent = str(kwargs.get(field) or args[0 if tool == "create-issue" else 1])
+    assert FAKE_SECRET not in sent, f"{tool} handed the credential to the tracker through {field}"
+    assert f"<REDACTED:{FAKE_SECRET_VAR}>" in sent, f"{tool} did not scrub {field}: {sent}"
+    assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
+
+
+@pytest.mark.anyio
+async def test_one_scrub_report_counts_every_field_of_a_write_not_just_the_body(monkeypatch):
+    """A count covering some of a write's fields is worse than none: it is read as covering all of them."""
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("create-issue", {
+            "issue_type": "task",
+            "title": f"TL;DR: {FAKE_SECRET}",
+            "body": f"it printed {FAKE_SECRET} twice: {FAKE_SECRET}\n",
+        })
+    assert result.is_error is False, result.content
+    report = _payload(result)["scrub"]
+    assert report == {
+        "scrubbed_vars": [FAKE_SECRET_VAR], "redactions": 3, "declared_absent_from_env": []
+    }, f"the report must total the title's redaction with the body's two: {report}"
+
+
+@pytest.mark.anyio
 async def test_a_declared_credential_absent_from_the_environment_is_reported_not_refused(monkeypatch):
     """`secrets.sanitize` raises on this and a body write must not, because the two cases differ.
 

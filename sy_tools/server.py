@@ -46,6 +46,7 @@ is exported and missing when it is not.
 """
 from __future__ import annotations
 
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -86,13 +87,20 @@ def _required(**fields: str) -> None:
             raise ToolError(f"{name!r} is required and must be a non-empty string")
 
 
-def _scrub_body(body: str) -> tuple[str, dict[str, Any]]:
-    """A caller-supplied body with every credential value this process holds replaced by a marker.
+def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
+    """Caller-supplied fields with every credential value this process holds replaced by a marker.
 
-    Returns the text to write and a report of what was redacted. The report names variables and
-    counts occurrences and nothing else, so a caller can see that something was stripped without the
-    result disclosing what: a redaction the caller cannot see is one nobody notices happened, and a
-    redaction the caller can read is the leak reintroduced in the reply.
+    Returns the texts to write, in the order given, and one report covering all of them. The report
+    names variables and counts occurrences and nothing else, so a caller can see that something was
+    stripped without the result disclosing what: a redaction the caller cannot see is one nobody
+    notices happened, and a redaction the caller can read is the leak reintroduced in the reply.
+
+    Variadic rather than one body at a time, because a write's *other* caller-supplied strings are the
+    same class of value and a per-field helper got wired to the body alone: `create-issue`'s `title`
+    reached the adapter unscrubbed while the body beside it was scrubbed and the report still said
+    `redactions: 1`, which reads as full coverage of that write. `add-label`'s `label` is the same
+    shape. One call per write, with every field it carries, is what keeps the count honest — a report
+    covering some of a write's fields is worse than no report, since it is read as covering all of them.
 
     Only `secrets.scrub_text`'s in-memory known-value pass runs here, never the scanner pass that
     `secrets.sanitize` adds on top of it for attachments. That is a deliberate line: the scanner
@@ -131,10 +139,15 @@ def _scrub_body(body: str) -> tuple[str, dict[str, Any]]:
             known[name] = value
         else:
             absent.append(name)
-    scrubbed, counts = secrets.scrub_text(body, known)
+    scrubbed: list[str] = []
+    totals: Counter[str] = Counter()
+    for text in texts:
+        clean, counts = secrets.scrub_text(text, known)
+        scrubbed.append(clean)
+        totals.update(counts)
     return scrubbed, {
-        "scrubbed_vars": sorted(counts),  # names only, never a value
-        "redactions": sum(counts.values()),
+        "scrubbed_vars": sorted(totals),  # names only, never a value
+        "redactions": sum(totals.values()),
         "declared_absent_from_env": sorted(absent),
     }
 
@@ -156,10 +169,13 @@ async def create_issue(
 
     A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
     machine log written into a body cannot bypass that gate; every other body passes through unchanged
-    apart from the credential scrub, whose `scrub` key reports the variable names it redacted.
+    apart from the credential scrub, whose `scrub` key reports the variable names it redacted. The
+    `title` is scrubbed on the same call and counted in the same report: a title is as likely to be
+    pasted out of command output as a body is, it is the field every search result and every failed
+    write echoes back, and it cannot be edited back out of a tracker's own history.
     """
     _required(title=title)
-    body, scrub = _scrub_body(body)
+    (title, body), scrub = _scrub_texts(title, body)
     _validate_machine_log(body)
     created = await tracker.adapter().create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
     return {**created, "scrub": scrub}
@@ -195,7 +211,7 @@ async def update_issue(
     apart from the credential scrub, whose `scrub` key reports the variable names it redacted.
     """
     _required(issue=issue)
-    body, scrub = _scrub_body(body)
+    (body,), scrub = _scrub_texts(body)
     _validate_machine_log(body)
     updated = await tracker.adapter().update_issue(issue, body)
     return {**updated, "scrub": scrub}
@@ -306,9 +322,16 @@ async def add_label(
 
     Canonical verb `add-label`. Additive by contract, and the full resulting label set comes back
     so the caller can confirm nothing was displaced.
+
+    The `label` goes through the same credential scrub every body does, reported under `scrub`. Lower
+    risk than a body, and the same class: it is a caller-supplied string that lands in durable tracker
+    state and in the tracker CLI's own error output, so exempting it would rest on a claim about what a
+    caller pastes rather than on a check.
     """
     _required(issue=issue, label=label)
-    return await tracker.adapter().add_label(issue, label)
+    (label,), scrub = _scrub_texts(label)
+    added = await tracker.adapter().add_label(issue, label)
+    return {**added, "scrub": scrub}
 
 
 @mcp.tool(name="post-comment")
@@ -331,7 +354,7 @@ async def post_comment(
     variable names it redacted.
     """
     _required(issue=issue)
-    body, scrub = _scrub_body(body)
+    (body,), scrub = _scrub_texts(body)
     _validate_machine_log(body)
     posted = await tracker.adapter().post_comment(issue, body)
     return {**posted, "scrub": scrub}

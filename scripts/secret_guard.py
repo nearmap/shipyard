@@ -139,8 +139,8 @@ _ENV_ACCESS = re.compile(
     r"|process\.env\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"
 )
 _PRINT_CALL = re.compile(
-    r"\b(print|console\.(?:log|info|dir|table|debug|warn)|sys\.stdout\.write|process\.stdout\.write"
-    r"|puts|warn)\s*\("
+    r"\b(print|console\.(?:log|info|dir|dirxml|table|debug|warn|error|trace|groupCollapsed|group"
+    r"|count|assert)|(?:sys|process)\.std(?:out|err)\.write|puts|warn)\s*\("
 )
 """A call that writes its argument out, so a one-liner that reads a secret without printing it allows.
 
@@ -150,7 +150,24 @@ of it to a matcher that works by name: `console.info`, `console.dir`, `console.t
 alone every one of them was allowed. `console.warn` did deny, but only by coincidence — the bare
 `warn` alternative here is perl's and ruby's own function, so a `console.warn` deny rested on another
 language's name and would have vanished the moment that alternative was scoped per interpreter. Each
-console method now denies for its own reason."""
+console method now denies for its own reason.
+
+The list is the whole printing half of node's `console` API rather than the four spellings a previous
+round happened to name, because naming spellings one at a time is what left `console.error` — the
+plainest of them all — allowed after a fix whose own docstring claimed the class was closed. Every
+method here was measured to write the value it is handed (node v24.11.1: `error`, `trace`, `group`,
+`groupCollapsed`, `count`, `assert(false, v)` and `dirxml` all reproduce a sentinel on stdout or
+stderr). `console.groupEnd` is the one member of that family deliberately absent: it ignores its
+argument and prints nothing at all (measured the same way), so denying it would pin a leak that does
+not happen — the same false pin `_generated_code_spellings` refuses to generate for `--print=<code>`.
+`console.groupCollapsed` precedes `console.group` in the alternation only for legibility; either order
+matches both, since `\\s*\\(` has to follow and the engine backtracks.
+
+stderr counts exactly as stdout does, so the writers are one `(?:sys|process)\\.std(?:out|err)\\.write`
+pattern instead of the two stdout spellings that were listed: a Bash tool call's result carries both
+streams into transcript history, and `sys.stderr.write(...)`/`process.stderr.write(...)` — verified live
+to reproduce a sentinel — were allowed by twin patterns that differed from the denied ones by four
+characters."""
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*")
 """A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
 
@@ -873,12 +890,31 @@ def _generated_spelling_cases() -> list[tuple[str, bool]]:
       restatement of the deny list — see `_test_generated_option_spellings_deny_whenever_the_tool_prints`
       for the two historical commits this list is shown to fail against.
 
-    1164 cases at the time of writing (677 deny, 487 allow); the self-test asserts a floor rather than an
-    exact number, so widening a table is a pass and emptying the generator is a loud failure.
+    1149 cases at the time of writing (667 deny, 482 allow); the self-test asserts a floor rather than an
+    exact number, so widening a table is a pass and emptying the generator is a loud failure. The floors are
+    asserted per family, not only in aggregate — see `_generated_case_families`.
 
     Module-level and importable on purpose, so a probe can import the case list from one version of this
     file and drive another version's hook as a subprocess, which is how that cross-commit check runs."""
-    return _generated_wrapper_cases() + _generated_env_cases() + _generated_interpreter_cases()
+    return [case for cases in _generated_case_families().values() for case in cases]
+
+
+def _generated_case_families() -> dict[str, list[tuple[str, bool]]]:
+    """The generated cases keyed by which table produced them, so each family can be counted on its own.
+
+    An aggregate floor cannot see a missing family. `_generated_interpreter_cases` skips a language whose
+    idioms `_ENV_ACCESS` does not know by `continue`-ing past it, and that same skip has already swallowed a
+    whole language's matrix once (python3's, silently — see the comment there); the interpreter family is
+    also the only one carrying the payload-suffix collision this generator exists to detect, and it is the
+    smallest of the three. So with `len(cases) > 900` and friends asserted over the total, the wrapper and
+    `env` families alone satisfied every floor and the freeze precondition was satisfiable with zero
+    interpreter coverage. Split here rather than counted in the test, so there is one source of truth for
+    what the families are and `_generated_spelling_cases` cannot drift from what gets floored."""
+    return {
+        "wrapper": _generated_wrapper_cases(),
+        "env": _generated_env_cases(),
+        "interpreter": _generated_interpreter_cases(),
+    }
 
 
 def _generated_cluster_prefix(flags: frozenset[str]) -> str | None:
@@ -887,13 +923,20 @@ def _generated_cluster_prefix(flags: frozenset[str]) -> str | None:
 
 
 def _generated_abbreviation(flag: str, longs: frozenset[str], exact_only: frozenset[str]) -> str | None:
-    """The shortest unambiguous `getopt_long` prefix abbreviation of `flag`, or None if it has none.
+    """The shortest `getopt_long` prefix abbreviation of `flag` unambiguous within this module's own tables.
 
-    Unambiguous against the *whole* long-option set, and never a prefix of an `exact_only` flag, because
-    both of those are what a real `getopt_long` refuses outright: `sudo --clas` is ambiguous and `sudo --log`
-    matches the value-less `--login` too, so neither command runs and neither is a spelling to assert
-    anything about. This is the same rule `_WRAPPER_EXACT_ONLY_FLAGS` exists for, applied from the
-    generator's side."""
+    Unambiguous against `longs` and never a prefix of an `exact_only` flag, because both of those are what a
+    real `getopt_long` refuses outright: `sudo --clas` is ambiguous and `sudo --log` matches the value-less
+    `--login` too, so neither command runs and neither is a spelling to assert anything about. This is the
+    same rule `_WRAPPER_EXACT_ONLY_FLAGS` exists for, applied from the generator's side.
+
+    `longs` is the value-taking subset this module models plus `exact_only`, not the tool's real full option
+    set, which the hook has no listing of — so an abbreviation generated here can still be ambiguous to the
+    real tool (`sudo --a`/`--h`/`--p`/`--r` each match several of sudo's own options). That direction is
+    harmless: such a command is one a real `getopt_long` refuses, so nothing runs, and asserting a deny for
+    a command that cannot run is the deny-leaning imprecision `_GENERATED_BOOLEAN_POOL` already documents.
+    The direction that would matter — abbreviating so *little* that a real tool reads the value as something
+    else — is what the `exact_only` check closes."""
     for size in range(3, len(flag)):
         prefix = flag[:size]
         if any(f.startswith(prefix) for f in exact_only):
@@ -980,8 +1023,9 @@ def _generated_code_spellings(name: str, flags: frozenset[str]) -> list[tuple[st
     the difference between a deny and a legitimate allow. It is read off the flag tokens with
     `_prints_result` — the only matcher this generator consults, and one the curated table in `_self_test`
     pins spelling by spelling — never off the arity walk, which is the part every round of review has found
-    broken. It is exact for the cases where it matters, because `_prints_result` answers on a long option's
-    `=`-split head, so `--print=<code>` and `--print` agree.
+    broken. It also decides which long options carry code at all: an auto-print flag's attached value is a
+    boolean to node rather than a payload, so `--print="<code>"` is not generated as a spelling of anything
+    (see below), while `--print` separated from its code is.
 
     The third element is whether the code shares a token with the flag (`-e<code>`). That shape is where an
     attached payload's own characters are read as more flags, which is deliberate and deny-leaning in
@@ -1000,7 +1044,15 @@ def _generated_code_spellings(name: str, flags: frozenset[str]) -> list[tuple[st
             spellings.append((f'{name} {cluster} "{{code}}"', _prints_result(cluster), False))
     for flag in longs:
         spellings.append((f'{name} {flag} "{{code}}"', _prints_result(flag), False))
-        spellings.append((f'{name} {flag}="{{code}}"', _prints_result(flag), False))
+        # Only for a long option that really carries a value. An auto-print flag's *attached* value is not
+        # code to node: it reads any value there as present-and-therefore-on (which is why
+        # `_prints_result` does not parse it), so `node --print="<code>"` prints the literal `undefined`
+        # and never evaluates the payload at all — measured on node v24.11.1. Generating a deny for it
+        # pinned a leak that does not happen, and inflated this generator's own detection counts with a
+        # case that carries nothing. The separated `--print "<code>"` spelling above is the real one, and
+        # `--print=<value> --eval "<code>"` below is how an attached value legitimately reaches a deny.
+        if not _prints_result(flag):
+            spellings.append((f'{name} {flag}="{{code}}"', False, False))
     # A table that lists several *interchangeable* code carriers accepts a cluster of them, and the print
     # flag leads it: node runs `-pe CODE` as both flags with CODE the next token and rejects the reverse
     # `-ep` outright, so the ordering is generated from which carrier prints rather than from both orders.
@@ -1104,6 +1156,10 @@ def _self_test() -> None:
         # writes nothing — so a one-liner that reads a secret and neither prints it nor asks for
         # auto-print leaks nothing. The invocation-wide print test must not widen the gate to this.
         '''node --eval="process.env.ACLI_TOKEN"''', '''node -e "process.env.ACLI_TOKEN"''',
+        # `console.groupEnd` takes no argument: it closes an indentation group and prints nothing at all,
+        # whatever it is handed (measured on node v24.11.1). It is the one member of the console family
+        # that must stay out of `_PRINT_CALL`, and this case is what keeps it out on the next widening.
+        '''node -e "console.groupEnd(process.env.ACLI_TOKEN)"''',
         # `-p` is node's print-and-evaluate flag, but perl's and ruby's own `-p` is a boolean line loop
         # whose `-e` still carries the code: a shared code-flag table read the cluster's `e` as the code
         # and skipped the real argument, so the flags are per interpreter.
@@ -1245,6 +1301,20 @@ def _self_test() -> None:
         '''node -e "console.table(process.env.GITHUB_TOKEN)"''',
         '''node -e "console.debug(process.env.GITHUB_TOKEN)"''',
         '''node -e "console.warn(process.env.GITHUB_TOKEN)"''',
+        # The rest of that same family, each measured on node v24.11.1 to reproduce a sentinel value and
+        # each allowed by a matcher that had closed the four spellings its docstring named instead of the
+        # class they belong to. `console.error` is the plainest of them and was the one still open.
+        '''node -e "console.error(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.trace(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.group(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.groupCollapsed(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.count(process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.assert(false, process.env.GITHUB_TOKEN)"''',
+        '''node -e "console.dirxml(process.env.GITHUB_TOKEN)"''',
+        # A tool call's result carries stderr as well as stdout into transcript history, so the stderr
+        # twins of the two stdout writers already matched are the same leak. Both verified live.
+        '''python3 -c "import os, sys; sys.stderr.write(os.environ['ACLI_TOKEN'])"''',
+        '''node -e "process.stderr.write(process.env.GITHUB_TOKEN)"''',
     ]
     for command in allow:
         got = decision("Bash", {"command": command})
@@ -1375,22 +1445,61 @@ def _test_generated_option_spellings_deny_whenever_the_tool_prints() -> None:
     `_GENERATED_CODE_SUFFIXES`), so a flags-only matrix would have shipped it as well.
 
     Verified to be a real detector rather than a restatement of current behaviour, by driving this same
-    generated list against two historical commits as real hook subprocesses: of 1164 cases it fails 27
-    against `a0add099` — the regressed commit, every one of them a payload-suffix or attached-code case —
-    and 25 against `ff78dcf`, the pre-regression commit, on node's `-pe`, `--print --eval` and
-    `--print=<value>` spellings that round 6 closed. It passes here with no crash-denies. Neither
-    historical failure set is a subset of the other, which is the property a curated list kept failing to
-    have: each round's list covered the round before it.
+    generated list against two historical commits as real hook subprocesses: of 1149 cases it fails 22
+    against `a0add099` — the regressed commit, on the payload-suffix and attached-code cases plus
+    `--print=<value> --eval` — and 25 against `ff78dcf`, the pre-regression commit, on node's `-pe`,
+    `--print --eval` and `--print=<value>` spellings that round 6 closed. It passes here with no
+    crash-denies. Neither historical failure set is a subset of the other — `a0add099` fails
+    `python -c"…  # c"` where `ff78dcf` passes it, and `ff78dcf` fails `node -pe` where `a0add099` passes —
+    which is the property a curated list kept failing to have: each round's list covered the round before
+    it.
 
     Both sides are asserted, and both are asserted to be non-trivially populated: a deny-only list would
     pass against a hook that denied everything, which is a real failure mode this file has flirted with
     (`env -- ls` was denied by the fix for `env -- echo $ACLI_TOKEN`), and the count assertions mean a
     refactor that silently empties the generator fails loudly instead of passing vacuously.
+
+    The counts are floored per family and not only in aggregate, because an aggregate floor is blind to a
+    missing family: the interpreter family is the smallest of the three (233 of 1149) and the only one
+    carrying the S3-shape payload collision, and `_generated_interpreter_cases` reaches it through a
+    `continue` that has already dropped a whole language's matrix once — so wrapper and `env` alone cleared
+    every aggregate floor while interpreter coverage was zero. Each payload in `_GENERATED_CODE_BASES` is
+    asserted to appear in a generated command as well as counted, since that is the dict the skip selects
+    on: a language dropped from generation then fails by name rather than by an arithmetic near-miss.
     """
     global _EXTRA_WORDS
     saved = _EXTRA_WORDS
     _EXTRA_WORDS = frozenset()  # built-in words only, for the reason the curated lists are pinned so
     try:
+        families = _generated_case_families()
+        # `(total, deny, allow)` floors as measured today, per family. Widening a table stays a pass; losing
+        # one is the failure this replaced an aggregate-only floor to catch.
+        for family, (total, deny, allow) in (
+            ("wrapper", (806, 483, 323)), ("env", (110, 66, 44)), ("interpreter", (233, 118, 115)),
+        ):
+            produced = families[family]
+            denied = sum(1 for _, expect_deny in produced if expect_deny)
+            assert len(produced) >= total, f"the {family} family produced only {len(produced)} cases"
+            assert denied >= deny, f"the {family} family produced only {denied} deny cases"
+            assert len(produced) - denied >= allow, f"the {family} family produced only {len(produced) - denied} allows"
+        interpreter = [command for command, _ in families["interpreter"]]
+        for language, bases in _GENERATED_CODE_BASES.items():
+            for kind, base in bases.items():
+                assert any(base in command for command in interpreter), (
+                    f"no generated case carries {language}'s {kind} payload, so the family-selection "
+                    "`continue` in `_generated_interpreter_cases` dropped it: the counts above cannot see "
+                    "that, and this payload is the leak shape the whole matrix exists to exercise"
+                )
+        # The S3 detector rests entirely on this: `_generated_interpreter_cases` substitutes a listed flag
+        # character into each template, and the collision it detects is between the *code's last character*
+        # and that flag. A template with anything after the placeholder — `"  # {ch} ok"` — still generates
+        # cases, still passes every floor above, and detects nothing at all.
+        for language, suffixes in _GENERATED_CODE_SUFFIXES.items():
+            for suffix in suffixes:
+                assert suffix.endswith("{ch}"), (
+                    f"{language}'s payload suffix {suffix!r} must end in the substituted flag character, or "
+                    "the attached-code collision it exists to reach is never spelled"
+                )
         cases = _generated_spelling_cases()
         denies = sum(1 for _, expect_deny in cases if expect_deny)
         assert len(cases) > 900, f"the generator produced only {len(cases)} cases: something emptied it"

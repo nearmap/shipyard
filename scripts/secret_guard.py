@@ -86,7 +86,13 @@ PRINTING_COMMANDS = {"echo", "printf", "print"}
 _ENV_ARG_FLAGS: frozenset[str] = frozenset({
     "-u", "-C", "-S", "-a", "-P", "--unset", "--chdir", "--split-string", "--argv0",
 })
-"""`env`'s own options that take the *next* token as their value rather than naming the command to run.
+"""`env`'s own options that take the *next* token as their value, which the walk must step over.
+
+The value is not the command `env` runs for any of them except `-S`/`--split-string`, whose value *is*
+a command — a whole shell-word-split command string, so `env -S "echo $ACLI_TOKEN"` runs the leak with
+no token this walk would ever land on. That is the accepted nested-indirection gap this module's own
+docstring names (`bash -c`, `base64`, sourcing a script), recorded here rather than closed: what the
+arity table owes it is being counted, so the walk does not read the string as `env`'s command name.
 
 Completed from both implementations' documented synopses, because the hook cannot know which `env` is
 on the host: GNU coreutils contributes `-a ARG`/`--argv0=ARG` (sets `argv[0]`, and COMMAND still runs
@@ -115,6 +121,24 @@ _ADVICE = (
     "`sy_preflight.py check` / the adapter's `preflight` command, which names what's missing or dead "
     "without ever printing a value."
 )
+MAX_COMMAND_CHARS = 20_000
+_TOO_LONG = (
+    "secret guard: this command is longer than this hook can evaluate within a Bash call's latency "
+    f"budget ({MAX_COMMAND_CHARS} characters), so it is refused rather than allowed unchecked. Split it "
+    "into separate calls, or move the body into a script file and run that."
+)
+"""The ceiling on the command text every check below scales with, and the deny past it.
+
+The checks here are not all linear: `_interpreter_reason` re-scans the remaining tokens once per
+interpreter-shaped token, so `"python " * 50000` took ~38s. This hook is a `PreToolUse` gate on every
+Bash call in every session, so that is a stall of the whole session, and a hook that has not written
+by the time anything gives up has written no decision at all — the same fail-open shape as a crash.
+One ceiling on the input closes that whole class rather than one loop's shape, which matters in a file
+whose matchers have each been found incomplete a round at a time. The number is far above any
+plausible single Bash call (a long `&&`-joined pipeline is hundreds of characters, not tens of
+thousands) and far below where the quadratic term bites: the worst input that fits under it — 2857
+`python` tokens, all interpreter-shaped — scans in ~0.13s, against ~6s at 20000 tokens and ~38s at
+50000."""
 _UNEVALUABLE = (
     "secret guard: this command could not be evaluated safely, so it is refused rather than allowed "
     "unchecked. Deeply nested wrapper or `env` layers are the known cause; flatten them and retry."
@@ -163,10 +187,15 @@ def decision(tool: str, args: dict) -> str | None:
     finally to a segment's actually-invoked command it became unreachable — no segment can lead with
     `sed`/`perl` and with one of the printing or dumping commands `_segment_reason` denies — so it is
     gone rather than left wired up to fail open again the day that denied set grows.
+
+    Command text past `MAX_COMMAND_CHARS` is refused before any of those checks run, since all of them
+    scale with it and one of them scales worse than linearly.
     """
     if tool != "Bash":
         return None
     command = str(args.get("command", ""))
+    if len(command) > MAX_COMMAND_CHARS:
+        return _TOO_LONG
     reason = _interpreter_reason(command)
     if reason:
         return f"secret guard: {reason} — {_ADVICE}"
@@ -178,13 +207,24 @@ def decision(tool: str, args: dict) -> str | None:
 
 
 def main() -> None:
+    """The hook entry point. Every way of failing to reach a decision here becomes a deny.
+
+    Reading stdin is one of those ways and used to sit outside that rule: `json.load` also raises
+    `UnicodeDecodeError` on malformed bytes and `OSError` on a broken pipe, neither of which the
+    `JSONDecodeError` catch covered, so both escaped as an unhandled crash *before* the backstop around
+    `decision()` — and a crashed `PreToolUse` hook writes nothing, which Claude Code reads as no
+    decision, i.e. an allow. Even the caught case returned silently, which is the same allow by a
+    tidier route. Both now emit `_UNEVALUABLE`, for the same reason the `decision()` backstop does: an
+    input this hook cannot read is not an input it has cleared.
+    """
     if len(sys.argv) > 1 and sys.argv[1] == "self-test":
         _self_test()
         print("secret_guard self-test passed")
         return
     try:
         event = json.load(sys.stdin)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        emit(_UNEVALUABLE, _CONFIG_WARNING)
         return
     if not isinstance(event, dict):
         return
@@ -268,13 +308,21 @@ def _consumes_next(tok: str, flags: frozenset[str], exact_only: frozenset[str] =
       under-consuming is the failure mode that already let real leaks through here. `--flag=value`
       carries its value in the one token and consumes nothing further, and `exact_only` names the
       value-less long options that must not be read as an abbreviation of a listed one.
+    - The bare `--` is excluded from that prefix rule by name. It is `getopt`'s universal
+      end-of-options marker, not an abbreviation of anything, but every long option starts with it, so
+      the prefix test matched any table with a single long flag in it and consumed the token after `--`
+      as its "value" — the over-consuming miss, on the one token guaranteed to be followed by the
+      command. `_leading_command`'s walk happens to test `== "--"` before asking, but `_env_reason`'s
+      does not, and there `env -- echo $ACLI_TOKEN` swallowed `echo`, left `$ACLI_TOKEN` as the
+      apparent command, and allowed the leak this hook's own docstring leads with. Fixed here, once,
+      rather than at each caller, since a matcher that is wrong about `--` is wrong for every table.
     """
     if tok in exact_only:
         return False
     if tok in flags:
         return True
     if tok.startswith("--"):
-        return "=" not in tok and any(f.startswith(tok) for f in flags if f.startswith("--"))
+        return tok != "--" and "=" not in tok and any(f.startswith(tok) for f in flags if f.startswith("--"))
     for position, char in enumerate(tok[1:], start=1):
         if f"-{char}" in flags:
             return position == len(tok) - 1
@@ -471,6 +519,9 @@ def _self_test() -> None:
         # env's own value-taking flags in both implementations' spellings, wrapping a harmless command.
         "env -a login /bin/sh -c true", "env --argv0=login /bin/sh -c true",
         "env -P /usr/bin ls", "env -vu ACLI_SITE ls", "env --uns ACLI_SITE ls",
+        # `--` ends env's options and names no value, so what follows it is the command env runs, not a
+        # flag value: reading it as one dumped the remaining tokens and denied this harmless wrapper.
+        "env -- ls", "env -u ACLI_SITE -- ls",
         "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
         "sudo -h ls", "sudo --host somehost ls",
         "sudo -T 5 ls", "sudo -R /some/root ls", "time -o /tmp/x pytest -q", "time -f %e ls",
@@ -537,6 +588,13 @@ def _self_test() -> None:
         "sudo --login echo $ACLI_TOKEN", "sudo -i echo $ACLI_TOKEN",
         "/usr/bin/time -o /tmp/x echo $ACLI_TOKEN", "time -f %e echo $ACLI_TOKEN",
         "time --output /tmp/x printenv ACLI_TOKEN", "time --output=/tmp/x echo $ACLI_TOKEN",
+        # The bare `--` is getopt's end-of-options marker, but every long option starts with it, so the
+        # prefix rule in `_consumes_next` matched it against any table and consumed the token after it —
+        # here `echo`, leaving `$ACLI_TOKEN` as the apparent command, which matches nothing. That
+        # allowed this file's own headline anti-pattern. `_leading_command`'s walk tests `== "--"` first
+        # and so never reached the bug; `_env_reason`'s does not, and did.
+        "env -- echo $ACLI_TOKEN", "env -- printenv ACLI_TOKEN", "env -- env",
+        "env -u ACLI_SITE -- echo $ACLI_TOKEN", "env FOO=bar -- printenv GITHUB_TOKEN",
         "env echo $ACLI_TOKEN", "env printenv ACLI_TOKEN", "env FOO=bar echo $ACLI_TOKEN",
         "sudo env echo $ACLI_TOKEN", "sudo timeout 5 env",
         '''python -c "import os; print(os.environ['ACLI_TOKEN'])"''',
@@ -555,9 +613,20 @@ def _self_test() -> None:
     assert _looks_like_secret_name("GITHUB_TOKEN")
     assert not _looks_like_secret_name("ACLI_SITE")
     assert not _looks_like_secret_name("PATH")
+    # Pinned on the matcher itself, not only through the commands above: the `--` bug shipped past a
+    # self-test that had command-level cases for every other spelling, because none of them put a bare
+    # `--` in front of `env`. Both tables, since the fault was that the flags argument never mattered.
+    for table in (_ENV_ARG_FLAGS, _WRAPPER_ARG_FLAGS["sudo"], _WRAPPER_ARG_FLAGS["timeout"]):
+        assert not _consumes_next("--", table), (
+            "`--` ends option processing and names no value, whatever the table holds"
+        )
+    assert _consumes_next("--unset", _ENV_ARG_FLAGS), "and the prefix rule it rides on still works"
+    assert _consumes_next("--uns", _ENV_ARG_FLAGS)
     _EXTRA_WORDS = saved_extra_words
 
     _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies()
+    _test_an_oversized_command_is_refused_instead_of_scanned()
+    _test_stdin_that_cannot_be_read_denies_rather_than_returning_silently()
     _test_an_in_place_edit_excuses_no_segment_and_denies_none()
     _test_extra_words_from_config()
     _test_unresolvable_config_warns_rather_than_dropping_silently()
@@ -572,6 +641,10 @@ def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> Non
     `_env_reason`'s own loop now, and `main()` turns any remaining unexpected crash into a deny rather
     than into that silence — checked here by forcing one, since the whole point is that no input is
     supposed to produce it.
+
+    The layer counts are chosen to stay under `MAX_COMMAND_CHARS`, so the harmless case here proves the
+    loop terminates rather than proving the length ceiling fires — 2000 layers is already twice the
+    default recursion limit the old per-layer recursion died at.
     """
     import contextlib
     import io
@@ -580,13 +653,14 @@ def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> Non
     saved = _EXTRA_WORDS
     _EXTRA_WORDS = frozenset()
     try:
-        chain = "env " * 5000
+        chain = "env " * 2000
+        assert len(f"{chain}echo $ACLI_TOKEN") < MAX_COMMAND_CHARS, "must test the loop, not the ceiling"
         assert decision("Bash", {"command": chain.strip()}) is not None, "a bare env chain still dumps"
         assert decision("Bash", {"command": f"{chain}echo $ACLI_TOKEN"}) is not None, (
             "a leak behind any number of env layers is still the leak"
         )
         assert decision("Bash", {"command": f"{chain}ls"}) is None, "and a harmless one is still harmless"
-        assert decision("Bash", {"command": "env -u A " * 5000 + "printenv ACLI_TOKEN"}) is not None
+        assert decision("Bash", {"command": "env -u A " * 2000 + "printenv ACLI_TOKEN"}) is not None
     finally:
         _EXTRA_WORDS = saved
 
@@ -609,6 +683,78 @@ def _test_a_deep_env_chain_terminates_and_an_unevaluable_command_denies() -> Non
     assert "forced" not in decided["permissionDecisionReason"], (
         f"the reason must carry no exception text, which could echo the command: {decided}"
     )
+
+
+def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
+    """A hook slow enough to stall a session is the same fail-open shape as one that crashes.
+
+    `_interpreter_reason` re-scans the remaining tokens once per interpreter-shaped token, so 50000
+    `python` tokens took ~38s on every Bash call that shape reached — no output for long enough that
+    Claude Code has nothing to act on. The ceiling in `decision()` refuses that input outright, so the
+    timing is part of the claim here, not just the verdict.
+    """
+    import time
+
+    global _EXTRA_WORDS
+    saved = _EXTRA_WORDS
+    _EXTRA_WORDS = frozenset()
+    try:
+        oversized = "python " * 50_000
+        started = time.perf_counter()
+        reason = decision("Bash", {"command": oversized})
+        elapsed = time.perf_counter() - started
+        assert reason == _TOO_LONG, f"an oversized command must be refused by the ceiling: {reason!r}"
+        assert elapsed < 1.0, f"the ceiling must refuse before any scan, took {elapsed:.2f}s"
+        assert oversized[:20] not in reason, "the reason must not echo the command back"
+        assert decision("Bash", {"command": "x" * MAX_COMMAND_CHARS}) is None, (
+            "the ceiling is exclusive: a command exactly at it is still evaluated normally"
+        )
+        # Nothing a human writes in one Bash call comes near this, including a long compound one.
+        compound = " && ".join(["git status", "pytest -q -k something_fairly_long", "ruff check ."] * 40)
+        assert len(compound) < MAX_COMMAND_CHARS // 4, f"a real compound command is small: {len(compound)}"
+        assert decision("Bash", {"command": compound}) is None, "and must not trip the ceiling"
+    finally:
+        _EXTRA_WORDS = saved
+
+
+def _test_stdin_that_cannot_be_read_denies_rather_than_returning_silently() -> None:
+    """Every way `main()` can fail to decide must deny, including the read that happens before the try.
+
+    `json.load(sys.stdin)` raises `UnicodeDecodeError` on malformed bytes and `OSError` on a broken
+    pipe, neither of which the `JSONDecodeError` catch covered — so both escaped as an unhandled crash
+    ahead of the backstop around `decision()`, and a `PreToolUse` hook that writes nothing is read as no
+    decision, i.e. an allow. The caught case returned silently, which is that same allow.
+    """
+    import contextlib
+    import io
+
+    class _Unreadable(io.TextIOBase):
+        def read(self, *_args) -> str:
+            raise OSError("broken pipe")
+
+    class _Undecodable(io.TextIOBase):
+        def read(self, *_args) -> str:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    saved_stdin, saved_argv = sys.stdin, sys.argv
+    for label, stream in (
+        ("malformed JSON", io.StringIO("{not json")),
+        ("a broken pipe", _Unreadable()),
+        ("undecodable bytes", _Undecodable()),
+    ):
+        captured = io.StringIO()
+        try:
+            sys.argv = [saved_argv[0]]  # the hook's stdin path, not the self-test this runs inside
+            sys.stdin = stream  # type: ignore[assignment]
+            with contextlib.redirect_stdout(captured):
+                main()
+        finally:
+            sys.stdin, sys.argv = saved_stdin, saved_argv
+        output = captured.getvalue()
+        assert output.strip(), f"{label} on stdin emitted nothing, which Claude Code reads as an allow"
+        decided = json.loads(output)["hookSpecificOutput"]
+        assert decided["permissionDecision"] == "deny", f"{label} must deny: {output!r}"
+        assert decided["permissionDecisionReason"] == _UNEVALUABLE, output
 
 
 def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:

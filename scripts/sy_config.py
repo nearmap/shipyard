@@ -54,6 +54,11 @@ CONFIG_FILENAME = "config.json"
 LOCAL_FILENAME = "config.local.json"
 CONFIG_DIRNAME = ".shipyard"
 SCHEMA_URL = "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json"
+# The only subprocess this module runs (`git rev-parse --show-toplevel`) is bounded, because
+# `secret_guard.py`'s `PreToolUse` hook reaches it on the Bash hot path and a hook that blocks emits no
+# decision, which is an allow. Generous for a local rev-parse under load, short of anything a caller
+# would sit through on a single tool call. Same shape as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
+GIT_TIMEOUT_SECONDS = 5
 
 # Weakest to strongest. Clamping a floor needs a total order, so an alias absent here is an error
 # rather than an unranked value that silently skips the floor check.
@@ -664,6 +669,12 @@ def _git_toplevel(start: Path) -> Path | None:
     subprocess in another script. As this module's own `SystemExit`, the refusal arrives as one line
     for the CLI and is caught by the callers that already degrade on one — `_adapter_map()`,
     `validate()`, and `secret_guard.py`'s word-list fallback.
+
+    A git that *hangs* is refused the same way, which needs `timeout=` and nothing else can substitute
+    for it: `secret_guard.py` reaches here on every Bash command naming a candidate variable, and that
+    hook's fail-closed backstop is an `except Exception`, which a hang never raises. Blocking there
+    writes no decision at all and Claude Code reads that as an allow, so an unbounded wait on a
+    filesystem this module does not control is a fail-open path on the secret gate's own hot path.
     """
     if not start.is_dir():
         return None
@@ -671,7 +682,14 @@ def _git_toplevel(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"sy_config: git did not resolve the repository root from {start} within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git (an unresponsive network mount, a "
+            "blocking git wrapper) cannot be waited out here, so resolution refuses instead."
+        ) from None
     except OSError as exc:
         raise SystemExit(
             f"sy_config: git could not be run to resolve the repository root from {start}: {exc}. "

@@ -166,10 +166,17 @@ def _frontmatter_field(text: str, field: str) -> str:
 
 
 def _component_md(seam_only: bool) -> list[Path]:
-    """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only."""
+    """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only.
+
+    `.scratch` is excluded at any depth for the same reason `check_config_seam` and
+    `check_no_repo_scratch_refs` exclude it: it is not Shipyard's to read, and its content is not
+    guaranteed to be UTF-8 decodable.
+    """
     paths: list[Path] = []
     for base in ("agents", "skills"):
         for p in (ROOT / base).rglob("*.md"):
+            if ".scratch" in p.relative_to(ROOT).parts:
+                continue
             if seam_only and "skills/tracker/" in p.as_posix():
                 continue
             paths.append(p)
@@ -206,7 +213,7 @@ def check_structure(errors: list[str]) -> None:
 
 def check_no_home_paths(errors: list[str]) -> None:
     for p in _component_md(seam_only=False):
-        if "~/.claude" in p.read_text(encoding="utf-8"):
+        if "~/.claude" in p.read_text(encoding="utf-8", errors="replace"):
             fail(f"{p.relative_to(ROOT)}: uses ~/.claude; bundle files must use ${{CLAUDE_PLUGIN_ROOT}}", errors)
 
 
@@ -216,7 +223,7 @@ def check_seam(errors: list[str]) -> None:
         ROOT / "scripts/sy_memory.py", ROOT / "scripts/sy_preflight.py", ROOT / "scripts/eval_events.py",
     ]
     for p in scan:
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8", errors="replace")
         for pattern in TRACKER_TOKENS:
             m = pattern.search(text)
             if m:
@@ -260,11 +267,12 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     — for `review_guard.py`'s hunt sandbox — a boundary the guard and the agent it guards would
     resolve two different ways.
 
-    This walks Shipyard's own files by suffix, never asks whether a `.scratch/` directory exists in
-    the checkout at all — that directory is not Shipyard's to police. Something else on this machine
-    may depend on it for entirely unrelated reasons, so `.gitignore` keeps excluding it (it is not
-    this migration's to remove either) and this check does not scan its contents, at any depth:
-    whatever is in there belongs to whoever put it there, not to Shipyard.
+    This walks every file in the checkout by suffix — not a git-tracked-files query, so a gitignored
+    file is scanned too — and never asks whether a `.scratch/` directory exists at all: that
+    directory is not Shipyard's to police. Something else on this machine may depend on it for
+    entirely unrelated reasons, so `.gitignore` keeps excluding it (it is not this migration's to
+    remove either) and this check does not scan its contents, at any depth: whatever is in there
+    belongs to whoever put it there, not to Shipyard.
 
     `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
     installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a

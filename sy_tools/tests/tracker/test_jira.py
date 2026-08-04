@@ -1118,6 +1118,27 @@ async def test_find_issues_fails_on_a_result_with_no_key(credentials, monkeypatc
 
 
 @pytest.mark.anyio
+async def test_find_issues_fails_on_a_result_whose_key_is_not_really_a_string(credentials, monkeypatch):
+    """Same coercion hole `_linked`/`_keys` closed with `_str_field`, one call site over.
+
+    `_field(entry, "key")` would `str()`-coerce a nested/malformed `key` shape into a fabricated,
+    truthy key instead of the missing one this file already refuses — a search result would read as
+    a found, addressable issue under a key nobody can look up.
+    """
+    fields = {
+        "summary": "Ship the thing",
+        "status": {"name": "In Review"},
+        "issuetype": {"name": "Task"},
+        "parent": {"key": "PROJ-1", "fields": {"summary": "The epic"}},
+        "labels": ["decomposed", "shipyard"],
+    }
+    _transport(monkeypatch, {"isLast": True, "issues": [{"id": "10001", "key": {"nested": 1}, "fields": fields}]})
+
+    with pytest.raises(TrackerError, match="no issue key"):
+        await adapter.JiraAdapter().find_issues()
+
+
+@pytest.mark.anyio
 async def test_find_issues_quotes_a_value_that_could_close_its_own_clause(credentials, monkeypatch):
     calls = _transport(monkeypatch, {"issues": [], "isLast": True})
 

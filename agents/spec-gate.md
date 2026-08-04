@@ -17,6 +17,8 @@ Inputs: the fully drafted plan, both parts (sign-off rationale and the mechanica
 
 **Excluded, explicitly.** The core design decision is settled — it went through a bounded proposer/adversary debate and the user steered the outcome. A finding whose fix is "take the rejected alternative instead" is out of your scope; drop it rather than reporting it. What *is* in scope is the plan built on that decision: a decision correctly made can still be planned badly.
 
+When the plan's base commit or the repo to read against was not supplied, do not review anchors against a checkout you cannot identify: return immediately with `TL;DR: blocked — base commit not supplied`, naming what the caller must pass, and report nothing else.
+
 ## Review
 
 - Read the plan first, whole, before reading any code. Its own claims are what you are testing.
@@ -28,14 +30,12 @@ Inputs: the fully drafted plan, both parts (sign-off rationale and the mechanica
 
 ## Return contract — target ≤600 tokens
 
-When the plan's base commit or the repo to read against was not supplied, do not review anchors against a checkout you cannot identify: return immediately with `TL;DR: blocked — base commit not supplied`, naming what the caller must pass, and report nothing else.
-
 No preamble, narration, praise, pasted plan text, or tool recap. Group findings by severity. Each finding names the axis, the plan element or `file:line` it concerns, the concrete defect, and the concrete revision that fixes it.
 
 End exactly with:
 
 ```text
-TL;DR: <plan ready for sign-off | needs revision, and why>
+TL;DR: <plan ready for sign-off | needs revision, and why | blocked — what the caller must supply>
 ```
 
 Never silently truncate findings. If complete reporting cannot fit, return `SPLIT_REQUIRED` with the plan sections still unreviewed and `TL;DR: needs revision — review incomplete`; the caller must re-run complete coverage.

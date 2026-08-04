@@ -485,6 +485,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("BUILD must verify load-bearing plan facts before executing (needs-decision/bail-to-spec on mismatch)", errors)
     if "content-QA" not in impl:
         fail("build implementation must include the deterministic content-QA grep for leaked wrapper tokens", errors)
+    if "docs requiring updates" not in impl:
+        fail("build implementation must route the plan's docs requiring updates field into a verification obligation", errors)
     for name, text in (("ship", ship), ("implementation", impl), ("ship-build agent", build_agent)):
         if "needs-trace" not in text:
             fail(f"{name} must carry the needs-trace worker return (parent dispatches sy:trace, BUILD never does)", errors)
@@ -508,6 +510,8 @@ def check_invariants(errors: list[str]) -> None:
         fail(f"spec-gate reference must define the Simplicity axis with {axis_phrase!r}", errors)
     if axis_phrase in spec_gate:
         fail("spec-gate agent restates an axis definition; cite spec-gate.md instead of copying it", errors)
+    if axis_phrase in spec:
+        fail("spec restates a spec-gate axis definition; cite spec-gate.md instead of copying it", errors)
     tools_value = _frontmatter_field(spec_gate, "tools")
     if re.search(r"\b(?:Agent|Skill)\b", tools_value):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)

@@ -43,7 +43,7 @@ Draft Summary, Context/constraints, and Out of scope. Write the body as short na
 
 ### Existing Task
 
-Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing — that governs research-phase edits; §7 Step 2 owns the post-approval refresh, which preserves whatever this run did not author. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
+Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing — that governs research-phase edits; §7 Step 2 never rewrites a pre-existing Task's body at all, and posts its summary as a comment instead. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
 
 ## 3. Resolve standards and deep research
 
@@ -142,7 +142,7 @@ The ship profile never lowers review or build: `sy:gate` remains frontier tier a
 
 Present a short natural-prose summary: what you are going to do, why this way, the strongest alternative you rejected and why, the risks worth knowing, and what this deliberately excludes. A few paragraphs, read once and understood — no nested outline, no file inventory, no restatement of the `/sy:ship` section. What is being approved is the judgment; the mechanics exist for `/sy:ship`, and pasting them here buries the decision the user is being asked to make.
 
-Then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED), refresh the Task body with this summary while preserving any body content this run did not author, and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
+Then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED), record this summary on the Task — replacing the body when this run created the Task and nothing has touched that body since, and otherwise posting the summary as a comment and leaving the body alone — and set the Task `ready`. Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
 
 A `request changes` answer revises the draft and returns to this step; re-run `sy:spec-gate` only when that revision is material, per the re-dispatch rule in its reference.
 
@@ -167,7 +167,9 @@ Supersedes: v<N-1>   # omit for v1
 ```
 
 3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
-4. refresh the Task body with the Step-1 summary via the `tracker` skill, so the body stays the current human-facing statement of the work while the mechanical detail lives in the plan comment. `update-issue` replaces the whole body, so read the current body with `get-issue` first and decide by provenance: a Task this run created (§2 "New goal") is replaced outright, since this run authored the prior body too; a Task that pre-existed (§2 "Existing Task") never loses content this run did not write — a reporter's repro steps, a PM's acceptance notes — so carry it forward beneath the summary, or move it to a comment when it would bloat the body. Content this run did not author is never dropped by the refresh.
+4. record the Step-1 summary on the Task via the `tracker` skill, so the ticket states the current human-facing shape of the work while the mechanical detail lives in the plan comment. The tracker's body read/write round trip is lossy on the default adapter and carries no fidelity signal, so a body read back with `get-issue` is not a faithful copy of what the ticket holds and can never be merged, edited, or written back around other content — do not attempt that. Choose the write by one rule:
+   - For a Task **this run created fresh, in this same run** (§2 "New goal"): read the current body with `get-issue` immediately before writing. When it still reads back as exactly what this run wrote at creation — nothing else has touched it, no edit landed during the Step-1 sign-off wait — replace it outright with the summary via `update-issue`. When it diverges at all, this run no longer knows what the body holds; take the next bullet instead of overwriting.
+   - In **every other case** — a Task that pre-existed (§2 "Existing Task"), or a fresh Task whose body diverged from what this run wrote — never write the body. Post the summary as a comment with `post-comment`, so the ticket gains the current statement of the work and the body is never a target of this run's write.
 5. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
 The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.

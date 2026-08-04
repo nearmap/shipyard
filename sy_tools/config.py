@@ -180,10 +180,11 @@ def _configured_worktree(common: Path) -> Path | None:
     `core.worktree` entirely (git treats it as belonging only to the main worktree's own per-worktree
     config) even though both files themselves are the same shared, worktree-independent source either
     way. `--separate-git-dir` checkouts do not set this key at all: an ordinary checkout, and a plain
-    `--separate-git-dir` one, both fall through to `None` here, and callers fall back to
-    `common.parent` — which can still collide if multiple such checkouts' git-dirs are deliberately
-    colocated under one shared parent directory, the same class of collision as two ordinary
-    same-named repos elsewhere on the machine, and out of scope for the same reason.
+    `--separate-git-dir` one, both fall through to `None` here, and `_logical_repo` falls back to
+    `common.parent` for those, once verified — which can still collide if multiple such checkouts'
+    git-dirs are deliberately colocated under one shared parent directory, the same class of
+    collision as two ordinary same-named repos elsewhere on the machine, and out of scope for the
+    same reason.
 
     `stdin` is closed for the same reason the sibling resolvers close it: this can run inside the MCP
     server, whose stdin is the JSON-RPC transport.
@@ -200,6 +201,34 @@ def _configured_worktree(common: Path) -> Path | None:
             if resolved.is_dir():
                 return resolved
     return None
+
+
+def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
+    """Whether `candidate` is a genuine working tree whose own shared git directory is `common`.
+
+    `_logical_repo` falls back to `common.parent` as `candidate` when `core.worktree` cannot be
+    read; that guess is right for an ordinary checkout (`common` is `<repo>/.git`, so `common.parent`
+    is the repo itself) and wrong for a git-internal storage directory that happens to sit at that
+    path — a submodule's `.git/modules/<name>`, a nested submodule's
+    `.git/modules/<outer>/modules/<inner>`, a `--separate-git-dir` superproject's own detached gitdir,
+    or any future layout with the same shape. None of those are themselves a working tree at all.
+    Settled by asking git directly rather than pattern-matching directory names: a real working tree
+    answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with `common`; a storage
+    directory answers neither.
+
+    `stdin` is closed for the same reason the sibling resolvers close it: this can run inside the MCP
+    server, whose stdin is the JSON-RPC transport.
+    """
+    if not candidate.is_dir():
+        return False
+    proc = subprocess.run(
+        ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() != "true":
+        return False
+    return _git_common_dir(candidate) == common
 
 
 def layers(root: Path) -> list[tuple[str, Path]]:
@@ -363,15 +392,19 @@ def _logical_repo(start: Path) -> Path:
     worktree of a submodule reports no superproject at all, and so any detection keyed on the checkout
     would miss exactly the worktrees `/sy:ship` itself creates.
 
-    `git submodule deinit` clears `core.worktree` from both config files while leaving
-    `.git/modules/<name>` itself in place — and any of the submodule's own linked worktrees checked
-    out and healthy — so a submodule can transiently lose the one signal that makes its identifier
-    distinct from every other submodule on the machine. Falling back to `common.parent` there would
-    silently resolve to the fixed string `modules` again, so that one case is refused by name instead
-    of falling back, unlike every other case below.
+    When `core.worktree` cannot be resolved at all (`git submodule deinit`, which clears it from both
+    config files while leaving `.git/modules/<name>` itself in place and any of the submodule's own
+    linked worktrees checked out and healthy), the naive fallback of `common.parent` is verified with
+    git itself rather than assumed: pattern-matching directory names (`modules`, nesting depth,
+    `--separate-git-dir`, `vendor/`-style grouping, and whatever shape comes after those) does not
+    generalize, as repeated fixes to this exact function have shown. `common.parent` is used only when
+    it is itself a real working tree whose own shared git directory is `common` — true for an ordinary
+    checkout, false for every git-internal storage directory this or a future git layout might produce
+    at that path. When it is false, this refuses by name rather than silently keying on whatever
+    `common.parent`'s name happens to be.
 
-    Falls back rather than refusing in every other case, because `repo_root()`'s own cwd path
-    legitimately resolves a directory that is in no checkout at all, and resolution must still
+    Falls back rather than refusing when there is no checkout at all, because `repo_root()`'s own cwd
+    path legitimately resolves a directory that is in no checkout at all, and resolution must still
     produce a value there.
     """
     common = _git_common_dir(start)
@@ -380,15 +413,17 @@ def _logical_repo(start: Path) -> Path:
     configured = _configured_worktree(common)
     if configured is not None:
         return configured
-    if common.parent.name == "modules" and common.parent.parent.name == ".git":
-        raise ConfigError(
-            f"{str(start)!r} is inside a git submodule whose own working tree cannot be resolved (no "
-            f"'core.worktree' in {common}) — most likely `git submodule deinit` ran without a later "
-            "`git submodule update --init` for it. Run `git submodule update --init` for this "
-            "submodule and retry; resolving anyway would key its scratch/worktree identifier on the "
-            "fixed string 'modules', shared by every other submodule on the machine in the same state."
-        )
-    return common.parent
+    if _is_resolved_working_tree(common.parent, common):
+        return common.parent
+    raise ConfigError(
+        f"{str(start)!r}'s repository has no resolvable working tree: its shared git directory is "
+        f"{common}, and {common.parent} is not itself a checkout of it. This is most often a "
+        "submodule whose own identity git cannot currently resolve — for example after `git "
+        "submodule deinit` without a later `git submodule update --init`, or a nested or detached "
+        "submodule layout git records no `core.worktree` for. Run `git submodule update --init` for "
+        "the affected submodule and retry; resolving anyway risks two unrelated repositories sharing "
+        "one scratch directory."
+    )
 
 
 def fingerprint() -> str:

@@ -350,6 +350,11 @@ def test_repo_scratch_dir_refuses_a_deinited_submodule_rather_than_collapsing_to
     and healthy. Falling back to `common.parent` there would silently key on the fixed string
     `modules`, colliding with every other deinit'd submodule on the machine -- so this must refuse
     loudly rather than resolve to a value this ticket has already proven unsafe to share.
+
+    This exercises the general working-tree-verification mechanism (`_is_resolved_working_tree`), not
+    a `modules`-shaped pattern match: `test_logical_repo_refuses_unresolvable_nested_and_detached_submodules`
+    below proves the same mechanism also catches shapes where `common.parent` is not literally named
+    `modules`, which a name-pattern detector was previously found not to generalize to.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
     subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
@@ -373,10 +378,93 @@ def test_repo_scratch_dir_refuses_a_deinited_submodule_rather_than_collapsing_to
     assert common is not None and config._configured_worktree(common) is None, (
         "deinit must have cleared core.worktree from both config files for this test to be non-vacuous"
     )
+    assert not config._is_resolved_working_tree(common.parent, common), (
+        ".git/modules is not itself a working tree; the fallback must not be trusted here"
+    )
     with pytest.raises(config.ConfigError, match="submodule update --init"):
         config._logical_repo(linked)
     with pytest.raises(config.ConfigError, match="submodule update --init"):
         config.repo_scratch_dir(linked)
+    proc = subprocess.run(
+        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+        cwd=linked, capture_output=True, text=True, check=False,
+        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    )
+    assert proc.returncode != 0 and "submodule update --init" in proc.stderr, (
+        f"the CLI resolver must refuse the same way: rc={proc.returncode}, stderr={proc.stderr!r}"
+    )
+
+
+def test_logical_repo_refuses_unresolvable_nested_and_detached_submodules(fixture_repo):
+    """The refusal above must not be a `modules`-shaped pattern match: it must hold for any layout
+    where `core.worktree` is unresolvable and `common.parent` is not itself a working tree, including
+    shapes where `common.parent`'s name is not literally `modules` at all.
+
+    Two such shapes, both structurally guaranteed (no co-naming or co-location needed):
+    - a nested submodule (`outer/inner`), whose deinit'd common dir is
+      `<super>/.git/modules/outer/modules/inner`, so `common.parent.name` is `modules` but
+      `common.parent.parent.name` is `outer`, not `.git` -- the two-level name check a prior fix used
+      would have missed this.
+    - a submodule of a `--separate-git-dir` superproject, whose common dir is
+      `<detached-gitdir>/modules/<name>` -- there is no `.git` component in its ancestry at all.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+
+    inner_src = fixture_repo.parent / "source-inner"
+    outer_src = fixture_repo.parent / "source-outer"
+    for src in (inner_src, outer_src):
+        src.mkdir()
+        subprocess.run([*git, "-C", str(src), "init", "-q"], check=True)
+        subprocess.run([*git, "-C", str(src), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    subprocess.run([*git, "-C", str(outer_src), "submodule", "add", "-q", str(inner_src), "inner"], check=True)
+    subprocess.run([*git, "-C", str(outer_src), "commit", "-q", "-m", "add inner"], check=True)
+
+    nested_super = fixture_repo.parent / "nested-super"
+    nested_super.mkdir()
+    subprocess.run([*git, "-C", str(nested_super), "init", "-q"], check=True)
+    subprocess.run([*git, "-C", str(nested_super), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    subprocess.run([*git, "-C", str(nested_super), "submodule", "add", "-q", str(outer_src), "outer"], check=True)
+    subprocess.run([*git, "-C", str(nested_super), "submodule", "update", "--init", "--recursive"], check=True)
+    outer = nested_super / "outer"
+    inner = outer / "inner"
+    subprocess.run([*git, "-C", str(outer), "commit", "-q", "--allow-empty", "-m", "sub"], check=True)
+    nested_linked = nested_super.parent / "nested-inner-linked"
+    subprocess.run([*git, "-C", str(inner), "worktree", "add", "-q", str(nested_linked), "-b", "wt"], check=True)
+    subprocess.run([*git, "-C", str(outer), "submodule", "deinit", "-f", "inner"], check=True)
+
+    common = config._git_common_dir(nested_linked)
+    assert common is not None and common.parent.name == "modules", "fixture must reproduce the nested shape"
+    assert common.parent.parent.name != ".git", (
+        "must be the shape a two-level '.git'-then-'modules' name check would miss"
+    )
+    assert config._configured_worktree(common) is None
+    assert not config._is_resolved_working_tree(common.parent, common)
+    with pytest.raises(config.ConfigError, match="submodule update --init"):
+        config._logical_repo(nested_linked)
+
+    dep_src = fixture_repo.parent / "source-detached-dep"
+    dep_src.mkdir()
+    subprocess.run([*git, "-C", str(dep_src), "init", "-q"], check=True)
+    subprocess.run([*git, "-C", str(dep_src), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    detached_work = fixture_repo.parent / "detached-work"
+    detached_gitdir = fixture_repo.parent / "detached-work.git"
+    subprocess.run(
+        [*git, "init", "-q", f"--separate-git-dir={detached_gitdir}", str(detached_work)], check=True
+    )
+    subprocess.run([*git, "-C", str(detached_work), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    subprocess.run([*git, "-C", str(detached_work), "submodule", "add", "-q", str(dep_src), "dep"], check=True)
+    dep = detached_work / "dep"
+    subprocess.run([*git, "-C", str(dep), "commit", "-q", "--allow-empty", "-m", "sub"], check=True)
+    detached_linked = detached_work.parent / "detached-dep-linked"
+    subprocess.run([*git, "-C", str(dep), "worktree", "add", "-q", str(detached_linked), "-b", "wt"], check=True)
+    subprocess.run([*git, "-C", str(detached_work), "submodule", "deinit", "-f", "dep"], check=True)
+
+    common2 = config._git_common_dir(detached_linked)
+    assert common2 is not None and ".git" not in common2.parts, "must be the detached-gitdir shape"
+    assert config._configured_worktree(common2) is None
+    assert not config._is_resolved_working_tree(common2.parent, common2)
+    with pytest.raises(config.ConfigError, match="submodule update --init"):
+        config._logical_repo(detached_linked)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

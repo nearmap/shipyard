@@ -2,13 +2,14 @@
 name: hunt
 description: >-
   Deep correctness investigation for gate. Hunt one coherent area for concrete bug
-  candidates, or refute one candidate adversarially. Source-read-only; .scratch only.
+  candidates, or refute one candidate adversarially. Source-read-only; writes only in the
+  repository's resolved scratch directory.
 tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch
 model: opus
 effort: high
 ---
 
-Run only the caller-named mode and scope. Output is evidence for `sy:gate`, never the final ship verdict. Read-only outside `.scratch/`; Bash may inspect state, run existing checks, and run `.scratch/` measurements/reproducers.
+Run only the caller-named mode and scope. Output is evidence for `sy:gate`, never the final ship verdict. Your one writable location is the repository's own scratch directory: resolve it with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir --repo` and write only under the path it prints — it is keyed on the repository, so it is the same directory from the main checkout or any ship worktree of it, and a write anywhere else is refused by the mutation guard for direct writes and shell redirection (see the guard's own module docstring for its documented limits). Everything else is read-only; Bash may inspect state, run existing checks, and run measurements/reproducers written there.
 
 ## Hunt mode
 

@@ -6,7 +6,7 @@ Create the durable records for the plan's process tier, each as its own tracker 
 
 ## Doc-accuracy self-check (before the retro)
 
-Distinct from BUILD's leaked-token content-QA grep (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/implementation.md`), which only proves nothing leaked: re-verify the load-bearing factual claims in the shipped documentation diff — version numbers, changelog citations, dated facts, claims about how a tool, system, or team actually behaves — against their primary source, not against the diff's own internal consistency. This is a repeatable catch category rather than a one-off: `sy:gate` has already caught exactly this shape once, a cited changelog version naming the wrong release. Record the check in `.scratch/` as claim → source consulted → outcome; a claim that cannot be verified is corrected or explicitly flagged, never shipped silently. Fold the outcome into the retrospective's prose.
+Distinct from BUILD's leaked-token content-QA grep (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/implementation.md`), which only proves nothing leaked: re-verify the load-bearing factual claims in the shipped documentation diff — version numbers, changelog citations, dated facts, claims about how a tool, system, or team actually behaves — against their primary source, not against the diff's own internal consistency. This is a repeatable catch category rather than a one-off: `sy:gate` has already caught exactly this shape once, a cited changelog version naming the wrong release. Record the check in the task's resolved scratch directory (`scratch_dir($TASK_KEY)`) as claim → source consulted → outcome; a claim that cannot be verified is corrected or explicitly flagged, never shipped silently. Fold the outcome into the retrospective's prose.
 
 ## 1. Human retrospective comment
 
@@ -37,7 +37,7 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py summarize \
   --task "$TASK_KEY" \
   --require-agent gate \
   --require-agent slice \
-  --output .scratch/claude-usage-$TASK_KEY.json
+  --output "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$TASK_KEY")/claude-usage-$TASK_KEY.json"
 ```
 
 Inspect the JSON before posting:
@@ -54,7 +54,7 @@ Post one small tracker comment containing only:
 # Claude Code usage
 
 ```json
-<contents of .scratch/claude-usage-$TASK_KEY.json>
+<contents of the claude-usage-$TASK_KEY.json written above>
 ```
 ````
 
@@ -113,7 +113,7 @@ When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders a
 python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py export \
   --session-id "$SHIP_SESSION_ID" \
   --task "$TASK_KEY" \
-  --output .scratch/$TASK_KEY-ship-transcript.txt
+  --output "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$TASK_KEY")/$TASK_KEY-ship-transcript.txt"
 ```
 
 The renderer truncates bulky tool output and strips raw-JSONL noise, so the result is an audit-readable transcript, not a machine dump; token accounting still comes from `session_usage.py summarize`. The delegate then runs the deterministic scan (known-secret scrub, then `gitleaks`), contextual review, and redaction, uploads exactly one attachment, and verifies it, per `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` and the `tracker` skill's attachment flow. Run it as late as possible (after an authorized merge) so the captured tail is maximal; because it reads on-disk transcripts it can also run on a resumed session. The rendered transcript is never read back into the ship context.

@@ -46,6 +46,10 @@ LEGACY_CONFIG_ENV = {
 }
 # The resolver owns the legacy map; the adapters own their own names; the docs explain the
 # migration. Everything else must go through `sy_config.py get`.
+_SCRATCH_HINT = '`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <identifier>`'
+_SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
+_SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
+
 CONFIG_ENV_ALLOWED = {
     "scripts/sy_config.py",
     "scripts/validate.py",
@@ -162,10 +166,17 @@ def _frontmatter_field(text: str, field: str) -> str:
 
 
 def _component_md(seam_only: bool) -> list[Path]:
-    """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only."""
+    """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only.
+
+    `.scratch` is excluded at any depth for the same reason `check_config_seam` and
+    `check_no_repo_scratch_refs` exclude it: it is not Shipyard's to read, and its content is not
+    guaranteed to be UTF-8 decodable.
+    """
     paths: list[Path] = []
     for base in ("agents", "skills"):
         for p in (ROOT / base).rglob("*.md"):
+            if ".scratch" in p.relative_to(ROOT).parts:
+                continue
             if seam_only and "skills/tracker/" in p.as_posix():
                 continue
             paths.append(p)
@@ -202,7 +213,7 @@ def check_structure(errors: list[str]) -> None:
 
 def check_no_home_paths(errors: list[str]) -> None:
     for p in _component_md(seam_only=False):
-        if "~/.claude" in p.read_text(encoding="utf-8"):
+        if "~/.claude" in p.read_text(encoding="utf-8", errors="replace"):
             fail(f"{p.relative_to(ROOT)}: uses ~/.claude; bundle files must use ${{CLAUDE_PLUGIN_ROOT}}", errors)
 
 
@@ -212,7 +223,7 @@ def check_seam(errors: list[str]) -> None:
         ROOT / "scripts/sy_memory.py", ROOT / "scripts/sy_preflight.py", ROOT / "scripts/eval_events.py",
     ]
     for p in scan:
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8", errors="replace")
         for pattern in TRACKER_TOKENS:
             m = pattern.search(text)
             if m:
@@ -231,10 +242,11 @@ def check_config_seam(errors: list[str]) -> None:
     for p in sorted(ROOT.rglob("*")):
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
             continue
-        rel = str(p.relative_to(ROOT))
-        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/")):
+        parts = p.relative_to(ROOT).parts
+        rel = "/".join(parts)
+        if rel in CONFIG_ENV_ALLOWED or ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
             continue
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8", errors="replace")
         for var in sorted(LEGACY_CONFIG_ENV):
             if var in text:
                 line = text[: text.index(var)].count("\n") + 1
@@ -244,6 +256,45 @@ def check_config_seam(errors: list[str]) -> None:
                     errors,
                 )
                 break
+
+
+def check_no_repo_scratch_refs(errors: list[str]) -> None:
+    """No file Shipyard ships may name a repo-relative scratch directory.
+
+    Scratch lives under the resolved `scratch.dir` now, keyed per identifier. A reintroduced
+    repo-relative path in Shipyard's own agents/scripts/skill docs is not cosmetic: it is fragile
+    exactly where it is used most, discarded with every `/sy:ship` worktree it was written in, and
+    — for `review_guard.py`'s hunt sandbox — a boundary the guard and the agent it guards would
+    resolve two different ways.
+
+    This walks every file in the checkout by suffix — not a git-tracked-files query, so a gitignored
+    file is scanned too — and never asks whether a `.scratch/` directory exists at all: that
+    directory is not Shipyard's to police. Something else on this machine may depend on it for
+    entirely unrelated reasons, so `.gitignore` keeps excluding it (it is not this migration's to
+    remove either) and this check does not scan its contents, at any depth: whatever is in there
+    belongs to whoever put it there, not to Shipyard.
+
+    `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
+    installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
+    directory nobody authored would raise out of this check and discard every error the whole run had
+    already collected.
+    """
+    for p in sorted(ROOT.rglob("*")):
+        if not p.is_file() or p.suffix not in _SCRATCH_REF_SUFFIXES:
+            continue
+        parts = p.relative_to(ROOT).parts
+        rel = "/".join(parts)
+        if rel == "scripts/validate.py" or ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace")
+        m = _SCRATCH_REF_PATTERN.search(text)
+        if m:
+            line = text[: m.start()].count("\n") + 1
+            fail(
+                f"SCRATCH SEAM: {rel}:{line}: names a repo-relative .scratch; resolve it with "
+                f"{_SCRATCH_HINT} instead",
+                errors,
+            )
 
 
 def check_agent_floors(errors: list[str]) -> None:
@@ -687,10 +738,14 @@ def main() -> int:
     for p in ROOT.rglob("*"):
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh"} or p.name == "validate.py":
             continue
-        text = p.read_text(encoding="utf-8")
+        parts = p.relative_to(ROOT).parts
+        if ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
+            continue
+        rel = "/".join(parts)
+        text = p.read_text(encoding="utf-8", errors="replace")
         for old in FORBIDDEN_OLD_NAMES:
             if old in text:
-                fail(f"{p.relative_to(ROOT)}: stale agent name {old}", errors)
+                fail(f"{rel}: stale agent name {old}", errors)
 
     for p in agent_paths:
         text = p.read_text(encoding="utf-8")
@@ -703,6 +758,7 @@ def main() -> int:
     check_no_home_paths(errors)
     check_seam(errors)
     check_config_seam(errors)
+    check_no_repo_scratch_refs(errors)
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
     check_contract_completeness(errors)

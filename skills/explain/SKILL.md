@@ -16,7 +16,7 @@ $ARGUMENTS
 
 ## Author
 
-Delegate the investigation to `sy:explain-author` — an isolated context, so its file reads and repro attempts never enter this session. Seed the prompt with every anchor already in hand: paths, symbols, the commit, the plan/gate/CI finding that made this worth explaining. It writes the doc itself to `.scratch/<topic>_explainer.md` and returns only a compact brief — doc path, layer count, the one surprising rule, and how many claims are verified versus inferred.
+Delegate the investigation to `sy:explain-author` — an isolated context, so its file reads and repro attempts never enter this session. Seed the prompt with every anchor already in hand: paths, symbols, the commit, the plan/gate/CI finding that made this worth explaining. It writes the doc itself to `<topic>_explainer.md` in the topic's resolved scratch directory (`scratch_dir(<topic-slug>)`) and returns only a compact brief — the resolved doc path, layer count, the one surprising rule, and how many claims are verified versus inferred.
 
 Present that brief as a **Status** update, then close with one **optional suggestion** (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`): walk it here now, or run `claude "/sy:explain <doc path>"` in a new session for a clean slate before something like a merge. Never block on it — proceed either way.
 

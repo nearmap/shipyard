@@ -19,7 +19,7 @@ DONE: promoted to `in-review`
 CI_GREEN_SHA: <sha>; REVIEWED_SHA: <sha>; REVIEW_BASE_SHA: <sha>; TARGET_SHA: <sha>
 REVIEW_MODEL_REQUESTED: <model>; PR: <url>
 FINDINGS: accepted <n>, rejected <n>; REVIEW_THREADS: addressed <n>
-STATE: .scratch/<task>-ship-state.yaml; AGENTS_USED: <names>
+STATE: scratch_dir($TASK_KEY)/ship-state.yaml; AGENTS_USED: <names>
 ```
 
 or `NEEDS-DECISION: <ambiguous finding>; OPTIONS: …; CHECKPOINT: <resolved vs pending + pushed SHA>; BEARING: <spans>`, `BAIL-TO-SPEC: <finding invalidates plan contract>; ANCHORS: <paths>`, or `BLOCKED: <external>; NEEDS: <unblock>`.

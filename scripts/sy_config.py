@@ -26,6 +26,7 @@ Commands:
   agent <name> [--json]            floor-clamped dispatch model for one agent
   fingerprint                      stable digest of the resolved config, for cache invalidation
   scratch-dir <identifier>         ephemeral working directory for one identifier, created if absent
+  scratch-dir --repo               this repository's own scratch directory, shared by its worktrees
   migrate --settings <path>        convert a legacy settings.json env block into config JSON
   self-test
 
@@ -117,7 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         print(fingerprint())
         return 0
     if args.command == "scratch-dir":
-        print(scratch_dir(args.identifier))
+        if args.repo == bool(args.identifier):
+            raise SystemExit("sy_config: scratch-dir takes either one identifier or --repo, not both and not neither.")
+        print(repo_scratch_dir() if args.repo else scratch_dir(args.identifier))
         return 0
     if args.command == "migrate":
         return _migrate(Path(args.settings), Path(args.out) if args.out else None)
@@ -162,8 +165,22 @@ def scratch_dir(identifier: str) -> Path:
     cleans up what it was handed would delete every other identifier's data. Resolving also catches
     a `..` hidden mid-path and a symlink already inside the root that `mkdir(parents=True)` would
     otherwise follow straight out of it.
+
+    `scratch.dir` itself must be absolute. A repo-committed `.shipyard/config.json` is one of the
+    layers this resolves, and `review_guard.py`'s hunt-mode write sandbox is exactly `scratch_dir()`'s
+    containment check — a relative value resolves against whatever the *calling process's* cwd
+    happens to be rather than any fixed location, so a committed `{"scratch": {"dir": ".."}}` can
+    silently put the "sandbox" root at an ancestor of the checkout itself, and every file inside the
+    checkout then satisfies the containment check that was supposed to keep hunt out of it.
     """
     root = Path(str(get("scratch.dir")))
+    if not root.is_absolute():
+        raise SystemExit(
+            f"sy_config: scratch.dir resolved to {str(root)!r}, which is not absolute. A relative "
+            "scratch.dir resolves against whatever directory happens to be the current process's cwd, "
+            "which can put the write sandbox this backs inside the very checkout it must stay outside "
+            "of. Set scratch.dir to an absolute path, or leave it unset to use the shipped default."
+        )
     refusal = SystemExit(
         f"sy_config: refusing to create a scratch directory for {identifier!r}: an identifier "
         "must be a relative name that stays inside the resolved scratch root."
@@ -184,6 +201,183 @@ def scratch_dir(identifier: str) -> Path:
         raise refusal
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
+
+
+def repo_scratch_dir(start: Path | None = None) -> Path:
+    """This repository's own scratch directory, resolved identically from any worktree of it.
+
+    Keyed on the *logical* repository — the directory holding the shared `.git` — rather than on the
+    resolved checkout, for a reason that is load-bearing rather than tidy. `repo_root()` honours
+    `CLAUDE_PROJECT_DIR` when a session set it and derives from the working directory when nothing
+    did, and Claude Code exports that pointer to hook subprocesses but not to a subagent's own Bash
+    tool. Keyed on `repo_root().name`, a `PreToolUse` guard inside a `/sy:ship` worktree would
+    therefore resolve the main checkout's name while the agent it guards resolved the worktree's, and
+    the guard would deny every write the agent believed was permitted. The logical repository is the
+    same absolute path from either, so both sides agree without depending on `CLAUDE_PROJECT_DIR` or
+    any working-directory convention (absent a `GIT_COMMON_DIR`/`GIT_DIR` override, which neither the
+    hook nor the agent sets).
+
+    `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
+    guarded resolve from one cwd concept; the default is the resolved repository root, which is what
+    a direct CLI or in-session caller means. Containment against the resolved *root* is `scratch_dir`'s
+    own job, never restated here — but the resolved *directory* is additionally checked against every
+    worktree of this repository, main and linked alike, because `scratch.dir` itself is one of the
+    values a repo-committed `.shipyard/config.json` can set: `scratch_dir()` already refuses a
+    non-absolute root, but nothing stops an absolute value that happens to equal or contain a checkout
+    being reviewed, which would hand `review_guard.py`'s hunt-mode write sandbox that checkout's own
+    source. Checking only `start`'s own working tree is not enough: a `PreToolUse` hook's cwd is the
+    *main* checkout in the overwhelming majority of `sy:gate`/`sy:hunt` runs, not the build/slice/review
+    worktree the tool call actually targets — `/sy:ship` names the worktree only in the dispatched
+    agent's prompt text, never as the subagent's own cwd — so a `scratch.dir` that overlaps some other,
+    currently-inactive worktree of the repo (for example a naturally-plausible `worktree.root` nested
+    under the same root as `scratch.dir`) would pass a check scoped to `start` alone while still
+    exposing whichever worktree an absolute-path write actually targets. `_all_worktrees` enumerates
+    every *linked* worktree from git's own bookkeeping, independent of `start`, plus `start`'s own
+    working tree explicitly (`_git_toplevel(origin)`) — the registry alone is not enough either: a
+    *main* working tree (as opposed to a linked one) has no entry under `<common>/worktrees/` at all,
+    so a `--separate-git-dir` or bare-plus-`worktree-add` main checkout with no resolvable
+    `core.worktree` (`_logical_repo` falls back to `common`, the detached gitdir itself, in that case)
+    would otherwise go unguarded even though `start` is sitting inside it right now. The comparison is
+    by device and inode, not by resolved spelling: `Path.resolve()` normalizes symlinks, `.` and `..`,
+    but not case, and a case-insensitive filesystem (APFS's default) lets a differently-cased spelling
+    of the same ancestor stay string-unequal to a checkout path while being the identical directory on
+    disk.
+    """
+    origin = Path(start) if start is not None else repo_root()
+    common = _git_common_dir(origin)
+    if common is None:
+        raise SystemExit(
+            f"sy_config: {str(origin)!r} is not a directory inside a git checkout, so no repository "
+            "scratch directory can be resolved from it."
+        )
+    logical = _logical_repo(origin)
+    directory = scratch_dir(logical.name)
+    guarded_set = _all_worktrees(common, logical)
+    checkout = _git_toplevel(origin)
+    if checkout is not None:
+        guarded_set.append(checkout)
+    for guarded in guarded_set:
+        if _same_directory(directory, guarded) or any(
+            _same_directory(directory, parent) for parent in guarded.parents
+        ):
+            raise SystemExit(
+                f"sy_config: the resolved scratch directory {directory.resolve()} contains a "
+                f"worktree of this repository ({guarded}). scratch.dir must not resolve to that "
+                "worktree or an ancestor of it — every file inside it would then satisfy the "
+                "containment check that is supposed to keep hunt out of it; check for a misconfigured "
+                "scratch.dir or worktree.root in a committed or local .shipyard/config.json."
+            )
+    return directory
+
+
+def _all_worktrees(common: Path, logical: Path) -> list[Path]:
+    """The main checkout plus every *linked* worktree of this repository, read directly from git's own
+    bookkeeping under `<common>/worktrees/`, independent of which one the current invocation happens
+    to be running from. (`repo_scratch_dir` separately adds `start`'s own working tree, which the
+    registry alone does not cover for a main worktree — see its docstring.)
+
+    A `PreToolUse` hook's cwd is the main checkout in the overwhelming majority of `sy:gate`/`sy:hunt`
+    runs, never the build/slice/review worktree `/sy:ship` actually dispatched the tool call against —
+    so a check scoped to the current invocation's own working tree misses every *other* live worktree
+    of the same repository, exactly where those worktrees live.
+
+    Each entry's own absolute path is read from `<common>/worktrees/<id>/gitdir`, not assumed to be
+    `<id>`'s own name: `git worktree add --relative-paths` (or `worktree.useRelativePaths`) writes that
+    file as a path relative to `<common>/worktrees/<id>/` itself, not to `common` or to any process's
+    cwd, so a relative record is resolved against the entry's own directory before use — resolving it
+    against the wrong base, or leaving it relative and comparing it as-is, would silently stat the
+    guard process's own cwd instead of the worktree. A record git itself writes always ends in the
+    literal `.git`, naming the worktree's own `.git` file, but git's own reader (`git-worktree(1)`'s
+    DETAILS section) accepts the bare directory form too — it's the documented spelling for hand
+    repairing a relocated worktree's `gitdir` file after moving it outside `git worktree move` — so
+    only the optional `.git` suffix is stripped, the same way git strips it, rather than requiring it
+    and refusing a form git itself accepts. A blank `gitdir` file, or one that is missing or
+    unreadable, means this cannot determine part of the guarded set at all, which fails closed
+    (raises) rather than silently guarding fewer worktrees than exist.
+    """
+    worktrees = [logical]
+    worktrees_dir = common / "worktrees"
+    if not worktrees_dir.is_dir():
+        return worktrees
+    for entry in sorted(worktrees_dir.iterdir()):
+        gitdir_file = entry / "gitdir"
+        if not gitdir_file.is_file():
+            raise SystemExit(
+                f"sy_config: {str(gitdir_file)!r} is missing, so this worktree's own location cannot "
+                "be determined and so cannot be guarded. Run `git worktree prune` if it was removed "
+                "without `git worktree remove`, or `git worktree repair` if it was relocated."
+            )
+        try:
+            raw = gitdir_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise SystemExit(
+                f"sy_config: {str(gitdir_file)!r} could not be read ({exc}), so this worktree's own "
+                "location cannot be determined and so cannot be guarded."
+            ) from None
+        if not raw:
+            raise SystemExit(
+                f"sy_config: {str(gitdir_file)!r} is blank, so this worktree's own location cannot be "
+                "determined and so cannot be guarded — most likely a truncated or otherwise corrupted "
+                "gitdir file."
+            )
+        pointed = Path(raw)
+        if not pointed.is_absolute():
+            pointed = (entry / pointed).resolve()
+        # Git's own reader strips an optional trailing "/.git" (git-worktree(1) documents writing the
+        # bare directory path directly when hand-repairing a relocated worktree, e.g. after `mv`), so
+        # both spellings name the worktree; requiring the suffix would refuse a git-accepted record.
+        worktree = pointed.parent if pointed.name == ".git" else pointed
+        worktrees.append(worktree)
+    return worktrees
+
+
+def _logical_repo(start: Path) -> Path:
+    """The directory holding the checkout's shared `.git`, or `start` itself when there is no checkout.
+
+    A linked worktree resolves to its main checkout, which is what every per-repository derived
+    default means. Keyed on the worktree instead, `worktree.root` nests a second worktrees directory
+    inside the first (`<repo>-worktrees/AM-1/../AM-1-worktrees`), which is where `/sy:ship` would put
+    a slice worktree it created from inside a build worktree.
+
+    A submodule's `--git-common-dir` resolves under the superproject's `.git/modules/`, whose parent
+    directory name is the fixed string `modules` for every submodule on the machine; keyed on that,
+    two unrelated submodules would share one scratch directory and one `worktree.root`. The shared git
+    dir names the submodule's own working tree in its `core.worktree`, so `_configured_worktree` reads
+    it from the *shared* config and needs no per-checkout detection — which matters because a linked
+    worktree of a submodule reports no superproject at all, and so any detection keyed on the checkout
+    would miss exactly the worktrees `/sy:ship` itself creates.
+
+    When `core.worktree` cannot be resolved at all (`git submodule deinit`, which clears it from both
+    config files while leaving `.git/modules/<name>` itself in place and any of the submodule's own
+    linked worktrees checked out and healthy), the naive fallback of `common.parent` is verified with
+    git itself rather than assumed: pattern-matching directory names (`modules`, nesting depth,
+    `--separate-git-dir`, `vendor/`-style grouping, and whatever shape comes after those) does not
+    generalize, as repeated fixes to this exact function have shown. `common.parent` is used only when
+    it is itself a real working tree whose own shared git directory is `common` — true for an ordinary
+    checkout, false for every git-internal storage directory this or a future git layout might produce
+    at that path (a submodule's own internal storage, a `--separate-git-dir` or bare checkout's
+    detached gitdir folder). Refusing there would make an ordinary `--separate-git-dir` or bare
+    checkout — nothing at all like the transient, self-inflicted deinit state this exists to guard
+    against — unusable outright, so instead this falls back one tier further: `common` itself. `common`
+    is an absolute, resolved path that is by construction identical from every worktree of one repo and
+    distinct from every other repo's, so it is always safe to key on even though it is sometimes less
+    readable than a checkout's own directory name (`.git/modules/<name>` for an otherwise-unresolvable
+    submodule still ends in that submodule's own name, which is what a resolvable one would have given
+    too).
+
+    Falls back to `start` itself only when there is no checkout at all, because `repo_root()`'s own cwd
+    path legitimately resolves a directory that is in no checkout at all, and resolution must still
+    produce a value there.
+    """
+    common = _git_common_dir(start)
+    if common is None:
+        return start
+    configured = _configured_worktree(common)
+    if configured is not None:
+        return configured
+    if _is_resolved_working_tree(common.parent, common):
+        return common.parent
+    return common
 
 
 def resolve() -> tuple[dict, dict[str, str]]:
@@ -453,6 +647,109 @@ def _git_toplevel(start: Path) -> Path | None:
     return Path(out).resolve() if proc.returncode == 0 and out else None
 
 
+def _git_common_dir(start: Path) -> Path | None:
+    """The absolute shared `.git` directory of the checkout containing `start`, or None if there is none.
+
+    `--path-format=absolute` is not decoration: without it git answers a bare relative `.git` from a
+    main checkout, whose `.parent.name` is the empty string. Absoluteness is therefore checked
+    explicitly rather than left to `.resolve()`, which would silently resolve a relative answer
+    against *this process's* cwd instead of `start` — fail-soft on the one boundary these callers
+    exist to keep. A relative answer is None, the same as no checkout.
+
+    A `git` that cannot be run is refused by name here for the reasons `_git_toplevel` gives; None
+    means only "git ran and reported no checkout", which the callers act on themselves.
+    """
+    if not start.is_dir():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+    except OSError as exc:
+        raise SystemExit(
+            f"sy_config: git could not be run to resolve the repository's scratch directory from {start}: "
+            f"{exc}. Install git, or put it on PATH."
+        ) from None
+    out = proc.stdout.strip()
+    if proc.returncode != 0 or not out:
+        return None
+    candidate = Path(out)
+    return candidate.resolve() if candidate.is_absolute() else None
+
+
+def _configured_worktree(common: Path) -> Path | None:
+    """The absolute working tree `git config core.worktree` in `common`'s own config names, or None.
+
+    A submodule's shared git dir (`<super>/.git/modules/<name>`) sets `core.worktree` to the relative
+    path back to the submodule's own working tree — normally in `<common>/config`, but git relocates it
+    to `<common>/config.worktree` the moment `extensions.worktreeConfig` is turned on, which
+    `git sparse-checkout init` does inside the submodule and never reverts on `sparse-checkout
+    disable`. Both files are read directly by path with `--file` rather than a bare `git config
+    --get`, because a bare query run from a *linked* worktree of the submodule suppresses
+    `core.worktree` entirely (git treats it as belonging only to the main worktree's own per-worktree
+    config) even though both files themselves are the same shared, worktree-independent source either
+    way. `--separate-git-dir` checkouts do not set this key at all: an ordinary checkout, and a plain
+    `--separate-git-dir` one, both fall through to `None` here, and `_logical_repo` falls back to
+    `common.parent` for those, once verified — which can still collide if multiple such checkouts'
+    git-dirs are deliberately colocated under one shared parent directory, the same class of
+    collision as two ordinary same-named repos elsewhere on the machine, and out of scope for the
+    same reason.
+    """
+    for filename in ("config.worktree", "config"):
+        proc = subprocess.run(
+            ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+        out = proc.stdout.strip()
+        if proc.returncode == 0 and out:
+            resolved = (common / out).resolve()
+            if resolved.is_dir():
+                return resolved
+    return None
+
+
+def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
+    """Whether `candidate` is a genuine working tree whose own shared git directory is `common`.
+
+    `_logical_repo` falls back to `common.parent` as `candidate` when `core.worktree` cannot be
+    read; that guess is right for an ordinary checkout (`common` is `<repo>/.git`, so `common.parent`
+    is the repo itself) and wrong for a git-internal storage directory that happens to sit at that
+    path — a submodule's `.git/modules/<name>`, a nested submodule's
+    `.git/modules/<outer>/modules/<inner>`, a `--separate-git-dir` superproject's own detached gitdir,
+    or any future layout with the same shape. None of those are themselves a working tree at all.
+    Settled by asking git directly rather than pattern-matching directory names: a real working tree
+    answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with `common`; a storage
+    directory answers neither.
+    """
+    if not candidate.is_dir():
+        return False
+    proc = subprocess.run(
+        ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() != "true":
+        return False
+    return _git_common_dir(candidate) == common
+
+
+def _same_directory(a: Path, b: Path) -> bool:
+    """Whether `a` and `b` name the same directory on disk, by device and inode rather than spelling.
+
+    `repo_scratch_dir`'s checkout-overlap guard cannot compare resolved paths as strings: a
+    case-insensitive filesystem (APFS's default) resolves a differently-cased spelling of the same
+    ancestor to a string that is unequal to the checkout's own canonical spelling, even though it
+    names the identical directory — the exact gap a resolved-path comparison alone left open. A
+    missing or unreadable directory can never be "the same" as one that exists.
+    """
+    try:
+        stat_a = a.stat()
+        stat_b = b.stat()
+    except OSError:
+        return False
+    return (stat_a.st_dev, stat_a.st_ino) == (stat_b.st_dev, stat_b.st_ino)
+
+
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:
     errors: list[str] = []
     models = values.get("models", {})
@@ -703,8 +1000,8 @@ def _clamp(value: object, floor: object, order: tuple[str, ...]) -> tuple[object
 
 def _apply_derived_defaults(values: dict, provenance: dict[str, str]) -> None:
     """Defaults that depend on the repo, so they live here instead of in ten prose copies."""
-    root = repo_root()
     if values.get("worktree", {}).get("root") in (None, ""):
+        root = _logical_repo(repo_root())
         values.setdefault("worktree", {})["root"] = str(root.parent / f"{root.name}-worktrees")
         provenance["worktree.root"] = "derived-default"
     if values.get("memory", {}).get("dir") in (None, ""):
@@ -952,7 +1249,11 @@ def _build_parser() -> argparse.ArgumentParser:
     a.add_argument("--json", action="store_true", help="full binding: model, effort, requested values, clamp flags")
     sub.add_parser("fingerprint", help="stable digest of the resolved config")
     d = sub.add_parser("scratch-dir", help="ephemeral working directory for one identifier, created if absent")
-    d.add_argument("identifier", help="relative name the directory is created under, e.g. a ticket key")
+    d.add_argument("identifier", nargs="?", help="relative name the directory is created under, e.g. a ticket key")
+    d.add_argument(
+        "--repo", action="store_true",
+        help="this repository's own scratch directory instead, keyed so every worktree of it agrees",
+    )
     m = sub.add_parser("migrate", help="convert a legacy settings.json env block into config JSON")
     m.add_argument("--settings", required=True, help="path to the settings.json holding the legacy env block")
     m.add_argument("--out", help="write here instead of stdout")
@@ -1012,6 +1313,28 @@ def _self_test() -> None:
                 else:
                     raise AssertionError(f"a scratch identifier of {escape!r} must be refused")
             assert not any(outside.iterdir()), "a symlink inside the scratch root must not be followed out of it"
+
+            checkout = Path(tmp) / "logical-repo"
+            checkout.mkdir()
+            git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-C", str(checkout)]
+            subprocess.run([*git[:1], "init", "-q", str(checkout)], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            linked = Path(tmp) / "logical-repo-worktrees" / "AM-1"
+            subprocess.run([*git, "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
+            scratch_root = Path(str(get("scratch.dir")))
+            assert repo_scratch_dir(checkout) == scratch_root / "logical-repo", (
+                "the repository's scratch directory must be keyed on the logical repo's own name"
+            )
+            assert repo_scratch_dir(linked) == repo_scratch_dir(checkout), (
+                "a worktree and its main checkout must resolve to one scratch directory, or a hook and the "
+                "agent it guards disagree about the sandbox root"
+            )
+            try:
+                repo_scratch_dir()  # the monkeypatched repo_root() is a plain directory, not a checkout
+            except SystemExit as exc:
+                assert "not a directory inside a git checkout" in str(exc)
+            else:
+                raise AssertionError("a repo root that is not a git checkout must be refused, not keyed on ''")
 
             write_layer(home / CONFIG_DIRNAME / CONFIG_FILENAME, {"ci": {"poll_timeout": 60}})
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,

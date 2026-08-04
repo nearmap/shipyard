@@ -306,6 +306,21 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
     return scratch_dir(common.parent.name)
 
 
+def _logical_repo(start: Path) -> Path:
+    """The directory holding the checkout's shared `.git`, or `start` itself when there is no checkout.
+
+    A linked worktree resolves to its main checkout, which is what every per-repository derived
+    default means. Keyed on the worktree instead, `worktree.root` nests a second worktrees directory
+    inside the first (`<repo>-worktrees/AM-1/../AM-1-worktrees`), which is where `/sy:ship` would put
+    a slice worktree it created from inside a build worktree.
+
+    Falls back rather than refusing, because `repo_root()`'s own cwd path legitimately resolves a
+    directory that is in no checkout at all, and resolution must still produce a value there.
+    """
+    common = _git_common_dir(start)
+    return common.parent if common is not None else start
+
+
 def fingerprint() -> str:
     """Digest of every resolved value, for cache invalidation and reload reporting."""
     values, _ = resolve()
@@ -456,7 +471,8 @@ def _resolve_uncached() -> _Resolved:
 
 def _apply_derived_defaults(values: dict, provenance: dict[str, str], root: Path) -> None:
     if values.get("worktree", {}).get("root") in (None, ""):
-        values.setdefault("worktree", {})["root"] = str(root.parent / f"{root.name}-worktrees")
+        logical = _logical_repo(root)
+        values.setdefault("worktree", {})["root"] = str(logical.parent / f"{logical.name}-worktrees")
         provenance["worktree.root"] = "derived-default"
     if values.get("memory", {}).get("dir") in (None, ""):
         values.setdefault("memory", {})["dir"] = str(Path.home() / ".claude" / "shipyard" / "memory")

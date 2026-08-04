@@ -212,6 +212,10 @@ def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree_and_both
     linked = fixture_repo.parent / "linked-worktree"
     subprocess.run([*git, "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
     assert config.repo_scratch_dir(linked) == expected, "a worktree must not get its own scratch directory"
+    assert config._logical_repo(linked) == fixture_repo, (
+        "every per-repository derived default keys on this: `worktree.root` derived from a worktree "
+        "would nest a second worktrees directory inside the first"
+    )
 
     for cwd, extra in ((fixture_repo, {}), (linked, {}), (linked, {"CLAUDE_PROJECT_DIR": str(fixture_repo)})):
         proc = subprocess.run(

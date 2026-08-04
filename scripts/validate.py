@@ -46,6 +46,8 @@ LEGACY_CONFIG_ENV = {
 }
 # The resolver owns the legacy map; the adapters own their own names; the docs explain the
 # migration. Everything else must go through `sy_config.py get`.
+_SCRATCH_HINT = '`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <identifier>`'
+
 CONFIG_ENV_ALLOWED = {
     "scripts/sy_config.py",
     "scripts/validate.py",
@@ -261,8 +263,8 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     stale = ROOT / ".scratch"
     if stale.exists():
         fail(
-            f".scratch/ exists in the checkout; nothing writes there any more. Delete it and use "
-            f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" scratch-dir <identifier>`",
+            ".scratch/ exists in the checkout; nothing writes there any more. Delete it and use "
+            f"{_SCRATCH_HINT}",
             errors,
         )
     for p in sorted(ROOT.rglob("*")):
@@ -275,8 +277,8 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
         if ".scratch/" in text:
             line = text[: text.index(".scratch/")].count("\n") + 1
             fail(
-                f"SCRATCH SEAM: {rel}:{line}: names a repo-relative .scratch/; resolve the path with "
-                f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" scratch-dir <identifier>` instead",
+                f"SCRATCH SEAM: {rel}:{line}: names a repo-relative .scratch/; resolve it with "
+                f"{_SCRATCH_HINT} instead",
                 errors,
             )
 

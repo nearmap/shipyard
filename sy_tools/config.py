@@ -139,8 +139,10 @@ def _git_common_dir(start: Path) -> Path | None:
     """The absolute shared `.git` directory of the checkout containing `start`, or None if there is none.
 
     `--path-format=absolute` is not decoration: without it git answers a bare relative `.git` from a
-    main checkout, whose `.parent.name` is the empty string — which `scratch_dir()` then rightly
-    refuses, turning a name derivation into a failure only reproducible outside a worktree.
+    main checkout, whose `.parent.name` is the empty string. Absoluteness is therefore checked
+    explicitly rather than left to `.resolve()`, which would silently resolve a relative answer
+    against *this process's* cwd instead of `start` — fail-soft on the one boundary these callers
+    exist to keep. A relative answer is None, the same as no checkout.
 
     A `git` that cannot be run is a named `ConfigError` for the reasons `_git_toplevel` gives, and
     `stdin` is closed for the same reason: this can run inside the MCP server, whose stdin is the
@@ -160,7 +162,37 @@ def _git_common_dir(start: Path) -> Path | None:
             "Install git, or put it on PATH."
         ) from None
     out = proc.stdout.strip()
-    return Path(out).resolve() if proc.returncode == 0 and out else None
+    if proc.returncode != 0 or not out:
+        return None
+    candidate = Path(out)
+    return candidate.resolve() if candidate.is_absolute() else None
+
+
+def _in_submodule(start: Path) -> bool:
+    """Whether `start` resolves inside a git submodule's own working tree.
+
+    `--show-superproject-working-tree` prints the superproject's working tree only from inside a
+    submodule checkout, and nothing otherwise. `_git_common_dir` cannot tell submodules apart on its
+    own: `--git-common-dir` from inside any submodule resolves to `<superproject>/.git/modules/<name>`,
+    whose parent directory name is the literal string `modules` for every submodule on the machine —
+    keying an identifier on it would commingle every submodule anywhere into one scratch directory and
+    one `worktree.root`, exactly the "never machine-global" boundary this resolver exists to keep.
+    """
+    if not start.is_dir():
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--path-format=absolute",
+             "--show-superproject-working-tree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise ConfigError(
+            f"git could not be run to resolve the repository's scratch directory from {start}: {exc}. "
+            "Install git, or put it on PATH."
+        ) from None
+    return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
 def layers(root: Path) -> list[tuple[str, Path]]:
@@ -289,8 +321,10 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
     did, and Claude Code exports that pointer to hook subprocesses and stdio servers but not to a
     subagent's own Bash tool. Keyed on `repo_root().name`, a `PreToolUse` guard inside a `/sy:ship`
     worktree would therefore resolve the main checkout's name while the agent it guards resolved the
-    worktree's, and the guard would deny every write the agent believed was permitted. The common git
-    dir is the same absolute path from either, so both sides agree with no environment dependency.
+    worktree's, and the guard would deny every write the agent believed was permitted. The logical
+    repository is the same absolute path from either, so both sides agree without depending on
+    `CLAUDE_PROJECT_DIR` or any working-directory convention (absent a `GIT_COMMON_DIR`/`GIT_DIR`
+    override, which neither the hook nor the agent sets).
 
     `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
     guarded resolve from one cwd concept; the default is the resolved repository root, which is what
@@ -303,7 +337,7 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
             f"{str(origin)!r} is not a directory inside a git checkout, so no repository scratch "
             "directory can be resolved from it."
         )
-    return scratch_dir(common.parent.name)
+    return scratch_dir(_logical_repo(origin).name)
 
 
 def _logical_repo(start: Path) -> Path:
@@ -314,11 +348,23 @@ def _logical_repo(start: Path) -> Path:
     inside the first (`<repo>-worktrees/AM-1/../AM-1-worktrees`), which is where `/sy:ship` would put
     a slice worktree it created from inside a build worktree.
 
+    A submodule's `--git-common-dir` resolves under the superproject's `.git/modules/`, whose parent
+    directory name is the fixed string `modules` for every submodule on the machine; keyed on that,
+    two unrelated submodules would share one scratch directory and one `worktree.root`. Detected via
+    `_in_submodule` and resolved instead to the submodule's own working-tree root (`_git_toplevel`),
+    which is already a distinct, stable path per submodule instance and needs no further qualification.
+
     Falls back rather than refusing, because `repo_root()`'s own cwd path legitimately resolves a
     directory that is in no checkout at all, and resolution must still produce a value there.
     """
     common = _git_common_dir(start)
-    return common.parent if common is not None else start
+    if common is None:
+        return start
+    if _in_submodule(start):
+        toplevel = _git_toplevel(start)
+        if toplevel is not None:
+            return toplevel
+    return common.parent
 
 
 def fingerprint() -> str:

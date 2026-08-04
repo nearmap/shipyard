@@ -54,8 +54,10 @@ def scratch_root(cwd: str) -> Path | None:
     `CLAUDE_PROJECT_DIR` to a hook subprocess but not to a subagent's own Bash tool, so a root
     derived from the environment would name the main checkout here and the worktree there: inside a
     `/sy:ship` worktree the guard would deny every hunt write as an escape while the agent believed
-    it was writing inside the sandbox it had been given. `repo_scratch_dir` keys on the shared git
-    dir, so guard and guarded agree from either, and containment stays `scratch_dir`'s own logic.
+    it was writing inside the sandbox it had been given. `repo_scratch_dir` keys on the logical
+    repository, so guard and guarded agree from either without depending on `CLAUDE_PROJECT_DIR` or
+    any working-directory convention (absent a `GIT_COMMON_DIR`/`GIT_DIR` override, which neither the
+    hook nor the agent sets), and containment stays `scratch_dir`'s own logic.
 
     None means the root could not be resolved at all, and every caller treats it as deny: a guard
     that cannot say where the sandbox is must not grant a write into it. `SystemExit` is caught

@@ -47,6 +47,8 @@ LEGACY_CONFIG_ENV = {
 # The resolver owns the legacy map; the adapters own their own names; the docs explain the
 # migration. Everything else must go through `sy_config.py get`.
 _SCRATCH_HINT = '`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <identifier>`'
+_SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
+_SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
 
 CONFIG_ENV_ALLOWED = {
     "scripts/sy_config.py",
@@ -234,7 +236,7 @@ def check_config_seam(errors: list[str]) -> None:
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
             continue
         rel = str(p.relative_to(ROOT))
-        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".shipyard/", ".git/")):
+        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/")):
             continue
         text = p.read_text(encoding="utf-8")
         for var in sorted(LEGACY_CONFIG_ENV):
@@ -256,9 +258,11 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
     every `/sy:ship` worktree it was written in, and — for `review_guard.py`'s hunt sandbox — a
     boundary the guard and the agent it guards would resolve two different ways.
 
-    The directory's own presence fails too, not just references to it. `check_config_seam` above no
-    longer excludes it, so a leftover directory would otherwise turn into unrelated seam failures over
-    scratch content, and with the `.gitignore` entry gone it is one `git add -A` from being committed.
+    The directory's own presence fails too, not just references to it: with the `.gitignore` entry
+    gone it is one `git add -A` from being committed. That presence check is the *only* thing that
+    reports a leftover directory — `check_config_seam` still skips its contents, because it scans for
+    legacy env-var names and would otherwise bury this one actionable message under a seam failure per
+    scratch file.
     """
     stale = ROOT / ".scratch"
     if stale.exists():
@@ -268,16 +272,17 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
             errors,
         )
     for p in sorted(ROOT.rglob("*")):
-        if not p.is_file() or (p.suffix not in {".md", ".py", ".sh", ".json"} and p.name != ".gitignore"):
+        if not p.is_file() or (p.suffix not in _SCRATCH_REF_SUFFIXES and p.name != ".gitignore"):
             continue
         rel = str(p.relative_to(ROOT))
         if rel == "scripts/validate.py" or rel.startswith((".shipyard/", ".git/")):
             continue
         text = p.read_text(encoding="utf-8")
-        if ".scratch/" in text:
-            line = text[: text.index(".scratch/")].count("\n") + 1
+        m = _SCRATCH_REF_PATTERN.search(text)
+        if m:
+            line = text[: m.start()].count("\n") + 1
             fail(
-                f"SCRATCH SEAM: {rel}:{line}: names a repo-relative .scratch/; resolve it with "
+                f"SCRATCH SEAM: {rel}:{line}: names a repo-relative .scratch; resolve it with "
                 f"{_SCRATCH_HINT} instead",
                 errors,
             )

@@ -232,6 +232,57 @@ def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree_and_both
         config.repo_scratch_dir(outside)
 
 
+def test_repo_scratch_dir_does_not_collapse_every_submodule_onto_one_directory(fixture_repo):
+    """A submodule's shared git dir is `<superproject>/.git/modules/<name>`, so keyed on its parent's
+    name every submodule on the machine would resolve the single identifier `modules`: one scratch
+    directory shared by unrelated repositories, and a `worktree.root` nested inside `.git`. Keyed on
+    the submodule's own working tree instead, each is as distinct as any other checkout.
+    """
+    root = Path(str(config.get("scratch.dir")))
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    subs = []
+    for name in ("dep-alpha", "dep-beta"):
+        source = fixture_repo.parent / f"source-{name}"
+        source.mkdir()
+        subprocess.run([*git, "-C", str(source), "init", "-q"], check=True)
+        subprocess.run([*git, "-C", str(source), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        subprocess.run([*git, "-C", str(fixture_repo), "submodule", "add", "-q", str(source), name], check=True)
+        subs.append(fixture_repo / name)
+
+    assert [config._in_submodule(s) for s in subs] == [True, True], "the fixture must be real submodules"
+    assert not config._in_submodule(fixture_repo), "the superproject itself is not a submodule"
+
+    for sub in subs:
+        common = config._git_common_dir(sub)
+        assert common is not None and common.parent.name == "modules", (
+            f"the collision this guards is gone from git, not merely handled: {common}"
+        )
+        assert config._logical_repo(sub) == config._git_toplevel(sub), (
+            "a submodule must key on its own working tree, not on the superproject's .git/modules"
+        )
+        assert config.repo_scratch_dir(sub) == root / sub.name
+
+    assert config.repo_scratch_dir(subs[0]) != config.repo_scratch_dir(subs[1]), (
+        "two submodules must not share one scratch directory"
+    )
+    assert root / "modules" not in {config.repo_scratch_dir(s) for s in subs}
+
+    resolved = []
+    for sub in subs:
+        proc = subprocess.run(
+            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+            cwd=sub, capture_output=True, text=True, check=False,
+            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+        )
+        assert proc.returncode == 0, proc.stderr
+        resolved.append(Path(proc.stdout.strip()))
+    assert resolved == [config.repo_scratch_dir(s) for s in subs], (
+        f"the CLI resolver disagrees with the server resolver on submodules: {resolved}"
+    )
+
+
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):
     for agent in ("sweep", "gate", "ship-build", "img-inspector"):
         assert config.agent_binding(agent) == _cli(fixture_repo, "agent", agent, "--json"), agent

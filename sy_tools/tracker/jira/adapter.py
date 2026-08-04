@@ -339,6 +339,17 @@ class JiraAdapter:
         verification read is not belt-and-braces — a reversed dependency reads as plausible and
         misleads every later decomposition, so a link whose direction cannot be confirmed is a
         failure rather than a warning.
+
+        That verification reads the *whole* `blocked_by` list, so it is asked for tolerantly
+        (`strict=False`): the POST above has already landed by the time it runs, and a per-entry drift in
+        some unrelated, pre-existing link on the same issue would otherwise abort a write that succeeded —
+        reporting failure for a real link, and inviting a retry that creates a second one. What this step
+        needs is only whether the entry just written is there, so an entry it cannot parse is one that is
+        not the entry it is looking for. Field-level drift still fails here, because a `blocked_by` field
+        that does not read back as a list of links leaves the direction genuinely unconfirmed, which is
+        exactly what this check exists to refuse. The general read path (`get_issue`) keeps the strict
+        answer: there, an unparseable link is a dependency silently missing from what a caller reads to
+        decide whether an issue is blocked.
         """
         base, auth = _credentials()
         payload = {
@@ -348,10 +359,10 @@ class JiraAdapter:
         }
         await _send_json("POST", f"{base}{API}/issueLink", auth, payload, expect=(200, 201, 204))
         links = (await _read_fields(base, auth, blocked_by, ("issuelinks",))).get("issuelinks")
-        if issue not in _linked(links, BLOCKED_SIDE, "issuelinks"):
+        if issue not in _linked(links, BLOCKED_SIDE, "issuelinks", strict=False):
             raise TrackerError(
                 f"direction not confirmed after creating the link: reading {blocked_by} shows no "
-                f"{BLOCKS} link naming {issue} as the blocked issue. Refusing to report the "
+                f"readable {BLOCKS} link naming {issue} as the blocked issue. Refusing to report the "
                 "dependency; check and fix by hand"
             )
         return {"id": issue, "blocked_by": blocked_by, "verified": True}
@@ -846,7 +857,7 @@ def _author(author: object, issue: str, index: int) -> str:
     return _field(author, "displayName") or ""
 
 
-def _linked(links: object, side: str, field: str) -> list[str]:
+def _linked(links: object, side: str, field: str, *, strict: bool = True) -> list[str]:
     """The `Blocks`-linked issues sitting on one absolute side of a read issue's links.
 
     A read carries only the *counterpart* of each link, and the field it arrives under names that
@@ -884,6 +895,20 @@ def _linked(links: object, side: str, field: str) -> list[str]:
     is blocking it" — that reads identically to a genuinely unblocked issue. The read-back that
     verifies a freshly written dependency goes through here too, so the same drift would have reported
     a link as confirmed that was never seen.
+
+    `strict=False` keeps every one of those *field*-level answers and downgrades only the per-entry
+    raises to a skip, for the one caller that is not reading the list but looking for a single entry in
+    it: `add_dependency`'s post-write verification. There, the write has already landed, the question is
+    only whether the entry just created can be seen, and an entry this cannot parse is by definition not
+    that entry — so raising over an unrelated, pre-existing malformed link failed a write that succeeded
+    and invited a retry that would duplicate it. Every other caller reports the whole list to someone who
+    acts on it and keeps the strict answer, because there a skipped entry is a dependency silently
+    missing.
+
+    `_str_field`, not `_field`, for the counterpart: an addressability decision cannot rest on
+    truthiness, or a `{"key": {...}}` lands the string `"{'a': 1}"` in `dependencies` as if it were an
+    issue key, and an `id` of any truthy shape reads as "addressable, just not by key" and drops a real
+    link. Jira's spec makes both members strings.
     """
     if links is None:
         return []
@@ -895,12 +920,16 @@ def _linked(links: object, side: str, field: str) -> list[str]:
     found = []
     for index, link in enumerate(links):
         if not isinstance(link, dict):
+            if not strict:
+                continue
             raise TrackerError(
                 f"entry {index} of the {field} field is not a link object but {_shape(link)}, so the "
                 "relations on this issue are unknown and it must not be reported as having none"
             )
         type_name = _field(link.get("type"), "name")
         if type_name is None:
+            if not strict:
+                continue
             raise TrackerError(
                 f"entry {index} of the {field} field has an unreadable link type ({_shape(link.get('type'))}), "
                 "so whether it is a Blocks link is unknown and it must not be reported as unrelated"
@@ -910,12 +939,14 @@ def _linked(links: object, side: str, field: str) -> list[str]:
         counterpart = link.get(side)
         if counterpart is None:
             continue  # this direction does not apply to this link, which is not a fault
-        key = _field(counterpart, "key")
+        key = _str_field(counterpart, "key")
         if key:
             found.append(key)
             continue
-        if _field(counterpart, "id"):
+        if _str_field(counterpart, "id"):
             continue  # spec-legal and addressable, just not by the key a caller reads
+        if not strict:
+            continue
         raise TrackerError(
             f"entry {index} of the {field} field has a {side} that names no issue "
             f"({_shape(counterpart)}), so a Blocks link on this issue cannot be read and it must not be "
@@ -965,6 +996,22 @@ def _field(value: object, key: str) -> str | None:
         return None
     member = value.get(key)
     return str(member) if member else None
+
+
+def _str_field(value: object, key: str) -> str | None:
+    """One member of a nested object that must really be a non-empty string, or None.
+
+    `_field`'s coercion is load-bearing where a member is displayed (`str()` on a Jira `id` that arrives
+    as a number is the id), and wrong where the member is *acted on*: `_linked` reads `key` into
+    `dependencies`, which callers use as an issue key, and reads `id` to decide that a counterpart is
+    addressable. Under `_field`, `{"key": {"a": 1}}` put the string `"{'a': 1}"` in `dependencies` and any
+    truthy `id` shape silently dropped a real Blocks link. Jira's REST v3 spec types both as strings, so
+    anything else is drift and reads here as absent — which `_linked` then reports as the drift it is.
+    """
+    if not isinstance(value, dict):
+        return None
+    member = value.get(key)
+    return member if isinstance(member, str) and member else None
 
 
 def _jql(value: str) -> str:

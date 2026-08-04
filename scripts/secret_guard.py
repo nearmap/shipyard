@@ -213,16 +213,62 @@ chase. That is a complete claim about the operator set and it was mistaken for a
 the *walk*, which it never was: an assignment prefix also varies in its left-hand side and in its
 value, and both variations disarmed this walk for as long as the tokenizer was `segment.split()`.
 `FOO[1]=bar echo $VAR` (bash, and zsh where the index is 1-based) has an indexed left-hand side, which
-the pattern now matches; `ARR=(a b) echo $VAR` has an array-literal value, whose tokens
-`_skip_assignment_prefix` consumes through the closing paren. Both were verified live in both shells to
-run the command behind them, and both allowed that command unchecked. What guarantees the walk is
-reached at all is `_tokens`, not this pattern.
+the pattern now matches; `ARR=(a b) echo $VAR` has an array-literal value, which `_lex_source` removes
+from the text before lexing so that the assignment is one token here like any other. Both were verified
+live in both shells to run the command behind them, and both allowed that command unchecked. What
+guarantees the walk is reached at all is `_tokens`, not this pattern.
 
 Note that `env(1)` does not read `+=` as an append: it splits on the first `=`, so `env FOO+=bar` sets
 a variable literally named `FOO+` (verified). The `env` layer consumes the token as an assignment
 either way, which is all this walk needs from it."""
+_ARRAY_ASSIGNMENT_OPENER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\(")
+"""An unquoted `NAME=(` / `NAME+=(` / `NAME[idx]=(` array-literal opener, matched on *raw* text.
+
+Matched before lexing, against the whole word from its start, because after lexing the question cannot be
+answered at all: `shlex` consumes the quote characters that made a `(` literal, so `A="(" echo $VAR` — a
+perfectly ordinary command — arrives as the token `A=(`, indistinguishable from the array literal in
+`ARR=(a b) echo $VAR`. Reading that post-lex token as an array literal started a paren-balance scan that
+swallowed the rest of the command looking for a close paren, so `echo $VAR` was never recognised as the
+command and the leak behind a quoted paren was allowed — verified live in both shells for `A="("`,
+`A='('`, `A="a(b"`, `A=a\\(`, `MSG="feat("`, `FOO+="("` and `A="(("`. An unclosed `(` inside a quoted
+value is not exotic: it is any commit message, URL fragment or path carrying a literal paren.
+
+In real shell syntax an array literal's `(` immediately follows the `=`, with no quote and no space
+between them, so requiring the match to cover the raw word from its first character rules out every
+quoted spelling: a quote anywhere in `NAME=(`'s span makes this pattern fail. `_ASSIGNMENT` then steps
+over the assignment as the ordinary single token it lexes to."""
+_WORD_BREAKS = " \t\n\r;&|()<>"
+"""The unquoted characters after which a new shell word begins, which is what scopes a `#` comment.
+
+POSIX makes `#` a comment introducer only at the *start* of a word; mid-word it is a literal character.
+This set is what "start of a word" is tested against in `_lex_source` — whitespace plus the operators
+that end a word without any whitespace (`ls;#c` really is a comment in both shells, verified, and so is
+`echo x >#c`, which both shells then reject as a syntax error for the missing redirection target)."""
 _SHORT_CLUSTER = re.compile(r"-[A-Za-z0-9]+")
 """A token shaped like a cluster of short options and nothing else — see `_is_short_cluster`."""
+_PRINTING_OPTION_LETTERS = frozenset("pm")
+"""The `export`/`declare`/`typeset` option letters that put the command in a variable-printing mode.
+
+`p` is the documented print option of all three. `m` is zsh's match-by-pattern mode, which prints every
+variable whose name matches an operand and is therefore the same leak under another letter — verified
+live in zsh for `typeset -m NAME`, `declare -m NAME`, `typeset -m 'NAME*'` and `typeset +m`, all of which
+this hook allowed while it tested for `p` alone.
+
+Both letters were established by sweeping every single option letter of all three commands, in `bash -c`
+and `zsh -c`, against a bare name, an assignment and no operand at all, rather than by reading which
+spellings a review happened to name. With an operand, `p` (both shells) and `m` (zsh) are the whole set;
+with no operand the command dumps everything whatever its options are, which is the rule above this one."""
+_PRINTING_OPTION_PAIRS = (frozenset("lu"),)
+"""Option letters that print only in combination, which no per-letter set can express.
+
+`typeset -lu NAME` and `-ul NAME` write `NAME=VALUE` in zsh (verified with a sentinel) while `-l` and
+`-u` alone are silent: zsh reports rather than sets when the two case attributes conflict. Found by
+sweeping all 676 two-letter clusters in both shells for one that prints with no `p` or `m` in it, so this
+tuple is a measured set and not an example — that sweep returned exactly this pair. Kept as a pair rather
+than folded into `_PRINTING_OPTION_LETTERS`, because adding `l` and `u` there would deny the two
+single-letter spellings that were measured silent."""
+_GLOB_CHARS = frozenset("*?[")
+"""The metacharacters that make an operand a pattern rather than a name — see `_declare_reason`."""
 _ADVICE = (
     "this can print a secret value into this command's own tool-call result, which becomes "
     "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
@@ -414,12 +460,10 @@ def _tokens(text: str) -> list[str] | None:
     a quoted assignment value hides *every* wrapper this file recognises, so the fix belongs in the
     tokenizer rather than in `_ASSIGNMENT`.
 
-    `comments=True`, because a `#` comment is text the shell never runs and this file used to read it
-    two ways, both fail-open. `env # note` and `set # note` really do dump the environment (verified in
-    both shells) while their tokens ended in a comment word that made `rest` non-empty, so the
-    dump-family shape tests saw an operand that does not exist. And a comment containing an apostrophe
-    (`python3 -c "…" # it's fine`) made the whole command unlexable, which the interpreter family
-    answered with an allow. Stripping the comment first fixes both at once.
+    Comments and array-literal values are removed from the *raw* text first (`_lex_source`) rather than
+    handled after lexing, because both questions are only answerable while the quote characters are still
+    there. `shlex`'s own `comments=True` is not used for the same reason it is not enough: see
+    `_lex_source`.
 
     One path, with no `str.split()` fast path beside it: `shlex` is ~40x slower per character, which
     mattered only while `_env_reason` re-lexed the remaining text once per `env` layer (~18s at the
@@ -433,32 +477,141 @@ def _tokens(text: str) -> list[str] | None:
     balanced commands.
     """
     try:
-        return shlex.split(text, comments=True)
+        return shlex.split(_lex_source(text))
     except ValueError:
         return None
+
+
+def _lex_source(text: str) -> str:
+    """`text` with the spans a shell turns into no command word at all replaced by one space.
+
+    Two of them, and both have to be decided here — on raw text, with the quoting still visible — rather
+    than on the tokens `shlex` produces, because lexing destroys the very evidence each one needs. This is
+    the same mistake in two places, each of which shipped a live bypass:
+
+    `#` comments. `shlex`'s `comments=True` strips from *any* unquoted `#`, but POSIX makes `#` a comment
+    introducer only where a word begins; mid-word it is an ordinary character. So `X=1#foo echo $VAR`
+    lexed to `['X=1']` — the real command vanished, the walk fell off the end of the tokens, and the leak
+    was allowed (verified live in both shells, as are the `printenv`/`env`/`set`/`python3 -c` shapes of
+    it). The same miscount denied harmless commands from the other side: `env COLOR=#ff0000 ls /tmp` and
+    `env HTTP_PROXY=http://p#1 ls /tmp` lost their assignment's value and read as bare `env`. A comment
+    is stripped to the end of its *line*, not to the end of the text, since a later line of a multi-line
+    command still runs — dropping the rest would hide an interpreter one-liner sitting behind a comment
+    line from `_interpreter_reason`, which is the only matcher that reads the whole command at once.
+
+    Array-literal values. `ARR=(a b) echo $VAR` runs `echo` in both shells (verified) and lexes as
+    `ARR=(a` + `b)`, so the walk read `b)` as the command; consuming through the close paren is correct,
+    because a `(...)` array literal cannot contain the wrapped command — the shell parses it as this
+    assignment's value, whatever words are inside it. Deciding that from the post-lex token instead is
+    what `_ARRAY_ASSIGNMENT_OPENER` documents: the quotes are gone by then, so an ordinary quoted paren
+    (`A="(" echo $VAR`) started a scan that swallowed the whole command and allowed the leak. Removing
+    the value here, from the text, leaves the `NAME=` head to lex as the ordinary assignment token it is,
+    so the token walks never see an array literal at all and need no rule for one.
+
+    Both replacements leave a space behind so that removing a span can never join two words into one.
+    An array-literal opener that is never closed removes nothing at all: its `(` stays in the text as an
+    ordinary character. Neither shell runs such a command — an unclosed `(` is a syntax error in both
+    (verified) — so there is no value there to remove, and swallowing the rest of the text as if there
+    were would hide a following interpreter one-liner from `_interpreter_reason`, the one matcher that
+    reads the whole command at once. Unbalanced *quoting* is likewise left exactly as it arrived, so
+    `_tokens` still reports it as unlexable rather than being quietly repaired here.
+    """
+    spans = _dropped_spans(text)
+    if not spans:
+        return text
+    out: list[str] = []
+    at = 0
+    for start, end in spans:
+        out.append(text[at:start])
+        out.append(" ")
+        at = end
+    out.append(text[at:])
+    return "".join(out)
+
+
+def _dropped_spans(text: str) -> list[tuple[int, int]]:
+    """The half-open spans `_lex_source` removes, in one left-to-right pass over the raw text.
+
+    One pass, with one place that tracks quoting, because the alternative measured as a stall: a lookahead
+    that scanned forward for an array literal's closing `)` re-scanned the remaining text once per opener,
+    and `"A=(" * 6666` — 20000 characters, which the `MAX_COMMAND_CHARS` ceiling admits — took ~17s here.
+    A hook that has not answered by the time anything gives up has allowed the command, so that is the
+    same fail-open the ceiling exists to prevent, reintroduced behind the fix for it. Carrying the paren
+    depth in this pass visits every character once and costs ~0.03s on that input. It also keeps the
+    quote state single-sourced: a scanner starting mid-text has to re-derive whether it began inside a
+    quote or a comment, and two state machines that must agree is how both of the last two tokenizer bugs
+    were built.
+
+    Nesting is counted for `$(...)`/`$((...))` inside a literal, whose own `)` must not close it. A bare
+    nested `(` is unreachable in a runnable command (`A=((x))` and `A=(a (b) c)` are syntax errors in both
+    shells, verified), so counting it costs nothing either way.
+
+    A literal that never closes leaves `depth` non-zero at the end, so no span is recorded and its text
+    survives untouched — what `_lex_source` documents as the right answer for an opener no shell accepts.
+    The comment rule does not run while a literal is open, so there is no half-applied state to undo.
+    """
+    spans: list[tuple[int, int]] = []
+    i = word_start = 0
+    quote = ""
+    depth = 0
+    opener = -1
+    while i < len(text):
+        char = text[i]
+        if quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                i += 1  # a backslash escapes the next character inside double quotes only
+            i += 1
+            continue
+        if char == "\\":  # the next character is literal, so it starts and ends nothing
+            i += 2
+            continue
+        if char in "'\"":
+            quote = char
+            i += 1
+            continue
+        if depth:  # inside an array-literal value, where only its own parens matter
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if not depth:
+                    spans.append((opener, i + 1))
+                    word_start = i + 1
+            i += 1
+            continue
+        if char == "#" and i == word_start:
+            newline = text.find("\n", i)
+            spans.append((i, len(text) if newline < 0 else newline))
+            if newline < 0:
+                break
+            i = newline  # the newline itself is the word break the tail of this loop records
+            continue
+        if (
+            char == "("
+            and i > word_start
+            and text[i - 1] == "="
+            and _ARRAY_ASSIGNMENT_OPENER.fullmatch(text, word_start, i + 1)
+        ):
+            depth, opener = 1, i
+            i += 1
+            continue
+        i += 1
+        if char in _WORD_BREAKS:
+            word_start = i
+    return spans
 
 
 def _skip_assignment_prefix(tokens: list[str], i: int) -> int:
     """The index after the assignment prefix at `i`, or `i` itself when that token is not one.
 
     One helper for both walks, since two copies of this rule is how `+=` came to be handled in one of
-    them only. It consumes an array-literal value's tokens too: `ARR=(a b) echo $VAR` runs `echo` in
-    both shells (verified live) and lexes as `ARR=(a` + `b)`, so stopping after the first token read
-    `b)` as the command and left the leak behind it unchecked. Consuming through the matching close
-    paren is correct rather than a new gap, because a `(...)` array literal cannot itself contain the
-    wrapped command: the shell parses it as this assignment's value, whatever words are inside it.
-
-    The paren balance is net over the tokens, so an ordinary value that merely carries parens
-    (`FOO=$(date)`, `FOO=a)`) never starts a scan: only an unclosed `(` does.
+    them only. It is one token per assignment, unconditionally: an array-literal value is already gone by
+    the time the tokens exist (`_lex_source` removes it from the text), so there is no paren scan here to
+    be fooled by a token whose `(` came out of a quoted value.
     """
-    if not _ASSIGNMENT.fullmatch(tokens[i]):
-        return i
-    depth = tokens[i].count("(") - tokens[i].count(")")
-    i += 1
-    while depth > 0 and i < len(tokens):
-        depth += tokens[i].count("(") - tokens[i].count(")")
-        i += 1
-    return i
+    return i + 1 if _ASSIGNMENT.fullmatch(tokens[i]) else i
 
 
 def _leading_command(segment: str) -> tuple[str, list[str]] | None:
@@ -647,8 +800,10 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
     `export`'s print mode is mostly a *shape* test, not a list of flag spellings: it prints when it is
     given no operand, whatever options precede that. Matching `[]` or `["-p"]` exactly missed `export --`,
     `export -n`, `export -np` and `export -p -p`, each verified to print `declare -x NAME="VALUE"` for
-    every exported variable. An operand is exactly a token that does not start with `-`, since every
-    option `export` takes is boolean.
+    every exported variable. An operand is exactly a token that `_is_option` says is not an option, since
+    every option this family takes is boolean — and `+p` is one of them, which is why that test is not
+    `startswith("-")`: `export +p` dumps the whole environment with values in zsh, verified live, and read
+    as an operand it made this shape test conclude the command had a name to print.
 
     The one spelling that shape test alone still missed is `-p` *with* an operand, because "no operand"
     is not the whole of print mode in every shell: zsh's `export -p ACLI_TOKEN` prints
@@ -670,8 +825,8 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
     if cmd == "set":
         return "bare `set` dumps every shell variable's value" if not rest else None
     if cmd == "export":
-        prints_named = any(t.startswith("-") and t != "--" and "p" in t for t in rest)
-        prints_all = all(t.startswith("-") for t in rest)  # true of `[]`, i.e. bare `export`, too
+        prints_named = any(_is_option(t) and _prints_variables(t) for t in rest)
+        prints_all = all(_is_option(t) for t in rest)  # true of `[]`, i.e. bare `export`, too
         if prints_named or prints_all:
             return "`export -p`, or `export` with no name or assignment, prints an exported variable's value"
     if cmd in {"declare", "typeset"}:
@@ -681,6 +836,36 @@ def _command_reason(cmd: str, rest: list[str], segment: str) -> str | None:
             if _looks_like_secret_name(match.group(1)):
                 return f"`{cmd}` of ${{{match.group(1)}}} prints a secret-shaped variable's value"
     return None
+
+
+def _is_option(tok: str) -> bool:
+    """Whether one `export`/`declare`/`typeset` token is an option rather than a variable operand.
+
+    `+` as well as `-`, because that is the shell's own syntax for turning an attribute *off* (`+x` is the
+    exact mirror of `-x`), and every option in this family is boolean either way. Read as an operand
+    instead, a `+`-prefixed option made the family's "no operand at all means dump everything" rule
+    unreachable: `declare +p`, `typeset +p`, `typeset +m` and `export +p` each dump every variable with its
+    value — verified live, in bash or zsh or both — while this walk believed they had been handed a name.
+    """
+    return tok.startswith(("-", "+"))
+
+
+def _prints_variables(tok: str) -> bool:
+    """Whether one option token of that family puts it in a mode that prints variables.
+
+    A character test over the token's cluster, like `_prints_result`'s, since the letters combine freely
+    with attribute options (`-px`, `-xp`) and with the `+` spelling. `m` sits beside `p` because zsh's `-m`
+    is a printing mode too — it matches variables by pattern and prints each one — and `typeset -m NAME`,
+    `declare -m NAME` and `typeset +m` all leaked live in zsh while only `p` was tested for. The bare `--`
+    is not an option token in this sense: it ends option processing and names no mode.
+
+    `_PRINTING_OPTION_PAIRS` is the same question for letters that print only together (zsh's `-lu`), which
+    a per-letter test cannot answer in either direction without being wrong about one of the spellings.
+    """
+    if tok == "--":
+        return False
+    letters = set(tok[1:])
+    return bool(_PRINTING_OPTION_LETTERS & letters) or any(pair <= letters for pair in _PRINTING_OPTION_PAIRS)
 
 
 def _declare_reason(cmd: str, rest: list[str]) -> str | None:
@@ -696,31 +881,55 @@ def _declare_reason(cmd: str, rest: list[str]) -> str | None:
                             prints `NAME=VALUE`, or `declare -x NAME="VALUE"` under `-x`; zsh prints
                             `NAME=VALUE`) — the same leak as bare `env`/`set`, so it denies whatever the
                             options are, exactly as bare `export` does.
-      `-p` with an operand  `declare -p NAME`, `typeset -p NAME`, `declare -px NAME`, `-xp` — all four
-                            print that variable's value in both shells.
+      `-p`/`-m` + operand   `declare -p NAME`, `typeset -p NAME`, `declare -px NAME`, `-xp` — all four
+                            print that variable's value in both shells. zsh's `-m` reads its operands as
+                            *patterns* and prints every variable matching them (`typeset -m NAME`,
+                            `declare -m NAME`, `typeset -m 'NAME*'`), which is the same print mode under a
+                            letter `p` alone did not cover.
       a bare-name operand   `declare NAME` and `declare -- NAME` print `NAME=VALUE` in zsh, which is the
                             shell Claude Code's Bash tool runs here; bash prints nothing for either.
-      prints nothing        an assignment operand (`declare -a arr=(1 2 3)`, `declare -x NAME=x`), and a
-                            bare name behind any *other* attribute option (`-x`, `-i`, `-r`, `-g`) —
-                            measured silent in both shells, so both stay allowed and are pinned as allow
-                            controls in the self-test.
+      prints nothing        an assignment operand behind no print option (`declare -a arr=(1 2 3)`,
+                            `declare -x NAME=x`), and a bare name behind any *other* attribute option
+                            (`-x`, `-i`, `-r`, `-g`, and the `+x` that removes one) — measured silent in
+                            both shells, so both stay allowed and are pinned as allow controls in the
+                            self-test. An assignment operand *with* a print option is not in this row:
+                            zsh prints for `typeset -p NAME=x` too.
+
+    An option is `_is_option`'s question rather than `startswith("-")`, because `+` toggles an attribute
+    off exactly as `-` toggles it on: `declare +p`, `typeset +p` and `typeset +m` were verified live to
+    dump every variable with its value, and reading `+p` as an *operand* meant the no-operand rule above
+    never fired for any of them.
 
     Unlike `export`, a named print here is tested against `_looks_like_secret_name` rather than denied
     outright, because the two commands print different amounts: bash's `export -p NAME` prints the whole
     exported environment, while `declare -p NAME` prints only `NAME` in both shells. So this is
     `printenv NAME`'s rule, not bare `export`'s, and `declare -p PATH` stays allowed for the same reason
     `printenv PATH` does. Both rules already exist in this file; neither is new judgement.
+
+    A glob operand is the one place that name test does not fit, and it arrives only with `-m`, whose
+    operands are patterns: `typeset -m 'ACLI_*'` prints `ACLI_TOKEN`'s value while the pattern's own words
+    (`ACLI`, and nothing else) are not credential-shaped. A pattern that could match any name is therefore
+    read as naming a secret, which denies `typeset -m 'PA*'` too — a command that prints only `PATH`. That
+    is this file's standing direction to be wrong in, and it costs no literal name: without a glob
+    metacharacter an `-m` operand is just a name and reads as one. Not conditioned on `-m` being present,
+    because a glob operand outside it names no real variable in either shell, so there is no allow to lose.
     """
-    options = [t for t in rest if t.startswith("-")]
-    operands = [t for t in rest if not t.startswith("-")]
+    options = [t for t in rest if _is_option(t)]
+    operands = [t for t in rest if not _is_option(t)]
     if not operands:
         return f"`{cmd}` with no name dumps every variable's value"
-    prints_named = any(t != "--" and "p" in t for t in options)
+    prints_named = any(_prints_variables(t) for t in options)
     unflagged = all(t == "--" for t in options)  # zsh prints a bare name given no attribute option
     if not (prints_named or unflagged):
         return None
-    named = [t for t in operands if "=" not in t]  # an assignment sets, it does not print
-    secret_names = [n for n in named if _looks_like_secret_name(n)]
+    if prints_named:
+        # An assignment operand does not stop a print mode from printing: zsh's `typeset -p NAME=x` writes
+        # `NAME=<old value>` (verified with a sentinel; bash writes nothing for it), so the variable this
+        # assigns to is still named, and reading only the bare operands dropped every `-p NAME=x` spelling.
+        named = [t.split("=", 1)[0] for t in operands]
+    else:
+        named = [t for t in operands if "=" not in t]  # with no print option, an assignment only sets
+    secret_names = [n for n in named if _looks_like_secret_name(n) or _GLOB_CHARS & set(n)]
     if secret_names:
         return f"`{cmd} {' '.join(secret_names)}` prints a secret-shaped variable's value"
     return None
@@ -1377,6 +1586,21 @@ def _self_test() -> None:
         # `declare -p NAME` prints only that name in both shells, unlike bash's `export -p NAME`, so this
         # family reads the name the way `printenv NAME` does.
         "declare -p PATH", "typeset -p HOME", "declare PATH",
+        # `+p` is an option, not an operand, but `+x`/`+i` are the attribute-removing mirror of `-x`/`-i`
+        # and print nothing at all (measured silent in both shells), so counting `+` as an option must not
+        # sweep those in. `-m` reads a literal operand as the name it is, exactly as `-p` does.
+        "declare +x ACLI_TOKEN", "typeset +x ACLI_TOKEN", "declare +i ACLI_TOKEN", "typeset -m PATH",
+        # `-l` and `-u` alone are silent in both shells; only the conflicting pair prints, so the pair test
+        # must not degrade into a per-letter one. `-x NAME=x` is the assignment operand with no print
+        # option, which prints nothing in either shell.
+        "typeset -l ACLI_TOKEN", "typeset -u ACLI_TOKEN", "declare -x ACLI_TOKEN=x",
+        # An unquoted `#` mid-word is a literal character, not a comment: cutting the text there lost this
+        # assignment's value and made both of these read as a bare `env` dumping the environment.
+        "env COLOR=#ff0000 ls /tmp", "env HTTP_PROXY=http://p#1 ls /tmp", "COLOR=#ff0000 ls",
+        "git commit -m 'fix the thing #123'", "ARR=(a '#b') ls",
+        # A quoted or escaped paren in an assignment value is ordinary text — a commit message, a URL
+        # fragment, a path — and reading it as an array-literal opener consumed the rest of the command.
+        'MSG="feat(" git status', "A='(' ls", 'A="a(b" ls', "A=a\\( ls", 'FOO+="(" ls', 'A="((" ls',
     ]
     deny_cases = [
         "env", "env | grep -i acli", "env | grep -i token",
@@ -1571,6 +1795,42 @@ def _self_test() -> None:
         "declare -xp GITHUB_TOKEN", "declare ACLI_TOKEN", "typeset ACLI_TOKEN",
         "declare -- ACLI_TOKEN", "typeset -- ACLI_TOKEN", "sudo declare -p ACLI_TOKEN",
         "FOO+=bar declare -p ACLI_TOKEN",
+        # `+` toggles an attribute off exactly as `-` toggles it on, so a `+`-prefixed token is an option
+        # and never the operand this family's dump rule looks for. Each of these was verified live to dump
+        # every variable with its value (bash for `+p`, zsh for `+m` and `export +p`, both for `declare +p`)
+        # while being allowed, because `+p` read as a name to print.
+        "declare +p", "typeset +p", "typeset +m", "declare +m", "export +p", "declare +p ACLI_TOKEN",
+        # zsh's `-m` is a printing mode under a letter that `"p" in t` did not cover: it matches variables
+        # by pattern and prints each one, verified live for a literal name and for a glob.
+        "typeset -m ACLI_TOKEN", "declare -m ACLI_TOKEN", "typeset -m 'ACLI_*'", "declare -pm 'ACLI_*'",
+        "export -m ACLI_TOKEN", "typeset -m '*'",
+        # Two more spellings of the same family, both found by sweeping every option letter and every
+        # two-letter cluster of all three commands in both shells rather than by adding what a review
+        # named. zsh prints `NAME=<old value>` for a print option with an *assignment* operand, which the
+        # "an assignment sets, it does not print" filter dropped wholesale; and `-lu`/`-ul` print while
+        # neither letter alone does, because zsh reports instead of setting when the two conflict.
+        "declare -p ACLI_TOKEN=x", "typeset -p ACLI_TOKEN=x", "declare +p ACLI_TOKEN=x",
+        "declare -px ACLI_TOKEN=x", "declare -p -- ACLI_TOKEN=x",
+        "typeset -lu ACLI_TOKEN", "typeset -ul ACLI_TOKEN", "declare -lu ACLI_TOKEN",
+        # The mid-word `#`: `shlex`'s `comments=True` cut the text at any unquoted `#`, so the real command
+        # behind an assignment carrying one vanished from the token list, the walk fell off the end and
+        # every one of these was allowed. All verified live in both shells to run and to print the value.
+        "X=1#foo echo $ACLI_TOKEN", "X=a#b printenv ACLI_TOKEN", "X=a#b env", "X=a#b set",
+        '''A=v#c python3 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
+        "env X=a#b echo $ACLI_TOKEN", "sudo X=a#b env",
+        # A comment ends at its line, so a later line still runs — including the interpreter one-liner that
+        # only the whole-command token list can see.
+        '''ls # note\npython3 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
+        # A quoted paren is literal content, not an array-literal opener, and scanning the tokens for a
+        # matching `)` swallowed the whole command instead — so nothing was checked at all. Every shape
+        # verified live in both shells.
+        'A="(" echo $ACLI_TOKEN', "A='(' echo $ACLI_TOKEN", 'A="a(b" echo $ACLI_TOKEN',
+        "A=a\\( echo $ACLI_TOKEN", 'MSG="feat(" echo $ACLI_TOKEN', 'FOO+="(" echo $ACLI_TOKEN',
+        'A="((" echo $ACLI_TOKEN', 'A="(" printenv ACLI_TOKEN', 'A="(" set', 'A="(" env',
+        '''MSG="feat(" python3 -c "import os; print(os.environ['ACLI_TOKEN'])"''',
+        # And the genuine array literal still denies, which is the fix the quoted-paren regression rode in
+        # on: the literal is removed from the *text*, so the walk lands on the command behind it.
+        "ARR+=(a b) echo $ACLI_TOKEN", "ARR=(a 'b )c') echo $ACLI_TOKEN", "ARR=($(date)) env",
         # Quoting this hook cannot lex at all is refused rather than scanned, the same rule a non-string
         # command and unreadable stdin already get: an input this hook cannot read is not one it has
         # cleared. The cost is named rather than discovered — `shlex` does not model heredocs, so a
@@ -1679,13 +1939,33 @@ def _self_test() -> None:
     assert decision("Bash", {"command": "echo 'unbalanced"}) == _UNEVALUABLE, (
         "an unlexable command is refused, not allowed unchecked"
     )
-    # An array-literal value is consumed whole: it is this assignment's value in the shell's own parse, so
-    # no command can hide inside it, and stopping at the first token read `b)` as the command instead.
-    assert _skip_assignment_prefix(["ARR=(a", "b)", "echo", "$X"], 0) == 2
+    # A `#` introduces a comment only where a word begins. `shlex`'s own `comments=True` cut at any
+    # unquoted `#`, which deleted the real command from `X=1#foo echo $X` (allowing the leak) and deleted
+    # an assignment's value from `env COLOR=#ff0000 ls` (denying a harmless command). Both directions are
+    # pinned, on the tokenizer, because the token list is where each of them actually went wrong.
+    assert _tokens("X=1#foo echo $X") == ["X=1#foo", "echo", "$X"], "a mid-word `#` is a literal character"
+    assert _tokens("env COLOR=#ff0000 ls") == ["env", "COLOR=#ff0000", "ls"], "so is one after an `=`"
+    assert _tokens("ls;#note") == ["ls;"], "and an operator ends a word, so a `#` after one does introduce"
+    assert _tokens("ls # note\nprintenv X") == ["ls", "printenv", "X"], "a comment ends at its own line"
+    assert _tokens('python3 -c "# note\nimport os"') == ["python3", "-c", "# note\nimport os"], (
+        "a `#` inside quotes belongs to the code, and dropping the token it starts hid the whole one-liner"
+    )
+    # An array-literal value is removed from the text, because it is this assignment's value in the shell's
+    # own parse and no command can hide inside it. Deciding that from the *token* cannot work: `shlex` has
+    # already eaten the quotes that made `A="("`'s paren literal, and the balance scan that followed
+    # swallowed the rest of the command and allowed every leak behind a quoted paren.
+    assert _tokens("ARR=(a b) echo $X") == ["ARR=", "echo", "$X"], "the literal is the value, not a command"
+    assert _tokens("ARR=(a 'b )c' $(date)) echo $X") == ["ARR=", "echo", "$X"], "quoted, nested parens too"
+    assert _tokens('A="(" echo $X') == ["A=(", "echo", "$X"], "a quoted paren opens no array literal"
+    assert _tokens("A=a\\( echo $X") == ["A=a(", "echo", "$X"], "nor does an escaped one"
+    assert _tokens('"ARR"=(a b) echo $X') == ["ARR=(a", "b)", "echo", "$X"], "nor a quoted name"
+    assert _tokens('ARR=( python3 -c "code"') == ["ARR=(", "python3", "-c", "code"], (
+        "an opener nothing closes removes nothing: swallowing to the end hid the command behind it"
+    )
+    assert _skip_assignment_prefix(["ARR=(a", "b)", "echo", "$X"], 0) == 1, "one token per assignment"
     assert _skip_assignment_prefix(["FOO[1]=bar", "echo"], 0) == 1, "an indexed left-hand side is one too"
-    assert _skip_assignment_prefix(["FOO=$(date)", "echo"], 0) == 1, "balanced parens start no scan"
+    assert _skip_assignment_prefix(["FOO=$(date)", "echo"], 0) == 1, "and parens in a value change nothing"
     assert _skip_assignment_prefix(["echo", "$X"], 0) == 0, "and a command is not an assignment"
-    assert _skip_assignment_prefix(["ARR=(a", "b"], 0) == 2, "an unclosed literal consumes what there is"
     # An attached spelling puts the flag and the code in one token, and a deny reason naming that token
     # would copy arbitrary code — the very thing this hook keeps out of transcript history — into the
     # transcript itself. Every reason names the flag alone.
@@ -1897,6 +2177,17 @@ def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
         assert decision("Bash", {"command": "x" * MAX_COMMAND_CHARS}) is None, (
             "the ceiling is exclusive: a command exactly at it is still evaluated normally"
         )
+        # The tokenizer's own worst shape, timed for the same reason the quoted tail above is: an
+        # array-literal opener that nothing closes. Looking ahead for the matching `)` once per opener
+        # re-scanned the whole remaining text each time, so this input — where every character starts
+        # another opener — took ~17s, the stall reached from inside the fix for the previous stall.
+        # `_dropped_spans` carries the depth in its single pass and costs ~0.03s. The decision itself is an
+        # allow, correctly: no shell runs an unclosed `(`, so there is no command here to deny.
+        openers = ("A=(" * (MAX_COMMAND_CHARS // 3 + 1))[:MAX_COMMAND_CHARS]
+        started = time.perf_counter()
+        decision("Bash", {"command": openers})
+        elapsed = time.perf_counter() - started
+        assert elapsed < 5.0, f"a command of nothing but array-literal openers took {elapsed:.2f}s"
         # Nothing a human writes in one Bash call comes near this, including a long compound one.
         compound = " && ".join(["git status", "pytest -q -k something_fairly_long", "ruff check ."] * 40)
         assert len(compound) < MAX_COMMAND_CHARS // 4, f"a real compound command is small: {len(compound)}"

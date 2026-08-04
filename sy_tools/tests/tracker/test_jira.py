@@ -960,8 +960,9 @@ async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(c
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "counterpart", [{}, {"summary": "Ship the thing"}, "PROJ-5", 5, []],
-    ids=["empty", "no-addressable-field", "string", "number", "list"],
+    "counterpart",
+    [{}, {"summary": "Ship the thing"}, "PROJ-5", 5, [], {"key": {"nested": 1}}, {"id": {"nested": 1}}],
+    ids=["empty", "no-addressable-field", "string", "number", "list", "nested-key", "nested-id"],
 )
 async def test_a_blocks_link_whose_counterpart_names_no_issue_is_not_reported_as_unrelated(
     credentials, monkeypatch, counterpart
@@ -974,6 +975,11 @@ async def test_a_blocks_link_whose_counterpart_names_no_issue_is_not_reported_as
     and with no truncation channel on `get_issue` to signal the drop. Jira's REST v3 spec documents
     `key` on this object as required when `id` is not provided, the same specification the link-type
     check cites, and `_keys` here plus github's `_refs` already raise on the equivalent per-entry drift.
+
+    The nested shapes are the truthiness half of the same answer: `str(member) if member else None` made
+    `{"key": {...}}` read as the issue key `"{'nested': 1}"` and any truthy `id` read as "addressable, so
+    skip", so an addressability decision rested on a value being non-empty rather than on it being the
+    string the spec types it as. `_str_field` is what reads both members now.
     """
     entry = {"type": {"name": "Blocks"}, "outwardIssue": counterpart}
     _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
@@ -1263,6 +1269,43 @@ async def test_add_dependency_fails_when_the_direction_is_not_confirmed(credenti
     _transport(monkeypatch, (201, None), verification)
     with pytest.raises(TrackerError, match="direction not confirmed"):
         await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "unrelated",
+    [
+        {"type": {"name": "Blocks"}, "inwardIssue": {}},
+        {"type": {"name": "Blocks"}, "inwardIssue": {"key": {"nested": 1}}},
+        {"type": {"name": "Relates"}},
+        "not a link object",
+    ],
+    ids=["unaddressable", "nested-key", "unreadable-type", "not-an-object"],
+)
+async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(credentials, monkeypatch, unrelated):
+    """The POST has already landed by the verification read, so drift in another link must not fail it.
+
+    Raising over the whole list reported failure for a link that really was created — with no indication
+    it existed — which invites a retry that creates a second one. The verification only needs the entry it
+    just wrote, so an entry it cannot parse is simply not that entry. `get_issue`'s strict read of the
+    same list is the test below, unchanged: there a skipped entry is a dependency silently missing.
+    """
+    confirming = {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}
+    _transport(monkeypatch, (201, None), {"fields": {"issuelinks": [unrelated, confirming]}})
+
+    result = await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
+
+    assert result == {"id": "PROJ-7", "blocked_by": "PROJ-5", "verified": True}
+
+
+@pytest.mark.anyio
+async def test_get_issue_still_refuses_the_malformed_link_add_dependency_tolerates(credentials, monkeypatch):
+    """The tolerance above is scoped to the write's own verification, not granted to the general read."""
+    unrelated = {"type": {"name": "Blocks"}, "outwardIssue": {"key": {"nested": 1}}}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [unrelated]}}, THREAD)
+
+    with pytest.raises(TrackerError, match="issuelinks"):
+        await adapter.JiraAdapter().get_issue("PROJ-7")
 
 
 @pytest.mark.anyio

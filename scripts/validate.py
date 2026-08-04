@@ -236,9 +236,9 @@ def check_config_seam(errors: list[str]) -> None:
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
             continue
         rel = str(p.relative_to(ROOT))
-        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/")):
+        if rel in CONFIG_ENV_ALLOWED or rel.startswith((".scratch/", ".shipyard/", ".git/", ".pixi/")):
             continue
-        text = p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8", errors="replace")
         for var in sorted(LEGACY_CONFIG_ENV):
             if var in text:
                 line = text[: text.index(var)].count("\n") + 1

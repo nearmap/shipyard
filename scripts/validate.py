@@ -142,7 +142,13 @@ def frontmatter(path: Path, errors: list[str]) -> None:
 
 
 def _frontmatter_field(text: str, field: str) -> str:
-    """Return a frontmatter field's value, joining an indented YAML block list into one string."""
+    """Return a frontmatter field's value, joining an indented YAML block list into one string.
+
+    Malformed frontmatter yields "" rather than raising: `frontmatter()` already records those two
+    delimiter failures as errors, and a raise here would abort main() before it prints the list.
+    """
+    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+        return ""
     block = text.split("---", 2)[1]
     match = re.search(rf"^{field}:(.*)$", block, re.M)
     if not match:

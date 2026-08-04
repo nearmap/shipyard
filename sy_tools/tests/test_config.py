@@ -189,6 +189,45 @@ def test_scratch_dir_refuses_the_same_identifiers_as_the_cli_resolver(fixture_re
             config.scratch_dir(identifier)
 
 
+def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree_and_both_resolvers(fixture_repo):
+    """The divergence this keys around is only reproducible from a linked worktree, so it is tested there.
+
+    Claude Code exports `CLAUDE_PROJECT_DIR` to hook subprocesses but not to a subagent's own Bash
+    tool, so a root keyed on `repo_root().name` resolves the main checkout from the guard's side and
+    the worktree from the guarded agent's, and the hunt sandbox then denies writes the agent believes
+    are permitted. Keyed on the shared git dir, all four combinations below must land on one path.
+    """
+    root = Path(str(config.get("scratch.dir")))
+    expected = root / fixture_repo.name
+    assert config.repo_scratch_dir() == expected
+    assert config.repo_scratch_dir(fixture_repo) == expected
+
+    common = config._git_common_dir(fixture_repo)
+    assert common is not None and common.is_absolute(), (
+        f"the derivation must stay absolute: a bare relative {common} has an empty parent name"
+    )
+
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-C", str(fixture_repo)]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    linked = fixture_repo.parent / "linked-worktree"
+    subprocess.run([*git, "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
+    assert config.repo_scratch_dir(linked) == expected, "a worktree must not get its own scratch directory"
+
+    for cwd, extra in ((fixture_repo, {}), (linked, {}), (linked, {"CLAUDE_PROJECT_DIR": str(fixture_repo)})):
+        proc = subprocess.run(
+            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
+            cwd=cwd, capture_output=True, text=True, check=False,
+            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), **extra},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert Path(proc.stdout.strip()) == expected, f"the CLI resolver disagrees from {cwd}: {proc.stdout!r}"
+
+    outside = fixture_repo.parent / "not-a-checkout"
+    outside.mkdir()
+    with pytest.raises(config.ConfigError, match="not a directory inside a git checkout"):
+        config.repo_scratch_dir(outside)
+
+
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):
     for agent in ("sweep", "gate", "ship-build", "img-inspector"):
         assert config.agent_binding(agent) == _cli(fixture_repo, "agent", agent, "--json"), agent

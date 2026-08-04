@@ -135,6 +135,34 @@ def _git_toplevel(start: Path) -> Path | None:
     return Path(out).resolve() if proc.returncode == 0 and out else None
 
 
+def _git_common_dir(start: Path) -> Path | None:
+    """The absolute shared `.git` directory of the checkout containing `start`, or None if there is none.
+
+    `--path-format=absolute` is not decoration: without it git answers a bare relative `.git` from a
+    main checkout, whose `.parent.name` is the empty string — which `scratch_dir()` then rightly
+    refuses, turning a name derivation into a failure only reproducible outside a worktree.
+
+    A `git` that cannot be run is a named `ConfigError` for the reasons `_git_toplevel` gives, and
+    `stdin` is closed for the same reason: this can run inside the MCP server, whose stdin is the
+    JSON-RPC transport. None means only "git ran and reported no checkout".
+    """
+    if not start.is_dir():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise ConfigError(
+            f"git could not be run to resolve the repository's scratch directory from {start}: {exc}. "
+            "Install git, or put it on PATH."
+        ) from None
+    out = proc.stdout.strip()
+    return Path(out).resolve() if proc.returncode == 0 and out else None
+
+
 def layers(root: Path) -> list[tuple[str, Path]]:
     """The layer chain, lowest precedence first."""
     return [
@@ -250,6 +278,32 @@ def scratch_dir(identifier: str) -> Path:
         raise refusal
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
+
+
+def repo_scratch_dir(start: Path | None = None) -> Path:
+    """This repository's own scratch directory, resolved identically from any worktree of it.
+
+    Keyed on the *logical* repository — the directory holding the shared `.git` — rather than on the
+    resolved checkout, for a reason that is load-bearing rather than tidy. `repo_root()` honours
+    `CLAUDE_PROJECT_DIR` when a session set it and derives from the working directory when nothing
+    did, and Claude Code exports that pointer to hook subprocesses and stdio servers but not to a
+    subagent's own Bash tool. Keyed on `repo_root().name`, a `PreToolUse` guard inside a `/sy:ship`
+    worktree would therefore resolve the main checkout's name while the agent it guards resolved the
+    worktree's, and the guard would deny every write the agent believed was permitted. The common git
+    dir is the same absolute path from either, so both sides agree with no environment dependency.
+
+    `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
+    guarded resolve from one cwd concept; the default is the resolved repository root, which is what
+    a direct in-session caller means. Containment is left to `scratch_dir()`, never restated.
+    """
+    origin = Path(start) if start is not None else repo_root()
+    common = _git_common_dir(origin)
+    if common is None:
+        raise ConfigError(
+            f"{str(origin)!r} is not a directory inside a git checkout, so no repository scratch "
+            "directory can be resolved from it."
+        )
+    return scratch_dir(common.parent.name)
 
 
 def fingerprint() -> str:

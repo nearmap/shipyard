@@ -26,6 +26,7 @@ Commands:
   agent <name> [--json]            floor-clamped dispatch model for one agent
   fingerprint                      stable digest of the resolved config, for cache invalidation
   scratch-dir <identifier>         ephemeral working directory for one identifier, created if absent
+  scratch-dir --repo               this repository's own scratch directory, shared by its worktrees
   migrate --settings <path>        convert a legacy settings.json env block into config JSON
   self-test
 
@@ -117,7 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         print(fingerprint())
         return 0
     if args.command == "scratch-dir":
-        print(scratch_dir(args.identifier))
+        if args.repo == bool(args.identifier):
+            raise SystemExit("sy_config: scratch-dir takes either one identifier or --repo, not both and not neither.")
+        print(repo_scratch_dir() if args.repo else scratch_dir(args.identifier))
         return 0
     if args.command == "migrate":
         return _migrate(Path(args.settings), Path(args.out) if args.out else None)
@@ -184,6 +187,32 @@ def scratch_dir(identifier: str) -> Path:
         raise refusal
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
+
+
+def repo_scratch_dir(start: Path | None = None) -> Path:
+    """This repository's own scratch directory, resolved identically from any worktree of it.
+
+    Keyed on the *logical* repository — the directory holding the shared `.git` — rather than on the
+    resolved checkout, for a reason that is load-bearing rather than tidy. `repo_root()` honours
+    `CLAUDE_PROJECT_DIR` when a session set it and derives from the working directory when nothing
+    did, and Claude Code exports that pointer to hook subprocesses but not to a subagent's own Bash
+    tool. Keyed on `repo_root().name`, a `PreToolUse` guard inside a `/sy:ship` worktree would
+    therefore resolve the main checkout's name while the agent it guards resolved the worktree's, and
+    the guard would deny every write the agent believed was permitted. The common git dir is the same
+    absolute path from either, so both sides agree with no environment dependency on either.
+
+    `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
+    guarded resolve from one cwd concept; the default is the resolved repository root, which is what
+    a direct CLI or in-session caller means. Containment is left to `scratch_dir()`, never restated.
+    """
+    origin = Path(start) if start is not None else repo_root()
+    common = _git_common_dir(origin)
+    if common is None:
+        raise SystemExit(
+            f"sy_config: {str(origin)!r} is not a directory inside a git checkout, so no repository "
+            "scratch directory can be resolved from it."
+        )
+    return scratch_dir(common.parent.name)
 
 
 def resolve() -> tuple[dict, dict[str, str]]:
@@ -448,6 +477,32 @@ def _git_toplevel(start: Path) -> Path | None:
             f"sy_config: git could not be run to resolve the repository root from {start}: {exc}. "
             "Every configuration layer above the shipped defaults lives under <root>/.shipyard/, so "
             "without git there is no root to read them from. Install git, or put it on PATH."
+        ) from None
+    out = proc.stdout.strip()
+    return Path(out).resolve() if proc.returncode == 0 and out else None
+
+
+def _git_common_dir(start: Path) -> Path | None:
+    """The absolute shared `.git` directory of the checkout containing `start`, or None if there is none.
+
+    `--path-format=absolute` is not decoration: without it git answers a bare relative `.git` from a
+    main checkout, whose `.parent.name` is the empty string — which `scratch_dir()` then rightly
+    refuses, turning a name derivation into a crash only reproducible outside a worktree.
+
+    A `git` that cannot be run is refused by name here for the reasons `_git_toplevel` gives; None
+    means only "git ran and reported no checkout", which the callers act on themselves.
+    """
+    if not start.is_dir():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+    except OSError as exc:
+        raise SystemExit(
+            f"sy_config: git could not be run to resolve the repository's scratch directory from {start}: "
+            f"{exc}. Install git, or put it on PATH."
         ) from None
     out = proc.stdout.strip()
     return Path(out).resolve() if proc.returncode == 0 and out else None
@@ -952,7 +1007,11 @@ def _build_parser() -> argparse.ArgumentParser:
     a.add_argument("--json", action="store_true", help="full binding: model, effort, requested values, clamp flags")
     sub.add_parser("fingerprint", help="stable digest of the resolved config")
     d = sub.add_parser("scratch-dir", help="ephemeral working directory for one identifier, created if absent")
-    d.add_argument("identifier", help="relative name the directory is created under, e.g. a ticket key")
+    d.add_argument("identifier", nargs="?", help="relative name the directory is created under, e.g. a ticket key")
+    d.add_argument(
+        "--repo", action="store_true",
+        help="this repository's own scratch directory instead, keyed so every worktree of it agrees",
+    )
     m = sub.add_parser("migrate", help="convert a legacy settings.json env block into config JSON")
     m.add_argument("--settings", required=True, help="path to the settings.json holding the legacy env block")
     m.add_argument("--out", help="write here instead of stdout")
@@ -1012,6 +1071,28 @@ def _self_test() -> None:
                 else:
                     raise AssertionError(f"a scratch identifier of {escape!r} must be refused")
             assert not any(outside.iterdir()), "a symlink inside the scratch root must not be followed out of it"
+
+            checkout = Path(tmp) / "logical-repo"
+            checkout.mkdir()
+            git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-C", str(checkout)]
+            subprocess.run([*git[:1], "init", "-q", str(checkout)], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            linked = Path(tmp) / "logical-repo-worktrees" / "AM-1"
+            subprocess.run([*git, "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
+            scratch_root = Path(str(get("scratch.dir")))
+            assert repo_scratch_dir(checkout) == scratch_root / "logical-repo", (
+                "the repository's scratch directory must be keyed on the logical repo's own name"
+            )
+            assert repo_scratch_dir(linked) == repo_scratch_dir(checkout), (
+                "a worktree and its main checkout must resolve to one scratch directory, or a hook and the "
+                "agent it guards disagree about the sandbox root"
+            )
+            try:
+                repo_scratch_dir()  # the monkeypatched repo_root() is a plain directory, not a checkout
+            except SystemExit as exc:
+                assert "not a directory inside a git checkout" in str(exc)
+            else:
+                raise AssertionError("a repo root that is not a git checkout must be refused, not keyed on ''")
 
             write_layer(home / CONFIG_DIRNAME / CONFIG_FILENAME, {"ci": {"poll_timeout": 60}})
             write_layer(repo / CONFIG_DIRNAME / CONFIG_FILENAME,

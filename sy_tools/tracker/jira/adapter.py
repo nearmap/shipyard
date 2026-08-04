@@ -162,7 +162,7 @@ class JiraAdapter:
             "body": adf.adf_to_markdown(fields.get("description")),
             "children": children,
             "children_truncated": children_truncated,
-            "dependencies": _linked(fields.get("issuelinks"), BLOCKER_SIDE),
+            "dependencies": _linked(fields.get("issuelinks"), BLOCKER_SIDE, "issuelinks"),
             "comments": comments,
             "comments_truncated": truncated,
         }
@@ -182,12 +182,15 @@ class JiraAdapter:
         parent: str | None = None,
         text: str | None = None,
         limit: int = 50,
+        page_token: str | None = None,
     ) -> dict:
         """One page of issues in the configured project matching the given filters, newest API only.
 
         The classic `GET /search` endpoint is gone (410), so this posts JQL to `/search/jql`, which
-        pages by opaque token and reports no total. Only the first page is fetched: a caller that
-        wants more asks again with the returned token rather than having this verb walk the board.
+        pages by opaque token and reports no total. Only one page is fetched: a caller that wants
+        more asks again with the returned token as `page_token` rather than having this verb walk the
+        board. That token was advertised before it could be sent back, which made the cursor this
+        verb reports unusable and the board effectively one page deep.
 
         `is_last` is derived from the absence of `nextPageToken`, not from `isLast`: the current
         spec does document `isLast`, and it was present in every live response, but `nextPageToken`
@@ -199,7 +202,8 @@ class JiraAdapter:
         out of its clause and widen the search.
         """
         return await self._search(
-            _project(), status=status, issue_type=issue_type, parent=parent, text=text, limit=limit
+            _project(), status=status, issue_type=issue_type, parent=parent, text=text, limit=limit,
+            page_token=page_token,
         )
 
     async def _search(
@@ -211,8 +215,13 @@ class JiraAdapter:
         parent: str | None = None,
         text: str | None = None,
         limit: int = 50,
+        page_token: str | None = None,
     ) -> dict:
         """One page of issues matching the given filters: the search both readers share.
+
+        `page_token` is Jira's own `nextPageToken`, sent back only when a caller supplies one: the
+        request for a first page carries no such key at all, because the endpoint reads the field's
+        presence rather than its value and an empty token is not the same request as no token.
 
         `project` is a parameter rather than a read of config, and an optional one, because the two
         callers scope differently. `find-issues` is a verb about the configured board, so it passes
@@ -242,11 +251,13 @@ class JiraAdapter:
                 "to one board or one issue's children — refusing before the request"
             )
         base, auth = _credentials()
-        payload = {
+        payload: dict[str, object] = {
             "jql": " AND ".join(clauses),
             "maxResults": min(limit, RESULT_CEILING),
             "fields": list(SUMMARY_FIELDS),
         }
+        if page_token:
+            payload["nextPageToken"] = page_token
         page = await _send_json("POST", f"{base}{API}/search/jql", auth, payload, expect=(200,))
         entries = page.get("issues") if isinstance(page, dict) else None
         if not isinstance(page, dict) or not isinstance(entries, list):
@@ -337,7 +348,7 @@ class JiraAdapter:
         }
         await _send_json("POST", f"{base}{API}/issueLink", auth, payload, expect=(200, 201, 204))
         links = (await _read_fields(base, auth, blocked_by, ("issuelinks",))).get("issuelinks")
-        if issue not in _linked(links, BLOCKED_SIDE):
+        if issue not in _linked(links, BLOCKED_SIDE, "issuelinks"):
             raise TrackerError(
                 f"direction not confirmed after creating the link: reading {blocked_by} shows no "
                 f"{BLOCKS} link naming {issue} as the blocked issue. Refusing to report the "
@@ -492,7 +503,7 @@ class JiraAdapter:
         `children: []` for a decomposed parent — the same silent emptiness an unrecognised type reached.
         """
         if canonical_type(_field(fields.get("issuetype"), "name")) in LEAF_TYPES:
-            return _keys(fields.get("subtasks")), False
+            return _keys(fields.get("subtasks"), "subtasks"), False
         page = await self._search(parent=issue, limit=RESULT_CEILING)
         return [str(item["id"]) for item in page["issues"]], not page["is_last"]
 
@@ -769,20 +780,29 @@ def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
     without checking. Completeness is read off Jira's own `startAt`/`total` when both are there; when
     `total` is absent the only honest signal left is a page that came back full, which is reported as
     possibly truncated rather than assumed complete.
+
+    An entry that is not an object fails the read rather than being skipped past. Skipping one dropped
+    a comment out of the returned thread while `total` and `startAt` still agreed the page was
+    complete — a comment missing from a read that reports itself whole, which is the same silence the
+    truncation signal exists to prevent, and which the search read a few hundred lines above already
+    refuses for the same drift.
     """
     entries = thread.get("comments") if isinstance(thread, dict) else None
     if not isinstance(entries, list):
         raise TrackerError(f"comment read of {issue} returned no comments list; got {_shape(thread)}")
-    items = [
-        {
+    items: list[dict] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise TrackerError(
+                f"comment {index} of {issue} is not a comment object but {_shape(entry)}, so the thread "
+                "cannot be read whole; it must not come back one comment short of what the page reports"
+            )
+        items.append({
             "id": _field(entry, "id") or "",
             "author": _field(entry.get("author"), "displayName") or "",
             "created": _field(entry, "created") or "",
             "body": adf.adf_to_markdown(entry.get("body")),
-        }
-        for entry in entries
-        if isinstance(entry, dict)
-    ]
+        })
     total = thread.get("total") if isinstance(thread, dict) else None
     start = thread.get("startAt") if isinstance(thread, dict) else None
     if isinstance(total, int) and not isinstance(total, bool):
@@ -791,7 +811,7 @@ def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
     return items, len(entries) >= COMMENT_PAGE
 
 
-def _linked(links: object, side: str) -> list[str]:
+def _linked(links: object, side: str, field: str) -> list[str]:
     """The `Blocks`-linked issues sitting on one absolute side of a read issue's links.
 
     A read carries only the *counterpart* of each link, and the field it arrives under names that
@@ -803,9 +823,21 @@ def _linked(links: object, side: str) -> list[str]:
     dependency: a link posted as "AM-1245 blocks AM-1246" reads back on AM-1246 with AM-1245 under
     `outwardIssue`, and on AM-1245 with AM-1246 under `inwardIssue`. Confirmed against real linked
     issues whose summaries make the intended direction unambiguous.
+
+    An absent field means no links, honestly: Jira omits a relation an issue has none of. A field that
+    is present but not a list is a failure instead, because `dependencies` is what a caller reads to
+    decide whether an issue is blocked, and a shape this cannot parse must not come back as "nothing
+    is blocking it" — that reads identically to a genuinely unblocked issue. The read-back that
+    verifies a freshly written dependency goes through here too, so the same drift would have reported
+    a link as confirmed that was never seen.
     """
-    if not isinstance(links, list):
+    if links is None:
         return []
+    if not isinstance(links, list):
+        raise TrackerError(
+            f"the {field} field read back as {_shape(links)}, not a list of links, so the relations on "
+            "this issue are unknown and it must not be reported as having none"
+        )
     found = []
     for link in links:
         if not isinstance(link, dict) or (_field(link.get("type"), "name") or "").lower() != BLOCKS.lower():
@@ -816,10 +848,20 @@ def _linked(links: object, side: str) -> list[str]:
     return found
 
 
-def _keys(value: object) -> list[str]:
-    """Every issue key in a list-of-issues field, ignoring entries that carry none."""
-    if not isinstance(value, list):
+def _keys(value: object, field: str) -> list[str]:
+    """Every issue key in a list-of-issues field, ignoring entries that carry none.
+
+    Absent is empty, for the same reason as `_linked`: Jira omits a relation field an issue has none
+    of. Present but not a list raises instead, naming `field` — a child list that cannot be parsed
+    reads as a bare, undecomposed issue, which is precisely the answer a caller acts on.
+    """
+    if value is None:
         return []
+    if not isinstance(value, list):
+        raise TrackerError(
+            f"the {field} field read back as {_shape(value)}, not a list of issues, so the related "
+            "issues on this issue are unknown and it must not be reported as having none"
+        )
     return [key for entry in value if (key := _field(entry, "key"))]
 
 

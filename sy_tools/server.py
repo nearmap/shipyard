@@ -147,15 +147,21 @@ async def find_issues(
     ] = None,
     text: Annotated[str | None, Field(description="Words to match against issue title and body.")] = None,
     limit: Annotated[int, Field(description="How many issues at most to bring back in this page.")] = 50,
+    page_token: Annotated[
+        str | None,
+        Field(description="The `next_page_token` a previous page returned; omit it to ask for the first page."),
+    ] = None,
 ) -> dict[str, Any]:
     """Search the configured project for issues matching any combination of filters.
 
     Canonical verb `find-issues`. Every filter is optional and they combine as AND; with none set
     this lists the project's recent issues. One page only: `is_last` says whether more remain, and
-    `next_page_token` is the cursor to ask for them where the tracker supports one.
+    `next_page_token` is the cursor to ask for them where the tracker supports one — send it back as
+    `page_token`, unread and unmodified, to get the page after it. A tracker with no cursor reports
+    `next_page_token: null`, so there is nothing to send back and `page_token` does nothing.
     """
     return await tracker.adapter().find_issues(
-        status=status, issue_type=issue_type, parent=parent, text=text, limit=limit
+        status=status, issue_type=issue_type, parent=parent, text=text, limit=limit, page_token=page_token
     )
 
 

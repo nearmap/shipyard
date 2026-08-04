@@ -49,10 +49,12 @@ WIRING = [
      "create_issue", (), {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"}),
     ("get-issue", {"issue": "PROJ-2"}, "get_issue", ("PROJ-2",), {}),
     ("update-issue", {"issue": "PROJ-3", "body": "replacement"}, "update_issue", ("PROJ-3", "replacement"), {}),
-    ("find-issues", {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5},
-     "find_issues", (), {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5}),
+    ("find-issues",
+     {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"},
+     "find_issues", (),
+     {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"}),
     ("find-issues", {}, "find_issues", (),
-     {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50}),
+     {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50, "page_token": None}),
     ("set-status", {"issue": "PROJ-5", "status": "in-review"}, "set_status", ("PROJ-5", "in-review"), {}),
     ("assign", {"issue": "PROJ-6"}, "assign", ("PROJ-6", "@me"), {}),
     ("link-parent", {"issue": "PROJ-7", "parent": "PROJ-8"}, "link_parent", ("PROJ-7", "PROJ-8"), {}),
@@ -132,7 +134,9 @@ async def test_initialize_list_and_call_roundtrip():
         assert "required" not in schemas["find-issues"] or not schemas["find-issues"]["required"], (
             "every find-issues filter is optional; a required one makes the tool uncallable as a plain list"
         )
-        assert set(schemas["find-issues"]["properties"]) == {"status", "issue_type", "parent", "text", "limit"}
+        assert set(schemas["find-issues"]["properties"]) == {
+            "status", "issue_type", "parent", "text", "limit", "page_token"
+        }, "the cursor a page returns has to be sendable back, or the paging it advertises is unusable"
 
         result = await client.call_tool("validate_config", {})
         assert result.is_error is False

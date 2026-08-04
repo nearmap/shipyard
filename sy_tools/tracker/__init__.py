@@ -101,8 +101,17 @@ class TrackerAdapter(Protocol):
         parent: str | None = None,
         text: str | None = None,
         limit: int = 50,
+        page_token: str | None = None,
     ) -> dict:
-        """One page of issues in the configured project by canonical status, type, parent and/or free text."""
+        """One page of issues in the configured project by canonical status, type, parent and/or free text.
+
+        `page_token` is the opaque cursor a previous page returned as `next_page_token`, sent back to
+        ask for the page after it; `None` asks for the first page. A cursor is only ever meaningful to
+        the adapter that minted it, so a caller passes one back untouched and interprets nothing.
+        An adapter whose transport exposes no cursor accepts `page_token` and ignores it — it reports
+        `next_page_token: None`, so there is never a cursor to hand back to it — which keeps this one
+        signature true of every adapter instead of making the caller ask which kind it has.
+        """
         ...
 
     async def set_status(self, issue: str, status: str) -> dict:
@@ -171,6 +180,17 @@ def column_names() -> dict[str, str]:
 
     An unset column is a configuration error, not a default to guess: guessing would move an issue
     to a column that happens to exist on someone else's board.
+
+    Two canonical statuses resolving to the same column name is refused for the same reason, and
+    refused here so it fires at config-resolution time for every caller rather than in whichever one
+    happens to trip over it. `canonical_status` matches case-insensitively and returns its first hit,
+    so a shared name silently made one of the two statuses unreachable through the canonical
+    vocabulary: an issue in that column read back as the other status, and nothing raised anywhere.
+    Names differing only in case collide too, because that is exactly how the match compares them.
+
+    Only the configured columns are checked. The canonical type names are a fixed literal in this
+    module rather than a per-repo setting, so no configuration can make two of them collide and
+    `canonical_type` is deliberately left alone.
     """
     resolved: dict[str, str] = {}
     missing: list[str] = []
@@ -184,6 +204,17 @@ def column_names() -> dict[str, str]:
         raise TrackerError(
             "missing required column name(s): " + ", ".join(missing)
             + ". Set them in the repo's .shipyard/config.json; see docs/configuration.md."
+        )
+    sharing: dict[str, tuple[str, list[str]]] = {}
+    for canonical, name in resolved.items():
+        sharing.setdefault(name.lower(), (name, []))[1].append(STATUS_CONFIG_KEYS[canonical])
+    collisions = sorted((name, keys) for name, keys in sharing.values() if len(keys) > 1)
+    if collisions:
+        raise TrackerError(
+            "column name(s) shared by more than one canonical status: "
+            + "; ".join(f"{', '.join(sorted(keys))} all name {name!r}" for name, keys in collisions)
+            + ". Each status needs its own column, or an issue in that column reports as only one of "
+            "them and the others become unreachable. Names are compared ignoring case."
         )
     return resolved
 

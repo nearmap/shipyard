@@ -58,6 +58,42 @@ def test_an_unset_column_name_fails_loudly_rather_than_defaulting(monkeypatch):
         tracker.column_names()
 
 
+@pytest.mark.parametrize(
+    "shared",
+    [{"columns.ready": "In Progress"}, {"columns.ready": "in progress"}],
+    ids=["identical", "differing-only-in-case"],
+)
+def test_two_statuses_sharing_one_column_name_is_refused_rather_than_first_match_wins(monkeypatch, shared):
+    """`canonical_status` returns its first hit, so a shared name made one status unreachable silently.
+
+    An issue sitting in that column read back as whichever canonical token happened to be checked
+    first, and the other one could never be reported at all. Case is covered too, because that is how
+    the match itself compares names.
+    """
+    monkeypatch.setattr(
+        tracker.config, "get", lambda key, *, default=None: {**COLUMNS, **shared}.get(key, default)
+    )
+    with pytest.raises(tracker.TrackerError) as failure:
+        tracker.column_names()
+
+    message = str(failure.value)
+    assert "columns.ready" in message and "columns.in_progress" in message, (
+        f"the failure must name both colliding canonical keys: {message}"
+    )
+    assert "In Progress" in message or "in progress" in message, f"and the name they share: {message}"
+
+
+def test_a_collision_fails_every_caller_not_just_the_one_that_reads_the_column(monkeypatch):
+    """Detection sits in `column_names`, so the whole vocabulary refuses to resolve, not one lookup."""
+    monkeypatch.setattr(
+        tracker.config, "get", lambda key, *, default=None: {**COLUMNS, "columns.done": "Created"}.get(key, default)
+    )
+    with pytest.raises(tracker.TrackerError, match=r"columns\.backlog"):
+        tracker.canonical_status("Created")
+    with pytest.raises(tracker.TrackerError, match=r"columns\.backlog"):
+        tracker.native_status("done")
+
+
 def test_every_adapter_implements_the_whole_protocol():
     """Every Protocol attribute is present on both adapters. Signatures are *not* checked here.
 

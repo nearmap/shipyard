@@ -922,6 +922,25 @@ async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(
 
 
 @pytest.mark.anyio
+async def test_find_issues_accepts_a_page_token_and_still_reports_no_cursor(monkeypatch, board):
+    """The canonical signature carries a cursor, and this adapter has none to resume.
+
+    `gh` exposes no cursor, so the parameter is accepted for protocol parity and ignored rather than
+    faked: reporting `next_page_token: None` means there is never a token of this adapter's own to send
+    back, and a caller looping on the two paging keys behaves correctly without asking which tracker
+    it has. What must not happen is a rejected call for passing a parameter every adapter accepts.
+    """
+    fake = _install(monkeypatch, _json([_list_row()]), _json(_items()))
+
+    found = await adapter.GithubAdapter().find_issues(page_token="eyJzdGFydEF0Ijo1MH0")
+
+    assert found["next_page_token"] is None, f"a cursor this adapter cannot resume must not be invented: {found}"
+    assert not any("eyJzdGFydEF0Ijo1MH0" in str(arg) for call in fake.calls for arg in call), (
+        f"an ignored token must not reach gh's argv: {fake.calls}"
+    )
+
+
+@pytest.mark.anyio
 async def test_a_board_issue_outside_any_issue_list_window_is_still_found(monkeypatch, board):
     """Found by review, twice: the candidate set must be bounded by the board, not by a repo read.
 

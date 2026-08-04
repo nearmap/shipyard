@@ -337,7 +337,7 @@ async def test_a_site_carrying_userinfo_is_refused_without_echoing_it(monkeypatc
 ADF_BODY = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
     {"type": "text", "text": "Body line."}]}]}
 
-ISSUE = {
+ISSUE: dict[str, Any] = {
     "id": "10001",
     "key": "PROJ-7",
     "fields": {
@@ -362,7 +362,7 @@ ISSUE = {
 }
 """One issue as `GET /issue/{id}?fields=...` returns it: `PROJ-5` blocks it, it blocks `PROJ-6`."""
 
-THREAD = {
+THREAD: dict[str, Any] = {
     "comments": [{
         "id": "20001", "author": {"displayName": "Ship Bot"},
         "created": "2026-07-30T00:00:00.000+0000", "body": ADF_BODY,
@@ -608,6 +608,28 @@ async def test_get_issue_says_whether_the_comment_page_left_anything_out(
     assert len(full["comments"]) == len(thread["comments"]), "every comment on the page must still be returned"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("malformed", ["a bare string", ["nested"], None], ids=["string", "list", "null"])
+async def test_a_comment_entry_of_the_wrong_shape_fails_rather_than_vanishing(credentials, monkeypatch, malformed):
+    """Skipping the entry returned a short thread that `total` and `startAt` still called complete.
+
+    A comment silently missing from a read is exactly what the truncation signal exists to prevent, and
+    the search read in the same module already refuses this drift.
+    """
+    thread = {"comments": [THREAD["comments"][0], malformed], "startAt": 0, "total": 2}
+    _transport(monkeypatch, ISSUE, thread)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "comment 1 of PROJ-7" in message, f"the failure must say which entry it could not read: {message}"
+    assert "nested" not in message and "a bare string" not in message, (
+        f"a shape failure names shapes, never the payload it could not parse: {message}"
+    )
+    assert FAKE_TOKEN not in message, "and never the credential"
+
+
 EPIC: dict[str, Any] = {
     "id": "10000",
     "key": "PROJ-1",
@@ -774,6 +796,67 @@ async def test_a_read_whose_shape_is_wrong_fails_without_quoting_the_credential(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("issuelinks", {"0": {"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}}),
+        ("issuelinks", "PROJ-5"),
+        ("subtasks", {"0": {"key": "PROJ-8"}}),
+        ("subtasks", "PROJ-8"),
+    ],
+    ids=["links-as-object", "links-as-string", "subtasks-as-object", "subtasks-as-string"],
+)
+async def test_a_relational_field_that_is_not_a_list_fails_instead_of_reading_as_empty(
+    credentials, monkeypatch, field, value
+):
+    """`dependencies: []` is what a caller reads as "not blocked", and `children: []` as "not decomposed".
+
+    Both used to be what a field of the wrong shape produced, indistinguishable from an issue that
+    really has no relations. The message names the field so the drift can be found, and names shapes
+    only — never the payload, never the credential.
+    """
+    drifted = {**ISSUE, "fields": {**ISSUE["fields"], field: value}}
+    _transport(monkeypatch, drifted, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert field in message and "not a list" in message, f"the failure must name the field: {message}"
+    assert "PROJ-5" not in message and "PROJ-8" not in message, f"and not the payload: {message}"
+    assert FAKE_TOKEN not in message, "and never the credential"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", [None, "absent"], ids=["null", "absent"])
+async def test_a_relational_field_jira_omits_still_reads_as_no_relations(credentials, monkeypatch, value):
+    """The distinction the refusal above exists for: absent honestly means none, and must not raise."""
+    fields = {k: v for k, v in ISSUE["fields"].items() if k not in ("issuelinks", "subtasks")}
+    if value is None:
+        fields |= {"issuelinks": None, "subtasks": None}
+    _transport(monkeypatch, {**ISSUE, "fields": fields}, THREAD)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    assert (full["dependencies"], full["children"]) == ([], []), full
+
+
+@pytest.mark.anyio
+async def test_a_dependency_read_back_through_a_drifted_field_is_not_reported_as_verified(
+    credentials, monkeypatch
+):
+    """The read-back that proves a link's direction goes through the same parse, so it fails too.
+
+    Reading the links as empty here reported a dependency as verified that was never seen, which is
+    worse than the unverified link the check exists to catch.
+    """
+    _transport(monkeypatch, (204, None), {"fields": {"issuelinks": {"0": {"key": "PROJ-7"}}}})
+
+    with pytest.raises(TrackerError, match="issuelinks"):
+        await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
+
+
+@pytest.mark.anyio
 async def test_update_issue_writes_a_converted_description(credentials, monkeypatch):
     calls = _transport(monkeypatch, (204, None))
 
@@ -828,6 +911,26 @@ async def test_find_issues_reads_exhaustion_from_the_token_not_from_isLast(crede
     _transport(monkeypatch, {"issues": []})
     exhausted = await adapter.JiraAdapter().find_issues()
     assert exhausted["is_last"] is True and exhausted["next_page_token"] is None, exhausted
+
+
+@pytest.mark.anyio
+async def test_find_issues_sends_a_returned_cursor_back_and_omits_it_on_a_first_page(credentials, monkeypatch):
+    """The token was advertised but could not be sent back, so the cursor this verb reports was unusable.
+
+    A first-page request must carry no `nextPageToken` key at all: the endpoint reads the field's
+    presence, so an empty token is a different request from no token.
+    """
+    calls = _transport(monkeypatch, SEARCH_PAGE)
+    first = await adapter.JiraAdapter().find_issues()
+    assert "nextPageToken" not in _sent(calls[0]), (
+        f"a first page must not claim to resume a cursor: {_sent(calls[0])}"
+    )
+
+    resumed = _transport(monkeypatch, SEARCH_PAGE)
+    await adapter.JiraAdapter().find_issues(page_token=first["next_page_token"])
+    assert _sent(resumed[0])["nextPageToken"] == SEARCH_PAGE["nextPageToken"], (
+        f"the token the previous page returned must go back untouched: {_sent(resumed[0])}"
+    )
 
 
 @pytest.mark.anyio

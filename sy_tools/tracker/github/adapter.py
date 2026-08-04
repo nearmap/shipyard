@@ -136,11 +136,18 @@ class GithubAdapter:
         parent: str | None = None,
         text: str | None = None,
         limit: int = 50,
+        page_token: str | None = None,
     ) -> dict:
         """Search issues, optionally by canonical status, canonical type, parent or free text.
 
         `gh` has no cursor, so `next_page_token` is always None rather than a cursor that cannot be
-        resumed. With no status or type filter, this fetches up to `limit` issues from `gh issue list`
+        resumed. `page_token` is accepted for that reason and then ignored: this verb never hands out a
+        token, so there is never one of its own to resume, and inventing a cursor `gh` cannot honour
+        would page a caller through a set nothing is holding still. Accepting the parameter keeps the
+        canonical signature identical on both adapters, so a caller loops on `is_last` and
+        `next_page_token` without asking which tracker it is talking to.
+
+        With no status or type filter, this fetches up to `limit` issues from `gh issue list`
         and reports `is_last` from what came back. A status or type filter names a board value, so the
         board becomes the candidate set: every matching issue card in the scoped repository is
         enumerated, `limit` bounds the page rather than the fetch, `is_last` says whether a further

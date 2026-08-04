@@ -251,45 +251,30 @@ def check_config_seam(errors: list[str]) -> None:
 
 
 def check_no_repo_scratch_refs(errors: list[str]) -> None:
-    """Nothing may name a repo-relative scratch directory, and none may exist in the checkout.
+    """No file Shipyard ships may name a repo-relative scratch directory.
 
     Scratch lives under the resolved `scratch.dir` now, keyed per identifier. A reintroduced
-    repo-relative path is not cosmetic: it is fragile exactly where it is used most, discarded with
-    every `/sy:ship` worktree it was written in, and — for `review_guard.py`'s hunt sandbox — a
-    boundary the guard and the agent it guards would resolve two different ways.
+    repo-relative path in Shipyard's own agents/scripts/skill docs is not cosmetic: it is fragile
+    exactly where it is used most, discarded with every `/sy:ship` worktree it was written in, and
+    — for `review_guard.py`'s hunt sandbox — a boundary the guard and the agent it guards would
+    resolve two different ways.
 
-    The directory's own presence fails too, not just references to it: with the `.gitignore` entry
-    gone it is one `git add -A` from being committed. This check can only speak for Shipyard's own
-    code, though: it has no way to know whether some other, unrelated tool on this machine writes to
-    a directory that happens to share this name, so the failure names what it can actually verify —
-    Shipyard itself no longer writes here — rather than asserting nothing does. That presence check is
-    the *only* thing that reports a leftover directory, so this returns immediately once it fires
-    rather than also running the content scan below: a leftover directory can hold thousands of files
-    that legitimately name `.scratch/`, and scanning them anyway would both bury the single actionable
-    message under one failure per file and walk the entire leftover tree for no reason (measured:
-    ~170ms on a real ~5,700-file leftover) once the presence check has already failed the run.
+    This check is scoped to Shipyard's own tracked files, never to whether a `.scratch/` directory
+    exists in the checkout — that directory is not Shipyard's to police. Something else on this
+    machine may depend on it for entirely unrelated reasons, so `.gitignore` keeps excluding it (it
+    is not this migration's to remove either) and this check does not scan its contents: whatever is
+    in there belongs to whoever put it there, not to Shipyard.
 
     `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
     installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
     directory nobody authored would raise out of this check and discard every error the whole run had
     already collected.
     """
-    stale = ROOT / ".scratch"
-    if stale.exists():
-        fail(
-            f"{stale} exists. Shipyard itself no longer writes there — everything moved to "
-            f"{_SCRATCH_HINT} — but this check cannot tell whether something else on this machine "
-            "still depends on the directory, so confirm that before deleting it.",
-            errors,
-        )
-        return
     for p in sorted(ROOT.rglob("*")):
-        if not p.is_file() or (p.suffix not in _SCRATCH_REF_SUFFIXES and p.name != ".gitignore"):
+        if not p.is_file() or p.suffix not in _SCRATCH_REF_SUFFIXES:
             continue
         rel = str(p.relative_to(ROOT))
-        # .scratch/ is not excluded here: reaching this loop already means stale.exists() was False
-        # (the branch above returns otherwise), so no path under .scratch/ can ever be yielded.
-        if rel == "scripts/validate.py" or rel.startswith((".shipyard/", ".git/", ".pixi/")):
+        if rel == "scripts/validate.py" or rel.startswith((".scratch/", ".shipyard/", ".git/", ".pixi/")):
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
         m = _SCRATCH_REF_PATTERN.search(text)

@@ -1,3 +1,4 @@
+.scratch/
 __pycache__/
 *.pyc
 # pixi's materialised environment: reproduced from the committed pixi.lock, never committed itself.

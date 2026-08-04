@@ -344,15 +344,16 @@ def test_repo_scratch_dir_keys_a_sparse_checkout_submodule_correctly(fixture_rep
     )
 
 
-def test_repo_scratch_dir_refuses_a_deinited_submodule_rather_than_collapsing_to_modules(fixture_repo):
+def test_repo_scratch_dir_keys_a_deinited_submodule_on_common_rather_than_modules(fixture_repo):
     """`git submodule deinit` clears `core.worktree` from both config files while leaving
     `.git/modules/<name>` itself in place, and any of the submodule's own linked worktrees checked out
     and healthy. Falling back to `common.parent` there would silently key on the fixed string
-    `modules`, colliding with every other deinit'd submodule on the machine -- so this must refuse
-    loudly rather than resolve to a value this ticket has already proven unsafe to share.
+    `modules`, colliding with every other deinit'd submodule on the machine. `common` itself (the
+    absolute git dir path, `.git/modules/<name>`) is used instead: still ends in the submodule's own
+    name, still identical from every worktree of it, and never machine-global.
 
     This exercises the general working-tree-verification mechanism (`_is_resolved_working_tree`), not
-    a `modules`-shaped pattern match: `test_logical_repo_refuses_unresolvable_nested_and_detached_submodules`
+    a `modules`-shaped pattern match: `test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctly`
     below proves the same mechanism also catches shapes where `common.parent` is not literally named
     `modules`, which a name-pattern detector was previously found not to generalize to.
     """
@@ -381,24 +382,25 @@ def test_repo_scratch_dir_refuses_a_deinited_submodule_rather_than_collapsing_to
     assert not config._is_resolved_working_tree(common.parent, common), (
         ".git/modules is not itself a working tree; the fallback must not be trusted here"
     )
-    with pytest.raises(config.ConfigError, match="submodule update --init"):
-        config._logical_repo(linked)
-    with pytest.raises(config.ConfigError, match="submodule update --init"):
-        config.repo_scratch_dir(linked)
+    root = Path(str(config.get("scratch.dir")))
+    assert config._logical_repo(linked) == common
+    assert config.repo_scratch_dir(linked) == root / "dep-deinit"
     proc = subprocess.run(
         [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
         cwd=linked, capture_output=True, text=True, check=False,
         env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
     )
-    assert proc.returncode != 0 and "submodule update --init" in proc.stderr, (
-        f"the CLI resolver must refuse the same way: rc={proc.returncode}, stderr={proc.stderr!r}"
+    assert proc.returncode == 0 and Path(proc.stdout.strip()) == root / "dep-deinit", (
+        f"the CLI resolver must resolve the same way: rc={proc.returncode}, stdout={proc.stdout!r}, "
+        f"stderr={proc.stderr!r}"
     )
 
 
-def test_logical_repo_refuses_unresolvable_nested_and_detached_submodules(fixture_repo):
-    """The refusal above must not be a `modules`-shaped pattern match: it must hold for any layout
+def test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctly(fixture_repo):
+    """The resolution above must not be a `modules`-shaped pattern match: it must hold for any layout
     where `core.worktree` is unresolvable and `common.parent` is not itself a working tree, including
-    shapes where `common.parent`'s name is not literally `modules` at all.
+    shapes where `common.parent`'s name is not literally `modules` at all, and two unrelated such
+    repos must still resolve to two distinct identifiers.
 
     Two such shapes, both structurally guaranteed (no co-naming or co-location needed):
     - a nested submodule (`outer/inner`), whose deinit'd common dir is
@@ -439,8 +441,7 @@ def test_logical_repo_refuses_unresolvable_nested_and_detached_submodules(fixtur
     )
     assert config._configured_worktree(common) is None
     assert not config._is_resolved_working_tree(common.parent, common)
-    with pytest.raises(config.ConfigError, match="submodule update --init"):
-        config._logical_repo(nested_linked)
+    assert config._logical_repo(nested_linked) == common
 
     dep_src = fixture_repo.parent / "source-detached-dep"
     dep_src.mkdir()
@@ -463,8 +464,74 @@ def test_logical_repo_refuses_unresolvable_nested_and_detached_submodules(fixtur
     assert common2 is not None and ".git" not in common2.parts, "must be the detached-gitdir shape"
     assert config._configured_worktree(common2) is None
     assert not config._is_resolved_working_tree(common2.parent, common2)
-    with pytest.raises(config.ConfigError, match="submodule update --init"):
-        config._logical_repo(detached_linked)
+    assert config._logical_repo(detached_linked) == common2
+    assert config._logical_repo(detached_linked) != config._logical_repo(nested_linked), (
+        "two unrelated unresolvable submodules must still resolve to two distinct identifiers"
+    )
+
+
+def test_logical_repo_resolves_a_plain_separate_git_dir_checkout_without_raising(fixture_repo):
+    """`--separate-git-dir` is an ordinary, documented git feature with no submodule involved at all,
+    and previously raised outright here (a real regression: no `sy_config` invocation at all -- not
+    just scratch/worktree resolution -- could succeed from such a checkout, with a misleading
+    "run `git submodule update --init`" message on a repo with no submodules).
+
+    `core.worktree` is never set for a plain `--separate-git-dir` checkout, and the directory holding
+    the detached gitdir is not itself a working tree, so this correctly falls through to the final,
+    always-safe tier: `common` itself (the detached gitdir's own path). That is less readable than the
+    checkout's own directory name, but stable and distinct -- and, most importantly, does not crash.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+
+    detached_gitdir = fixture_repo.parent / "plain-detached.git"
+    detached_work = fixture_repo.parent / "plain-detached-work"
+    subprocess.run(
+        [*git, "init", "-q", f"--separate-git-dir={detached_gitdir}", str(detached_work)], check=True
+    )
+    subprocess.run([*git, "-C", str(detached_work), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    common = config._git_common_dir(detached_work)
+    assert common == detached_gitdir.resolve()
+    assert config._configured_worktree(common) is None, "a plain --separate-git-dir checkout never sets core.worktree"
+    assert config._is_resolved_working_tree(common.parent, common) is False, (
+        "the directory holding the detached gitdir is not itself the checkout"
+    )
+    assert config._logical_repo(detached_work) == common, (
+        "must fall through to the common-dir tier rather than raise for an ordinary, submodule-free checkout"
+    )
+    root = Path(str(config.get("scratch.dir")))
+    assert config.repo_scratch_dir(detached_work) == root / common.name
+
+
+def test_scratch_dir_refuses_a_non_absolute_root(fixture_repo):
+    """`review_guard.py`'s hunt-mode write sandbox is exactly `scratch_dir()`'s containment check, and
+    `scratch.dir` is one of the values a repo-committed `.shipyard/config.json` can set. A relative
+    value resolves against whatever the calling process's cwd happens to be rather than any fixed
+    location -- a committed `{"scratch": {"dir": ".."}}` can silently put the "sandbox" root at an
+    ancestor of the checkout itself, so every file inside the checkout would satisfy the containment
+    check that was supposed to keep hunt out of it. Refused outright rather than resolved.
+    """
+    layer = {**FIXTURE_LAYER, "scratch": {"dir": ".."}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+    with pytest.raises(config.ConfigError, match="not absolute"):
+        config.scratch_dir("anything")
+    with pytest.raises(config.ConfigError, match="not absolute"):
+        config.repo_scratch_dir(fixture_repo)
+
+
+def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo):
+    """Even an absolute `scratch.dir` must not resolve to a directory that equals or contains the
+    checkout it is asked to provide a scratch directory for -- `scratch_dir()`'s own containment check
+    only constrains the *identifier* relative to the root, not the root itself, so a repo-committed
+    `.shipyard/config.json` pointing `scratch.dir` at (or above) its own checkout would otherwise hand
+    `review_guard.py`'s hunt-mode write sandbox the checkout's own source.
+    """
+    layer = {**FIXTURE_LAYER, "scratch": {"dir": str(fixture_repo.parent)}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+    with pytest.raises(config.ConfigError, match="contains this repository's own checkout"):
+        config.repo_scratch_dir(fixture_repo)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

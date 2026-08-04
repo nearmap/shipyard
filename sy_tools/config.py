@@ -324,8 +324,22 @@ def scratch_dir(identifier: str) -> Path:
     cleans up what it was handed would delete every other identifier's data. Resolving also catches
     a `..` hidden mid-path and a symlink already inside the root that `mkdir(parents=True)` would
     otherwise follow straight out of it.
+
+    `scratch.dir` itself must be absolute. A repo-committed `.shipyard/config.json` is one of the
+    layers this resolves, and `review_guard.py`'s hunt-mode write sandbox is exactly `scratch_dir()`'s
+    containment check — a relative value resolves against whatever the *calling process's* cwd
+    happens to be rather than any fixed location, so a committed `{"scratch": {"dir": ".."}}` can
+    silently put the "sandbox" root at an ancestor of the checkout itself, and every file inside the
+    checkout then satisfies the containment check that was supposed to keep hunt out of it.
     """
     root = Path(str(get("scratch.dir")))
+    if not root.is_absolute():
+        raise ConfigError(
+            f"scratch.dir resolved to {str(root)!r}, which is not absolute. A relative scratch.dir "
+            "resolves against whatever directory happens to be the current process's cwd, which can "
+            "put the write sandbox this backs inside the very checkout it must stay outside of. Set "
+            "scratch.dir to an absolute path, or leave it unset to use the shipped default."
+        )
     refusal = ConfigError(
         f"refusing to create a scratch directory for {identifier!r}: an identifier must be a "
         "relative name that stays inside the resolved scratch root."
@@ -364,7 +378,12 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
 
     `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
     guarded resolve from one cwd concept; the default is the resolved repository root, which is what
-    a direct in-session caller means. Containment is left to `scratch_dir()`, never restated.
+    a direct in-session caller means. Containment against the resolved *root* is `scratch_dir`'s own
+    job, never restated here — but the resolved *directory* is additionally checked against this same
+    repository's own logical checkout, because `scratch.dir` itself is one of the values a
+    repo-committed `.shipyard/config.json` can set: `scratch_dir()` already refuses a non-absolute
+    root, but nothing stops an absolute value that happens to equal or contain the checkout being
+    reviewed, which would hand `review_guard.py`'s hunt-mode write sandbox the checkout's own source.
     """
     origin = Path(start) if start is not None else repo_root()
     common = _git_common_dir(origin)
@@ -373,7 +392,17 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
             f"{str(origin)!r} is not a directory inside a git checkout, so no repository scratch "
             "directory can be resolved from it."
         )
-    return scratch_dir(_logical_repo(origin).name)
+    logical = _logical_repo(origin)
+    directory = scratch_dir(logical.name)
+    if directory == logical or directory in logical.parents:
+        raise ConfigError(
+            f"the resolved scratch directory {directory} contains this repository's own checkout "
+            f"({logical}). scratch.dir must not resolve to the checkout itself or an ancestor of it — "
+            "every file inside the checkout would then satisfy the containment check that is supposed "
+            "to keep hunt out of it; check for a misconfigured scratch.dir in a committed or local "
+            ".shipyard/config.json."
+        )
+    return directory
 
 
 def _logical_repo(start: Path) -> Path:
@@ -400,10 +429,17 @@ def _logical_repo(start: Path) -> Path:
     generalize, as repeated fixes to this exact function have shown. `common.parent` is used only when
     it is itself a real working tree whose own shared git directory is `common` — true for an ordinary
     checkout, false for every git-internal storage directory this or a future git layout might produce
-    at that path. When it is false, this refuses by name rather than silently keying on whatever
-    `common.parent`'s name happens to be.
+    at that path (a submodule's own internal storage, a `--separate-git-dir` or bare checkout's
+    detached gitdir folder). Refusing there would make an ordinary `--separate-git-dir` or bare
+    checkout — nothing at all like the transient, self-inflicted deinit state this exists to guard
+    against — unusable outright, so instead this falls back one tier further: `common` itself. `common`
+    is an absolute, resolved path that is by construction identical from every worktree of one repo and
+    distinct from every other repo's, so it is always safe to key on even though it is sometimes less
+    readable than a checkout's own directory name (`.git/modules/<name>` for an otherwise-unresolvable
+    submodule still ends in that submodule's own name, which is what a resolvable one would have given
+    too).
 
-    Falls back rather than refusing when there is no checkout at all, because `repo_root()`'s own cwd
+    Falls back to `start` itself only when there is no checkout at all, because `repo_root()`'s own cwd
     path legitimately resolves a directory that is in no checkout at all, and resolution must still
     produce a value there.
     """
@@ -415,15 +451,7 @@ def _logical_repo(start: Path) -> Path:
         return configured
     if _is_resolved_working_tree(common.parent, common):
         return common.parent
-    raise ConfigError(
-        f"{str(start)!r}'s repository has no resolvable working tree: its shared git directory is "
-        f"{common}, and {common.parent} is not itself a checkout of it. This is most often a "
-        "submodule whose own identity git cannot currently resolve — for example after `git "
-        "submodule deinit` without a later `git submodule update --init`, or a nested or detached "
-        "submodule layout git records no `core.worktree` for. Run `git submodule update --init` for "
-        "the affected submodule and retry; resolving anyway risks two unrelated repositories sharing "
-        "one scratch directory."
-    )
+    return common
 
 
 def fingerprint() -> str:

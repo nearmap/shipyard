@@ -545,21 +545,30 @@ def _configured_worktree(common: Path) -> Path | None:
     """The absolute working tree `git config core.worktree` in `common`'s own config names, or None.
 
     A submodule's shared git dir (`<super>/.git/modules/<name>`) sets `core.worktree` to the relative
-    path back to the submodule's own working tree, in `<common>/config` — and that is true identically
-    from the submodule's main checkout and from every linked worktree created inside it, because
-    `--git-common-dir` already resolves to this same shared directory from either. `--separate-git-dir`
-    checkouts set the same key for the same reason. An ordinary checkout never sets it, so `None` here
-    is the normal case, and callers fall back to `common.parent`.
+    path back to the submodule's own working tree — normally in `<common>/config`, but git relocates it
+    to `<common>/config.worktree` the moment `extensions.worktreeConfig` is turned on, which
+    `git sparse-checkout init` does inside the submodule and never reverts on `sparse-checkout
+    disable`. Both files are read directly by path with `--file` rather than a bare `git config
+    --get`, because a bare query run from a *linked* worktree of the submodule suppresses
+    `core.worktree` entirely (git treats it as belonging only to the main worktree's own per-worktree
+    config) even though both files themselves are the same shared, worktree-independent source either
+    way. `--separate-git-dir` checkouts do not set this key at all: an ordinary checkout, and a plain
+    `--separate-git-dir` one, both fall through to `None` here, and callers fall back to
+    `common.parent` — which can still collide if multiple such checkouts' git-dirs are deliberately
+    colocated under one shared parent directory, the same class of collision as two ordinary
+    same-named repos elsewhere on the machine, and out of scope for the same reason.
     """
-    proc = subprocess.run(
-        ["git", "config", "--file", str(common / "config"), "--get", "core.worktree"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
-    out = proc.stdout.strip()
-    if proc.returncode != 0 or not out:
-        return None
-    resolved = (common / out).resolve()
-    return resolved if resolved.is_dir() else None
+    for filename in ("config.worktree", "config"):
+        proc = subprocess.run(
+            ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+        out = proc.stdout.strip()
+        if proc.returncode == 0 and out:
+            resolved = (common / out).resolve()
+            if resolved.is_dir():
+                return resolved
+    return None
 
 
 def _validate_models(values: dict, provenance: dict[str, str]) -> list[str]:

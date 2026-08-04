@@ -309,6 +309,41 @@ def test_repo_scratch_dir_does_not_collapse_every_submodule_onto_one_directory(f
     )
 
 
+def test_repo_scratch_dir_keys_a_sparse_checkout_submodule_correctly(fixture_repo):
+    """`git sparse-checkout init` inside a submodule migrates `core.worktree` from `<common>/config`
+    to `<common>/config.worktree` (git's per-worktree config extension) and never reverts it on
+    `sparse-checkout disable`. A resolver that only reads `<common>/config` would silently fall back
+    to `common.parent` (`.git/modules`) the moment a consumer repo's submodule ever turns sparse
+    checkout on, even once it is switched back off.
+    """
+    root = Path(str(config.get("scratch.dir")))
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    source = fixture_repo.parent / "source-dep-sparse"
+    source.mkdir()
+    subprocess.run([*git, "-C", str(source), "init", "-q"], check=True)
+    subprocess.run([*git, "-C", str(source), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    subprocess.run([*git, "-C", str(fixture_repo), "submodule", "add", "-q", str(source), "dep-sparse"], check=True)
+    sub = fixture_repo / "dep-sparse"
+
+    subprocess.run([*git, "-C", str(sub), "sparse-checkout", "init", "--cone"], check=True)
+    common = config._git_common_dir(sub)
+    assert common is not None and (common / "config.worktree").is_file(), (
+        "sparse-checkout must have migrated core.worktree into config.worktree for this test to be non-vacuous"
+    )
+    assert config._logical_repo(sub) == config._git_toplevel(sub) == sub
+    assert config.repo_scratch_dir(sub) == root / "dep-sparse"
+
+    subprocess.run([*git, "-C", str(sub), "sparse-checkout", "disable"], check=True)
+    assert config._logical_repo(sub) == sub, (
+        "core.worktree must still resolve from config.worktree after sparse-checkout is disabled again"
+    )
+    assert config.repo_scratch_dir(sub) == root / "dep-sparse", (
+        "disabling sparse-checkout must not regress the identifier back to .git/modules"
+    )
+
+
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):
     for agent in ("sweep", "gate", "ship-build", "img-inspector"):
         assert config.agent_binding(agent) == _cli(fixture_repo, "agent", agent, "--json"), agent

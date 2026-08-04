@@ -232,11 +232,16 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
     currently-inactive worktree of the repo (for example a naturally-plausible `worktree.root` nested
     under the same root as `scratch.dir`) would pass a check scoped to `start` alone while still
     exposing whichever worktree an absolute-path write actually targets. `_all_worktrees` enumerates
-    every worktree from git's own bookkeeping, independent of `start`, so this holds regardless of
-    which one the current invocation happens to be running from. The comparison is by device and
-    inode, not by resolved spelling: `Path.resolve()` normalizes symlinks, `.` and `..`, but not case,
-    and a case-insensitive filesystem (APFS's default) lets a differently-cased spelling of the same
-    ancestor stay string-unequal to a checkout path while being the identical directory on disk.
+    every *linked* worktree from git's own bookkeeping, independent of `start`, plus `start`'s own
+    working tree explicitly (`_git_toplevel(origin)`) — the registry alone is not enough either: a
+    *main* working tree (as opposed to a linked one) has no entry under `<common>/worktrees/` at all,
+    so a `--separate-git-dir` or bare-plus-`worktree-add` main checkout with no resolvable
+    `core.worktree` (`_logical_repo` falls back to `common`, the detached gitdir itself, in that case)
+    would otherwise go unguarded even though `start` is sitting inside it right now. The comparison is
+    by device and inode, not by resolved spelling: `Path.resolve()` normalizes symlinks, `.` and `..`,
+    but not case, and a case-insensitive filesystem (APFS's default) lets a differently-cased spelling
+    of the same ancestor stay string-unequal to a checkout path while being the identical directory on
+    disk.
     """
     origin = Path(start) if start is not None else repo_root()
     common = _git_common_dir(origin)
@@ -247,7 +252,11 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
         )
     logical = _logical_repo(origin)
     directory = scratch_dir(logical.name)
-    for guarded in _all_worktrees(common, logical):
+    guarded_set = _all_worktrees(common, logical)
+    checkout = _git_toplevel(origin)
+    if checkout is not None:
+        guarded_set.append(checkout)
+    for guarded in guarded_set:
         if _same_directory(directory, guarded) or any(
             _same_directory(directory, parent) for parent in guarded.parents
         ):
@@ -262,17 +271,24 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
 
 
 def _all_worktrees(common: Path, logical: Path) -> list[Path]:
-    """Every worktree of this repository — the main checkout plus every linked worktree — read
-    directly from git's own bookkeeping under `<common>/worktrees/`, independent of which one the
-    current invocation happens to be running from.
+    """The main checkout plus every *linked* worktree of this repository, read directly from git's own
+    bookkeeping under `<common>/worktrees/`, independent of which one the current invocation happens
+    to be running from. (`repo_scratch_dir` separately adds `start`'s own working tree, which the
+    registry alone does not cover for a main worktree — see its docstring.)
 
     A `PreToolUse` hook's cwd is the main checkout in the overwhelming majority of `sy:gate`/`sy:hunt`
     runs, never the build/slice/review worktree `/sy:ship` actually dispatched the tool call against —
     so a check scoped to the current invocation's own working tree misses every *other* live worktree
-    of the same repository, exactly where those worktrees live. Each linked worktree's own absolute
-    path is `<common>/worktrees/<id>/gitdir`'s content with the trailing `.git` stripped — that file is
-    git's own record of where the worktree lives, not a guess, so this needs no cwd and no assumption
-    about which worktree exists on disk beyond `common` itself.
+    of the same repository, exactly where those worktrees live.
+
+    Each entry's own absolute path is read from `<common>/worktrees/<id>/gitdir`, not assumed to be
+    `<id>`'s own name: `git worktree add --relative-paths` (or `worktree.useRelativePaths`) writes that
+    file as a path relative to `<common>/worktrees/<id>/` itself, not to `common` or to any process's
+    cwd, so a relative record is resolved against the entry's own directory before use — resolving it
+    against the wrong base, or leaving it relative and comparing it as-is, would silently stat the
+    guard process's own cwd instead of the worktree. A `gitdir` file that is missing, unreadable, or
+    still relative after that resolution means this cannot determine part of the guarded set at all,
+    which fails closed (raises) rather than silently guarding fewer worktrees than exist.
     """
     worktrees = [logical]
     worktrees_dir = common / "worktrees"
@@ -281,11 +297,26 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
     for entry in sorted(worktrees_dir.iterdir()):
         gitdir_file = entry / "gitdir"
         if not gitdir_file.is_file():
-            continue
+            raise SystemExit(
+                f"sy_config: {str(gitdir_file)!r} is missing, so this worktree's own location cannot "
+                "be determined and so cannot be guarded. Run `git worktree prune` if it was removed "
+                "without `git worktree remove`, or `git worktree repair` if it was relocated."
+            )
         try:
             pointed = Path(gitdir_file.read_text(encoding="utf-8").strip())
-        except OSError:
-            continue
+        except OSError as exc:
+            raise SystemExit(
+                f"sy_config: {str(gitdir_file)!r} could not be read ({exc}), so this worktree's own "
+                "location cannot be determined and so cannot be guarded."
+            ) from None
+        if not pointed.is_absolute():
+            pointed = (entry / pointed).resolve()
+        if not pointed.is_absolute():
+            raise SystemExit(
+                f"sy_config: {str(gitdir_file)!r} names {str(pointed)!r}, which did not resolve to an "
+                "absolute path, so this worktree's own location cannot be determined and so cannot be "
+                "guarded."
+            )
         worktrees.append(pointed.parent)
     return worktrees
 

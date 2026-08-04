@@ -521,10 +521,16 @@ def test_scratch_dir_refuses_a_non_absolute_root(fixture_repo):
 
 
 def test_same_directory_identifies_a_symlinked_alias_portably(tmp_path):
-    """`_same_directory`'s whole purpose is to catch aliasing a spelling comparison misses, and the
-    case-variant regression coverage below only exercises that on a case-insensitive filesystem (a
-    no-op on Linux CI). A symlink alias is a portable way to exercise the same device+inode comparison
-    on any filesystem, so this runs unconditionally everywhere.
+    """A basic, portable correctness check for `_same_directory` on any filesystem/OS: it identifies a
+    symlinked alias by device+inode even though the two paths differ as strings.
+
+    This does NOT discriminate `_same_directory` from the plain `a.resolve() == b.resolve()` it
+    replaced -- `Path.resolve()` already normalizes symlinks, so a symlink alone does not exercise the
+    regression that motivated the switch to device+inode comparison. Only a differently-*cased*
+    spelling on a case-insensitive filesystem does that (the case-variant spelling in
+    `test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout` below), and CI runs
+    `ubuntu-latest` only, where that spelling is never appended and the regression has no automated
+    coverage. Recorded here as a known gap rather than silently assumed covered.
     """
     real = tmp_path / "real"
     real.mkdir()
@@ -630,6 +636,96 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_o
             f"the CLI resolver must refuse the same way from {cwd}: rc={proc.returncode}, "
             f"stderr={proc.stderr!r}"
         )
+
+
+def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkout(fixture_repo):
+    """A `--separate-git-dir` (or bare-plus-`worktree-add`) main checkout has no `core.worktree` and
+    no entry under `<common>/worktrees/` at all -- `<common>/worktrees/` only ever holds *linked*
+    worktrees, never the main one. `_logical_repo` falls back to `common` (the detached gitdir itself)
+    for this shape, so a fix that checks only `_all_worktrees` (which starts from `logical`) would
+    compare against the *gitdir's* location, not the actual working tree `start` is sitting in right
+    now -- the gitdir and the working tree share a basename here (both named `sepwork`) precisely so
+    the resolved scratch directory's *name* matches either, and only comparing against
+    `_git_toplevel(start)` catches the real overlap on the working tree's own, different, parent.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+
+    gitdirs_parent = fixture_repo.parent / "gitdirs"
+    checkouts_parent = fixture_repo.parent / "checkouts"
+    gitdirs_parent.mkdir()
+    detached_gitdir = gitdirs_parent / "sepwork"
+    detached_work = checkouts_parent / "sepwork"
+    subprocess.run(
+        [*git, "init", "-q", f"--separate-git-dir={detached_gitdir}", str(detached_work)], check=True
+    )
+    subprocess.run([*git, "-C", str(detached_work), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    common = config._git_common_dir(detached_work)
+    assert common == detached_gitdir.resolve()
+    assert config._configured_worktree(common) is None
+    assert not config._is_resolved_working_tree(common.parent, common), (
+        "the directory holding the detached gitdir must not be mistaken for the checkout"
+    )
+    assert config._logical_repo(detached_work) == common, (
+        "fixture must reproduce the tier-3 (common-dir) fallback for this test to be non-vacuous"
+    )
+
+    layer = {**FIXTURE_LAYER, "scratch": {"dir": str(checkouts_parent)}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+
+    # The resolved scratch directory (checkouts_parent/"sepwork") is NOT an ancestor of `common`
+    # (gitdirs_parent/"sepwork") -- confirming _all_worktrees([logical]) alone would miss this.
+    directory = checkouts_parent / "sepwork"
+    assert not config._same_directory(directory, common) and not any(
+        config._same_directory(directory, p) for p in common.parents
+    )
+    # But it is exactly the actual working tree `start` sits in.
+    assert directory.resolve() == detached_work.resolve()
+
+    with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
+        config.repo_scratch_dir(detached_work)
+
+
+def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
+    """`git worktree add --relative-paths` (or `worktree.useRelativePaths`) writes the linked
+    worktree's `gitdir` record as a path relative to `<common>/worktrees/<id>/` itself, not absolute
+    and not relative to any process's cwd. Comparing that value as-is would silently stat whatever the
+    *guard process's* own cwd happens to be instead of the worktree, missing the overlap entirely.
+
+    The linked worktree is placed *inside* the resolved scratch directory (mirroring the
+    main-checkout-overlap test above) rather than merely beside the main checkout, so only the
+    (potentially broken) linked-worktree registry entry -- not the main checkout or `start`'s own
+    working tree, both already covered separately -- can catch this.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    shared_root = fixture_repo.parent / "relative-shared-root"
+    resolved_scratch_dir = shared_root / fixture_repo.name  # what scratch_dir(logical.name) will be
+    resolved_scratch_dir.mkdir(parents=True)
+    linked = resolved_scratch_dir / "AM-relative"
+    subprocess.run(
+        [*git, "-C", str(fixture_repo), "worktree", "add", "--relative-paths", "-q", str(linked), "-b", "wt"],
+        check=True,
+    )
+    common = config._git_common_dir(fixture_repo)
+    gitdir_files = list((common / "worktrees").glob("*/gitdir"))
+    assert len(gitdir_files) == 1
+    recorded = gitdir_files[0].read_text(encoding="utf-8").strip()
+    assert not Path(recorded).is_absolute(), (
+        "fixture must reproduce a relative gitdir record for this test to be non-vacuous"
+    )
+
+    layer = {**FIXTURE_LAYER, "scratch": {"dir": str(shared_root)}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+
+    # The resolved scratch directory is not an ancestor of the main checkout or of start's own working
+    # tree -- both already covered separately -- so only the linked-worktree registry entry itself
+    # can catch this. It must, because the linked worktree lives inside the resolved scratch directory.
+    with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
+        config.repo_scratch_dir(fixture_repo)
 
 
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):

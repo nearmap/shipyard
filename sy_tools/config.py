@@ -363,14 +363,32 @@ def _logical_repo(start: Path) -> Path:
     worktree of a submodule reports no superproject at all, and so any detection keyed on the checkout
     would miss exactly the worktrees `/sy:ship` itself creates.
 
-    Falls back rather than refusing, because `repo_root()`'s own cwd path legitimately resolves a
-    directory that is in no checkout at all, and resolution must still produce a value there.
+    `git submodule deinit` clears `core.worktree` from both config files while leaving
+    `.git/modules/<name>` itself in place — and any of the submodule's own linked worktrees checked
+    out and healthy — so a submodule can transiently lose the one signal that makes its identifier
+    distinct from every other submodule on the machine. Falling back to `common.parent` there would
+    silently resolve to the fixed string `modules` again, so that one case is refused by name instead
+    of falling back, unlike every other case below.
+
+    Falls back rather than refusing in every other case, because `repo_root()`'s own cwd path
+    legitimately resolves a directory that is in no checkout at all, and resolution must still
+    produce a value there.
     """
     common = _git_common_dir(start)
     if common is None:
         return start
     configured = _configured_worktree(common)
-    return configured if configured is not None else common.parent
+    if configured is not None:
+        return configured
+    if common.parent.name == "modules" and common.parent.parent.name == ".git":
+        raise ConfigError(
+            f"{str(start)!r} is inside a git submodule whose own working tree cannot be resolved (no "
+            f"'core.worktree' in {common}) — most likely `git submodule deinit` ran without a later "
+            "`git submodule update --init` for it. Run `git submodule update --init` for this "
+            "submodule and retry; resolving anyway would key its scratch/worktree identifier on the "
+            "fixed string 'modules', shared by every other submodule on the machine in the same state."
+        )
+    return common.parent
 
 
 def fingerprint() -> str:

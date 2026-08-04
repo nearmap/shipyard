@@ -344,6 +344,41 @@ def test_repo_scratch_dir_keys_a_sparse_checkout_submodule_correctly(fixture_rep
     )
 
 
+def test_repo_scratch_dir_refuses_a_deinited_submodule_rather_than_collapsing_to_modules(fixture_repo):
+    """`git submodule deinit` clears `core.worktree` from both config files while leaving
+    `.git/modules/<name>` itself in place, and any of the submodule's own linked worktrees checked out
+    and healthy. Falling back to `common.parent` there would silently key on the fixed string
+    `modules`, colliding with every other deinit'd submodule on the machine -- so this must refuse
+    loudly rather than resolve to a value this ticket has already proven unsafe to share.
+    """
+    git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
+    subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+
+    source = fixture_repo.parent / "source-dep-deinit"
+    source.mkdir()
+    subprocess.run([*git, "-C", str(source), "init", "-q"], check=True)
+    subprocess.run([*git, "-C", str(source), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    subprocess.run([*git, "-C", str(fixture_repo), "submodule", "add", "-q", str(source), "dep-deinit"], check=True)
+    sub = fixture_repo / "dep-deinit"
+    subprocess.run([*git, "-C", str(sub), "commit", "-q", "--allow-empty", "-m", "sub"], check=True)
+
+    linked = fixture_repo.parent / "linked-deinit-submodule-worktree"
+    subprocess.run([*git, "-C", str(sub), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
+    subprocess.run([*git, "-C", str(fixture_repo), "submodule", "deinit", "-f", "dep-deinit"], check=True)
+
+    assert subprocess.run(["git", "-C", str(linked), "status", "-sb"], capture_output=True, check=True), (
+        "the linked worktree must still be a healthy checkout after its submodule is deinit'd"
+    )
+    common = config._git_common_dir(linked)
+    assert common is not None and config._configured_worktree(common) is None, (
+        "deinit must have cleared core.worktree from both config files for this test to be non-vacuous"
+    )
+    with pytest.raises(config.ConfigError, match="submodule update --init"):
+        config._logical_repo(linked)
+    with pytest.raises(config.ConfigError, match="submodule update --init"):
+        config.repo_scratch_dir(linked)
+
+
 def test_agent_binding_matches_the_cli_resolver(fixture_repo):
     for agent in ("sweep", "gate", "ship-build", "img-inspector"):
         assert config.agent_binding(agent) == _cli(fixture_repo, "agent", agent, "--json"), agent

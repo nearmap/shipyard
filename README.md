@@ -55,7 +55,7 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 ### Spec
 
-`/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and presents a complete plan for your approval: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate, which runs on every plan before sign-off), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. You approve before anything is built; the plan lands on the ticket as the single ACTIVE plan, stamped with the commit it was planned against. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
+`/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and writes a complete plan: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate, which runs on every plan before sign-off), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. Before you see it, a separate `sy:spec-gate` reviewer reads the drafted plan for architecture, simplicity and correctness, and for the two things plans quietly omit: which docs the change makes stale, and which figures or screenshots need a visual check. What you are then asked to approve is a short prose summary — the judgment calls, not the file inventory; the full mechanical plan lands on the ticket as the single ACTIVE plan, stamped with the commit it was planned against, once you have said yes. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
 
 ![Verification obligations](docs/img/verification-obligations.png)
 
@@ -112,7 +112,7 @@ shipyard/
   .claude-plugin/plugin.json      # name: sy, version 1.0.0
   hooks/hooks.json                # review guard + usage accounting (plugin-level)
   scripts/                        # tracker-agnostic: validate.py, session_usage.py, review_guard.py, sy_memory.py, ci_poll.sh
-  agents/                         # sweep seam trace slice hunt gate img-inspector explain-author debate debater ship-{start,build,gate}
+  agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}
   skills/
     plan/ spec/ ship/ spike/ pr/ ci/ standards/ explain/ help/
     tracker/

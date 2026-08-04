@@ -71,6 +71,7 @@
       "ship-gate": { "model": "cheap", "effort": "high" },
       "ship-start": { "model": "cheap", "effort": "high" },
       "slice": { "model": "standard", "effort": "high" },
+      "spec-gate": { "model": "standard", "effort": "high" },
       "sweep": { "model": "cheap", "effort": "high" },
       "trace": { "model": "standard", "effort": "high" }
     }

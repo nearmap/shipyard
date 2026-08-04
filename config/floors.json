@@ -24,6 +24,11 @@
     "min_effort": "high",
     "why": "debate is a judgment task, not a lookup; a weaker model produces agreeable noise instead of an adversary"
   },
+  "spec-gate": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "an early architecture/simplicity/correctness check on a drafted plan is a judgment task like debate, not the final pre-merge backstop; sy:gate still reviews the actual shipped code at frontier tier regardless"
+  },
   "explain-author": {
     "min_model": "cheap",
     "min_effort": "medium",

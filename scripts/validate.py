@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_AGENTS = {
     "sweep", "seam", "trace", "slice", "hunt", "gate", "ship-start", "ship-build", "ship-gate",
-    "img-inspector", "explain-author", "debate", "debater",
+    "img-inspector", "explain-author", "debate", "debater", "spec-gate",
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
@@ -105,6 +105,7 @@ REQUIRED = {
     "skills/shared/references/scope-discipline.md",
     "skills/shared/references/preflight.md",
     "skills/shared/references/debate.md",
+    "skills/shared/references/spec-gate.md",
     "skills/shared/references/model-dispatch.md",
     "skills/shared/references/config-values.md",
     "skills/plan/references/new-objective.md",
@@ -138,6 +139,26 @@ def frontmatter(path: Path, errors: list[str]) -> None:
         fail(f"{path}: missing description", errors)
     if re.search(r"^hooks:\s*$", block, re.M) or re.search(r"^hooks:\s", block, re.M):
         fail(f"{path}: plugin-shipped agents/skills cannot declare hooks; move them to hooks/hooks.json", errors)
+
+
+def _frontmatter_field(text: str, field: str) -> str:
+    """Return a frontmatter field's value, joining an indented YAML block list into one string.
+
+    Malformed frontmatter yields "" rather than raising: `frontmatter()` already records those two
+    delimiter failures as errors, and a raise here would abort main() before it prints the list.
+    """
+    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+        return ""
+    block = text.split("---", 2)[1]
+    match = re.search(rf"^{field}:(.*)$", block, re.M)
+    if not match:
+        return ""
+    value = [match.group(1)]
+    for line in block[match.end():].splitlines()[1:]:
+        if line.strip() and not line.startswith((" ", "\t", "-")):
+            break
+        value.append(line)
+    return " ".join(value)
 
 
 def _component_md(seam_only: bool) -> list[Path]:
@@ -372,6 +393,7 @@ def check_invariants(errors: list[str]) -> None:
     scope = read("skills/shared/references/scope-discipline.md")
     preflight_ref = read("skills/shared/references/preflight.md")
     debate_ref = read("skills/shared/references/debate.md")
+    spec_gate_ref = read("skills/shared/references/spec-gate.md")
     roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
     jira_adapter = read("skills/tracker/jira/ADAPTER.md")
@@ -469,6 +491,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("BUILD must verify load-bearing plan facts before executing (needs-decision/bail-to-spec on mismatch)", errors)
     if "content-QA" not in impl:
         fail("build implementation must include the deterministic content-QA grep for leaked wrapper tokens", errors)
+    if "docs requiring updates" not in impl:
+        fail("build implementation must route the plan's docs requiring updates field into a verification obligation", errors)
     for name, text in (("ship", ship), ("implementation", impl), ("ship-build agent", build_agent)):
         if "needs-trace" not in text:
             fail(f"{name} must carry the needs-trace worker return (parent dispatches sy:trace, BUILD never does)", errors)
@@ -479,6 +503,44 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spec", spec), ("spike", spike)):
         if "unconditionally" not in text.lower():
             fail(f"{name} must run the sy:debate pass unconditionally, not gated on a pre-identified fork", errors)
+
+    # The spec-gate checklist has exactly one copy and its reviewer dispatches nothing; both were
+    # prose invariants until asserted here, and a restated checklist drifts invisibly.
+    spec_gate = read("agents/spec-gate.md")
+    if "spec-gate.md" not in spec:
+        fail("spec must run the pre-sign-off spec-gate pass and cite spec-gate.md", errors)
+    if "spec-gate.md" not in spec_gate:
+        fail("spec-gate agent must cite the shared checklist in spec-gate.md, never restate it", errors)
+    axis_phrase = "the smallest change that delivers the goal"
+    if axis_phrase not in spec_gate_ref:
+        fail(f"spec-gate reference must define the Simplicity axis with {axis_phrase!r}", errors)
+    if axis_phrase in spec_gate:
+        fail("spec-gate agent restates an axis definition; cite spec-gate.md instead of copying it", errors)
+    if axis_phrase in spec:
+        fail("spec restates a spec-gate axis definition; cite spec-gate.md instead of copying it", errors)
+    tools_value = _frontmatter_field(spec_gate, "tools").strip()
+    if not tools_value:
+        fail(
+            "spec-gate must declare an explicit tools: list; an absent tools field inherits every tool "
+            "including Agent/Skill, which is the violation this pin exists to block",
+            errors,
+        )
+    elif re.search(r"\b(?:Agent|Skill)\b", tools_value):
+        fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
+    if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
+        fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)
+    # Section-scoped on purpose: §2 legitimately permits a research-phase body edit, so a whole-file
+    # check passes on §2's prose alone after the guarantee is dropped from the post-approval procedure.
+    # The guarantee is asserted in Step 2 (where the writes happen) rather than across all of §7,
+    # where Step 1's consent sentence would satisfy it on its own.
+    spec_s7 = spec.partition("## 7.")[2].partition("## 8.")[0]
+    if "update-issue" in spec_s7:
+        fail("spec §7 must not reach for update-issue; after approval it posts comments and sets status only", errors)
+    if "never writes the Task body" not in spec_s7.partition("### Step 2")[2]:
+        fail("spec §7's Step 2 procedure must state it never writes the Task body", errors)
+    if "Step 2 — after approval" not in spec:
+        fail("spec must keep the staged reveal: full plan posted only in Step 2, after approval", errors)
+
     if "undispositioned actionable finding" not in gate_ref:
         fail("immutable-gate fix cycle must state the stopping rule (no undispositioned actionable finding)", errors)
     if "drift re-check" not in gate_ref.lower():

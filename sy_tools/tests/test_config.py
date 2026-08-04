@@ -47,7 +47,14 @@ def _agreed_repo_root() -> Path | None:
     Asked of the two together because the failure this guards is a *disagreement*: the CLI runs in the
     same cwd and the same environment as this process, so the only thing that can separate them is
     their own resolution logic. One resolving while the other refuses is a disagreement too, and fails.
+
+    The memoized root is dropped first, because the callers below change `CLAUDE_PROJECT_DIR` and then ask
+    — the CLI side is a fresh process and reads the new pointer, this side would answer from the previous
+    test's root and the comparison would fail on a cache rather than on a disagreement. `reset_cache()`
+    and not `reload()`: `reload()` resolves eagerly, so it would raise `ConfigError` out of this helper
+    before the refusal branch below could assert that both sides refuse the same bogus pointer.
     """
+    config.reset_cache()
     proc = subprocess.run(
         [sys.executable, "-c", "import sy_config; print(sy_config.repo_root())"],
         capture_output=True, text=True, check=False,
@@ -1459,6 +1466,53 @@ def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_
     assert seen and all(kwargs.get("stdin") == subprocess.DEVNULL for kwargs in seen), (
         f"a git call was handed the server's own stdin: {seen}"
     )
+
+
+def test_the_repo_root_resolves_once_per_process_refusal_included(fixture_repo, tmp_path, monkeypatch):
+    """The bound `GIT_TIMEOUT_SECONDS` documents is per resolution, so resolution must happen once.
+
+    This resolver is on the path every tool call takes to a resolved value and it shelled out to `git
+    rev-parse` on each of them. Worse for the failing case, which is what the bound is for: one failed
+    `get()` asks for the root twice — the credential-shape gate resolves first and the value's own
+    `resolve()` asks again — so an unmemoized refusal made the real wait on a wedged git twice the
+    number anyone reading that constant would expect. The refusal is therefore memoized alongside the
+    answer, exactly as `scripts/sy_config.py::repo_root` memoizes its own `SystemExit`.
+
+    Spawn counts are the assertion because a returned value cannot tell a fresh resolution from a cached
+    one, and `reset_cache()` clearing *both* is the other half: a root that outlived the cache it is
+    stored beside would leave `reload()` re-reading the previous repository's layers.
+    """
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def record(cmd, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(config.subprocess, "run", record)
+    config.reset_cache()
+    resolved = config.repo_root()
+    assert config.repo_root() == resolved and len(calls) == 1, f"the root must be resolved once: {calls}"
+
+    bogus = tmp_path.parent / "not-a-checkout"  # exists, so git really runs and reports no checkout
+    bogus.mkdir(exist_ok=True)
+    config.reset_cache()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(bogus))
+    with pytest.raises(config.ConfigError, match="CLAUDE_PROJECT_DIR"):
+        config.repo_root()
+    refused_after = len(calls)
+    with pytest.raises(config.ConfigError, match="CLAUDE_PROJECT_DIR"):
+        config.repo_root()
+    assert len(calls) == refused_after, f"a memoized refusal must not shell out again: {calls}"
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR")
+    config.reset_cache()
+    assert config.repo_root() == resolved, "reset_cache() must clear the refusal, not only the answer"
+    assert len(calls) == refused_after + 1, f"and the call after it must really re-resolve: {calls}"
+
+    calls.clear()
+    config.reload()
+    assert calls, "reload() must clear the root too, or it re-reads the layers of the previous repo"
 
 
 def test_env_present_reports_presence_and_reads_an_empty_variable_as_absent(monkeypatch):

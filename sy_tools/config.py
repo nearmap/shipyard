@@ -61,6 +61,10 @@ class ConfigError(RuntimeError):
     """The configuration could not be resolved, or a caller asked for something it may not have."""
 
 
+_REPO_ROOT: Path | None = None
+_REPO_ROOT_REFUSAL: ConfigError | None = None
+
+
 def plugin_root() -> Path:
     """The plugin checkout: the session's own pointer when set, else this package's parent."""
     root = os.environ.get("CLAUDE_PLUGIN_ROOT")
@@ -87,25 +91,43 @@ def repo_root() -> Path:
     directory that can no longer be read at all — deleted or made inaccessible under a long-lived
     server process — is a fourth named `ConfigError`, so it reaches `validate()` as a reportable fault
     rather than a raw `FileNotFoundError` out of whichever tool call resolved first.
+
+    A refusal is memoized alongside an answer, so root resolution runs git at most once per process, the
+    same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without it this
+    resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, and one
+    failed `get()` asks for the root twice: the credential-shape gate resolves first and the value's own
+    `resolve()` asks again, so the wait a caller actually sat through on a wedged git was twice
+    `GIT_TIMEOUT_SECONDS`, not the one bound that constant documents. The sibling
+    `scripts/sy_config.py::repo_root` memoizes its own `SystemExit` refusal for the same reason.
     """
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project_dir:
-        root = _git_toplevel(Path(project_dir))
-        if root is None:
-            raise ConfigError(
-                f"CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a git checkout, "
-                "so no repository configuration can be resolved from it. Point it at the consuming "
-                "repository, or unset it to resolve from the working directory."
-            )
-        return root
-    try:
-        return _git_toplevel(Path.cwd()) or Path.cwd()
-    except OSError as exc:
-        raise ConfigError(
-            f"the working directory could not be read to derive the repository root: {exc}. Set "
-            "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a directory "
-            "that still exists."
-        ) from None
+    global _REPO_ROOT, _REPO_ROOT_REFUSAL
+    if _REPO_ROOT_REFUSAL is not None:
+        raise _REPO_ROOT_REFUSAL
+    if _REPO_ROOT is None:
+        try:
+            project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+            if project_dir:
+                root = _git_toplevel(Path(project_dir))
+                if root is None:
+                    raise ConfigError(
+                        f"CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a git "
+                        "checkout, so no repository configuration can be resolved from it. Point it at the "
+                        "consuming repository, or unset it to resolve from the working directory."
+                    )
+                _REPO_ROOT = root
+            else:
+                try:
+                    _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+                except OSError as exc:
+                    raise ConfigError(
+                        f"the working directory could not be read to derive the repository root: {exc}. Set "
+                        "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a "
+                        "directory that still exists."
+                    ) from None
+        except ConfigError as refusal:
+            _REPO_ROOT_REFUSAL = refusal
+            raise
+    return _REPO_ROOT
 
 
 def _git_toplevel(start: Path) -> Path | None:
@@ -286,11 +308,25 @@ def resolve() -> tuple[dict, dict[str, str]]:
     return _STATE.values, _STATE.provenance
 
 
+def reset_cache() -> None:
+    """Drop everything memoized, so the next read sees the environment and the files as they are now.
+
+    One function rather than a bare `_STATE = None`, because the repository root is memoized too and a
+    second, un-cleared cache would leave `reload()` re-reading the layers of whichever repo the *first*
+    resolution found: the pointer that names the repo is read once, and clearing only half of it makes a
+    reload after a `CLAUDE_PROJECT_DIR` change silently a no-op. Mirrors `scripts/sy_config.py`'s own
+    `reset_cache()`, which clears the same three.
+    """
+    global _STATE, _REPO_ROOT, _REPO_ROOT_REFUSAL
+    _STATE = None
+    _REPO_ROOT = None
+    _REPO_ROOT_REFUSAL = None
+
+
 def reload() -> dict:
     """Drop the hot state and re-resolve from disk. Returns a summary, never a value."""
-    global _STATE
     before = fingerprint() if _STATE is not None else None
-    _STATE = None
+    reset_cache()
     values, provenance = resolve()
     after = fingerprint()
     return {

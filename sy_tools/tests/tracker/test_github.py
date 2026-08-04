@@ -882,6 +882,55 @@ async def test_a_label_entry_with_no_readable_name_fails_the_read_rather_than_dr
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("field", ["labels", "comments"])
+async def test_a_field_gh_did_not_return_as_a_list_is_never_read_as_an_empty_one(monkeypatch, board, field):
+    """The per-entry refusals above are reached through `_as_list`, which never raises.
+
+    So the entries were checked and the field holding them was not: `labels: "shipyard"` and
+    `comments: "a note"` both became `[]`, an issue reporting no labels and no comments at all —
+    indistinguishable from one that genuinely has neither, which is the same silence the per-entry
+    refusals exist to prevent, one level out. Jira's `_summary` has always refused its whole `labels`
+    field; this is the half of that parity github was missing.
+
+    The nesting `gh` really uses is checked in the same test, because the field-level check sits ahead of
+    the one parser that unwraps it: refusing everything but a bare list would have broken the `{field:
+    [...]}` wrapper `_as_list` exists for, and that regression is silent in the other direction.
+    """
+    drifted = {**_issue_view(), field: "shipyard"}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match=f"{field} field read back as str"):
+        await adapter.GithubAdapter().get_issue("7")
+
+    nested = {**_issue_view(), field: {field: _issue_view()[field]}}
+    _install(monkeypatch, _json(nested), _json(_items()))
+    issue = await adapter.GithubAdapter().get_issue("7")
+    assert len(issue[field]) == len(_issue_view()[field]), (
+        f"gh's own {{{field!r}: [...]}} nesting is what _as_list exists to unwrap and must stay readable"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", ["a note", 7, None], ids=["bare-string", "number", "null"])
+async def test_a_malformed_comment_entry_fails_the_read_rather_than_leaving_the_thread_short(
+    monkeypatch, board, entry
+):
+    """Parity with jira's `_comments`, which refuses this same drift on its own thread.
+
+    Dropping the entry returned a thread one comment short of what `gh` sent while the read still
+    reported itself whole — and on this tracker those comments are also the only index of which gist
+    holds which artifact, so the dropped one read as an artifact that was never attached.
+    """
+    drifted = {**_issue_view(), "comments": [*_issue_view()["comments"], entry]}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match="comments field") as failure:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert "entry 1" in str(failure.value), failure.value
+
+
+@pytest.mark.anyio
 async def test_a_relation_gh_paged_reports_itself_clipped_rather_than_short(monkeypatch, board):
     """`gh` caps these relations at one page — 50 blocked-by — and reports `totalCount` beside the nodes.
 

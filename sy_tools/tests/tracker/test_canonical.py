@@ -150,6 +150,47 @@ def test_every_adapter_implements_the_whole_protocol():
         assert isinstance(adapter, tracker.TrackerAdapter), f"{type(adapter).__name__} is missing a canonical verb"
 
 
+@pytest.mark.parametrize(
+    "drift",
+    ["field", "entry"],
+    ids=["whole-field-of-the-wrong-shape", "one-malformed-entry"],
+)
+@pytest.mark.parametrize("field", ["labels", "comments"])
+def test_neither_adapter_shortens_a_labels_or_comments_field_it_cannot_read(field, drift):
+    """`labels` and `comments` are read from both trackers, so one adapter's refusal is both adapters'.
+
+    The two answer a single protocol, and the caller cannot see which tracker replied: `labels` is what
+    decides whether an issue is already decomposed or already shipped, and `comments` is a thread a read
+    reports as whole. A shape one side refuses and the other quietly drops is worse than either
+    behaviour alone, because the same drift then produces a loud failure or a short list depending only
+    on which tracker the repo happens to use. Both the whole field and one entry inside it are covered,
+    since each was fixed on one adapter first and left on the other.
+
+    The field readers are called directly rather than through the verbs: both transports are faked
+    per-adapter in `test_github.py` and `test_jira.py`, where the end-to-end cases live, and duplicating
+    either fake here would test the fake. What has to be asserted in one place is that the refusal is
+    common to both.
+    """
+    from sy_tools.tracker.github import adapter as github
+    from sy_tools.tracker.jira import adapter as jira
+
+    base = "https://example.atlassian.net"
+    gh_value: object = "not-a-list" if drift == "field" else [{"name": "shipyard"}, 7]
+    jira_value: object = "not-a-list" if drift == "field" else ["shipyard", 7]
+    readers = {
+        ("labels", "github"): lambda: github._labels({"labels": gh_value}),
+        ("labels", "jira"): lambda: jira._summary(base, "AM-1", {"labels": jira_value}),
+        ("comments", "github"): lambda: github._comments({"comments": gh_value}),
+        ("comments", "jira"): lambda: jira._comments("AM-1", {"comments": jira_value}),
+    }
+    for name in ("github", "jira"):
+        with pytest.raises(tracker.TrackerError) as failure:
+            readers[(field, name)]()
+        assert field.removesuffix("s") in str(failure.value), (
+            f"{name}'s refusal must name what it could not read: {failure.value}"
+        )
+
+
 def test_an_unknown_canonical_token_is_refused(columns):
     with pytest.raises(tracker.TrackerError, match="unknown canonical status"):
         tracker.native_status("blocked")

@@ -1103,17 +1103,43 @@ def _summary(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _comments(data: dict[str, Any]) -> list[dict[str, str]]:
-    """`gh`'s comment list, reduced to the four fields the canonical shape carries."""
-    return [
-        {
+    """`gh`'s comment list, reduced to the four fields the canonical shape carries.
+
+    An entry that is not a comment object fails the read rather than being skipped past, the refusal
+    jira's `_comments` already makes: skipping one dropped a comment out of the returned thread while the
+    read still reported itself whole, so a caller reading the thread — or `_artifact_gists`, which reads
+    these same comments as the only index of which gist holds which artifact — was one comment short of
+    what `gh` returned with nothing saying so.
+
+    A `comments` field that is present but not a list is that same failure one level out, and `_as_list`
+    never raises, so it used to come back as `[]`: an issue reporting no comments, indistinguishable from
+    one that really has none, and an artifact lookup reporting no artifacts while the gists sit where
+    nothing can find them again. The check lives here rather than in `_as_list`, whose tolerance the
+    optional relations it also parses depend on. A dict is still accepted — `{"comments": [...]}` is the
+    nesting `_as_list` exists to unwrap — and an absent field is honestly no comments.
+    """
+    field = data.get("comments")
+    if field is not None and not isinstance(field, (list, dict)):
+        raise TrackerError(
+            f"the comments field read back as {type(field).__name__}, not a list of comments, so this "
+            "issue's thread is unknown and it must not be reported as having none. Check the installed gh "
+            "version against the fields this adapter requests."
+        )
+    thread: list[dict[str, str]] = []
+    for index, comment in enumerate(_as_list(field, "comments")):
+        if not isinstance(comment, dict):
+            raise TrackerError(
+                f"entry {index} of the comments field read back as {type(comment).__name__}, not a comment "
+                "object, so this thread cannot be read whole; it must not come back one comment short of "
+                "what gh returned. Check the installed gh version against the fields this adapter requests."
+            )
+        thread.append({
             "id": str(comment.get("id") or ""),
             "author": str((comment.get("author") or {}).get("login") or ""),
             "created": str(comment.get("createdAt") or ""),
             "body": str(comment.get("body") or ""),
-        }
-        for comment in _as_list(data.get("comments"), "comments")
-        if isinstance(comment, dict)
-    ]
+        })
+    return thread
 
 
 def _labels(data: dict[str, Any]) -> list[str]:
@@ -1124,8 +1150,24 @@ def _labels(data: dict[str, Any]) -> list[str]:
     so a shape drift one of them refuses cannot be the other's silent shortening. A filtered list reads
     as the issue's real labels, and `labels` is what a caller reads to decide whether an issue is
     already decomposed or already shipped.
+
+    The whole field is checked first, because jira refuses a `labels` that is not a list of strings and
+    this side only refused the entries inside one: `_as_list` never raises, so a `labels` of `"shipyard"`
+    or of `3` came back as `[]` — an issue reporting no labels at all, which reads exactly like one that
+    genuinely has none and is the same silence the per-entry refusal exists to prevent, one level out.
+    That check belongs here rather than in `_as_list`, whose tolerance is load-bearing for the optional
+    relations it also parses: the strictness is this field's protocol obligation, not the parser's. A
+    dict is still accepted, because `{"labels": [...]}` is the `gh` nesting `_as_list` exists to unwrap,
+    and an absent field is honestly no labels.
     """
-    labels = _as_list(data.get("labels"), "labels")
+    field = data.get("labels")
+    if field is not None and not isinstance(field, (list, dict)):
+        raise TrackerError(
+            f"the labels field read back as {type(field).__name__}, not a list of labels, so the labels on "
+            "this issue are unknown and it must not be reported as having none. Check the installed gh "
+            "version against the fields this adapter requests."
+        )
+    labels = _as_list(field, "labels")
     names: list[str] = []
     for index, label in enumerate(labels):
         name = label.get("name") if isinstance(label, dict) else None

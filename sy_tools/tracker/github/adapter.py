@@ -1,35 +1,21 @@
 """GitHub tracker adapter, spoken to only through `sy_tools.tracker.adapter()`.
 
-This is the implementation of every canonical verb of `skills/tracker/CONTRACT.md` for this tracker,
-and the `gh` transport it speaks them over. Two properties come from where it runs rather than from
-`gh`: it never writes to stdout (that stream carries JSON-RPC frames, so one stray line
-desynchronises the client), and a failure raises `TrackerError` instead of exiting, because this
-process has other calls to serve after a bad one.
+Every canonical verb of `skills/tracker/CONTRACT.md`, over the `gh` transport. Two properties come
+from where this runs rather than from `gh`: nothing here writes to stdout, which carries the JSON-RPC
+frames one stray line would desynchronise, and a failure raises `TrackerError` rather than exiting,
+because this process has other calls to serve after a bad one.
 
-Issue `Type` and `Status` are Projects v2 single-select fields, which `gh issue` cannot touch at all,
-so the board is resolved here: resolve, look the option up case-insensitively, and on a miss
-re-resolve once before failing, so a column added minutes ago works without a restart. The resolved
-board is cached in a per-instance dict, and the `item-edit` response is deliberately not parsed —
-a human-readable success line must not turn a completed write into a failure.
-
-The attachment verbs are the deliberate asymmetry `skills/tracker/github/ADAPTER.md` documents: this
-tracker has no scriptable file attachment, so an artifact becomes a secret gist that a comment on the
-work item links to, and the lifecycle verbs act on that gist through the link the comment carries.
-Privacy is verified by reading the created gist back, not assumed from the flags passed: a public
-gist would publish a transcript irrevocably.
+`Type` and `Status` are Projects v2 single-select fields that `gh issue` cannot touch at all, so both
+are read and written through the board, resolved once per adapter. The attachment verbs are the
+asymmetry `skills/tracker/github/ADAPTER.md` documents: this tracker has no scriptable file
+attachment, so an artifact becomes a secret gist that a comment on the work item links to, and the
+lifecycle verbs act on that gist through the link that comment carries.
 
 Credentials are `gh`'s own business. Nothing here reads, passes, or echoes a token, and every message
-built from command output or from a configured value goes through `_safe`, which both scrubs the
-credentials this process holds and drops the userinfo a configured remote URL can carry — a credential
-this process does not hold and so cannot recognise by value. Both halves live in that one function
-rather than at each site, because the site-by-site version leaked twice: first from the argv every
-verb renders, then from the stderr `gh` echoes a credentialed repository value back in.
+built from command output or from a configured value goes through `_safe`.
 
-The canonical verbs are `async` because the seam above this module is uniformly async: the server
-serves calls concurrently, and a slow attachment must not block an unrelated tool call. `gh`
-offers no async transport, so the synchronous transport below is kept verbatim — `_sync_*` bodies
-calling `subprocess.run` — and each verb offloads it to a worker thread. The `subprocess` timeout
-still bounds that thread: a thread blocked forever is a leaked thread, not a served call.
+The canonical verbs are `async` because the seam above this module is; `gh` offers no async transport,
+so each offloads a synchronous `_sync_*` body to a worker thread.
 """
 from __future__ import annotations
 
@@ -64,51 +50,42 @@ SUMMARY_FIELDS = "number,title,url,labels,parent"
 MAX_BOARD_READS = 500
 """How many individual `gh issue view` reads one board-filtered search may perform.
 
-`limit` bounds the reads by itself while a board value is the only filter, but `text` and `parent` are
-matched against the read, so a filter that matches nothing reads every remaining candidate: one
-subprocess each, bounded individually by `TIMEOUT_SECONDS` and in aggregate by nothing. Past this many
-the search fails and says how to narrow itself, because a query that spends minutes and then reports
-nothing is indistinguishable to its caller from a board that has nothing on it."""
+`limit` bounds the reads by itself only while a board value is the only filter: `text` and `parent` are
+matched against the read, so a filter that matches nothing reads every remaining candidate — one
+subprocess each, bounded individually by `TIMEOUT_SECONDS` and in aggregate by nothing but this."""
 
 ARTIFACT_COMMENT = "Shipyard artifact `{filename}`: {url}\n\nSecret gist — reachable only from this link."
 ARTIFACT_LINK = re.compile(r"Shipyard artifact `([^`\n]+)`: (https://\S+)")
 """The comment `attach-artifact` writes, and the pattern the lifecycle verbs read it back with.
 
-The template and the pattern are one pair on purpose. This tracker stores nothing that links an issue to
-its artifact except that comment, so the comment *is* the attachment index: `attachment-download` and
-`-update` each find their gist by matching it. Written at one site and matched at another, the two drift
-the first time the wording changes, and the symptom is every lifecycle verb reporting that an issue has
-no artifacts while its transcripts sit in gists nobody can find again."""
+One pair on purpose: nothing else on this tracker links an issue to its artifact, so this comment *is*
+the attachment index. Change the wording on one side only and every lifecycle verb reports that an issue
+has no artifacts while its transcripts sit in gists nobody can find again."""
 
 FORBIDDEN_IN_FILENAME = ("`", "\n")
 """Characters an artifact's filename may not carry, because that index is prose with no escaping in it.
 
 `ARTIFACT_LINK` reads the filename back from between backticks on one line, so a name holding either
-character writes an entry no read can match: the upload reports success, and the next
-`attachment-update` then finds no artifact of that name and uploads a second gist beside the first,
-while `attachment-download` reports the issue has none. Both are legal in a POSIX filename, and both are
-refused rather than escaped — there is nowhere in a comment body to escape them to."""
+character writes an entry no read can match while the upload reports success. Both are legal in a POSIX
+filename, and both are refused rather than escaped — a comment body has nowhere to escape them to."""
 
 VERIFY_ATTEMPTS = 4
 VERIFY_BACKOFF_SECONDS = 0.75
 """How hard a board write is re-read before it is called a failure.
 
-The board's item list is eventually consistent, so the first read after a write can legitimately
-miss the card entirely. The bound matters as much as the retry: an unset field has to stay a
-failure rather than becoming a hang."""
+The board's item list is eventually consistent, so the first read after a write can legitimately miss
+the card entirely; the bound matters as much as the retry, since an unset field has to stay a failure
+rather than becoming a hang."""
 
 
 class GithubAdapter:
     """Canonical tracker verbs, mapped onto the `gh` CLI.
 
-    An issue is identified by its URL in every returned `id`: `gh` accepts a URL wherever it
-    accepts a number, and `project item-add --url` accepts nothing else, so the URL is the one
-    reference that works for every call this adapter makes. The GraphQL node id `gh` reports as
-    `id` is deliberately not used — no `gh issue` command accepts it.
-
-    `tracker.adapter()` builds a fresh adapter per tool call, so the resolved-board cache below
-    lives for one call: long enough to stop `create_issue` resolving the same board twice, short
-    enough that no id survives a board edit between calls.
+    Every returned `id` is the issue URL: `gh` accepts a URL wherever it accepts a number and
+    `project item-add --url` accepts nothing else, while the GraphQL node id `gh` reports as `id` is
+    accepted by no `gh issue` command. The resolved-board cache below lives for one tool call, since
+    `tracker.adapter()` builds a fresh adapter per call — long enough to stop `create_issue` resolving
+    the same board twice, short enough that no id survives a board edit between calls.
     """
 
     name = "github"
@@ -140,21 +117,16 @@ class GithubAdapter:
     ) -> dict:
         """Search issues, optionally by canonical status, canonical type, parent or free text.
 
-        `gh` has no cursor, so `next_page_token` is always None rather than a cursor that cannot be
-        resumed. `page_token` is accepted for that reason and then ignored: this verb never hands out a
-        token, so there is never one of its own to resume, and inventing a cursor `gh` cannot honour
-        would page a caller through a set nothing is holding still. Accepting the parameter keeps the
-        canonical signature identical on both adapters, so a caller loops on `is_last` and
-        `next_page_token` without asking which tracker it is talking to.
+        `gh` has no cursor, so `next_page_token` is always None and `page_token` is accepted and then
+        ignored: the canonical signature stays identical on both adapters, and a cursor `gh` cannot
+        honour would page a caller through a set nothing is holding still.
 
-        With no status or type filter, this fetches up to `limit` issues from `gh issue list`
-        and reports `is_last` from what came back. A status or type filter names a board value, so the
-        board becomes the candidate set: every matching issue card in the scoped repository is
-        enumerated, `limit` bounds the page rather than the fetch, `is_last` says whether a further
-        match exists, and `text` is matched here against title and body instead of by GitHub's
-        server-side search. A query too wide to read within `MAX_BOARD_READS` fails saying so; so does a
-        status or type this cannot match a card by — an unrecognised canonical token, or one whose
-        configured board name the board itself does not offer — rather than answering an empty page.
+        With no status or type filter this is one `gh issue list` page of up to `limit` issues. A status
+        or type filter names a board value, so the board becomes the candidate set: `limit` bounds the
+        page rather than the fetch, `is_last` says whether a further match exists, and `text` is matched
+        here against title and body instead of by GitHub's server-side search. A query too wide to read
+        within `MAX_BOARD_READS` fails saying so, as does a status or type no card can carry, rather
+        than answering an empty page.
         """
         return await to_thread.run_sync(
             functools.partial(
@@ -192,7 +164,7 @@ class GithubAdapter:
         return await to_thread.run_sync(self._sync_post_comment, issue, body)
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
-        """Upload `path` as a secret gist and link it from a comment on `issue`, off the event loop."""
+        """Upload `path` as a secret gist and link it from a comment on `issue`."""
         return await to_thread.run_sync(self._sync_attach_artifact, issue, path)
 
     async def type_convert(self, issue: str, issue_type: str) -> dict:
@@ -200,23 +172,20 @@ class GithubAdapter:
         return await to_thread.run_sync(self._sync_type_convert, issue, issue_type)
 
     async def attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
-        """Write the artifact gist `filename_or_id` names on `issue` to `output_path`, off the event loop."""
+        """Write the artifact gist `filename_or_id` names on `issue` to `output_path`."""
         return await to_thread.run_sync(self._sync_attachment_download, issue, filename_or_id, output_path)
 
     async def attachment_update(self, issue: str, path: Path) -> dict:
-        """Replace the contents of `issue`'s artifact gist named `path.name` with `path`, off the event loop."""
+        """Replace the contents of `issue`'s artifact gist named `path.name` with `path`."""
         return await to_thread.run_sync(self._sync_attachment_update, issue, path)
 
     async def preflight(self) -> dict:
-        """Confirm `gh` is installed and authenticated, off the event loop."""
+        """Confirm `gh` is installed, authenticated, and able to reach the configured board."""
         return await to_thread.run_sync(self._sync_preflight)
 
     def _sync_create_issue(self, issue_type: str, title: str, body: str, parent: str | None) -> dict:
-        """Create the issue, then put it on the board with its `Type` set.
-
-        The type is mapped before the write: an unknown canonical token must not leave an issue
-        created with no type on it.
-        """
+        """Create the issue, then put it on the board with its `Type` set."""
+        # Mapped before the write: an unknown canonical token must not leave an issue created untyped.
         option = native_type(issue_type)
         url = _gh(["issue", "create", *_repo_args(), "--title", title, "--body", body])
         if not url.startswith("https://"):
@@ -229,13 +198,10 @@ class GithubAdapter:
     def _sync_get_issue(self, issue: str) -> dict:
         """Read `issue` from `gh`, with status and type taken from the board.
 
-        `gh issue view --json` exposes no project single-select value, so the board item is read
-        separately: `Status` and `Type` live on the card, not on the issue.
-
-        `children_truncated` and `dependencies_truncated` say whether `gh`'s own per-page cap on those
-        two relations cut anything off, for the reason `_relation` documents. They are the same signal
-        the other adapter reports as `comments_truncated`: a clipped list reads exactly like a complete
-        short one, and only one of them means what a caller acts on.
+        `gh issue view --json` exposes no project single-select value, so `Status` and `Type` are read
+        from the board card instead. `children_truncated` and `dependencies_truncated` say whether
+        `gh`'s own per-page cap on those two relations cut anything off, the same signal the other
+        adapter reports as `comments_truncated`: a clipped list reads exactly like a complete short one.
         """
         data = _view(issue, ISSUE_FIELDS)
         url = str(data.get("url") or "")
@@ -270,40 +236,18 @@ class GithubAdapter:
     ) -> dict:
         """List issues and filter them on the fields `gh` cannot filter on.
 
-        `--state all` is deliberate: a done issue is still an issue a caller may be searching for,
-        and `gh issue list` would otherwise hide every closed one. Status, type and parent are
-        filtered here because they are board values and a sub-issue relation, not list flags.
-
-        With no board filter this is one `gh issue list` page: `--limit limit` is the page, `--search`
-        is GitHub's, and `is_last` is read from whether that page came back full — from every row `gh`
-        returned, because a response this cannot read fails in `_listed_rows` rather than shortening the
-        page that `is_last` is then computed from. A row carrying no URL fails here for the same reason it
-        fails a `get_issue` and a board-path read: the URL is the `id` every other verb takes, so such a
-        row is an unaddressable entry that `_checked_ref` would reject on the caller's next call, not an
-        issue that was found.
-
-        A status or type filter names a board value, so the board — not the repository — is the
-        candidate set, and `_board_page` enumerates it board-first. Two different truncations made
-        the previous repo-wide read dishonest here. `--limit limit` on `issue list` asks for the
-        newest `limit` issues and filters after, so the one `ready` issue older than that window came
-        back as `count: 0` — a caller reading "nothing to pick up" from a board that has work on it.
-        Widening that list to `ITEM_LIMIT` then bounded the call by the repository's size instead of
-        the board's, which both costs about a second per hundred rows (a few thousand all-state issues
-        and the call alone exceeds `TIMEOUT_SECONDS`) and, with `--search`, routes through the Search
-        API, whose silent 1,000-row cap is invisible in `--json` output: board items beyond it were
-        dropped from the candidate set while `is_last` still reported the result complete.
-
-        Three properties of that board path are the caller's to rely on. Only issues come back, never a
-        pull request or draft card sharing the column. The page is scoped to one concrete repository —
-        `tracker_config.repo`, or the repository `gh` resolves from the working directory, in either case
-        resolved by `gh` itself so any spelling `--repo` accepts names the same one — and never to the
-        board at large. And the per-candidate reads are bounded by `MAX_BOARD_READS`, past which the call
-        fails with what to narrow instead of returning a page it cannot honestly call complete.
+        Status, type and parent are filtered here because they are board values and a sub-issue
+        relation, not list flags, so a status or type filter makes the board — not the repository — the
+        candidate set. Without one this is a single `gh issue list` page, and `is_last` is read from
+        whether that page came back full.
         """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
+        # Board-first: `issue list --limit` takes the newest N and filters after, so an older match answered
+        # count: 0; ITEM_LIMIT bounds it by the repository (seconds per 1k rows) and --search silently caps at 1k.
         if status is not None or issue_type is not None:
             return self._board_page(status=status, issue_type=issue_type, parent=parent, text=text, limit=limit)
+        # --state all: a done issue is still one a caller searches for, and `issue list` hides closed ones.
         args = [
             "issue", "list", *_repo_args(), "--state", "all", "--limit", str(limit), "--json", SUMMARY_FIELDS
         ]
@@ -343,20 +287,17 @@ class GithubAdapter:
     def _sync_assign(self, issue: str, assignee: str) -> dict:
         """Self-assign, reporting the account the write actually landed on.
 
-        Any other assignee is refused rather than silently redirected to `@me`. The returned
-        `assignee` is read back rather than echoing the request: `@me` names an intent, and only the
-        resolved account evidences which identity now owns the issue — which is also what the other
-        adapter reports, so one caller-visible shape covers both.
-
-        `@me` is resolved to a login before the write, because that is the only thing the read-back
-        can be checked against: `--add-assignee` on an already-assigned issue is a no-op that exits
-        zero, so a non-empty assignee list proves someone owns the issue, not that this account does.
+        Any other assignee is refused rather than silently redirected to `@me`, and the returned
+        `assignee` is read back rather than echoing the request — the shape both adapters report, since
+        `@me` names an intent and only the resolved account evidences which identity owns the issue.
         """
         if assignee != "@me":
             raise TrackerError(
                 f"only self-assignment is supported by this adapter; got {assignee!r}. Pass '@me', or "
                 "assign someone else with `gh issue edit --add-assignee`."
             )
+        # Resolved before the write, because `--add-assignee` is a zero-exit no-op on an already-assigned
+        # issue: a non-empty assignee list proves someone owns it, not that this account does.
         target = str(_gh_json(["api", "user"]).get("login") or "")
         if not target:
             raise TrackerError(
@@ -413,14 +354,14 @@ class GithubAdapter:
     def _set_field(self, issue_url: str, field_name: str, option_name: str) -> str:
         """Ensure the issue is a board item, set one single-select field, and read the value back.
 
-        The option lookup is `_checked_option` rather than inline, because the board-filtered read has to
-        make the very same check against the very same board fields before it matches a card by one of
-        them. Every write of a board value — `Status`, and the `Type` both `create-issue` and
-        `type-convert` set — goes through here, so the read-back verification cannot be skipped by one.
+        Every write of a board value — `Status`, and the `Type` both `create-issue` and `type-convert`
+        set — goes through here, so none of them can skip the read-back verification.
         """
         owner, number = _project_ref()
         resolved, (field_id, option_id) = self._checked_option(owner, number, field_name, option_name)
         item_id = self._find_or_add_item(owner, number, issue_url)
+        # The human-readable success line `item-edit` prints is deliberately not parsed: it must not turn
+        # a completed write into a failure. `_verify_field` below is what evidences the write instead.
         _gh([
             "project", "item-edit",
             "--id", item_id,
@@ -436,21 +377,17 @@ class GithubAdapter:
     ) -> tuple[dict[str, Any], tuple[str, str]]:
         """The board and the `(field_id, option_id)` for one native option name, or a failure naming the drift.
 
-        Shared by the write path with the read filter because the two meet the same fault: the board's real
-        `Status` column or `Type` option name has drifted from the `columns.*` config key naming it —
-        renamed, retyped, or never created. Only the write path used to notice. `_board_page` compared
-        canonical tokens against values `canonical_status` had passed through unmapped, so the same drift
-        filtered every card out and `find_issues` answered `count: 0, is_last: true` from a board with work
-        on it, which is the one wrong answer a caller cannot tell from an empty queue. `context` is what the
-        read path adds to say the query was refused rather than answered.
-
-        The refresh retry is the load-bearing part for both: an option added to the board after this board
-        was resolved must work without restarting the server, so a lookup miss re-resolves once before it
-        is treated as a real miss.
+        Shared by the write path with the read filter, which meet the same fault: the board's real
+        `Status` column or `Type` option name has drifted from the `columns.*` config key naming it, and
+        a read filtering on the drifted value answered `count: 0, is_last: true` from a board with work
+        on it — the one wrong answer a caller cannot tell from an empty queue. `context` is what the read
+        path adds to say the query was refused rather than answered.
         """
         resolved = self._resolve(owner, number, refresh=False)
         ids = _option_id(resolved, field_name, option_name)
         if ids is None:
+            # Re-resolved once before a miss is treated as real: an option added to the board after it
+            # was resolved must work without restarting the server.
             resolved = self._resolve(owner, number, refresh=True)
             ids = _option_id(resolved, field_name, option_name)
         if ids is None:
@@ -467,46 +404,19 @@ class GithubAdapter:
     ) -> dict:
         """One page of the board items matching a status or type filter, read board-first.
 
-        The board item list is the candidate set: it is a project-item read bounded by the board's own
-        size, it carries `Status` and `Type`, and it never touches `gh issue list` or the Search API. Only
-        the surviving cards are then read individually for the fields a card does not carry — the labels
-        and parent `_summary` reports, plus the body a `text` filter needs — so the per-issue cost scales
-        with the filtered board, not with the repository.
+        The board item list is the candidate set: it carries `Status` and `Type`, is bounded by the
+        board's own size, and never touches `gh issue list` or the Search API. Candidates are narrowed to
+        actual issues in one concrete repository — `tracker_config.repo` when set, otherwise the one `gh`
+        resolves from the working directory, never the whole board — before any of them is read, and only
+        the survivors are read individually for the fields a card does not carry, so the per-issue cost
+        scales with the filtered board rather than with the repository.
 
-        Candidates are narrowed to actual issues in one concrete repository before any of them is read. A
-        board holds pull request and draft cards too, and `gh issue view` reads a pull request URL without
-        complaint, so a PR sitting in the filtered column would otherwise be returned as an issue; and the
-        repository is always exactly the one every other verb acts on — `tracker_config.repo` when it is
-        set, otherwise the one `gh` resolves from the working directory — never the whole board.
-
-        Reading stops one match past the page: `is_last` needs to know only whether a further match
-        exists, and each further candidate costs a `gh issue view` a caller would never see. `MAX_BOARD_READS`
-        bounds those reads for the case `limit` cannot: a `text` or `parent` filter that matches nothing
-        rejects every candidate after reading it, and past the bound this stops rather than spending a minute
-        per few hundred cards. Reaching the bound with a full page returns that page as the truncated page it
-        is, `is_last` false; reaching it without one fails, saying what to narrow, because a page that is
-        neither full nor known to be complete is exactly the answer a caller cannot act on.
-
-        `text` is therefore matched here, case-insensitively, as a substring of title or body. That is a
-        deliberate divergence from `gh issue list --search`: no attempt is made to reproduce GitHub's
-        server-side ranking or query syntax, in exchange for a result set that is complete for the board
-        rather than silently capped at the Search API's thousandth row.
-
-        The filter is checked in two places, because matching is what makes both checks necessary — an
-        unmatchable filter simply matches no card, and every miss came back as a complete empty page.
-        `native_status`/`native_type` reject an unrecognised *canonical* token before any `gh` call, the way
-        every write here does: `in_progress` for `in-progress` used to answer `count: 0, is_last: true`, which
-        the duplicate-work checks in `skills/plan/SKILL.md` and `skills/spec/SKILL.md` read as "no prior work".
-        `_checked_option` then rejects a native name the board does not actually offer, against the board's own
-        field options — the same read and the same failure the write path makes. That is the drift the
-        comparison below cannot see: it is canonical-to-canonical, over values `_normalize_item` produced, and
-        `canonical_status`/`canonical_type` pass a board value no configured column names through unchanged, so
-        a renamed column matches nothing and the empty page reports itself complete.
-
-        That check comes after the board read rather than before it, so a board this adapter cannot read
-        completely keeps its own failure: telling an operator to fix a column name over a board too large for
-        one read sends them to correct configuration that is already right.
+        Reaching `MAX_BOARD_READS` with a full page returns that page as the truncated page it is,
+        `is_last` false; reaching it without one fails saying what to narrow, because a page that is
+        neither full nor known to be complete is the answer a caller cannot act on.
         """
+        # Rejects an unrecognised canonical token before any `gh` call, as every write here does: `in_progress`
+        # for `in-progress` answered count: 0, which the duplicate-work checks read as no prior work.
         wanted = {
             STATUS_FIELD: native_status(status) if status is not None else None,
             TYPE_FIELD: native_type(issue_type) if issue_type is not None else None,
@@ -514,6 +424,8 @@ class GithubAdapter:
         owner, number = _project_ref()
         repo = _effective_repo()
         index = _item_index(owner, number)
+        # After the board read rather than before it: a board this adapter cannot read completely keeps
+        # its own failure instead of sending an operator to fix a column name that is already right.
         for field_name, option_name in wanted.items():
             if option_name is not None:
                 self._checked_option(
@@ -535,8 +447,12 @@ class GithubAdapter:
         reads = 0
         bounded = False
         for url, item in candidates:
+            # One match past the page: `is_last` needs only whether a further match exists, and every
+            # further candidate costs a `gh issue view` a caller would never see.
             if len(matched) > limit:
                 break
+            # Bounds the case `limit` cannot: a `text` or `parent` filter that matches nothing rejects
+            # every candidate only after reading it.
             if reads >= MAX_BOARD_READS:
                 if len(matched) < limit:
                     raise TrackerError(
@@ -554,6 +470,8 @@ class GithubAdapter:
             summary = _summary(data, item)
             if parent is not None and not _same_ref(summary["parent"], parent):
                 continue
+            # Substring, not `gh issue list --search`: GitHub's ranking and query syntax are given up for
+            # a set complete for the board rather than capped at the Search API's thousandth row.
             if needle and needle not in f"{data.get('title') or ''}\n{data.get('body') or ''}".lower():
                 continue
             matched.append(summary)
@@ -568,10 +486,8 @@ class GithubAdapter:
     def _resolve(self, owner: str, number: str, *, refresh: bool) -> dict[str, Any]:
         """The board's node id and its single-select fields, cached for the life of this adapter.
 
-        Only fields carrying options are kept: everything else on the board is a text, number or
-        date field this adapter never writes. The fields are asked for at `gh`'s maximum rather than
-        its 30-row default, because a board wide enough to push `Status` past the thirtieth field
-        would otherwise resolve as a board that has no `Status` at all.
+        Only fields carrying options are kept: everything else on the board is a text, number or date
+        field this adapter never writes.
         """
         key = f"{owner}/{number}"
         if not refresh and key in self._boards:
@@ -583,6 +499,8 @@ class GithubAdapter:
                 f"gh project view {number} --owner {owner} reported no project id; check "
                 "tracker_config.project against `gh project list`."
             )
+        # Asked for at `gh`'s maximum, not its 30-row default: a board wide enough to push `Status` past
+        # the thirtieth field would otherwise resolve as a board that has no `Status` at all.
         field_args = ["project", "field-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT]
         fields = _gh_data(field_args)
         raw_fields = fields.get("fields") if isinstance(fields, dict) else None
@@ -623,9 +541,9 @@ class GithubAdapter:
     def _sync_attach_artifact(self, issue: str, path: Path) -> dict:
         """Upload `path` as a secret gist and link it from a comment on `issue`.
 
-        Returns the transport's own evidence: the gist URL it printed, the re-read confirmation
-        that the gist is not public, and the URL of the comment that carries the link. Any step
-        that produces no output, or exits non-zero, is a failure rather than a warning.
+        Returns the transport's own evidence: the gist URL it printed, the re-read confirmation that the
+        gist is not public, and the URL of the comment that carries the link. Any step that produces no
+        output, or exits non-zero, is a failure rather than a warning.
         """
         issue = _checked_ref(issue)
         _checked_artifact(path)
@@ -636,6 +554,8 @@ class GithubAdapter:
                 f"gist creation returned no usable URL for {path.name}; nothing was attached to {issue}."
             )
         gist_id = _gist_id(gist_url)
+        # Privacy read back rather than assumed from the flags passed: a public gist would publish a
+        # transcript irrevocably.
         if _gh_json(["api", f"gists/{gist_id}"]).get("public") is not False:
             raise TrackerError(
                 f"{gist_url} is public or its visibility could not be confirmed; refusing to link it "
@@ -660,13 +580,10 @@ class GithubAdapter:
         """Set the board `Type` on an issue that already exists, reporting both vocabularies.
 
         The same board write `create_issue` makes, on an issue it did not just create, so it goes through
-        `_set_field` and inherits that path's bounded read-back: `gh project item-edit` reports success
-        whether or not the value changed. The type is mapped before anything is written, so an unknown
-        canonical token cannot leave a card half-converted.
-
-        The issue is resolved to a URL first because board items are keyed by their content URL: an issue
-        number identifies nothing on the board.
+        `_set_field` and inherits that path's bounded read-back.
         """
+        # Mapped before anything is written: an unknown canonical token must not leave a card
+        # half-converted.
         option = native_type(issue_type)
         url = _url_of(issue)
         self._set_field(url, TYPE_FIELD, option)
@@ -675,25 +592,17 @@ class GithubAdapter:
     def _sync_attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
         """Write the artifact gist `filename_or_id` names on `issue` to `output_path`.
 
-        `--filename` is not optional here, and leaving it off is not a smaller version of this call:
-        `gh gist view --raw` with no filename prepends the gist's *description* and a blank line to the
-        output, so it wrote a corrupted artifact — the description text, then the transcript — while
-        reporting a successful download. Naming the file returns exactly that file's bytes and nothing
-        else, on a multi-file gist as well as a single-file one. Measured against a real gist, because
-        this is the shape an offline fake reproduces only if it already knows about it: the mocked
-        transport answered the description-less content for the same argv, so the tests agreed with the
-        bug until a live run disagreed with both.
-
         Empty output is a failure rather than a zero-byte file: on disk the two are indistinguishable,
-        and only one of them is an artifact.
-
-        The bytes written are the artifact's text, not a byte-exact copy: `_gh` trims the output it
-        returns, so a trailing newline is not preserved. That is stated rather than worked around because
-        every other verb in this file goes through `_gh` for the timeout and the credential scrubbing it
-        applies, and a transcript is read for its content.
+        and only one of them is an artifact. The bytes written are the artifact's text, not a byte-exact
+        copy — `_gh` trims what it returns, so a trailing newline is not preserved. That is stated rather
+        than worked around, because every verb here goes through `_gh` for the timeout and the credential
+        scrubbing it applies.
         """
         issue = _checked_ref(issue)
         gist_id, filename, _ = _resolve_gist(issue, filename_or_id)
+        # `--filename` is not optional: without it `gh gist view --raw` prepends the gist's *description*
+        # and a blank line, which wrote a corrupted artifact while reporting a successful download —
+        # measured against a real gist, since the mocked transport answered the same argv without it.
         content = _gh(["gist", "view", gist_id, "--raw", "--filename", filename])
         if not content:
             raise TrackerError(
@@ -713,23 +622,10 @@ class GithubAdapter:
     def _sync_attachment_update(self, issue: str, path: Path) -> dict:
         """Replace the contents of `issue`'s artifact gist named `path.name` with `path`.
 
-        `gh gist edit <id> --filename <name> <source>` replaces one file in a gist from a local file,
-        which is a real in-place replace: the gist id and therefore the URL in the comment survive, so the
-        link on the work item keeps pointing at the current artifact and no second comment is posted. That
-        is the flag semantics `gh 2.96.0` documents for itself, not an assumption — `--add` adds a *new*
-        file, and adding one under a name the gist already carries is not what replace means here.
-
-        Verified by reading the gist back and comparing what it now holds against the file that was sent,
-        because `gh gist edit` prints nothing and exits zero either way. The read-back names the file for
-        the same reason the download does: without `--filename`, `gh gist view --raw` prepends the gist's
-        description, so the comparison could never match and a replacement that had landed was reported as
-        unconfirmed. The comparison ignores surrounding whitespace only, since `_gh` trims its output.
-
         An issue carrying no artifact of that name is a first upload, not an error: the verb's contract is
-        replace-by-filename with zero existing explicitly fine, and routing that through the resolver's
-        exactly-one rule made this adapter refuse every first `attachment-update` where the other adapter
-        performs one. So it does what a fresh attach does — the same gist, privacy re-read and linking
-        comment — and reports `replaced: 0`, which is how a caller tells a supersede from an upload.
+        replace-by-filename with zero existing explicitly fine, so that case does what a fresh attach does
+        — the same gist, privacy re-read and linking comment — and reports `replaced: 0`, which is how a
+        caller tells a supersede from an upload.
         """
         issue = _checked_ref(issue)
         _checked_artifact(path)
@@ -752,7 +648,11 @@ class GithubAdapter:
                 "comment_url": fresh["comment_url"],
             }
         gist_id, filename, gist_url = found
+        # A real in-place replace, per the flag semantics `gh 2.96.0` documents: `--filename` replaces that
+        # one file, so the gist id and the comment's URL survive, where `--add` would add a second file.
         _gh(["gist", "edit", gist_id, "--filename", filename, str(path)])
+        # Read back because `gh gist edit` prints nothing and exits zero either way; named for the reason
+        # the download is; whitespace-insensitive only, since `_gh` trims its output.
         if _gh(["gist", "view", gist_id, "--raw", "--filename", filename]).strip() != intended.strip():
             raise TrackerError(
                 f"gist {gist_id} does not read back as the contents of {path.name} after the edit, so the "
@@ -763,20 +663,11 @@ class GithubAdapter:
     def _sync_preflight(self) -> dict:
         """Confirm `gh` is installed, authenticated, and able to reach the configured board.
 
-        The board is read on every path, because that is the only thing that confirms the board this
-        repository is configured against is actually reachable — the claim
-        `skills/tracker/github/ADAPTER.md` makes for this verb. A scope is a property of the credential,
-        not of the board: a token that reports `project` still fails every `set_status` and every `Type`
-        write if the configured board has since been deleted, renamed, or made invisible to it, and
-        checking only the scope deferred that to the first board write, which is the half-finished
-        workflow this call exists to prevent.
-
-        The scope check stays, ahead of the read, as the cheap pre-check it is: it names the exact fix
-        for the one failure a credential can be diagnosed for without touching the board, and only a
-        classic or OAuth token has scopes to check at all. `gh auth status` prints no `Token scopes:`
-        line for a fine-grained PAT or an App token — the type GitHub now recommends — so an absent line
-        cannot mean "unscoped" without failing a working configuration, and `scopes` comes back as None
-        rather than as an empty or invented list to say which check was available.
+        Reading the board is the only thing that confirms reachability, the claim
+        `skills/tracker/github/ADAPTER.md` makes for this verb. `scopes` comes back as None rather than an
+        empty or invented list to say which check was available: only a classic or OAuth token has scopes
+        at all, `gh auth status` prints no `Token scopes:` line for a fine-grained PAT or an App token,
+        and an absent line must not read as "unscoped".
         """
         version = _gh(["--version"]).splitlines()
         try:
@@ -787,6 +678,8 @@ class GithubAdapter:
         line = re.search(r"Token scopes:(.*)", status)
         scopes: list[str] | None = None
         if line:
+            # Kept ahead of the board read as the cheap pre-check it is: it names the exact fix for the one
+            # credential fault diagnosable without touching the board.
             scopes = sorted(re.findall(r"'([^']+)'", line.group(1)))
             if "project" not in scopes:
                 raise TrackerError(
@@ -804,12 +697,11 @@ class GithubAdapter:
 
 
 def _checked_ref(issue: str) -> str:
-    """`issue` if it is a reference `gh` reads as an issue, refusing anything it could read as a flag.
+    """`issue` if it is a reference `gh` reads as an issue: a URL or a number, as this adapter produces.
 
     An id crosses the tool boundary as an opaque string and lands in `gh`'s argv as a positional, so
-    without this an id shaped like `-Rowner/repo` is a flag: with `tracker_config.repo` unset there is
-    no `--repo` ahead of it to lose the race, and the write retargets to a repo the caller named.
-    The accepted shapes are the ones this adapter itself produces and resolves: a URL, or a number.
+    without this an id shaped like `-Rowner/repo` is a flag — and with `tracker_config.repo` unset there
+    is no `--repo` ahead of it to lose the race, so the write retargets to a repo the caller named.
     """
     ref = issue.strip()
     if not re.fullmatch(r"https://\S+|#?\d+", ref):
@@ -823,15 +715,9 @@ def _checked_ref(issue: str) -> str:
 def _checked_artifact(path: Path) -> str:
     """`path.name`, refusing before any upload the two faults an artifact's own name cannot recover from.
 
-    The name is checked, not escaped: it is written into the comment that is this tracker's entire index
-    of which gist holds which artifact, and `ARTIFACT_LINK` reads it back from between backticks on one
-    line. A backtick or a newline in it therefore corrupts the index silently — the upload reports success
-    and every later lookup of that artifact misses, producing a duplicate gist or "0 artifacts match"
-    instead of a failure naming the problem. See `FORBIDDEN_IN_FILENAME`.
-
-    Both checks are shared by the two uploading verbs rather than repeated, because on this tracker a
-    first `attachment-update` *is* an upload: a check only one of them made would be a check the other
-    could write past.
+    The name is checked, not escaped — see `FORBIDDEN_IN_FILENAME` — and both checks are shared by the two
+    uploading verbs rather than repeated, because on this tracker a first `attachment-update` *is* an
+    upload: a check only one of them made would be a check the other could write past.
     """
     if any(character in path.name for character in FORBIDDEN_IN_FILENAME):
         raise TrackerError(
@@ -878,14 +764,11 @@ def _gist_id(gist_url: str) -> str:
 def _artifact_gists(issue: str, filename_or_id: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
     """`(the artifacts on `issue` that `filename_or_id` selects, every artifact its comments record)`.
 
-    The issue's own comments are the index: `attach-artifact` records the artifact's filename and the gist
-    URL in one, and nothing else on this tracker ties the two together. So the comments are read and
-    matched, by gist id first and then by exact filename.
-
-    Both lists come back from the one read, because how many matched decides the outcome and everything
-    recorded is what a failure has to list. Each entry is `(filename, gist_id, gist_url)`. Two comments
-    naming the same filename *and* the same gist are one artifact recorded twice, so they collapse rather
-    than reading as an ambiguity a caller cannot resolve.
+    The issue's own comments are the index — `attach-artifact` records the filename and the gist URL in
+    one, and nothing else on this tracker ties the two together — matched by gist id first and then by
+    exact filename. Both lists come from the one read, because how many matched decides the outcome and
+    everything recorded is what a failure has to list. Each entry is `(filename, gist_id, gist_url)`, and
+    one artifact recorded by two identical comments collapses rather than reading as an ambiguity.
     """
     links = list(
         dict.fromkeys(
@@ -905,10 +788,8 @@ def _not_one_artifact(
     matches: list[tuple[str, str, str]],
     links: list[tuple[str, str, str]],
 ) -> TrackerError:
-    """The refusal for a name that selects other than one artifact, listing what the comments do record.
-
-    The listing goes through `_safe`: it is built from comment bodies, which carry whatever a caller wrote.
-    """
+    """The refusal for a name that selects other than one artifact, listing what the comments do record."""
+    # Scrubbed below: the listing is built from comment bodies, which carry whatever a caller wrote.
     listing = ", ".join(f"{filename} -> {gist_id}" for filename, gist_id, _ in (matches or links))
     return TrackerError(
         f"{len(matches)} artifacts on {issue} match {filename_or_id!r}; expected exactly one, so pass the gist "
@@ -919,11 +800,10 @@ def _not_one_artifact(
 def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
     """The one artifact gist `filename_or_id` names on `issue`, as `(gist_id, filename, gist_url)`.
 
-    Exactly one match, or a failure — the same rule the other adapter applies to attachments sharing a
-    filename, and for the same reason: attaching one transcript twice leaves two gists under one name,
-    and picking either would download or irrevocably delete an arbitrary one of them. Zero is a failure
-    too, for the verbs that have nothing to act on without a match; `_find_gist` is the one for the verb
-    where zero is a legitimate answer.
+    Exactly one match or a failure, zero included — the rule the other adapter applies to attachments
+    sharing a filename, for the same reason: two gists under one name make picking either an arbitrary
+    download or an irrevocable delete. `_find_gist` is the variant for the one verb where zero is a
+    legitimate answer.
     """
     matches, links = _artifact_gists(issue, filename_or_id)
     if len(matches) != 1:
@@ -935,9 +815,8 @@ def _resolve_gist(issue: str, filename_or_id: str) -> tuple[str, str, str]:
 def _find_gist(issue: str, filename_or_id: str) -> tuple[str, str, str] | None:
     """`_resolve_gist`, returning None instead of raising when the issue records no such artifact.
 
-    `attachment-update` is replace-by-filename with zero existing explicitly fine — a plain first upload —
-    so a no-match there is a decision for the caller, not a failure. More than one still raises: which of
-    two namesakes to overwrite is exactly the question nothing here can answer.
+    `attachment-update` is replace-by-filename with zero existing explicitly fine — a plain first upload.
+    More than one still raises: which of two namesakes to overwrite is the question nothing here can answer.
     """
     matches, links = _artifact_gists(issue, filename_or_id)
     if not matches:
@@ -951,17 +830,11 @@ def _find_gist(issue: str, filename_or_id: str) -> tuple[str, str, str] | None:
 def _repo_slug(url: str) -> str:
     """The normalised `owner/repo` an issue URL belongs to, from its path so a GHES host works too.
 
-    A board may span repositories while this search is repo-scoped, so another repo's card is skipped
-    before it is read rather than after `gh` refuses it: dropping a candidate because a read failed is
-    how a truncated result comes back looking complete.
-
-    Only `gh`'s own output for a board card is parsed here — always `<host>/<owner>/<repo>/issues/<n>` —
-    so the two path segments before the `issues/<n>` tail are the pair, lowercased because GitHub's names
-    are case-insensitive and `_effective_repo` lowercases the side this is compared against. The
-    repository the *caller* spelled is not parsed here or anywhere in this file; `gh` resolves that one.
-
-    `""` means the URL holds no pair to compare, which `_in_repo` refuses rather than reads as "some other
-    repository".
+    Only `gh`'s own output for a board card is parsed here — always `<host>/<owner>/<repo>/issues/<n>` — so
+    the two path segments before that tail are the pair, lowercased because GitHub's names are
+    case-insensitive and `_effective_repo` lowercases the side this is compared against. The repository the
+    *caller* spelled is not parsed here or anywhere in this file; `gh` resolves that one. `""` means the URL
+    holds no pair to compare, which `_in_repo` refuses rather than reads as "some other repository".
     """
     parts = url.rstrip("/").split("/")
     pair = [part for part in parts[-4:-2] if part] if len(parts) >= 4 else []
@@ -971,15 +844,11 @@ def _repo_slug(url: str) -> str:
 def _in_repo(url: str, repo: str) -> bool:
     """Whether a board card's issue URL belongs to `repo`, refusing a URL holding no pair to compare.
 
-    Found by review, sweeping for the pattern this path keeps growing: a card whose URL `_repo_slug` could
-    not read came back as `""`, which equals no repository, so the card was dropped from the candidate set
-    exactly as another repository's card is — and the page still reported itself complete. That is the same
-    silent shortening `_item_index`, `_raw_items` and `_listed_rows` each refuse one level up, and it also
-    took the `_is_issue_card` check out of reach for such a card, since this comparison runs first.
-
     Every URL that reaches here is one `gh` printed for a board card, always
-    `<host>/<owner>/<repo>/issues|pull/<n>`, so a URL with no pair in it is shape drift rather than a card
-    belonging somewhere else.
+    `<host>/<owner>/<repo>/issues|pull/<n>`, so no pair in it is shape drift rather than a card belonging
+    somewhere else — and an unreadable one compared as "some other repository" would drop out of a page
+    that still reported itself complete, the same silent shortening `_item_index`, `_raw_items` and
+    `_listed_rows` each refuse. This also runs before `_is_issue_card`, which such a card never reaches.
     """
     slug = _repo_slug(url)
     if not slug:
@@ -994,41 +863,23 @@ def _in_repo(url: str, repo: str) -> bool:
 def _effective_repo() -> str:
     """The single repository a board-filtered search is scoped to, as `gh` itself resolves it.
 
-    `_repo_args()` sets the pattern every write here follows: `tracker_config.repo` when it is set, and
-    otherwise whatever repository `gh` resolves from the working directory. A search has to answer about
-    the same one, so an unset value resolves that repository rather than widening the search to the whole
-    board: a page mixing another repo's cards into this repo's queue is read as this repo's queue.
-
-    Both branches ask `gh` rather than parsing the value here. `gh --repo` accepts `OWNER/REPO`,
-    `HOST/OWNER/REPO`, an https URL with or without a `.git` suffix, and an scp-like SSH remote, and every
-    hand-written parser of that grammar was one spelling short of it — each miss answering `count: 0` from
-    a board full of the configured repo's cards, the one wrong answer a caller cannot tell from an empty
-    queue. `gh repo view` takes exactly the references `--repo` takes and prints the canonical pair, so
-    the two sides of the comparison agree by construction instead of by this file keeping up with `gh`.
-
-    An unresolvable value is a failure rather than a fallback to board-wide, and `gh` refusing it is that
-    check: a value which is not a repository reference at all — an issue URL, say — is refused there
-    instead of being normalised into something that matches no card while the page reports itself
-    complete. `gh`'s answer is then checked to be one `owner/repo` pair for the same reason: a repository
-    this cannot compare a card against is as invisible to a caller as a board with nothing on it.
-
-    The value reaches `gh` unparsed but not unchecked: one starting with `-` is refused here, because it
-    lands in `gh`'s argv as a bare positional and `gh` would read it as a flag — the hazard `_checked_ref`
-    exists for on the issue-reference side, on a value that arrives from configuration instead of a caller.
-
-    It also reaches no message unstripped. An https remote can carry userinfo, so the failures that name
-    the value go through `_safe`, which drops it, and the `gh` failure this one wraps is safe for the same
-    reason one round further in: `_shown` strips every argv element and `_safe` strips `gh`'s own stderr,
-    so neither the value `_repo_args()` hands to every other verb nor the text `gh` echoes it back in can
-    print its token.
+    `tracker_config.repo` when it is set, otherwise the repository `gh` resolves from the working
+    directory — the pattern `_repo_args()` sets for every write here, so a search answers about the
+    repository a write lands in rather than widening to the whole board: a page mixing another repo's cards
+    into this repo's queue is read as this repo's queue. An unresolvable value is a failure rather than
+    that widening, and `gh` refusing it is that check.
     """
     configured = str(config.get("tracker_config.repo", default="") or "")
+    # Unparsed but not unchecked: a value opening with `-` lands in `gh`'s argv as a bare positional and
+    # would be read as a flag — `_checked_ref`'s hazard, on a value arriving from configuration.
     if configured.strip().startswith("-"):
         raise TrackerError(
             f"tracker_config.repo is set to {_safe(configured)!r}, which gh would read as a flag rather "
             "than a repository reference, so it is refused before gh is called. Set it to OWNER/REPO in "
             ".shipyard/config.json; see docs/github-setup.md."
         )
+    # Both sides come from `gh`: `--repo` also takes HOST/OWNER/REPO, https with or without `.git`, and an
+    # scp-like SSH remote; every hand-written parser was one spelling short, each miss answering count: 0.
     args = ["repo", "view", *([configured] if configured else []), "--json", "nameWithOwner", "-q", ".nameWithOwner"]
     try:
         printed = _gh(args)
@@ -1056,13 +907,10 @@ def _effective_repo() -> str:
 def _is_issue_card(url: str, item: dict[str, Any]) -> bool:
     """Whether a board card holds an issue, so a pull request or a draft never answers an issue search.
 
-    `find_issues` owes its caller issues, and `gh issue view` reads a pull request URL happily enough
-    that a PR card in the filtered column comes back looking like one — which the duplicate-work checks
-    in `skills/plan/SKILL.md` and `skills/spec/SKILL.md` then read as prior work on the issue.
-
-    A card whose content type is missing altogether is a failure rather than a guess in either direction:
-    calling it an issue reports a PR as one, and calling it not an issue drops a real issue from a page
-    that still reports itself complete.
+    `gh issue view` reads a pull request URL happily enough that a PR card in the filtered column comes
+    back looking like an issue, which the duplicate-work checks in `skills/plan/SKILL.md` and
+    `skills/spec/SKILL.md` then read as prior work. A card whose content type is missing altogether is a
+    failure rather than a guess in either direction.
     """
     kind = str(item.get("kind") or "")
     if not kind:
@@ -1073,9 +921,9 @@ def _is_issue_card(url: str, item: dict[str, Any]) -> bool:
 def _unclassifiable_card(ref: str) -> TrackerError:
     """The failure a board card carrying no content type gets, shared by both places that can see one.
 
-    Returned rather than raised so each caller raises it at its own site, and shared so the two cannot
-    drift: `_item_index` meets such a card when its content object also carries no URL, `_is_issue_card`
-    when it carries one, and both are the same unreadable shape rather than two different problems.
+    Returned rather than raised so each caller raises it at its own site: `_item_index` meets such a card
+    when its content object also carries no URL, `_is_issue_card` when it carries one, and both are the
+    same unreadable shape rather than two different problems.
     """
     return TrackerError(
         f"the board reports no content type for {ref}, so whether that card holds an issue or a pull "
@@ -1087,8 +935,8 @@ def _unclassifiable_card(ref: str) -> TrackerError:
 def _summary(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     """The fields `get_issue` and `find_issues` both report, canonicalised once for both.
 
-    Shared rather than duplicated because the two verbs must agree key for key: a caller that
-    filters a search result and then reads the issue must not meet the same status spelled twice.
+    Shared so the two agree key for key: a caller that filters a search result and then reads the issue
+    must not meet the same status spelled twice.
     """
     url = str(data.get("url") or "")
     return {
@@ -1105,17 +953,11 @@ def _summary(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
 def _comments(data: dict[str, Any]) -> list[dict[str, str]]:
     """`gh`'s comment list, reduced to the four fields the canonical shape carries.
 
-    An entry that is not a comment object fails the read rather than being skipped past, the refusal
-    jira's `_comments` already makes: skipping one dropped a comment out of the returned thread while the
-    read still reported itself whole, so a caller reading the thread — or `_artifact_gists`, which reads
-    these same comments as the only index of which gist holds which artifact — was one comment short of
-    what `gh` returned with nothing saying so.
-
-    A `comments` field that is present but not a list is that same failure one level out, and `_as_list`
-    never raises, so it used to come back as `[]`: an issue reporting no comments, indistinguishable from
-    one that really has none, and an artifact lookup reporting no artifacts while the gists sit where
-    nothing can find them again. `_read_list` makes that refusal, and an absent field is honestly no
-    comments.
+    A shape this cannot read fails the read rather than shortening it — an entry that is not a comment
+    object here, and via `_read_list` a `comments` field that is not a list at all — the refusal jira's
+    `_comments` also makes. A thread one comment short reads exactly like a complete one, both to a caller
+    and to `_artifact_gists`, which reads these same comments as the only index of which gist holds which
+    artifact. An absent field is honestly no comments.
     """
     thread: list[dict[str, str]] = []
     for index, comment in enumerate(_read_list(data, "comments", "this issue's thread")):
@@ -1137,22 +979,12 @@ def _comments(data: dict[str, Any]) -> list[dict[str, str]]:
 def _labels(data: dict[str, Any]) -> list[str]:
     """Label names only: the ids and colours `gh` also returns are noise to every caller.
 
-    An entry no name can be read out of fails the read instead of dropping out of the list, the same
-    refusal jira's `_summary` makes for its own `labels` field — the two adapters answer one protocol,
-    so a shape drift one of them refuses cannot be the other's silent shortening. A filtered list reads
-    as the issue's real labels, and `labels` is what a caller reads to decide whether an issue is
-    already decomposed or already shipped.
-
-    The whole field is checked first, because jira refuses a `labels` that is not a list of strings and
-    this side only refused the entries inside one: `_as_list` never raises, so a `labels` of `"shipyard"`
-    or of `3` came back as `[]` — an issue reporting no labels at all, which reads exactly like one that
-    genuinely has none and is the same silence the per-entry refusal exists to prevent, one level out.
-    `_read_list` makes that refusal, and an absent field is honestly no labels.
-
-    A name that is not a string is refused rather than coerced, which is the direction jira already takes
-    for its own `labels` — it refuses a non-string entry outright. `str(name)` turned a `{"name": 3}` into
-    the label `"3"`, so the same drift produced a plausible-looking label here and a loud failure there,
-    on one protocol whose caller cannot see which tracker replied.
+    Both the whole field (via `_read_list`) and every entry in it must read as the issue's real labels or
+    the read fails: `labels` is what a caller reads to decide whether an issue is already decomposed or
+    already shipped, and a filtered or empty list reads exactly like an issue that genuinely has none. A
+    name that is not a string is refused rather than coerced, since `str(name)` turned a `{"name": 3}` into
+    the label `"3"`. Jira refuses each of these, and one protocol whose caller cannot see which tracker
+    replied must not have two behaviours. An absent field is honestly no labels.
     """
     names: list[str] = []
     for index, label in enumerate(_read_list(data, "labels", "the labels on this issue")):
@@ -1171,15 +1003,11 @@ def _read_list(data: dict[str, Any], key: str, subject: str) -> list[Any]:
     """One `gh` field that must be a list of objects, refusing every other shape rather than emptying it.
 
     `_as_list`'s tolerance is load-bearing for the optional relations it also parses, so the strictness
-    lives here: it is these fields' protocol obligation, not the parser's. Shared by `labels` and
-    `comments` because the pair were fixed one at a time twice already, in both directions.
-
-    The nested `{key: [...]}` wrapper is accepted, since that is the `gh` nesting `_as_list` exists to
-    unwrap — but only that one, checked rather than assumed. Admitting *any* dict and handing it to
-    `_as_list` looked equivalent and was not: `_as_list` returns `[]` for a dict it cannot address, and
-    `{"nodes": [...]}` is precisely the shape this file's own `_refs` treats as gh's native relation-list
-    wrapper elsewhere, so the most plausible drift of all reported "no labels"/"no comments" through a
-    guard written to make exactly that impossible.
+    lives here instead, shared by `labels` and `comments`. Only the `{key: [...]}` nesting `_as_list` exists
+    to unwrap is accepted, and it is checked rather than assumed: admitting *any* dict and handing it to
+    `_as_list` looks equivalent and is not — `_as_list` returns `[]` for a dict it cannot address, and
+    `{"nodes": [...]}`, the wrapper this file's own `_refs` treats as `gh`'s native relation list, is the
+    most plausible drift of all.
     """
     field = data.get(key)
     if field is None:
@@ -1199,9 +1027,9 @@ def _read_list(data: dict[str, Any], key: str, subject: str) -> list[Any]:
 def _shape(value: object) -> str:
     """A payload's shape for a failure message: its keys or its type, never its content.
 
-    Keys for an object, because the drift that matters is a list arriving under a wrapper this adapter
-    does not know — `{"nodes": [...]}` — and `dict` alone names nothing a reader can act on. The twin of
-    jira's `_shape`, so a refusal reads the same whichever adapter made it.
+    Keys for an object, because the drift that matters is a list arriving under a wrapper this adapter does
+    not know — `{"nodes": [...]}` — which `dict` alone names nothing actionable about. The twin of jira's
+    `_shape`, so a refusal reads the same whichever adapter made it.
     """
     if isinstance(value, dict):
         return f"an object with keys {sorted(str(k) for k in value)}"
@@ -1211,13 +1039,9 @@ def _shape(value: object) -> str:
 def _login(author: object, index: int) -> str:
     """One comment author's login, refusing a shape this adapter cannot read.
 
-    `(author or {}).get("login")` raised a bare `AttributeError` the moment `author` came back as
-    anything dict-shaped it isn't — a plain login string, say — which escapes every caller's
-    `except TrackerError`. That is the same "read whose failure is not the failure this module
-    promises" that the entry and field checks above close, in the one field they left open, so it is
-    answered the same way instead of being the last raw traceback in a function that now raises
-    properly for everything else. An absent author stays honestly empty: `gh` omits it for a deleted
-    account, which is not a drift.
+    A non-dict `author` — a plain login string, say — raised a bare `AttributeError` past every caller's
+    `except TrackerError`, which is not the failure this module promises. An absent author stays honestly
+    empty: `gh` omits it for a deleted account, which is not a drift.
     """
     if author is None:
         return ""
@@ -1232,6 +1056,7 @@ def _login(author: object, index: int) -> str:
 
 def _ref(node: object) -> str | None:
     """One related issue as a reference `gh` accepts back — its URL, or its number if that is all there is."""
+    # Tolerant rather than raising: the other caller reads an optional `parent`, where no node means unparented.
     if not isinstance(node, dict):
         return None
     return str(node.get("url") or node.get("number") or "") or None
@@ -1240,40 +1065,21 @@ def _ref(node: object) -> str | None:
 def _refs(payload: object) -> tuple[list[str], int]:
     """Every related issue in a `{nodes: [...]}` relation, plus how many entries it could not name.
 
-    Tolerant of both wrappers because `subIssues` and `blockedBy` are recent `gh` fields whose shape
-    has changed once already, and of an absent relation, which honestly means no related issues.
+    Both wrappers are tolerated, because `subIssues` and `blockedBy` are recent `gh` fields whose shape has
+    changed once already, and an absent relation honestly means no related issues. Every other unreadable
+    shape is a failure, a dict carrying no `nodes` key included: `dependencies` is what a caller reads to
+    decide whether an issue is blocked, and a shape this cannot parse must not come back as "nothing is
+    blocking it". `nodes` is therefore read with no default, since `.get("nodes", [])` admits any object and
+    answers "no related issues" for the drift most worth catching.
 
-    A relation that is present but not a list is a failure, not an empty one: `dependencies` is what a
-    caller reads to decide whether an issue is blocked, and a shape this cannot parse must not come
-    back as "nothing is blocking it" — that reads identically to a genuinely unblocked issue. A dict
-    carrying no `nodes` key at all is that same failure, not an empty relation: `nodes` is read with no
-    default, because `.get("nodes", [])` admitted any object and answered "no related issues" for the
-    one drift most worth catching — an unrecognised wrapper — which is exactly the "admit any dict, get
-    `[]` back" hole `_read_list` was written to refuse for `labels` and `comments`.
+    An entry that names no issue is the one exception, and only where the shortfall can be signalled: it is
+    skipped and counted when the relation carries a `totalCount` for `_relation` to report it from, and
+    raises when there is none. Raising unconditionally would fail an entire `get_issue` — relations the
+    caller never asked about included — over one unaddressable node, the blast radius `_item_index` already
+    refuses; the invariant is narrower than "raise": no dropped node may be silently claimed complete.
 
-    An entry inside the list that names no issue is where this reconciles two rules that pull opposite
-    ways, both of them load-bearing here:
-
-    - jira's `_keys` raises on its own equivalent entry, and one protocol must not have two behaviours:
-      a caller cannot see which tracker replied, so a drift one adapter refuses must not be the other's
-      quiet shortening.
-    - `_item_index` deliberately *skips* a board card the credential may not view instead of raising,
-      because raising failed every read of the whole board over one card nobody can see. `_refs` runs
-      inside `get_issue` on two optional relations, so a raise here has the same blast radius: one
-      unaddressable node would fail the entire issue read, relations a caller did not even ask about
-      included.
-
-    Both are satisfiable at once, because the actual invariant is narrower than "raise": no dropped node
-    may be silently claimed complete. So an entry that names no issue is skipped and counted whenever the
-    relation carries a `totalCount` for `_relation` to report the shortfall from, and raises only when
-    there is no count to report it with — the bare-list shape, or a wrapper that omits the count. That
-    keeps the invariant where it can be signalled and keeps the refusal where it cannot, rather than
-    trading one for the other. `_ref` itself stays tolerant, because its other caller reads an optional
-    `parent`, where "no node" really does mean unparented.
-
-    The count is returned rather than inferred from the lengths, so `_relation` reports a drop even when
-    a drifting `totalCount` happens to agree with the shortened list. `_sync_add_dependency` ignores it,
-    correctly: it searches the relation for the one reference it just wrote rather than reporting the set.
+    The count is returned rather than inferred from the lengths, so a `totalCount` that drifts down to agree
+    with the shortened list is still reported as a drop.
     """
     if payload is None:
         return [], 0
@@ -1317,40 +1123,31 @@ def _relation(payload: object) -> tuple[list[str], bool]:
     """A relation's related issues, plus whether `gh` returned fewer of them than the relation holds.
 
     `gh` asks for one page of each of these relations and has no loop behind it — 100 sub-issues, 50
-    blocked-by — but it returns `totalCount` beside the nodes, so the two disagreeing is the one signal
-    that says the list is short. Reading only `nodes` meant an issue with sixty blockers came back as
-    exactly fifty, indistinguishable from an issue that really has fifty: the same failure `_refs` refuses
-    for an unparseable relation, one step quieter, and the same one the other adapter reports as
-    `comments_truncated` for a clipped comment thread.
+    blocked-by — but returns `totalCount` beside the nodes, so the two disagreeing is the one signal that
+    the list is short: an issue with sixty blockers came back as exactly fifty, indistinguishable from one
+    that really has fifty, which is what the other adapter reports as `comments_truncated`.
 
-    An absent `totalCount` reports complete: `gh` prints it for every relation object, and the bare-list
-    shape `_refs` also tolerates carries no count to compare against. Every other unreadable count reports
-    truncated instead — a `totalCount` of `"60"` must not skip the check the way a clean `int` comparison
-    silently would, which is how false completeness has been reintroduced one type away before.
-
-    A node `_refs` could not name is reported here too, and that is what lets `_refs` skip one instead of
-    failing the whole `get_issue` read over it (see its docstring for why raising there has the blast
-    radius `_item_index` already refuses to accept). It is taken from `_refs`'s own count rather than
-    inferred from `len(found)`, because a shortfall the count cannot see — a `totalCount` that drifts down
-    to agree with the shortened list — is exactly the silent completeness this pair exists to prevent. A
-    drop can only reach here with a count present, since `_refs` raises otherwise, so the early return
-    above cannot hide one.
+    An absent `totalCount` reports complete, since `gh` prints one for every relation object and the
+    bare-list shape `_refs` also tolerates carries none. Every other unreadable count reports truncated, a
+    `totalCount` of `"60"` included, which a clean `int` comparison would silently skip. A node `_refs`
+    could not name counts as truncation too — that is what lets it skip one rather than fail the whole
+    `get_issue` read — and comes from its own count rather than from `len(found)`, because a shortfall the
+    count cannot see is exactly the silent completeness this pair exists to prevent.
     """
     found, dropped = _refs(payload)
     total = payload.get("totalCount") if isinstance(payload, dict) else None
+    # A drop cannot reach this return: `_refs` raises rather than counting one with no count to report it.
     if total is None:
         return found, False
     return found, bool(dropped) or not isinstance(total, int) or isinstance(total, bool) or total > len(found)
 
 
 def _same_ref(ref: str | None, other: str | None) -> bool:
-    """Whether two issue references name the same issue, comparing `7`, `#7` and a URL alike.
-
-    Needed because the caller may pass a number where `gh` reported a URL, and the verification
-    re-read must not call a landed write a failure over spelling.
-    """
+    """Whether two issue references name the same issue, comparing `7`, `#7` and a URL alike."""
     if not ref or not other:
         return False
+    # A caller may pass a number where `gh` reported a URL; a re-read must not fail a landed write over
+    # spelling.
     first, second = (str(x).rstrip("/").rsplit("/", 1)[-1].lstrip("#") for x in (ref, other))
     return first == second
 
@@ -1358,13 +1155,11 @@ def _same_ref(ref: str | None, other: str | None) -> bool:
 def _project_ref() -> tuple[str, str]:
     """The configured board as `(owner, number)`. An unusable value fails before any write.
 
-    The owner half is checked to be shaped like one, not merely non-empty: `gh --owner` takes a login or
-    `@me`, and GitHub logins are alphanumerics and hyphens, so anything else is a misconfiguration that
-    `gh` would refuse anyway. Checking it here is what keeps the owner printable — it reaches the failure
-    message of every board read, write and verification in this file, and a value shaped like a URL can
-    carry userinfo, so `https://x-access-token:<token>@host/orgs/o/projects/3` would otherwise hand a
-    credential to half a dozen messages that have no way to recognise one. The single message that does
-    print the raw configured value goes through `_safe`, which strips it.
+    The owner half is checked to be shaped like one rather than merely non-empty, and that is what keeps it
+    printable: it reaches the failure message of every board read, write and verification in this file, and
+    a value shaped like a URL can carry userinfo, so `https://x-access-token:<token>@host/orgs/o/projects/3`
+    would otherwise hand a credential to half a dozen messages with no way to recognise one. `gh --owner`
+    takes a login or `@me`, and GitHub logins are alphanumerics and hyphens.
     """
     ref = str(config.get("tracker_config.project", default="") or "")
     owner, sep, number = ref.rpartition("/")
@@ -1379,27 +1174,18 @@ def _project_ref() -> tuple[str, str]:
 def _confirm_board_access(scopes: list[str] | None = None) -> None:
     """Prove the configured board is reachable with this credential, by reading it.
 
-    Run for every token, whatever its scopes say. On a fine-grained or App token it stands in for the
-    scope check preflight cannot make: the failure it exists to catch is a `repo`-only credential, which
-    cannot read Projects v2 at all, so one successful board read is positive evidence rather than an
-    assumption. On a token that does report `project` it checks the other half, which the scope cannot:
-    a scope is a property of the credential, and the board it is pointed at can still be deleted,
-    renamed, or invisible to it — which used to surface only at the first real board write.
-
-    A grant that can read the board but not write it is indistinguishable from here without performing a
-    write, which a preflight must not do; that residual case fails later, at the write, with its own
-    message.
-
-    Only `gh` refusing the read is relabelled as a credential problem, because only that shape can be
-    one, and `scopes` decides how it is named: recommending `gh auth refresh` to a token that already
-    holds `project` sends its operator to re-grant a scope that is already there instead of at the board
-    the read could not reach. Everything else `_raw_items` can raise — a board larger than one read, a
-    payload it will not parse as a board, a `gh` that is missing or hung — keeps its own message for the
-    same reason.
+    Run for every token, whatever its scopes say: a `repo`-only credential cannot read Projects v2 at all,
+    so one successful read is positive evidence rather than an assumption, and a scope is a property of the
+    credential, not of the board — a token that does report `project` still fails every board write if the
+    board has since been deleted, renamed, or made invisible to it. A grant that can read the board but not
+    write it is indistinguishable from here without performing a write, which a preflight must not do; that
+    residual case fails later, at the write, with its own message.
     """
     owner, number = _project_ref()
     try:
         _raw_items(owner, number)
+    # Only `gh` refusing the read can be a credential problem, and `scopes` decides how it is named:
+    # `gh auth refresh` sends a token that already holds `project` to re-grant a scope it has.
     except _GhFailure as exc:
         fix = (
             f"The token already reports the 'project' scope ({scopes}), so check tracker_config.project "
@@ -1431,26 +1217,20 @@ def _item_index(owner: str, number: str) -> dict[str, dict[str, Any]]:
     """Every board item, canonicalised and keyed by the URL of the issue it holds.
 
     A card with no URL is left out rather than indexed: a `DraftIssue` legitimately has none, and nothing
-    here can address a card that is not an issue or a pull request anyway.
+    here can address a card that is not an issue or a pull request anyway. So is a card with no `content`
+    object at all — Projects v2 reports an item the credential may not view as `REDACTED`, which `gh`
+    renders as `content: null`, a documented board state rather than a malformed response.
 
-    A card carrying a `content` object with neither a URL nor a content type inside it is not that case —
-    it is a shape this cannot read — and it fails here instead of being dropped as though it were a draft.
-    Dropping it silently is how a card goes missing from a page that still reports itself complete, and it
-    also took the same failure `_is_issue_card` raises out of reach: every url-less card was gone before
-    that check ever saw one.
-
-    A card with no `content` object at all is the third case, and it is neither of those: Projects v2
-    reports an item the credential may not view as `REDACTED`, which `gh` renders as `content: null`, so
-    such a card is a documented board state and not a malformed response. It is skipped like a draft —
-    silently, because it carries no URL for any caller to have acted on and no verb here could address it
-    if it did — and the raise is reserved for a `content` object that is present but says nothing. The two
-    are told apart on the raw item, before `_normalize_item` collapses `null` into `{}`: a check that could
-    not tell them apart failed every read of the whole board over one card nobody can see.
+    A `content` object that is present but carries neither a URL nor a content type is neither case: it is a
+    shape this cannot read, and it fails here rather than going missing from a page that still reports
+    itself complete.
     """
     index = {}
     for raw in _raw_items(owner, number):
         item = _normalize_item(raw)
         if not item["url"]:
+            # Told apart on the raw item, before `_normalize_item` collapses `null` into `{}`: a check that
+            # cannot tell them apart fails every read of the whole board over one card nobody can see.
             if not item["kind"] and _content_of(raw) is not None:
                 raise _unclassifiable_card(f"board item {raw.get('id') or 'with no id'}")
             continue
@@ -1461,14 +1241,10 @@ def _item_index(owner: str, number: str) -> dict[str, dict[str, Any]]:
 def _content_of(raw: dict[str, Any]) -> dict[str, Any] | None:
     """A board item's `content` object, or None when the item carries nothing readable as one.
 
-    The three places that read a card's content — the board index, the board-item lookup a write does,
-    and the write's verifying re-read — all have to survive a `content` that is not an object: `gh`
-    renders a card the credential may not view as `content: null`, and any future non-object would
-    otherwise cross the tool boundary as an `AttributeError` rather than as a `TrackerError`. Shared
-    rather than repeated, because two of the three sites were fixed a round apart from the first.
-
-    None is `null`, absent, and not-an-object alike; `_item_index` is the only caller that needs to tell
-    "no content object" from "an empty one", and it has the raw item to do it with.
+    `null`, absent and not-an-object alike, shared by the three places that read a card's content: `gh`
+    renders a card the credential may not view as `content: null`, and any other non-object would otherwise
+    cross the tool boundary as an `AttributeError` rather than as a `TrackerError`. `_item_index` is the only
+    caller that must tell "no content object" from "an empty one", and it has the raw item to do it with.
     """
     content = raw.get("content")
     return content if isinstance(content, dict) else None
@@ -1478,16 +1254,11 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     """One board item, with its `Type` and `Status` option names mapped to canonical tokens.
 
     `kind` is the card's own content type — `Issue`, `PullRequest` or `DraftIssue` — carried through
-    unmapped, because `find_issues` owes its caller issues and a board holds pull request and draft cards
-    in the same columns. It is deliberately not folded into `type`, which is the board's own single-select
-    and the canonical `epic`/`task`/`bug` vocabulary.
-
-    A `content` that is anything but an object reads as no content, rather than being asked for keys it
-    has no `get` for: `null` is what `gh` renders a card the credential may not view as, and any other
-    non-object would otherwise leave an `AttributeError` — not a `TrackerError` — crossing the tool
-    boundary. `_item_index` is where the distinction between "no content object" and "an empty one" is
-    drawn, on the raw item, because this collapse is exactly what loses it.
+    unmapped, because `find_issues` owes its caller issues and a board holds pull request and draft cards in
+    the same columns. It is deliberately not folded into `type`, which is the board's own single-select and
+    the canonical `epic`/`task`/`bug` vocabulary.
     """
+    # Collapsing `null` into `{}` is what loses the distinction `_item_index` draws on the raw item.
     content = _content_of(item) or {}
     return {
         "number": content.get("number"),
@@ -1500,26 +1271,20 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _verify_field(owner: str, number: str, issue_url: str, field_name: str, option_name: str) -> None:
-    """Confirm the single-select write by re-reading the board, per CONTRIBUTING's write discipline.
+    """Confirm the single-select write by re-reading the board, as every write verb here evidences itself.
 
-    `gh project item-edit` reports success whether or not the value changed, and a card that did not
-    move is exactly the failure a caller cannot see, so the value is read back by name.
-
-    The read is retried because the board's item list is eventually consistent, which a live run
-    caught: a card added and edited moments earlier can be entirely absent from the very next
-    `item-list`, then present with the right value a second later. Failing on the first read turns a
-    write that landed into a reported failure, so the retry is what makes read-back verification
-    usable here at all — but it stays bounded, because a genuinely unset field must still fail.
-
-    The read is therefore asked for without `_raw_items`' completeness checks: this loop already treats an
-    incomplete read as "not yet, read again", and a transient `totalCount` disagreement raised on the first
-    attempt would abort the very retry that exists to absorb it — reporting a landed write as failed, which
-    is the failure this whole function is built to avoid.
+    `gh project item-edit` reports success whether or not the value changed, and a card that did not move is
+    exactly the failure a caller cannot see, so the value is read back by name. Retried, because the board's
+    item list is eventually consistent — a live run saw a card added and edited moments earlier absent from
+    the very next `item-list` and present with the right value a second later — and bounded, because a
+    genuinely unset field must still fail.
     """
     last = ""
     for attempt in range(VERIFY_ATTEMPTS):
         if attempt:
             time.sleep(VERIFY_BACKOFF_SECONDS * attempt)
+        # strict=False: this loop already reads an incomplete board as "not yet", and a transient
+        # `totalCount` disagreement raised on the first attempt would abort the retry it exists for.
         for raw in _raw_items(owner, number, strict=False):
             if (_content_of(raw) or {}).get("url") != issue_url:
                 continue
@@ -1536,31 +1301,18 @@ def _raw_items(owner: str, number: str, *, strict: bool = True) -> list[dict[str
     """Every item on the board, unmapped, in one read bounded by this adapter's own `ITEM_LIMIT`.
 
     `ITEM_LIMIT` is not a `gh` maximum — `gh` documents none — so nothing but this read's own bound
-    guarantees the list is the whole board, and every caller treats it as the whole board: `_board_page`
-    reads `is_last` from it, the preflight reads reachability from it, and the write-back verification
-    reads a card's absence from it as the write not having landed. `gh` returns `totalCount` for the board
-    alongside the truncated `items`, so a board larger than one read fails here rather than answering
-    completely from its first `ITEM_LIMIT` cards.
+    guarantees the list is the whole board, which is what every caller treats it as: `_board_page` reads
+    `is_last` from it, the preflight reads reachability, the write-back verification reads a card's absence
+    as the write not having landed. So a board larger than one read fails here, and so does a payload with no
+    `items` list or a `totalCount` that is absent or not an `int` — `gh` prints one for every board, an empty
+    one included, and a count of `"65"` silently skipped a check made only for a clean `int`. `items: []` is
+    accepted: a board really can hold nothing.
 
-    That count has to be readable as a number for the check to mean anything, so one that is absent or of
-    any other type fails too. `gh project item-list --format json` prints `totalCount` for every board,
-    including an empty one, so an unreadable count is shape drift rather than a `gh` version that omits it —
-    and making the completeness check only for a clean `int` is the same false completeness the check
-    exists to prevent, reintroduced one type away: a `totalCount` of `"65"` skipped it silently.
-
-    A payload carrying no `items` list is that same failure and not an empty board. `_as_list` is
-    deliberately tolerant, because the relations it also parses are legitimately absent; a board this
-    could not read must not come back looking like a board with nothing on it, which reads identically to
-    a genuinely empty one. `items: []` is accepted: a board really can hold nothing.
-
-    `strict=False` drops those completeness checks for `_verify_field` alone, which already tolerates an
-    incomplete read: the board's item list is eventually consistent, so that caller retries with backoff
-    and treats a card it cannot find as "not yet", never as "the write failed". A `totalCount` that
-    disagrees with the items returned is exactly what a mid-pagination read of a busy board can transiently
-    look like, and raising on it inside that retry loop aborted the retry on its first attempt and reported
-    a write that had landed as a failure. The read still cannot make that caller optimistic — an
-    unverifiable write stays a bounded failure with its own message — so the tolerance costs nothing the
-    search paths need, and they keep the checks, because a page they call complete has to be.
+    `strict=False` drops those completeness checks for `_verify_field` alone, which retries with backoff and
+    reads a card it cannot find as "not yet" rather than as a failed write — a `totalCount` disagreeing with
+    the items returned is what a mid-pagination read of a busy board transiently looks like. An unverifiable
+    write stays a bounded failure there, so the search paths keep the checks: a page they call complete has
+    to be.
     """
     args = ["project", "item-list", number, "--owner", owner, "--format", "json", "--limit", ITEM_LIMIT]
     data = _gh_data(args)
@@ -1604,11 +1356,9 @@ def _listed_rows(args: list[str]) -> list[dict[str, Any]]:
     """`gh issue list --json`'s rows, refusing a payload it cannot read rather than calling it empty.
 
     The check `_raw_items` makes on the board read, made here on the sibling path a `find_issues` with no
-    board filter takes. `_as_list` is tolerant by design and stays so — the optional relations it also
-    parses are legitimately absent — but tolerance here read an unparseable response as "no issues match",
-    and `is_last` then reported that page complete: the same false completeness the board path has now been
-    fixed for four times, on the one path it was never applied to. `gh` prints a bare array; an object
-    carrying an `issues` list is tolerated in case it ever wraps it, and `[]` remains a real empty page.
+    board filter takes: `_as_list`'s tolerance read an unparseable response as "no issues match" and
+    `is_last` then reported that page complete. `gh` prints a bare array; an object carrying an `issues` list
+    is tolerated in case it ever wraps one, and `[]` remains a real empty page.
     """
     payload = _gh_data(args)
     rows = payload.get("issues") if isinstance(payload, dict) else payload
@@ -1645,42 +1395,24 @@ def _repo_args() -> list[str]:
 class _GhFailure(TrackerError):
     """A `gh` invocation that exited non-zero: the tool ran and refused the operation.
 
-    A `TrackerError` either way for every caller, and subclassed only so one of them can tell `gh`
-    refusing a call — the shape a credential problem takes — from this adapter refusing `gh`'s answer.
-    `_confirm_board_access` relabels the first as a missing scope and must not relabel the second: a
-    board too large to read in one call, or a payload of the wrong shape, is not a token problem, and
-    naming it as one sends whoever reads the preflight to `gh auth refresh` over an unrelated fault.
+    A `TrackerError` either way for every caller, and subclassed only so `_confirm_board_access` can tell
+    `gh` refusing a call — the shape a credential problem takes — from this adapter refusing `gh`'s answer,
+    which it must not relabel as a missing scope: a board too large to read in one call, or a payload of the
+    wrong shape, is not a token problem.
     """
 
 
 def _gh(args: list[str]) -> str:
     """Run `gh` in the consuming repository and return its trimmed stdout. Writes nothing to stdout.
 
-    The working directory is the repository the configuration resolved against, never this process's
-    own. `_repo_args()` is empty whenever `tracker_config.repo` is unset — a documented-optional
-    field — and an unqualified `gh` call then resolves its target repository from wherever it runs.
-    That is not where the server runs: a `pixi run <declared-task>` launch puts the process in the
-    *plugin's* checkout, which has an `origin` of its own, so an unqualified write would land in
-    Shipyard's repository rather than the consumer's and report success for it. Pinning `cwd` to the
-    resolved root makes the two agree by construction, config-configured repo or not.
-
-    That `cwd` is checked before `gh` is invoked rather than left to `subprocess.run`, which reports a
-    `cwd` that does not exist as `FileNotFoundError` — the same class a missing `gh` binary raises, so
-    a resolved root pointing at nothing would be reported as "install the GitHub CLI" and send whoever
-    read it after the wrong fix — and a `cwd` that exists but is not a directory as `NotADirectoryError`,
-    an `OSError` this adapter never contracted to let escape. Checked here, `FileNotFoundError` below
-    can only mean the binary.
-
-    The timeout bounds a `gh` that never returns — a network stall, or a credential helper
-    prompting on a stdin no one is answering — because this process has other calls to serve.
-
-    That stdin is closed rather than inherited. This process's own stdin carries the JSON-RPC frames the
-    MCP client sends, and a child inherits it by default: a credential helper prompting for a password, or
-    anything else `gh` reads a line from, would consume a frame the server needed and desynchronise the
-    session — the same failure a stray write to stdout causes, in the other direction. `DEVNULL` turns any
-    such read into an immediate EOF, so `gh` fails fast with its own message instead.
+    The working directory is the repository the configuration resolved against, never this process's own:
+    `_repo_args()` is empty whenever `tracker_config.repo` is unset — a documented-optional field — and an
+    unqualified `gh` then resolves its target repository from wherever it runs, which for a `pixi run` launch
+    is the *plugin's* checkout, so the write would land in Shipyard's repository and report success for it.
     """
     root = config.resolved_root()
+    # Checked before `gh` is invoked: `subprocess.run` reports a missing cwd as `FileNotFoundError`, the same
+    # class a missing binary raises, and a non-directory one as an `OSError` nothing here contracts for.
     if not root.is_dir():
         raise TrackerError(
             f"the repository the configuration resolved against, {root}, is not an existing directory, "
@@ -1688,6 +1420,8 @@ def _gh(args: list[str]) -> str:
             "check CLAUDE_PROJECT_DIR and the .shipyard/ layers it points at."
         )
     try:
+        # The timeout bounds a `gh` that never returns and with it the worker thread the verb offloaded;
+        # DEVNULL because a child inherits the stdin carrying this server's JSON-RPC frames and would eat one.
         proc = subprocess.run(
             ["gh", *args], capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS,
             cwd=root, stdin=subprocess.DEVNULL,
@@ -1728,43 +1462,34 @@ def _gh_json(args: list[str]) -> dict[str, Any]:
 def _shown(args: list[str]) -> str:
     """The `gh` argv as a message may carry it: each element stripped, joined, then scrubbed as output is.
 
-    The argv is not obviously secret-bearing, but `--body` carries whatever the caller wrote and
-    `_repo_args()` carries `tracker_config.repo` — into every verb's argv, not just the one that
-    resolves the repository — so both go through the same redaction as stderr rather than being
-    trusted to be clean.
-
-    The strip is per element and *before* the join, even though `_safe` strips too: an element is the unit
-    the caller controls, so an over-stripping fallback for a malformed authority in one of them cannot
-    reach an element the join happened to put next to it.
+    Not obviously secret-bearing, but `--body` carries whatever the caller wrote and `_repo_args()` carries
+    `tracker_config.repo` into every verb's argv, so both take the same redaction as stderr.
     """
+    # Per element and *before* the join, though `_safe` strips too: an element is the unit the caller
+    # controls, so an over-stripping fallback for one malformed authority cannot reach its neighbour.
     return _safe(" ".join(_stripped_of_credentials(arg) for arg in args))
 
 
 def _stripped_of_credentials(value: str) -> str:
     """`value` with the userinfo of every credentialed authority in it dropped, credential fragments included.
 
-    `gh --repo` accepts an https remote, and an https remote can carry userinfo, so a misconfigured
-    `https://x-access-token:<token>@github.com/owner/repo.git` would otherwise be printed in cleartext by
-    the failure that names it — and `gh`'s own stderr echoes such a value back for several failure shapes,
-    which is why this runs over command output too. What is left — `https://host/owner/repo`, or
-    `host:owner/repo` for an SSH remote — is still the value the operator has to go and fix.
+    `gh --repo` accepts an https remote, an https remote can carry userinfo, and `gh`'s own stderr echoes such
+    a value back for several failure shapes — so a misconfigured
+    `https://x-access-token:<token>@github.com/owner/repo.git` runs through here whether it came from
+    configuration or from command output. What is left — `https://host/owner/repo`, or `host:owner/repo` for
+    an SSH remote — is still the value the operator has to go and fix.
 
-    The value is stripped one whitespace-separated token at a time, and the whitespace is put back: a
-    credentialed reference is rarely the whole value. Real `gh` (2.96.0) quotes one *inside a sentence* —
-    ``Could not resolve to a Repository with the name 'x-access-token:<token>@github.com:owner/repo.git'.``
-    — and a `--body` carries whatever the caller wrote around one. Matching the whole value, which is what
-    the schemeless spellings used to require, therefore missed every prose case; a token cannot contain
-    whitespace, so bounding a match inside one needs no lookahead past the token and several credentialed
-    references in one line are each stripped independently.
+    One whitespace-separated token at a time, whitespace put back, because a credentialed reference is rarely
+    the whole value: real `gh` (2.96.0) quotes one *inside a sentence* and a `--body` carries whatever the
+    caller wrote around one, so matching the whole value missed every prose case. A token cannot contain
+    whitespace, so several credentialed references in one line each strip independently. Punctuation around
+    one is not preserved — dropping `gh`'s opening quote with the userinfo is a cosmetic cost paid to remove
+    the secret.
 
-    Leading and trailing punctuation around a token's credentialed reference — `gh`'s quotes and its
-    trailing period — is not preserved: the userinfo prefix is what is dropped, and dropping an opening
-    quote with it is a cosmetic cost paid to remove the secret.
-
-    Adversarially malformed userinfo is not guaranteed to be stripped in full; real-world credential
-    shapes are. A userinfo holding a raw, unencoded `/` is not RFC 3986 (it would be `%2F`), and no
-    genuine remote or token an operator configures carries one, so `/` is read as the path boundary it is
-    in every compliant value rather than guessed at.
+    Adversarially malformed userinfo is not guaranteed to be stripped in full; real-world credential shapes
+    are. A userinfo holding a raw, unencoded `/` is not RFC 3986 (it would be `%2F`), and no genuine remote or
+    token an operator configures carries one, so `/` is read as the path boundary it is in every compliant
+    value rather than guessed at.
     """
     return "".join(piece if piece.isspace() else _stripped_token(piece) for piece in re.split(r"(\s+)", value))
 
@@ -1772,25 +1497,22 @@ def _stripped_of_credentials(value: str) -> str:
 def _stripped_token(token: str) -> str:
     """One whitespace-free piece of a value, with the userinfo of the credentialed authority in it dropped.
 
-    A token opening an authority with `//` is bounded before the credential is looked for, which is what a
-    `re.sub` could not do: `_stripped_authority` cuts the authority component out first and only the last
-    `@` *inside* it separates userinfo from host, so an extra `@` in the userinfo carries no fragment of
-    itself through.
+    A token opening an authority with `//` is bounded before the credential is looked for, which a `re.sub`
+    could not do: `_stripped_authority` cuts the authority component out first, and only the last `@` *inside*
+    it separates userinfo from host, so an extra `@` in the userinfo carries no fragment of itself through.
 
     Any other token is matched against three schemeless remote spellings: `user:pass@host:path` and
-    `user:pass@host/path`, matched greedily to the last `@` so an extra `@` in the userinfo loses none of
-    itself; and `user:pass@host` with no path or port at all — the bare RFC 3986 authority, which
-    `git credential fill`/`.netrc` hand back directly and which a base-host paste against `--repo`'s
-    `HOST/OWNER/REPO` grammar produces — which requires a colon inside the userinfo to tell it apart from
-    a bare `user@host` address with nothing after it. The userinfo must be non-empty, so `@me` and
-    `@me/abc` are left exactly as configured rather than reported back to the operator as `me/abc`; and a
-    host followed by a bare `:` is not the scp form, so an address in a comment body
-    (`someone@example.com: ...`) is not read as a credential. A token shaped like none of these —
-    `OWNER/REPO`, a flag, an email address — is returned unchanged.
+    `user:pass@host/path`, greedy to the last `@` for that same reason; and `user:pass@host` with no path or
+    port at all — the bare RFC 3986 authority `git credential fill`/`.netrc` hand back and a base-host paste
+    against `--repo`'s `HOST/OWNER/REPO` grammar produces — which needs a colon inside the userinfo to tell it
+    from a bare `user@host` address. The userinfo must be non-empty, so `@me` and `@me/abc` are left exactly as
+    configured, and a host followed by a bare `:` is not the scp form, so an address in a comment body
+    (`someone@example.com: ...`) is not read as a credential. Anything else — `OWNER/REPO`, a flag, an email
+    address — is returned unchanged.
 
-    An address immediately followed by a path (`someone@example.com/team`) *is* the schemeless remote
-    spelling and loses its local part. The two are not distinguishable by shape, and a comment body with a
-    mangled address in it costs less than a body with a token in it.
+    An address immediately followed by a path (`someone@example.com/team`) *is* the schemeless spelling and
+    loses its local part: the two are not distinguishable by shape, and a mangled address in a comment body
+    costs less than a token in one.
     """
     if "//" in token:
         head, *segments = token.split("//")
@@ -1801,10 +1523,9 @@ def _stripped_token(token: str) -> str:
 def _stripped_authority(segment: str) -> str:
     """One `//`-opened piece of a value, with the userinfo of the authority it opens with dropped.
 
-    The authority is everything up to the first `/`, `?` or `#`, and the host is what follows its last
-    `@`. A segment whose host is then not a host at all is not something this can reason about as a URL,
-    so it falls back to dropping everything before the segment's last `@` — over-stripping a malformed
-    value rather than printing what may be a password with a slash in it.
+    The authority is everything up to the first `/`, `?` or `#`, and the host is what follows its last `@`. A
+    segment whose host is then not a host at all falls back to dropping everything before the segment's last
+    `@` — over-stripping a malformed value rather than printing what may be a password with a slash in it.
     """
     boundary = min((cut for cut in (segment.find(char) for char in "/?#") if cut != -1), default=len(segment))
     authority, tail = segment[:boundary], segment[boundary:]
@@ -1817,42 +1538,31 @@ def _stripped_authority(segment: str) -> str:
 def _safe(text: str) -> str:
     """`text` as a message may carry it: credentials this process holds redacted, URL userinfo dropped.
 
-    Three passes, and none can do the others' job. Scrubbing catches the credentials this process holds
-    in its own environment; discovery honours `redaction.extra_words`, so an org-specific credential name
-    redacts here exactly as it does on the attach-artifact sanitisation path. Stripping catches a
-    credential this process cannot recognise by value, by its shape in free text — a token misconfigured
-    into a remote URL. But a bare `<token>@host` with no path, port, or colon in it is shape-identical to
-    a real email address, and no pattern can tell the two apart in *free* text without also mangling every
-    genuine address a `gh` error or a comment body carries; found by review, round 10.
+    Three passes, and none can do the others' job. Scrubbing catches the credentials this process holds in its
+    own environment, honouring `redaction.extra_words` so an org-specific credential name redacts here exactly
+    as on the attach-artifact sanitisation path. Stripping catches a credential this process cannot recognise
+    by value, by its shape in free text. Neither reaches a bare `<token>@host` with no path, port or colon in
+    it, which is shape-identical to a real email address: no pattern can tell those two apart in *free* text
+    without also mangling every genuine address a `gh` error or a comment body carries.
 
-    The third pass sidesteps that ambiguity by not pattern-matching at all: `tracker_config.repo` and
-    `.project` are held directly, not inferred from arbitrary output, so any `@` in either — other than
-    the literal `@me`/`@me/...` self-reference, which is the one legitimate use of `@` a project value
-    has — is unambiguously a credential boundary *in this narrow, known context*, the same way scrubbing
-    already treats an environment variable's value as unambiguously sensitive because of what it is, not
-    what it looks like. The exact prefix is registered for the same literal-value replacement scrubbing
-    already does, so the schemeless and colon-less shapes the strip cannot safely touch — with a colon,
-    without one, with or without a path — are caught here by matching the value itself rather than
-    guessing at its shape; a scheme-bearing echo is already the strip's, scheme-case-agnostically. Below
-    `DEFAULT_MIN_LENGTH` a prefix is not registered at all: a degenerate one- or two-character value would
-    otherwise redact every short, unrelated `@`-bearing substring a message happens to carry.
+    The third pass sidesteps that ambiguity by not pattern-matching at all. `tracker_config.repo` and
+    `.project` are held directly, not inferred from arbitrary output, so any `@` in either — other than the
+    literal `@me`/`@me/...` self-reference — is unambiguously a credential boundary *in this narrow, known
+    context*, the way scrubbing already treats an environment variable's value as sensitive for what it is
+    rather than what it looks like. Its exact prefix is registered for the same literal-value replacement, so
+    the schemeless and colon-less shapes the strip cannot safely touch are caught by matching the value itself;
+    a scheme-bearing echo is already the strip's, scheme-case-agnostically. Below `DEFAULT_MIN_LENGTH` no
+    prefix is registered at all: a degenerate one- or two-character value would otherwise redact every short,
+    unrelated `@`-bearing substring a message happens to carry.
 
     Every message built from `gh` output, from `_shown`'s argv rendering, or from a configured
-    `tracker_config.repo`/`.project` value — the values that can actually carry a credential — goes
-    through here, and the strip is part of it rather than something each site remembers to do: `gh`'s own
-    stderr echoes a credentialed repository value back for a GraphQL resolution error, an HTTP error
+    `tracker_config.repo`/`.project` value goes through here, the strip included rather than left to each site:
+    `gh`'s own stderr echoes a credentialed repository value back for a GraphQL resolution error, an HTTP error
     naming the URL, and a malformed-URL argument error, so the site-by-site version of this leaked from
-    whichever verb was fixed second. The two messages that echo a *caller-supplied* free-text string —
-    `_sync_create_issue`'s title and `_sync_add_label`'s label — go through here too. The earlier reasoning
-    that a title is "never credential-shaped by construction" was a claim about what a caller pastes, not a
-    property of the value: a title assembled from command output can carry a token exactly as a body can,
-    and `gh`'s own failure output echoes both back. The server scrubs those two fields on the way in as
-    well; this is the second half, for a value that reached a message without passing through it.
-
-    The remaining interpolations are of `gh`-returned or configured identifiers — an assignee login, a
-    configured `columns.*` display name, a board field's own option titles, the label names a re-read
-    reports — which are not caller free text and are never a token's home; only a repository or project
-    reference is.
+    whichever verb was fixed second. So do the two messages that echo caller-supplied free text — a title and
+    a label — since a title assembled from command output can carry a token exactly as a body can, whatever a
+    caller usually pastes; the server scrubs those two fields on the way in, and this is the second half. Every
+    other interpolation here is a `gh`-returned or configured identifier, which is never a token's home.
     """
     secrets = dict(discover_secret_vars(extra_words=config.extra_secret_words()))
     configured_paths = (
@@ -1870,17 +1580,15 @@ def _safe(text: str) -> str:
 def _configured_secret_prefix(path: str) -> str | None:
     """The credential-bearing prefix of a configured repository/project reference, or `None` without one.
 
-    Read directly from config rather than matched against arbitrary text, which is what lets this catch
-    the one shape no pattern safely can: a bare `<token>@host` is indistinguishable from an email address
-    in free text, but `tracker_config.repo`/`.project` is never legitimately an email address, so any `@`
-    in it is unambiguously a credential boundary here — except the literal `@me` or `@me/...` self-
-    reference, `tracker_config.project`'s one legitimate use of `@`, which this leaves alone rather than
-    reporting it back to the operator as a value they never configured.
+    Read directly from config rather than matched against arbitrary text, which is what lets this catch the one
+    shape no pattern safely can: a bare `<token>@host` is indistinguishable from an email address in free text,
+    but these two values are never legitimately an email address, so any `@` in one is a credential boundary —
+    except the literal `@me` or `@me/...` self-reference, `tracker_config.project`'s one legitimate use of `@`.
 
     The carve-out does not generalise beyond that one literal form: a typo like `myorg@3` is treated as a
-    credential too, and reported redacted rather than verbatim — hiding the very value the operator would
-    need to see to fix it. That is the same trade this file already makes everywhere else in this
-    direction: erring toward over-redaction of an ambiguous value costs a confusing message, not a leak.
+    credential too and reported redacted rather than verbatim, hiding the very value the operator needs to see
+    to fix it. That is this file's trade everywhere in this direction — over-redacting an ambiguous value costs
+    a confusing message, not a leak.
     """
     value = str(config.get(path, default="") or "")
     if not value or value == "@me" or value.startswith("@me/"):

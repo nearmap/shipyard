@@ -73,8 +73,8 @@ def _load_cache() -> dict:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return {}  # unreadable or non-UTF-8 bytes are a miss too, not only a bad JSON parse
     return data if isinstance(data, dict) else {}  # valid JSON but the wrong shape is still a miss
 
 

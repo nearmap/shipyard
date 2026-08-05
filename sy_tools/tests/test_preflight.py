@@ -65,6 +65,12 @@ def test_a_cache_holding_valid_json_of_the_wrong_shape_misses_instead_of_crashin
     assert not preflight.check("trackerA", VARS, 3600), "valid JSON that isn't an object must be a miss"
 
 
+def test_a_cache_holding_non_utf8_bytes_misses_instead_of_crashing(cache):
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(b"\xff\xfe\x00\x01")
+    assert not preflight.check("trackerA", VARS, 3600), "non-UTF-8 bytes must be a miss, not a decode crash"
+
+
 def test_a_non_numeric_verified_at_misses_instead_of_crashing(cache):
     preflight.record("trackerA", VARS)
     corrupted = {**json.loads(cache.read_text(encoding="utf-8")), "verified_at": "not-a-number"}

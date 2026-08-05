@@ -7,7 +7,9 @@ than one because each walks a different tree by a different rule.
 
 There are exactly three exemptions: the legal zone, adapter tests, and this file. `sy_tools/guards/`
 is not one of them — a hook guard's self-test corpus needs command strings of a realistic *shape*,
-which a tracker-neutral stand-in gives it, so the guards' corpora name no tracker.
+which a tracker-neutral stand-in gives it. The patterns below are word-bounded, so a tracker name
+buried in an identifier (`ACLI_TOKEN`) reads as one word to `\b` and slips a scan that a bare `acli`
+would fail; the corpora therefore use neutral names (`EXAMPLE_TOKEN`) rather than relying on that.
 """
 from __future__ import annotations
 

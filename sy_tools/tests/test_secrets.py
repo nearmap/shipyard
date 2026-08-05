@@ -140,7 +140,7 @@ def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
     }
     proc = subprocess.run(
         [sys.executable, "-m", "sy_tools.guards.secret_guard"],
-        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo $ACLI_TOKEN"}}),
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo $EXAMPLE_TOKEN"}}),
         cwd=tmp_path, capture_output=True, text=True, check=False, env=env,
     )
     assert proc.returncode == 0, f"the hook crashed instead of degrading: {proc.stderr}"
@@ -196,7 +196,7 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
         "if 'extra_words' not in (secret_guard._CONFIG_WARNING or ''):\n"
         "    raise AssertionError(f'the drop must be reported: {secret_guard._CONFIG_WARNING}')\n"
-        "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
+        "if not secret_guard.decision('Bash', {'command': 'echo $EXAMPLE_TOKEN'}):\n"
         "    raise AssertionError('built-ins must still deny')\n"
     )
     # Phase two answers every earlier call and wedges the last: the resolver reaches git in four
@@ -228,7 +228,7 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "        raise AssertionError(f'{site} was never reached, so its bound is unproven: {calls}')\n"
         "if secret_guard._extra_words() != frozenset():\n"
         "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
-        "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
+        "if not secret_guard.decision('Bash', {'command': 'echo $EXAMPLE_TOKEN'}):\n"
         "    raise AssertionError('built-ins must still deny')\n"
     )
     for label, child in (("the first git call", wedge_first), ("a later git call", wedge_last)):

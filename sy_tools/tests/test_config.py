@@ -1253,4 +1253,4 @@ def test_a_name_the_environment_cannot_encode_is_absent_rather_than_a_crash():
     presence answer is not. Nothing can export an unpaired surrogate, so absent is also the true answer.
     """
     assert config.env_present("\ud800") is False
-    assert config.env_present("ACLI_\udfff_TOKEN") is False
+    assert config.env_present("EXAMPLE_\udfff_TOKEN") is False

@@ -5,27 +5,16 @@ WARNING: THIS CREATES REAL ISSUES (an Epic + 3 Tasks), real comments, a real att
          board moves in whatever project `.shipyard/config.json` resolves to. Point it at a SCRATCH
          project, never a production one. It refuses to run until you set SMOKE_LIVE=1.
 
-Tracker-agnostic by construction: it spawns the `sy` MCP server as a real subprocess, connects the
-SDK's own stdio client to its pipes, and calls tools by their canonical names. Which tracker those
-tools reach is the server's business, resolved from configuration — this file names none, imports no
-adapter, and would smoke a tracker added after it was written. `validate_config` runs first and
-reports the tracker it resolved, so the transcript still says what was exercised.
-
-The server resolves configuration from `CLAUDE_PROJECT_DIR` when it is set, and otherwise from a `git
-rev-parse` of its own working directory. Nothing sets that pointer here — this script is not launched
-by Claude Code — so the cwd-derived half is the path it relies on: run it from the consuming project
-and that project's board is what gets smoked. The manifest path is absolute for the opposite reason —
-`pixi` finds its manifest by walking up from the working directory, which is not where this plugin
-lives. The environment is forwarded whole, because the tracker credential arrives in it and the SDK's
-stdio client otherwise passes on only a fixed handful of variables.
+Run it from the consuming project: the server resolves configuration from its own working directory,
+so that project's board is the one smoked. This file names no tracker and imports no adapter, and
+`validate_config` runs first so the transcript reports whichever one the server resolved.
 
 Verbs exercised: preflight, create-issue, create-child, get-issue, update-issue, find-issues,
   set-status, assign, link-parent, add-dependency, add-label, post-comment, post-log, link-pr,
   attach-artifact, type-convert, attachment-download, attachment-update.
 
-Cleanup: created issues are left in place by default. Set SMOKE_CLEANUP=1 to move them to `done`,
-which is as far as the canonical verb surface goes — it has no delete verb, so removing them is a
-manual step. Nothing this run did not create is ever touched.
+Cleanup: created issues are left in place unless SMOKE_CLEANUP=1 moves them to `done`; the canonical
+verb surface has no delete verb, so removal is manual. Nothing this run did not create is touched.
 
 Commands:
   run          # SMOKE_LIVE=1 required; spawns the server and drives every verb live
@@ -51,10 +40,8 @@ OPT_IN_ENV = "SMOKE_LIVE"
 CLEANUP_ENV = "SMOKE_CLEANUP"
 PR_PLACEHOLDER = "https://example.invalid/repo/pull/1"
 SMOKE_LABEL = "documentation"
-"""A label a scratch project already has, because `add-label` deliberately does not create a missing one.
-
-An adapter that invented one would hide a typo in a real caller, so it refuses instead — which means this
-scenario has to name a label that exists rather than one that reads well."""
+"""A label a scratch project already has: `add-label` refuses to create a missing one, since inventing
+one would hide a typo in a real caller."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
 VERB_TOOLS: dict[str, str] = {
@@ -89,42 +76,24 @@ UNEXERCISED_TOOLS = frozenset({
 })
 """Tools the server registers that this scenario deliberately does not call.
 
-Named rather than implied, so the self-test can compare the two sets exactly: a tool added to the
-server and smoked by nobody has to be an explicit decision, not an omission that passes.
-
-None is a canonical contract verb, and none reaches the tracker: `reload_config` mutates the server's
-hot config out from under a live scenario, `check_env` reports environment presence, and five read the
-resolved configuration — so a live run has nothing to learn from any of them that `preflight` does not
-already prove, and `sy_tools/tests/test_config.py` covers what they resolve against a fixture layer
-chain rather than whatever the running machine happens to be configured to.
-
-`usage_summarize` and `export_transcript` are here for a different reason: both read the caller's own
-on-disk transcript tree, whose contents are whatever session happens to be running the smoke, so a
-live call proves nothing repeatable and an export would write a copy of this very session to disk.
-`sy_tools/tests/test_usage.py` covers both against a synthetic tree instead.
-
-The three `memory_*` tools are here for the same shape of reason: they read and write the operator's
-real user-global memory root, so a live run would either pollute the durable store with scenario
-lessons or report whatever that machine happens to hold. `sy_tools/tests/test_memory.py` covers them
-against a temporary root instead."""
+Named rather than implied so the self-test can compare the two sets exactly: a tool the server gains
+and nobody smokes has to be an explicit decision, not an omission that passes. None is a contract verb
+and none reaches the tracker — a live call would mutate the server's own config, or the operator's real
+memory root, or read whatever session happens to be running — so `sy_tools/tests/` covers them against
+fixtures (`test_config.py`, `test_usage.py`, `test_memory.py`) instead."""
 
 SERVER_SOURCE = PLUGIN_ROOT / "sy_tools" / "server.py"
 TOOL_REGISTRATION = re.compile(r"""@mcp\.tool\(name=["']([^"']+)["']\)""")
 
 
 def _server_params() -> dict[str, Any]:
-    """How to launch the real server: the way `.mcp.json` launches it, with an absolute manifest.
-
-    The environment is passed explicitly and in full. `stdio_client` does not inherit the caller's
-    when `env` is omitted — it forwards a fixed, credential-free allowlist (`DEFAULT_INHERITED_ENV_VARS`:
-    HOME, LOGNAME, PATH, SHELL, TERM, USER) — so the tracker credential the caller's shell already holds
-    would never reach the spawned server, and a live run would fail authentication rather than smoke
-    anything. Which variable that credential is named in is the adapter's business, not this file's,
-    which is why the whole environment goes rather than a list this script would have to keep current.
-    """
+    """How to launch the real server: the way `.mcp.json` launches it, with an absolute manifest."""
     return {
         "command": "pixi",
+        # Absolute: `pixi` finds a manifest by walking up from the working directory, not from this file.
         "args": ["run", "--manifest-path", str(PLUGIN_ROOT / "pyproject.toml"), "sy-server"],
+        # The whole environment, since which variable holds the tracker credential is the adapter's
+        # business: with `env` omitted, `stdio_client` forwards only `DEFAULT_INHERITED_ENV_VARS`.
         "env": dict(os.environ),
     }
 
@@ -133,10 +102,8 @@ def _registered_tools() -> frozenset[str]:
     """Every tool name the shipped server registers, read out of its source.
 
     Read, not imported: `scripts/validate.py` runs this self-test on a bare interpreter, where importing
-    the server would die on the SDK it is built on before a single name could be compared. Every
-    registration is a literal `@mcp.tool(name=...)` decorator, so the source is an exact index of them —
-    and comparing against it is what makes a renamed or deleted tool fail here rather than at the first
-    live run, which is what this offline check is for.
+    the server would die on the SDK it is built on. Every registration is a literal `@mcp.tool(name=...)`,
+    so the source is an exact index of them.
     """
     return frozenset(TOOL_REGISTRATION.findall(SERVER_SOURCE.read_text(encoding="utf-8")))
 
@@ -195,8 +162,7 @@ class Smoke:
         """Create an Epic and three child Tasks, then exercise every canonical verb against them."""
         config = await self.call("validate_config", {})
         print(f"==> tracker: {(config or {}).get('tracker', 'unresolved')} valid={(config or {}).get('valid')}")
-        # `force`, because a cached success from an earlier run proves nothing about this one: a live
-        # run's whole claim is that the credential works now.
+        # `force`: a cached success from an earlier run proves nothing about this one.
         await self.call("preflight", {"force": True})
 
         epic = _issue_id(await self.call("create-issue", {
@@ -217,9 +183,8 @@ class Smoke:
             ids = [str(entry.get("id")) for entry in found.get("issues", [])]
             self.check("find-issues", epic in ids, f"epic {epic} absent from {len(ids)} matching epics")
 
-        # Two created already parented and one created unparented: `link-parent` re-parents an existing
-        # issue, so aiming it at the parent an issue already has exercises nothing, and a tracker may refuse
-        # it outright as a duplicate relation.
+        # One of the three is created unparented: `link-parent` re-parents, so aiming it at the parent an
+        # issue already has exercises nothing and a tracker may refuse it as a duplicate relation.
         tasks: list[str] = []
         for n in (1, 2, 3):
             task = _issue_id(await self.call("create-child" if n < 3 else "create-issue", {
@@ -277,8 +242,7 @@ class Smoke:
         if attached is not None:
             self.check("attach-artifact", bool(attached.get("attached")), f"not attached: {attached}")
 
-        # Compared by content, not by existence: a download that wrote the wrong bytes passed an
-        # existence check as a success once already, and on disk the two are indistinguishable.
+        # Compared by content: a download that wrote the wrong bytes once passed an existence check.
         sent = artifact.read_text(encoding="utf-8")
         roundtrip = tmp / "roundtrip.txt"
         await self.call("attachment-download", {
@@ -291,10 +255,8 @@ class Smoke:
             f"what came back is not what was attached: sent {sent.strip()!r}, got {landed.strip()!r}",
         )
 
-        # `kind` and `caller` mirror the attach above for the same reason: `attachment-update` defaults
-        # to the gated `transcript` kind, and a gated call returns `{"updated": false, "skipped": true}`,
-        # which is a successful tool call that replaced nothing. Un-gated and read back, or this verb is
-        # counted as exercised by a skip.
+        # `kind` and `caller` mirror the attach above: `attachment-update` defaults to the gated
+        # `transcript` kind, whose `{"updated": false, "skipped": true}` is a success that replaced nothing.
         revised = f"shipyard smoke transcript for {run_tag}\nrevised, still no secrets.\n"
         artifact.write_text(revised, encoding="utf-8")
         updated = await self.call("attachment-update", {
@@ -311,9 +273,8 @@ class Smoke:
     async def _read_back(self, issue: str, filename: str, destination: Path) -> str | None:
         """Download `filename` off `issue` without tallying a verb: None when the tracker refuses.
 
-        Untallied deliberately: this is `attachment-update`'s own evidence that the replacement landed,
-        not a second, independently-scored `attachment-download` — routing it through `call` would
-        double-count one download as two verbs exercised.
+        Untallied deliberately: this is `attachment-update`'s own evidence, and routing it through `call`
+        would double-count one download as two verbs exercised.
         """
         result = await self.client.call_tool(VERB_TOOLS["attachment-download"], {
             "issue": issue, "filename_or_id": filename, "output_path": str(destination),
@@ -355,8 +316,8 @@ class Smoke:
 
 async def run_live() -> int:
     """Connect to a freshly spawned server, run the scenario, optionally tidy, and report."""
-    # Imported here, not at module scope: `self-test` has to pass on a bare interpreter, which is how
-    # scripts/validate.py invokes it, while the SDK exists only inside this repo's pixi environment.
+    # Imported here, not at module scope: the SDK exists only inside this repo's pixi environment, while
+    # `self-test` has to pass on the bare interpreter scripts/validate.py invokes it with.
     import mcp
     from mcp import StdioServerParameters, stdio_client
 

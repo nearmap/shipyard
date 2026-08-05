@@ -1,29 +1,26 @@
 #!/usr/bin/env bash
-# Shared token-free CI poller for ship phases. Launch in the background (run_in_background);
-# it sleeps between checks and exits when nothing is pending, so waiting costs no reasoning turns.
-# jq-free by design and talks only to the code host. Every ship phase invokes this instead of
-# hand-writing its own poller.
+# Shared token-free CI poller for ship phases: launch it in the background (run_in_background) and it
+# sleeps between checks, so waiting costs no reasoning turns. Every ship phase invokes this rather than
+# hand-writing a poller; jq-free by design, and it talks only to the code host.
 #
 # Usage:
 #   ci_poll.sh poll <pr-number-or-branch> [interval_s] [timeout_s]
 #   ci_poll.sh self-test
 #
-# Omitted interval_s/timeout_s come from resolved config (ci.poll_interval, ci.poll_timeout) —
-# raise ci.poll_timeout for repos/matrices whose CI routinely outlasts 30 minutes so a single
-# poll call spans the wait.
+# Omitted interval_s/timeout_s come from resolved config (ci.poll_interval, ci.poll_timeout); raise
+# ci.poll_timeout where CI routinely outlasts it, so one poll call spans the whole wait.
 #
 # Exit codes for poll: 0 = checks green or none reported (nothing pending);
 # 1 = checks terminal with failures; 2 = timed out while still pending.
 set -euo pipefail
 
-# Single reader for every setting; never re-derive a default here. Every other read of the resolver is
-# an MCP tool call, which a bash script cannot make, so this reaches the same `sy_tools.config.get` the
-# tool does, in-process. Deliberately not via a `python -m` entry point on that module: adding one would
-# put a second, argv-shaped resolution path beside the tool surface, which is the duplication retiring
-# the old config CLI removed. PYTHONPATH is set the way `hooks/hooks.json` sets it, for the same reason —
-# the plugin root has to reach `sys.path`, and neither a hook nor this poller may depend on `pixi run`.
+# Single reader for every setting; never re-derive a default here. In-process rather than a `python -m`
+# entry point on that module: a bash script cannot make an MCP call, and an argv-shaped second path would
+# duplicate the tool surface.
 _config() {
     local root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    # PYTHONPATH, as in `hooks/hooks.json`: the plugin root has to reach `sys.path`, and neither a hook
+    # nor this poller may depend on `pixi run`.
     PYTHONPATH="$root" python -c 'import sys; from sy_tools.config import get; print(get(sys.argv[1]))' "$1"
 }
 

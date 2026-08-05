@@ -86,4 +86,4 @@ Then call the `preflight` verb, which is the live half: it proves `gh` is authen
 
 ## Note on organizations and native issue types
 
-You do **not** need an org. If you already have one, an org-owned board works the same way — just set `tracker_config.project=<org>/<number>`. GitHub's native `issue_type` field (Epic/Task/Bug shown on the issue itself) is org-only, but Shipyard deliberately does not use it: the project `Type` field is the single mechanism across personal and org projects, so behaviour is identical either way and a personal private project (which cannot be moved into a Free org) is fully supported.
+If you already have an org, an org-owned board works the same way — just set `tracker_config.project=<org>/<number>`. The project `Type` field (not GitHub's native, org-only `issue_type`) is what makes that possible: behaviour is identical either way, so a personal private project — which cannot be moved into a Free org — is fully supported too.

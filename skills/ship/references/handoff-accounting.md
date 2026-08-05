@@ -103,18 +103,18 @@ These are settled definitions, not restatements: several of them were being coun
 
 ## 4. Transcript attachment (full tier only, and only when enabled)
 
-This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true — `get_config {"key": "transcript.attach"}` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). When `transcript.attach` is false, skip this record on `full` tier exactly as `light` tier already does — same `transcript_attachment: null` in the metrics JSON.
+This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true (`get_config {"key": "transcript.attach"}`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). Otherwise skip it exactly as `light` tier does — same `transcript_attachment: null` in the metrics JSON.
 
-When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders and uploads the transcript straight from the on-disk session tree, so nothing session-bound and no by-hand `/export` is involved. It renders the whole tree — main plus every nested subagent — into one readable file:
+When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders the whole tree — main plus every nested subagent — into one readable file straight from the on-disk session tree, so nothing session-bound and no by-hand `/export` is involved:
 
 ```
 export_transcript {"session_id": "$SHIP_SESSION_ID", "task": "$TASK_KEY",
                    "output": "<scratch_dir($TASK_KEY)>/$TASK_KEY-ship-transcript.txt"}
 ```
 
-`output` is mandatory and the rendered text is never returned — the file is scanned and uploaded by path, never read back. The renderer truncates bulky tool output and strips raw-JSONL noise, so the result is an audit-readable transcript, not a machine dump; token accounting still comes from `usage_summarize`. The delegate then runs the deterministic scan (known-secret scrub, then `gitleaks`), contextual review, and redaction, uploads exactly one attachment, and verifies it, per `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` and the `tracker` skill's attachment flow. Run it as late as possible (after an authorized merge) so the captured tail is maximal; because it reads on-disk transcripts it can also run on a resumed session. The rendered transcript is never read back into the ship context.
+`output` is mandatory and the rendered text is never returned — the file is scanned and uploaded by path, never read back. The renderer truncates bulky tool output and strips raw-JSONL noise, so the result is an audit-readable transcript, not a machine dump; token accounting still comes from `usage_summarize`. Run it as late as possible (after an authorized merge) so the captured tail is maximal; because it reads on-disk transcripts it can also run on a resumed session.
 
-Subagent delegation is the primary path. When it is denied under auto-mode — the delegation itself is refused rather than the attachment — the identical operation may run inline as an explicit permitted fallback: make the same `export_transcript` call above, then the deterministic scan and redaction, then upload the single attachment through the `tracker` skill's attachment flow, all directly in the caller. This is the authorized-alternate-route case of the denied-write boundary in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: it is the same documented render-and-attach, not a reroute to force a write the operator blocked. The invariant is unchanged — the rendered transcript file is written, scanned, and uploaded by path only, and its text is never read back into the caller context. The fallback's scan is deterministic-only — it drops the contextual-review step of the primary path, since reading the transcript to review it would defeat the isolation invariant it exists to preserve — so treat a clean result here as evidence, not proof, per the `tracker` skill's attachment flow. If neither path can complete, surface it loudly (do not silently skip the attachment) per the same boundary.
+Scan, redact, and upload exactly one attachment — and, when the delegation itself is denied under auto-mode, fall back to the identical `export_transcript` call inline — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/transcript-attach.md` and `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md`'s attachment flow.
 
 ## Handoff
 

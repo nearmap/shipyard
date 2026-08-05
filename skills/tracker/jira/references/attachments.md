@@ -4,18 +4,16 @@ Use for large durable artifacts, especially session transcripts. Attachments bel
 
 ## Render a session transcript
 
-Render the whole transcript tree (main plus every nested subagent) from the on-disk JSONL rather than running `/export` by hand:
+Render the whole transcript tree (main plus every nested subagent) from the on-disk JSONL rather than running `/export` by hand, with the `export_transcript` tool:
 
-```bash
-python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py export \
-  --session-id "$SESSION_ID" \
-  --task "$KEY" \
-  --output "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$KEY")/$KEY-$KIND-transcript-$(date -u +%Y%m%d%H%M).txt"
+```
+export_transcript {"session_id": "<current session id>", "task": "<KEY>",
+                   "output": "<resolved scratch dir>/<KEY>-<KIND>-transcript-<UTC yyyymmddHHMM>.txt"}
 ```
 
-`$SESSION_ID` is the current session id; `$KIND` is `ship`, `spec`, or `plan`. The renderer truncates bulky tool output and strips raw-JSONL noise, so the file stays audit-readable. Prefer rendering from a delegate so the rendered text never enters the caller's context; when that delegation is denied under auto-mode, rendering inline via direct Bash is a permitted fallback, provided the rendered transcript is still never read back into the caller's context. Run it as late as the session allows so the captured tail is maximal.
+Give `session_id` or an explicit `transcript` path, not both and not neither. `output` is mandatory and the rendered text is never returned — that is the point: the file can be scanned, redacted and attached by path without ever entering a context. The result reports the path, byte count and line count it wrote. `<KIND>` is `ship`, `spec`, or `plan`; resolve `<resolved scratch dir>` with `scratch_dir {"identifier": "<KEY>"}` and use the `path` it reports. The renderer truncates bulky tool output and strips raw-JSONL noise, so the file stays audit-readable. Prefer rendering from a delegate so the rendered text never enters the caller's context; when that delegation is denied under auto-mode, rendering inline via direct Bash is a permitted fallback, provided the rendered transcript is still never read back into the caller's context. Run it as late as the session allows so the captured tail is maximal.
 
-Whether an artifact is attached at all is gated by `transcript.attach` (resolve via `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). `/ship` additionally requires the `full` process tier on top of `transcript.attach`; `/spec` and `/plan` gate on `transcript.attach` alone, attaching to the Task and the Epic respectively. Resolve the gate *before* rendering — the render is the expensive part and the attach step cannot un-render a file.
+Whether an artifact is attached at all is gated by `transcript.attach` (resolve via `get_config {"key": "transcript.attach"}`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). `/ship` additionally requires the `full` process tier on top of `transcript.attach`; `/spec` and `/plan` gate on `transcript.attach` alone, attaching to the Task and the Epic respectively. Resolve the gate *before* rendering — the render is the expensive part and the attach step cannot un-render a file.
 
 ## Attach
 
@@ -26,13 +24,13 @@ attach-artifact {"issue": "PROJ-123", "path": "<resolved scratch dir>/PROJ-123-s
                  "kind": "transcript", "caller": "ship", "process_tier": "full"}
 ```
 
-`path` is the absolute path the render above actually wrote: resolve the scratch directory in the shell and pass the result, since the tool takes a literal string and expands no substitution of its own.
+`path` is the absolute path the render above actually wrote — the one `export_transcript` reported: pass that literal string, since the tool expands no substitution of its own.
 
 One call does gate, both sanitisation passes, and upload. It re-checks the gate itself and returns a no-op skip when it is off — nothing is read, scrubbed, scanned, or uploaded — so the gate cannot be forgotten at the upload site. Pass `caller` and `process_tier` honestly: a `ship` caller without the `full` tier is skipped, and one that omits `process_tier` is skipped too, which is the safe direction to fail. Only `kind: transcript` is gated; other kinds attach unconditionally.
 
 The tool dispatches to the configured tracker's adapter, so the caller names no tracker: Jira gets a native work-item attachment, GitHub a private gist. Credentials are read from the server's environment — never argv, never stdout. It returns whether it attached or skipped, the scrub summary (variable names and counts, never a value), and the tracker's own response evidence.
 
-`${CLAUDE_PLUGIN_ROOT}/scripts/scrub_known_secrets.py` still ships and still works standalone (`--help` documents it) — it is a general-purpose security utility, not tracker mechanics, and is unaffected by anything here. What no longer exists is a second, unscanned upload path: replacing an already-attached artifact goes through `attachment-update`, which runs the same gate and the same two passes in the same order, so there is no way to upload one that skips them.
+There is no standalone scrub script to run by hand any more: both passes live inside the tools, in `sy_tools/secrets.py`, which `attach-artifact` and `attachment-update` each call (as `secrets.sanitize`) before anything is uploaded. That machinery is general-purpose and tracker-neutral rather than tracker mechanics, and nothing here changes it — what it removes is any need for a caller to remember a preparatory step, and any second, unscanned upload path: replacing an already-attached artifact goes through `attachment-update`, which runs the same gate and the same two passes in the same order, so there is no way to upload one that skips them.
 
 ## Why sanitisation is part of the attach
 
@@ -43,7 +41,7 @@ Two passes, in this order, both mandatory — the tool exposes no way to run one
 
 A zero-result scan is evidence, not proof of safety. Neither pass substitutes for the other: the scrub catches known values verbatim regardless of shape; the scanner catches shapes it recognises regardless of whether this process ever held the value. Findings name a rule, not a value — inspect the file, redact contextual secrets the rules miss (organisation-specific identifiers, private signed URLs, `.env` values), and re-attach. If safe redaction is uncertain, stop rather than publishing.
 
-When diagnosing tracker credentials, never dump them to inspect: `env | grep -i token`, `echo $ACLI_TOKEN`, and similar print the raw value into that command's own tool-call result, which is permanent session history from that point on — it resurfaces in every future transcript render whether or not it started life as a leak. Use the `check_env` MCP tool instead (`name: ACLI_TOKEN`): it reports only whether the variable is set and non-empty, never returns a value, and so has nothing to leak — a plain `[ -n "$ACLI_TOKEN" ]` is the shell equivalent if no MCP session is available. The tracker's own `preflight` command remains the check for a credential that is present but dead, and it too names what's missing without ever printing a value. `scripts/secret_guard.py` (a `PreToolUse` hook on every `Bash` call) denies the dump/echo patterns outright rather than relying on this being remembered.
+When diagnosing tracker credentials, never dump them to inspect: `env | grep -i token`, `echo $ACLI_TOKEN`, and similar print the raw value into that command's own tool-call result, which is permanent session history from that point on — it resurfaces in every future transcript render whether or not it started life as a leak. Use the `check_env` MCP tool instead (`name: ACLI_TOKEN`): it reports only whether the variable is set and non-empty, never returns a value, and so has nothing to leak — a plain `[ -n "$ACLI_TOKEN" ]` is the shell equivalent if no MCP session is available. The `preflight` tool remains the check for a credential that is present but dead, and it too names what's missing without ever printing a value. `sy_tools/guards/secret_guard.py` (a `PreToolUse` hook on every `Bash` call) denies the dump/echo patterns outright rather than relying on this being remembered.
 
 Rules:
 

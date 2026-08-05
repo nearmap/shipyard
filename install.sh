@@ -7,13 +7,18 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 command -v python >/dev/null 2>&1 || { echo "ERROR: python not found on PATH" >&2; exit 1; }
 
-# Hard, and checked for every tracker: the `sy` MCP server is launched as `pixi run sy-server`, so
-# without pixi it cannot start at all.
+# Single reader for every setting; nothing here re-derives a default. In-process because a bash script
+# cannot make an MCP call, and on bare `python` because this must run before `pixi run` is known to work.
+_resolver() {
+  local snippet="$1"; shift
+  # PYTHONPATH, as in `hooks/hooks.json`: the plugin root has to reach `sys.path`.
+  PYTHONPATH="$PLUGIN_ROOT" python -c "$snippet" "$@"
+}
+
 command -v pixi >/dev/null 2>&1 || \
   { echo "ERROR: pixi not found on PATH; the sy MCP server runs as 'pixi run sy-server'. Install it: https://pixi.sh/latest/#installation" >&2; exit 1; }
 
-# Pre-warm the server's environment. --locked refuses to re-resolve, so a pyproject.toml that has
-# moved away from the committed pixi.lock stops here instead of installing something untested.
+# --locked refuses to re-resolve, so lock/manifest drift stops here rather than installing something untested.
 echo "Preparing the sy MCP server environment..."
 if ! (cd "$PLUGIN_ROOT" && pixi install --locked); then
   echo "ERROR: 'pixi install --locked' failed. If it reports a lock mismatch, pixi.lock and pyproject.toml disagree in this checkout — that is the plugin's bug, not yours; report it rather than running 'pixi install' without --locked." >&2
@@ -33,12 +38,17 @@ fi
 echo "Validating Shipyard plugin..."
 python "$PLUGIN_ROOT/scripts/validate.py"
 
-# Every setting resolves through one reader; nothing here re-derives a default.
-if ! python "$PLUGIN_ROOT/scripts/sy_config.py" validate; then
+if ! _resolver '
+import sys
+from sy_tools.config import validate
+errors = validate()
+sys.stderr.write("".join(f"  {e}\n" for e in errors))
+sys.exit(1 if errors else 0)
+'; then
   echo "ERROR: Shipyard configuration is invalid; fix the errors above before loading the plugin." >&2
   exit 1
 fi
-TRACKER="$(python "$PLUGIN_ROOT/scripts/sy_config.py" get tracker)"
+TRACKER="$(_resolver 'import sys; from sy_tools.config import get; print(get(sys.argv[1]))' tracker)"
 case "$TRACKER" in
   jira)
     command -v acli >/dev/null 2>&1 || echo "NOTE: tracker is 'jira' but 'acli' (Atlassian CLI) is not on PATH." >&2
@@ -54,16 +64,16 @@ esac
 command -v gitleaks >/dev/null 2>&1 || \
   echo "NOTE: gitleaks not on PATH; the MCP server resolves its own from pixi.lock, so only the off-tool path (running the two sanitisation passes by hand) stops before publish." >&2
 
-# CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes
-# every agent off whatever the resolver decided. `sy_config.py validate` already fails on it; this
-# is only a clearer message at install time.
+# CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes every
+# agent off the resolved one. The validation above already fails on it; this is the clearer message.
 if [[ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]]; then
   echo "ERROR: CLAUDE_CODE_SUBAGENT_MODEL is set; it outranks resolved per-agent models and would reroute the reviewer, the image inspector, and the debate. Unset it." >&2
   exit 1
 fi
 
+# The `show_config` report verbatim as JSON: reformatting it here would be a second renderer to keep in step.
 echo "Resolved configuration:"
-python "$PLUGIN_ROOT/scripts/sy_config.py" show
+_resolver 'import json; from sy_tools.config import show; print(json.dumps(show(), indent=2))'
 
 cat <<EOF
 

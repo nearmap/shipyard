@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/review_guard.py\""
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.guards.review_guard"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/secret_guard.py\""
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.guards.secret_guard"
           }
         ]
       },
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/eval_events.py\" hook"
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.eval_events hook"
           }
         ]
       }
@@ -33,11 +33,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py\" hook"
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.usage hook"
           },
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/eval_events.py\" hook"
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.eval_events hook"
           }
         ]
       }
@@ -47,11 +47,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py\" hook"
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.usage hook"
           },
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/eval_events.py\" hook"
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.eval_events hook"
           }
         ]
       }

@@ -1,18 +1,18 @@
-"""Resolved Shipyard configuration, held hot in memory for the life of the server process.
+"""Resolved Shipyard configuration: the resolver every `sy` tool call reads a setting through.
 
-`scripts/sy_config.py` is a CLI: every read is a fresh process that re-reads up to four JSON
-files and shells out to git. A long-lived MCP server resolves the same layer chain once and
-serves every tool call from memory; `reload()` (the `reload_config` tool) is the only way to
-re-read, so a config edit is picked up deliberately rather than racing mid-call.
+The layer chain, lowest precedence first: the shipped defaults, then the user-global, repo-committed
+and repo-local `.shipyard/config.json` layers, deep-merged in that order. It resolves once and serves
+every later read from memory for the life of the server process; `reload()` — the `reload_config`
+tool — is the only way to re-read, so a config edit is picked up deliberately rather than racing a
+call mid-flight.
 
-Values resolve identically to `sy_config.py` — same layer chain, same deep merge, same derived
-defaults, same floor clamping — and `sy_tools/tests/test_config.py` asserts that parity against
-`sy_config.py show --json` rather than trusting the reimplementation.
+Served alongside the values: the layer each key came from, the per-agent model and effort bindings
+after floor clamping, the scratch directories, a digest of the whole resolved config, and
+`validate()`'s report of every reason that config must be rejected.
 
-Two pieces of `sy_config.py` are deliberately absent. The retired-environment-variable conflict
-report is one: it can only be written by naming those variables, and `scripts/validate.py`'s
-config-seam check treats any file but the resolver naming one as a second resolution path for a
-key. `migrate` is the other — it is a one-time CLI affordance with no meaning in a server.
+Two invariants a caller can rely on. Every refusal is a `ConfigError`, including the environment
+faults — an unrunnable `git`, an unreadable layer — that reaching a value at all depends on. And no
+accessor here returns a credential-shaped value: a config layer is not where a secret lives.
 """
 from __future__ import annotations
 
@@ -36,19 +36,28 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 REQUIRED_PATHS = (*(f"columns.{name}" for name in CANONICAL_COLUMNS), "tracker")
-# Every subprocess this module runs is a git query, and all four call sites are bounded by this:
-# `rev-parse --show-toplevel` (`_git_toplevel`), `rev-parse --git-common-dir` (`_git_common_dir`),
-# `config --get core.worktree` (`_configured_worktree`) and `rev-parse --is-inside-work-tree`
-# (`_is_resolved_working_tree`). They run inside the MCP server on the path *every* tool call takes to a
-# resolved value, and a hung resolution is a hung server: no response for the call that triggered it and
-# none for any call queued behind it. Generous for a local rev-parse under load, short of anything a
-# caller would sit through on a single tool call. What it bounds is one subprocess, not one call: a cold
-# `repo_scratch_dir()` reaches 13 of them in an ordinary checkout (measured, not estimated — one root
-# resolution, one `_git_common_dir`, five for `_logical_repo`, five more for the `worktree.root` derived
-# default's own `_logical_repo`, one closing `_git_toplevel`), so a git slow enough to answer just under
-# the bound every time costs 13x this number, where a *wedged* one refuses at the first site it reaches.
-# Same shape and number as `scripts/sy_config.py::GIT_TIMEOUT_SECONDS`, whose own hot path is the
-# `PreToolUse` secret gate, and as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
+# Retired env var -> the config path that replaced it, for the conflict report. Tracker-specific names
+# are not here: the selected adapter declares its own in skills/tracker/<name>/config-map.json.
+LEGACY_ENV = {
+    "SY_TRACKER": "tracker",
+    "SY_WORKTREE_ROOT": "worktree.root",
+    "SY_MEMORY_DIR": "memory.dir",
+    "SY_DEBUG_EVALS": "debug.evals",
+    "SY_CI_POLL_TIMEOUT": "ci.poll_timeout",
+    "SY_BACKLOG_COLNAME": "columns.backlog",
+    "SY_READY_COLNAME": "columns.ready",
+    "SY_IN_PROGRESS_COLNAME": "columns.in_progress",
+    "SY_IN_REVIEW_COLNAME": "columns.in_review",
+    "SY_DONE_COLNAME": "columns.done",
+    "SY_FRONTIER_MODEL": "models.tiers.frontier",
+    "SY_FRONTIER_FALLBACK": "models.tiers.frontier_fallback",
+    "SY_IMAGE_MODEL": "models.agents.img-inspector.model",
+    "SY_DEBATE_MODEL": "models.agents.debate.model",
+}
+# Bounds every git query this module runs. They sit inside the MCP server on the path *every* tool call
+# takes to a resolved value, so an unbounded wait is a hung server rather than a slow call. It bounds one
+# subprocess, not one call: a cold `repo_scratch_dir()` reaches 13 of them in an ordinary checkout
+# (measured), so a git answering just under the bound every time costs 13x this number.
 GIT_TIMEOUT_SECONDS = 5
 
 
@@ -71,9 +80,7 @@ class ConfigError(RuntimeError):
 class _TransientConfigError(ConfigError):
     """A resolution failure a later attempt can still succeed at, so it is never memoized.
 
-    A `ConfigError` to every caller — nothing above this module needs to tell the two apart — and
-    subclassed only so `repo_root` can decline to remember one. See its docstring for why that
-    distinction exists here and not in the CLI-side twin.
+    A `ConfigError` to every caller; subclassed only so `repo_root` can decline to remember one.
     """
 
 
@@ -88,73 +95,58 @@ def plugin_root() -> Path:
     return Path(root) if root else Path(__file__).resolve().parent.parent
 
 
+def plugin_build() -> str:
+    """The plugin's identity: its git HEAD when `CLAUDE_PLUGIN_ROOT` is a checkout, else its version.
+
+    Reads the pointer directly rather than through `plugin_root()`: without one there is no build to
+    identify, and `plugin_root()`'s package-parent fallback would report whichever checkout this file
+    happens to sit in as the session's plugin build.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if not root:
+        return "unknown"
+    try:
+        # Bounded and with `stdin` closed like every other git call here, and degrading to "unknown"
+        # rather than refusing: `fingerprint()` folds this in, so raising would make a wedged git break
+        # every caller of the digest instead of only widening it.
+        proc = subprocess.run(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        return proc.stdout.strip()
+    manifest = Path(root) / ".claude-plugin" / "plugin.json"
+    if manifest.is_file():
+        try:
+            return str(json.loads(manifest.read_text(encoding="utf-8")).get("version", "unknown"))
+        except (OSError, json.JSONDecodeError):
+            return "unknown"
+    return "unknown"
+
+
 def repo_root() -> Path:
     """The consuming repository's root: Claude Code's own pointer when set, else derived from cwd.
 
-    `CLAUDE_PROJECT_DIR` is authoritative when present — Claude Code sets it for every MCP stdio
-    server it launches (matching the pointer it already gives hooks), and unlike cwd it survives a
-    `pixi run <declared-task>` dispatch, which resets the launched process's working directory to
-    the manifest's own directory rather than inheriting the caller's. Falling back to `git
-    rev-parse --show-toplevel` from cwd keeps every non-Claude-Code invocation working exactly as
-    before (manual `pixi run sy-server`, `docs/smoke_mcp.py`, the pytest suite).
-
     Both paths go through the same `git rev-parse`, so a pointer at a subdirectory resolves to the
-    checkout root exactly as cwd does, and a pointer that names no checkout is a `ConfigError`
-    rather than a silent fall-through: every layer above the shipped defaults lives under
-    `<root>/.shipyard/`, so an unusable root resolves to the shipped defaults with no tracker, no
-    column names and nothing said about why. A `git` that cannot be run is a third, separately named
-    `ConfigError` raised by `_git_toplevel` itself, so it reaches both paths — including the cwd
-    fallback, which has no pointer to blame — and is never reported as the pointer's fault. A working
-    directory that can no longer be read at all — deleted or made inaccessible under a long-lived
-    server process — is a fourth named `ConfigError`, so it reaches `validate()` as a reportable fault
-    rather than a raw `FileNotFoundError` out of whichever tool call resolved first.
-
-    A *settled* refusal is memoized alongside an answer, so root resolution runs git at most once per
-    process, the same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without
-    it this resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, so
-    the wait a caller actually sat through under a wedged git was a multiple of `GIT_TIMEOUT_SECONDS` rather
-    than the single root resolution that constant's own accounting counts. The sibling
-    `scripts/sy_config.py::repo_root` memoizes its own `SystemExit` refusal for the same reason.
-
-    What is remembered is the refusal's *message*, and each call raises a freshly built `ConfigError` from
-    it. Re-raising the one cached instance appended two traceback frames to that instance every time it was
-    raised, because `raise` extends the exception's own `__traceback__` chain in place: measured at ~400
-    frames and ~53KB of rendered traceback after 200 calls, growing without bound for as long as a refused
-    server stays up — and every renderer of that exception (a client's error display, a log) pays for the
-    whole chain. Repeat-call consistency is what memoizing is for here, and an equal message on an equal
-    class is that; object identity was never the property anything needed, only the cheapest way to spell it.
-
-    A `_TransientConfigError` is the exception, and it is where this parts company with that sibling: a git
-    that timed out has said nothing about the repository, only that it did not answer in five seconds — a
-    momentary index lock or a slow network filesystem — and this module backs a long-lived MCP server, not a
-    one-shot CLI process. Memoizing that verdict turned one hiccup into a server that refused every
-    subsequent tool call for the rest of its uptime. `reset_cache()` *is* reachable without a restart —
-    the `reload_config` tool calls `reload()`, which clears all three caches, and that is the documented
-    recovery from the non-transient refusal this function does memoize — but nothing tells a client that a
-    five-second git hiccup is what it is now stuck on, so recovery would depend on someone guessing to
-    reload the configuration. Retrying instead needs no client to know anything: a timeout costs the one
-    call it happened on. That is the right trade for this side, a bounded, self-clearing slowness against a
-    refusal that clears only on request. The CLI twin keeps memoizing, correctly, because its process ends
-    with the command.
-
-    The bill for that retry is unmemoized repetition *within* one tool call, and it is larger than one
-    extra wait: each attempt pays a fresh `GIT_TIMEOUT_SECONDS`, and a single call can resolve the root
-    several times. Counted against a `_git_toplevel` stubbed to time out: `get()` attempts it twice (the
-    credential-shape gate consults `extra_secret_words()`, which resolves, before the value's own
-    `resolve()` does), and the `validate_config` tool five times — one in `config.validate()`, two in the
-    first `config.get` inside `tracker.column_collisions()`, two in its own `config.get("tracker")` — so
-    that tool's worst case is 5x `GIT_TIMEOUT_SECONDS` in root resolution alone, not the 2x this docstring
-    used to claim (the other three bounded call sites are counted where the constant is defined). A
-    request-scoped cache would collapse it and is deliberately not added: it would be a second cache with
-    a lifetime this module has nowhere else, needing every tool entry point to bracket its own call before
-    it bought anything, against one module-level memo cleared in exactly one place. The number is recorded
-    rather than designed around, so a call path that reaches the root more times than this moves it again.
+    checkout root exactly as cwd does. Every failure is a separately named `ConfigError` — a pointer
+    that names no checkout, a `git` that cannot be run, an unreadable working directory — so an
+    unusable root is reportable rather than a silent fall-through to the shipped defaults alone.
+    Resolved once per process, then memoized until `reset_cache()`.
     """
     global _REPO_ROOT, _REPO_ROOT_REFUSAL
+    # A freshly built error from the remembered *message*: re-raising one cached instance extends its own
+    # `__traceback__` in place, measured at ~400 frames and ~53KB of rendered traceback after 200 calls.
     if _REPO_ROOT_REFUSAL is not None:
         raise ConfigError(_REPO_ROOT_REFUSAL)
+    # Memoized because every tool call reaches here: re-shelling out per call multiplied the wait a
+    # caller sat through under a wedged git by the number of times that call resolved the root.
     if _REPO_ROOT is None:
         try:
+            # Pointer first: unlike cwd it survives a `pixi run <task>` dispatch, which resets the
+            # launched process's working directory to the manifest's own.
             project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
             if project_dir:
                 root = _git_toplevel(Path(project_dir))
@@ -174,8 +166,12 @@ def repo_root() -> Path:
                         "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a "
                         "directory that still exists."
                     ) from None
+        # A timeout said nothing about the repository, so it is not an answer to remember: memoizing one
+        # git hiccup made a long-lived server refuse every later tool call. The retry is not free — one
+        # `validate_config` resolves the root five times (measured), each paying a fresh timeout — and a
+        # request-scoped cache is deliberately not added for a lifetime this module has nowhere else.
         except _TransientConfigError:
-            raise  # said nothing about the repository, so it is not an answer to remember
+            raise
         except ConfigError as refusal:
             _REPO_ROOT_REFUSAL = str(refusal)
             raise
@@ -185,37 +181,22 @@ def repo_root() -> Path:
 def _git_toplevel(start: Path) -> Path | None:
     """The resolved root of the git checkout containing `start`, or None when there is not one.
 
-    A `git` that cannot be *run* at all raises rather than returning None, and it raises from here so
-    that every caller is covered by one guard instead of each call site growing its own. None means
-    one specific thing — git ran and reported no checkout — and the callers act on it accordingly:
-    the cwd path treats it as "not in a checkout" and falls back to cwd, which is a legitimate way to
-    run the server. Collapsing a missing binary into that same None would take the fallback, resolve
-    the shipped defaults alone, and leave every tool call reporting no tracker and unset columns with
-    nothing naming the cause; under `CLAUDE_PROJECT_DIR` it would instead blame the pointer for not
-    being a checkout, which is false when the pointer is fine and the binary is absent. A missing
-    binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
-
-    A `git` that *hangs* is refused the same way, and only `timeout=` can refuse it: an unbounded wait
-    is not an exception any `except` clause here catches, it is the server never answering. This resolver
-    is the twin of `scripts/sy_config.py::_git_toplevel`, which was bounded first because the secret
-    gate's fail-open reaches it, but this is the hotter of the two — it runs on every tool call, not once
-    per CLI process — so the same bound belongs here, degrading to this module's own `ConfigError`
-    exactly as the unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
-    the missing binary does not, because only one of the two can come out differently on the next call and
-    `repo_root` memoizes accordingly.
-
-    `stdin` is closed for the same reason the tracker adapters close it on their own subprocesses: this
-    runs inside the MCP server, whose stdin is the JSON-RPC transport, and a child that inherits it can
-    consume a frame the server was going to read.
+    None means one specific thing: git ran and reported no checkout, which the cwd path treats as "not
+    in a checkout". A git that cannot be run, or that hangs, is a named `ConfigError` instead —
+    collapsing either into None would resolve the shipped defaults alone with nothing naming the cause.
     """
     if not start.is_dir():
         return None
     try:
+        # `stdin` is closed on every git query here: this runs inside the MCP server, whose own stdin is
+        # the JSON-RPC transport, and a child that inherits it can consume a frame the server was to read.
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
             stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    # Only the timeout raises the transient subclass: a hang can come out differently next call, an
+    # absent binary cannot, and `repo_root` memoizes accordingly.
     except subprocess.TimeoutExpired:
         raise _TransientConfigError(
             f"git did not resolve the repository root from {start} within {GIT_TIMEOUT_SECONDS}s and "
@@ -236,22 +217,14 @@ def _git_toplevel(start: Path) -> Path | None:
 def _git_common_dir(start: Path) -> Path | None:
     """The absolute shared `.git` directory of the checkout containing `start`, or None if there is none.
 
-    `--path-format=absolute` is not decoration: without it git answers a bare relative `.git` from a
-    main checkout, whose `.parent.name` is the empty string. Absoluteness is therefore checked
-    explicitly rather than left to `.resolve()`, which would silently resolve a relative answer
-    against *this process's* cwd instead of `start` — fail-soft on the one boundary these callers
-    exist to keep. A relative answer is None, the same as no checkout.
-
-    A `git` that cannot be run is a named `ConfigError` for the reasons `_git_toplevel` gives, and one
-    that *hangs* is bounded and refused for those same reasons — an unbounded wait is not an exception
-    any `except` clause here catches, it is the server never answering — as the `_TransientConfigError`
-    subclass, because a timeout settles nothing about the repository. `stdin` is closed for the same
-    reason: this can run inside the MCP server, whose stdin is the JSON-RPC transport. None means only
-    "git ran and reported no checkout".
+    None means only "git ran and reported no checkout", or answered a relative path. A git that cannot
+    be run, or that hangs, is a named `ConfigError` exactly as in `_git_toplevel`.
     """
     if not start.is_dir():
         return None
     try:
+        # `--path-format=absolute`: without it git answers a bare relative `.git` from a main checkout,
+        # whose `.parent.name` is the empty string.
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
@@ -272,31 +245,21 @@ def _git_common_dir(start: Path) -> Path | None:
     if proc.returncode != 0 or not out:
         return None
     candidate = Path(out)
+    # Absoluteness checked, not left to `.resolve()`: that would resolve a relative answer against *this
+    # process's* cwd instead of `start` — fail-soft on the one boundary these callers exist to keep.
     return candidate.resolve() if candidate.is_absolute() else None
 
 
 def _configured_worktree(common: Path) -> Path | None:
     """The absolute working tree `git config core.worktree` in `common`'s own config names, or None.
 
-    A submodule's shared git dir (`<super>/.git/modules/<name>`) sets `core.worktree` to the relative
-    path back to the submodule's own working tree — normally in `<common>/config`, but git relocates it
-    to `<common>/config.worktree` the moment `extensions.worktreeConfig` is turned on, which
-    `git sparse-checkout init` does inside the submodule and never reverts on `sparse-checkout
-    disable`. Both files are read directly by path with `--file` rather than a bare `git config
-    --get`, because a bare query run from a *linked* worktree of the submodule suppresses
-    `core.worktree` entirely (git treats it as belonging only to the main worktree's own per-worktree
-    config) even though both files themselves are the same shared, worktree-independent source either
-    way. `--separate-git-dir` checkouts do not set this key at all: an ordinary checkout, and a plain
-    `--separate-git-dir` one, both fall through to `None` here, and `_logical_repo` falls back to
-    `common.parent` for those, once verified — which can still collide if multiple such checkouts'
-    git-dirs are deliberately colocated under one shared parent directory, the same class of
-    collision as two ordinary same-named repos elsewhere on the machine, and out of scope for the
-    same reason.
-
-    Each read is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and
-    close their own: this can run inside the MCP server, whose stdin is the JSON-RPC transport and whose
-    only defence against a git that never returns is `timeout=`.
+    A submodule's shared git dir sets this key; an ordinary checkout and a `--separate-git-dir` one do
+    not set it at all and resolve to None, which `_logical_repo` handles.
     """
+    # Both files, read by `--file` path: git relocates `core.worktree` from `<common>/config` to
+    # `<common>/config.worktree` once `extensions.worktreeConfig` is on (`git sparse-checkout init`
+    # turns it on and never reverts it), and a bare `git config --get` run from a *linked* worktree
+    # suppresses the key entirely even though both files are the same shared, worktree-independent source.
     for filename in ("config.worktree", "config"):
         try:
             proc = subprocess.run(
@@ -321,19 +284,8 @@ def _configured_worktree(common: Path) -> Path | None:
 def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
     """Whether `candidate` is a genuine working tree whose own shared git directory is `common`.
 
-    `_logical_repo` falls back to `common.parent` as `candidate` when `core.worktree` cannot be
-    read; that guess is right for an ordinary checkout (`common` is `<repo>/.git`, so `common.parent`
-    is the repo itself) and wrong for a git-internal storage directory that happens to sit at that
-    path — a submodule's `.git/modules/<name>`, a nested submodule's
-    `.git/modules/<outer>/modules/<inner>`, a `--separate-git-dir` superproject's own detached gitdir,
-    or any future layout with the same shape. None of those are themselves a working tree at all.
-    Settled by asking git directly rather than pattern-matching directory names: a real working tree
-    answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with `common`; a storage
-    directory answers neither.
-
-    The question is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and
-    close their own: this can run inside the MCP server, whose stdin is the JSON-RPC transport and whose
-    only defence against a git that never returns is `timeout=`.
+    A real working tree answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with
+    `common`; a git-internal storage directory sitting at that path answers neither.
     """
     if not candidate.is_dir():
         return False
@@ -357,12 +309,10 @@ def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
 def _same_directory(a: Path, b: Path) -> bool:
     """Whether `a` and `b` name the same directory on disk, by device and inode rather than spelling.
 
-    `repo_scratch_dir`'s checkout-overlap guard cannot compare resolved paths as strings: a
-    case-insensitive filesystem (APFS's default) resolves a differently-cased spelling of the same
-    ancestor to a string that is unequal to the checkout's own canonical spelling, even though it
-    names the identical directory — the exact gap a resolved-path comparison alone left open. A
-    missing or unreadable directory can never be "the same" as one that exists.
+    A missing or unreadable directory is never "the same" as one that exists.
     """
+    # Not a resolved-string comparison: `Path.resolve()` normalizes symlinks, `.` and `..` but not case,
+    # so on a case-insensitive filesystem (APFS's default) one directory has two unequal spellings.
     try:
         stat_a = a.stat()
         stat_b = b.stat()
@@ -389,14 +339,9 @@ def resolve() -> tuple[dict, dict[str, str]]:
 
 
 def reset_cache() -> None:
-    """Drop everything memoized, so the next read sees the environment and the files as they are now.
-
-    One function rather than a bare `_STATE = None`, because the repository root is memoized too and a
-    second, un-cleared cache would leave `reload()` re-reading the layers of whichever repo the *first*
-    resolution found: the pointer that names the repo is read once, and clearing only half of it makes a
-    reload after a `CLAUDE_PROJECT_DIR` change silently a no-op. Mirrors `scripts/sy_config.py`'s own
-    `reset_cache()`, which clears the same three.
-    """
+    """Drop everything memoized, so the next read sees the environment and the files as they are now."""
+    # All three, never just `_STATE`: the root is memoized too, so clearing half of it makes a reload
+    # after a `CLAUDE_PROJECT_DIR` change re-read the layers of whichever repo resolved first.
     global _STATE, _REPO_ROOT, _REPO_ROOT_REFUSAL
     _STATE = None
     _REPO_ROOT = None
@@ -425,9 +370,8 @@ _UNSET = object()
 def get(path: str, *, default: object = _UNSET) -> object:
     """One resolved value by dotted path. Refuses credential-shaped keys outright.
 
-    An unknown key is an error unless a default is supplied: a key an adapter documents as
-    optional has no entry to resolve, and a caller that knows it is optional says so. The
-    sentinel default is what lets `None` itself be a legitimate default.
+    An unknown key is an error unless a default is supplied, so a caller that knows a key is optional
+    says so. The sentinel default is what lets `None` itself be a legitimate default.
     """
     if _looks_like_secret(path.replace(".", "_")):
         raise ConfigError(
@@ -441,6 +385,35 @@ def get(path: str, *, default: object = _UNSET) -> object:
         near = ", ".join(sorted(k for k in flat if k.startswith(path.split(".")[0]))) or "none"
         raise ConfigError(f"unknown config key {path!r}. Keys under that prefix: {near}")
     return flat[path]
+
+
+def show() -> dict:
+    """Every resolved value, the layer each key came from, the digest, and the layer chain on disk.
+
+    Keyed `values`, `provenance`, `fingerprint`, and `layers` — the last a list of
+    `{label, path, present}`, in precedence order, so an absent layer is still reported.
+
+    Refuses outright, disclosing no value at all and naming only the offending keys, when the resolved
+    configuration carries a credential-shaped key: a secret returned even once is a permanent part of
+    whatever transcript asked for it.
+    """
+    values, provenance = resolve()
+    credential_keys = sorted(key for key in _flatten(values) if _looks_like_secret(key.replace(".", "_")))
+    if credential_keys:
+        raise ConfigError(
+            "refusing to show any value — the resolved configuration declares credential-shaped "
+            f"key(s): {', '.join(credential_keys)}. Secrets are never read from a config file: keep "
+            "them in the environment."
+        )
+    return {
+        "values": values,
+        "provenance": provenance,
+        "fingerprint": fingerprint(),
+        "layers": [
+            {"label": label, "path": str(path), "present": path.is_file()}
+            for label, path in layers(resolved_root())
+        ],
+    }
 
 
 def agent_binding(name: str) -> dict:
@@ -470,21 +443,8 @@ def agent_binding(name: str) -> dict:
 def scratch_dir(identifier: str) -> Path:
     """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
 
-    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
-
-    Containment is checked against the resolved candidate rather than inferred from the string. An
-    identifier of `"."` or `""` has no path parts at all, so every string-shaped guard passes it and
-    the root itself would be returned: two identifiers would collide there, and a caller that
-    cleans up what it was handed would delete every other identifier's data. Resolving also catches
-    a `..` hidden mid-path and a symlink already inside the root that `mkdir(parents=True)` would
-    otherwise follow straight out of it.
-
-    `scratch.dir` itself must be absolute. A repo-committed `.shipyard/config.json` is one of the
-    layers this resolves, and `review_guard.py`'s hunt-mode write sandbox is exactly `scratch_dir()`'s
-    containment check — a relative value resolves against whatever the *calling process's* cwd
-    happens to be rather than any fixed location, so a committed `{"scratch": {"dir": ".."}}` can
-    silently put the "sandbox" root at an ancestor of the checkout itself, and every file inside the
-    checkout then satisfies the containment check that was supposed to keep hunt out of it.
+    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once,
+    and it must be absolute. An identifier that does not stay inside the resolved root is refused.
     """
     root = Path(str(get("scratch.dir")))
     if not root.is_absolute():
@@ -501,6 +461,10 @@ def scratch_dir(identifier: str) -> Path:
     try:
         relative = Path(identifier)
         candidate = root / relative
+        # Checked on the resolved candidate, not on the string: `"."` and `""` have no path parts, so
+        # every string-shaped guard passes them and the root itself would be returned — two identifiers
+        # colliding, and a caller cleaning up what it was handed deleting every other one's data.
+        # Resolving also catches a `..` mid-path and a symlink `mkdir(parents=True)` would follow out.
         contained = (
             bool(relative.parts)
             and bool(identifier.strip())
@@ -519,42 +483,10 @@ def scratch_dir(identifier: str) -> Path:
 def repo_scratch_dir(start: Path | None = None) -> Path:
     """This repository's own scratch directory, resolved identically from any worktree of it.
 
-    Keyed on the *logical* repository — the directory holding the shared `.git` — rather than on the
-    resolved checkout, for a reason that is load-bearing rather than tidy. `repo_root()` honours
-    `CLAUDE_PROJECT_DIR` when a session set it and derives from the working directory when nothing
-    did, and Claude Code exports that pointer to hook subprocesses and stdio servers but not to a
-    subagent's own Bash tool. Keyed on `repo_root().name`, a `PreToolUse` guard inside a `/sy:ship`
-    worktree would therefore resolve the main checkout's name while the agent it guards resolved the
-    worktree's, and the guard would deny every write the agent believed was permitted. The logical
-    repository is the same absolute path from either, so both sides agree without depending on
-    `CLAUDE_PROJECT_DIR` or any working-directory convention (absent a `GIT_COMMON_DIR`/`GIT_DIR`
-    override, which neither the hook nor the agent sets).
-
     `start` names the directory to resolve from — a hook passes the event's own cwd, so guard and
-    guarded resolve from one cwd concept; the default is the resolved repository root, which is what
-    a direct in-session caller means. Containment against the resolved *root* is `scratch_dir`'s own
-    job, never restated here — but the resolved *directory* is additionally checked against every
-    worktree of this repository, main and linked alike, because `scratch.dir` itself is one of the
-    values a repo-committed `.shipyard/config.json` can set: `scratch_dir()` already refuses a
-    non-absolute root, but nothing stops an absolute value that happens to equal or contain a checkout
-    being reviewed, which would hand `review_guard.py`'s hunt-mode write sandbox that checkout's own
-    source. Checking only `start`'s own working tree is not enough: a `PreToolUse` hook's cwd is the
-    *main* checkout in the overwhelming majority of `sy:gate`/`sy:hunt` runs, not the build/slice/review
-    worktree the tool call actually targets — `/sy:ship` names the worktree only in the dispatched
-    agent's prompt text, never as the subagent's own cwd — so a `scratch.dir` that overlaps some other,
-    currently-inactive worktree of the repo (for example a naturally-plausible `worktree.root` nested
-    under the same root as `scratch.dir`) would pass a check scoped to `start` alone while still
-    exposing whichever worktree an absolute-path write actually targets. `_all_worktrees` enumerates
-    every *linked* worktree from git's own bookkeeping, independent of `start`, plus `start`'s own
-    working tree explicitly (`_git_toplevel(origin)`) — the registry alone is not enough either: a
-    *main* working tree (as opposed to a linked one) has no entry under `<common>/worktrees/` at all,
-    so a `--separate-git-dir` or bare-plus-`worktree-add` main checkout with no resolvable
-    `core.worktree` (`_logical_repo` falls back to `common`, the detached gitdir itself, in that case)
-    would otherwise go unguarded even though `start` is sitting inside it right now. The comparison is
-    by device and inode, not by resolved spelling: `Path.resolve()` normalizes symlinks, `.` and `..`,
-    but not case, and a case-insensitive filesystem (APFS's default) lets a differently-cased spelling
-    of the same ancestor stay string-unequal to a checkout path while being the identical directory on
-    disk.
+    guarded resolve from one cwd concept; the default is the resolved repository root, which is what a
+    direct in-session caller means. Refuses when the resolved directory contains, or is, any worktree
+    of this repository.
     """
     origin = Path(start) if start is not None else repo_root()
     common = _git_common_dir(origin)
@@ -563,8 +495,16 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
             f"{str(origin)!r} is not a directory inside a git checkout, so no repository scratch "
             "directory can be resolved from it."
         )
+    # Keyed on the *logical* repository, never `repo_root().name`: Claude Code exports
+    # `CLAUDE_PROJECT_DIR` to hooks and stdio servers but not to a subagent's own Bash, so inside a
+    # `/sy:ship` worktree a guard would key on the main checkout while the agent it guards keyed on the
+    # worktree, and the guard would deny every write the agent believed was permitted.
     logical = _logical_repo(origin)
     directory = scratch_dir(logical.name)
+    # Every worktree, not just `start`'s: a `PreToolUse` hook's cwd is the main checkout in almost every
+    # run, not the worktree the tool call targets, so a `scratch.dir` overlapping some other, currently
+    # inactive worktree would pass a check scoped to `start` and still expose that worktree's source.
+    # `start`'s own tree is added separately because a *main* worktree has no entry in the registry.
     guarded_set = _all_worktrees(common, logical)
     checkout = _git_toplevel(origin)
     if checkout is not None:
@@ -584,29 +524,11 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
 
 
 def _all_worktrees(common: Path, logical: Path) -> list[Path]:
-    """The main checkout plus every *linked* worktree of this repository, read directly from git's own
-    bookkeeping under `<common>/worktrees/`, independent of which one the current invocation happens
-    to be running from. (`repo_scratch_dir` separately adds `start`'s own working tree, which the
-    registry alone does not cover for a main worktree — see its docstring.)
+    """The main checkout plus every *linked* worktree of this repository, from git's own bookkeeping.
 
-    A `PreToolUse` hook's cwd is the main checkout in the overwhelming majority of `sy:gate`/`sy:hunt`
-    runs, never the build/slice/review worktree `/sy:ship` actually dispatched the tool call against —
-    so a check scoped to the current invocation's own working tree misses every *other* live worktree
-    of the same repository, exactly where those worktrees live.
-
-    Each entry's own absolute path is read from `<common>/worktrees/<id>/gitdir`, not assumed to be
-    `<id>`'s own name: `git worktree add --relative-paths` (or `worktree.useRelativePaths`) writes that
-    file as a path relative to `<common>/worktrees/<id>/` itself, not to `common` or to any process's
-    cwd, so a relative record is resolved against the entry's own directory before use — resolving it
-    against the wrong base, or leaving it relative and comparing it as-is, would silently stat the
-    guard process's own cwd instead of the worktree. A record git itself writes always ends in the
-    literal `.git`, naming the worktree's own `.git` file, but git's own reader (`git-worktree(1)`'s
-    DETAILS section) accepts the bare directory form too — it's the documented spelling for hand
-    repairing a relocated worktree's `gitdir` file after moving it outside `git worktree move` — so
-    only the optional `.git` suffix is stripped, the same way git strips it, rather than requiring it
-    and refusing a form git itself accepts. A blank `gitdir` file, or one that is missing or
-    unreadable, means this cannot determine part of the guarded set at all, which fails closed
-    (raises) rather than silently guarding fewer worktrees than exist.
+    Read from `<common>/worktrees/`, independent of which worktree the invocation runs from. A `gitdir`
+    record that is missing, unreadable or blank raises rather than silently guarding fewer worktrees
+    than exist.
     """
     worktrees = [logical]
     worktrees_dir = common / "worktrees"
@@ -633,11 +555,13 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
                 "and so cannot be guarded — most likely a truncated or otherwise corrupted gitdir file."
             )
         pointed = Path(raw)
+        # `git worktree add --relative-paths` writes this file relative to the entry's own directory, not
+        # to `common` or any process's cwd, so resolving against another base would stat the wrong path.
         if not pointed.is_absolute():
             pointed = (entry / pointed).resolve()
-        # Git's own reader strips an optional trailing "/.git" (git-worktree(1) documents writing the
-        # bare directory path directly when hand-repairing a relocated worktree, e.g. after `mv`), so
-        # both spellings name the worktree; requiring the suffix would refuse a git-accepted record.
+        # Git's own reader strips an optional trailing "/.git" (git-worktree(1)'s DETAILS section
+        # documents the bare directory form for hand-repairing a relocated worktree), so requiring the
+        # suffix would refuse a record git itself accepts.
         worktree = pointed.parent if pointed.name == ".git" else pointed
         worktrees.append(worktree)
     return worktrees
@@ -646,87 +570,71 @@ def _all_worktrees(common: Path, logical: Path) -> list[Path]:
 def _logical_repo(start: Path) -> Path:
     """The directory holding the checkout's shared `.git`, or `start` itself when there is no checkout.
 
-    A linked worktree resolves to its main checkout, which is what every per-repository derived
-    default means. Keyed on the worktree instead, `worktree.root` nests a second worktrees directory
-    inside the first (`<repo>-worktrees/AM-1/../AM-1-worktrees`), which is where `/sy:ship` would put
-    a slice worktree it created from inside a build worktree.
-
-    A submodule's `--git-common-dir` resolves under the superproject's `.git/modules/`, whose parent
-    directory name is the fixed string `modules` for every submodule on the machine; keyed on that,
-    two unrelated submodules would share one scratch directory and one `worktree.root`. The shared git
-    dir names the submodule's own working tree in its `core.worktree`, so `_configured_worktree` reads
-    it from the *shared* config and needs no per-checkout detection — which matters because a linked
-    worktree of a submodule reports no superproject at all, and so any detection keyed on the checkout
-    would miss exactly the worktrees `/sy:ship` itself creates.
-
-    When `core.worktree` cannot be resolved at all (`git submodule deinit`, which clears it from both
-    config files while leaving `.git/modules/<name>` itself in place and any of the submodule's own
-    linked worktrees checked out and healthy), the naive fallback of `common.parent` is verified with
-    git itself rather than assumed: pattern-matching directory names (`modules`, nesting depth,
-    `--separate-git-dir`, `vendor/`-style grouping, and whatever shape comes after those) does not
-    generalize, as repeated fixes to this exact function have shown. `common.parent` is used only when
-    it is itself a real working tree whose own shared git directory is `common` — true for an ordinary
-    checkout, false for every git-internal storage directory this or a future git layout might produce
-    at that path (a submodule's own internal storage, a `--separate-git-dir` or bare checkout's
-    detached gitdir folder). Refusing there would make an ordinary `--separate-git-dir` or bare
-    checkout — nothing at all like the transient, self-inflicted deinit state this exists to guard
-    against — unusable outright, so instead this falls back one tier further: `common` itself. `common`
-    is an absolute, resolved path that is by construction identical from every worktree of one repo and
-    distinct from every other repo's, so it is always safe to key on even though it is sometimes less
-    readable than a checkout's own directory name (`.git/modules/<name>` for an otherwise-unresolvable
-    submodule still ends in that submodule's own name, which is what a resolvable one would have given
-    too).
-
-    Falls back to `start` itself only when there is no checkout at all, because `repo_root()`'s own cwd
-    path legitimately resolves a directory that is in no checkout at all, and resolution must still
-    produce a value there.
+    A linked worktree resolves to its main checkout, which is what every per-repository derived default
+    means: keyed on the worktree instead, `worktree.root` nests a second worktrees directory inside the
+    first (`<repo>-worktrees/AM-1/../AM-1-worktrees`), which is where `/sy:ship` would put a slice
+    worktree created from inside a build worktree.
     """
     common = _git_common_dir(start)
     if common is None:
+        # `repo_root()`'s cwd path legitimately resolves a directory in no checkout, and resolution must
+        # still produce a value there.
         return start
+    # From the *shared* config, so no per-checkout detection is needed: a linked worktree of a submodule
+    # reports no superproject at all, and detection keyed on the checkout would miss exactly the
+    # worktrees `/sy:ship` creates. Keying on `common.parent` for a submodule would key every submodule
+    # on the machine to the fixed string `modules`, sharing one scratch directory and one worktree root.
     configured = _configured_worktree(common)
     if configured is not None:
         return configured
+    # Verified with git rather than assumed, because pattern-matching directory names (`modules`, nesting
+    # depth, `--separate-git-dir`, `vendor/`-style grouping) does not generalize — as repeated fixes to
+    # this function have shown. Unverified, `common.parent` names a git-internal storage directory rather
+    # than a checkout whenever `core.worktree` is unresolvable, as after `git submodule deinit`.
     if _is_resolved_working_tree(common.parent, common):
         return common.parent
+    # One tier further rather than refusing, which would make an ordinary `--separate-git-dir` or bare
+    # checkout unusable: `common` is absolute, identical from every worktree of one repo and distinct
+    # from every other repo's, so it is always safe to key on — only less readable.
     return common
 
 
 def fingerprint() -> str:
-    """Digest of every resolved value, for cache invalidation and reload reporting."""
+    """Digest of every resolved value *and* the plugin build, for cache invalidation and drift detection.
+
+    The build identifier is in the digest, not only the values, because `/sy:ship`'s mid-run drift guard
+    compares this across a run to catch any config-relevant change — and `config/floors.json`'s model and
+    effort floors and `agents/*.md`'s `effort:` frontmatter are config-relevant without being resolved
+    values, so a digest over the values alone reported no drift when either changed under a running
+    session. The build identifier moves on a plugin upgrade or a checkout's own commit; it does not move
+    on an in-place edit under one build, so drift detection is build-granular, not file-granular.
+    """
     values, _ = resolve()
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{plugin_build()}|{canonical}".encode()).hexdigest()[:16]
 
 
 def validate() -> list[str]:
     """Every reason the resolved configuration must be rejected. Side-effect-free.
 
-    A configuration that cannot be resolved at all — an unusable repository root, a layer file that
-    cannot be read or parsed — is returned as one error rather than raised, exactly as
-    `sy_config.validate()` does it: `validate_config`'s contract is to report a broken config, and an
-    exception escaping here reaches the operator as a traceback string instead of a report. Resolution
-    is therefore asked before the per-layer schema pass.
-
-    Guarding `resolve()` alone is not enough here, and that is the difference between this deployment
-    and the CLI's. The CLI resolves once per process, so a layer the resolver just read successfully
-    reads again in the schema pass. This server resolves once per *process lifetime* and then serves
-    memory, so once the hot copy is warm the schema pass — plus `adapter_map()`, the floors and the
-    schema — are the only things still touching disk, and a layer edited into invalid JSON after that
-    point raised out of the one tool whose whole job is diagnosing exactly this fault. Everything after
-    resolution therefore reports its own read failure as an error too, on any call, warm or cold.
-
-    The one check that needs nothing resolved — an environment variable Claude Code lets outrank this
-    resolver — runs first and survives a resolution failure, exactly as in the CLI: a root that will
-    not resolve is no reason to hide a live problem that has nothing to do with it.
+    A configuration that cannot be resolved at all — an unusable repository root, a layer that cannot be
+    read or parsed — is returned as one error rather than raised: an exception escaping here would reach
+    the operator as a traceback instead of the report this exists to produce.
     """
+    # Ordering is load-bearing. The environment check needs nothing resolved, so it runs first and
+    # survives a resolution failure. The retired-name checks absorb one into an empty config and would
+    # then report every retired name as disagreeing with a key that "resolves to None", burying the cause.
     errors: list[str] = list(_outranking_env_conflicts())
     try:
         values, provenance = resolve()
     except ConfigError as exc:
         return [str(exc), *errors]
 
+    # Everything past resolution reports its own read failure as an error too, warm or cold: the server
+    # resolves once per process, so a layer edited into invalid JSON afterwards raised out of the one
+    # tool whose whole job is diagnosing that fault.
     try:
+        errors.extend(_legacy_env_conflicts())
         errors.extend(_post_resolution_violations(values, provenance))
     except ConfigError as exc:
         errors.append(str(exc))
@@ -736,12 +644,7 @@ def validate() -> list[str]:
 def _outranking_env_conflicts() -> list[str]:
     """A variable Claude Code lets outrank this resolver: an error, never an override.
 
-    Mirrors `scripts/sy_config.py::_outranking_env_conflicts`, message included, because the CLI's
-    `validate` and the `validate_config` tool are one contract read two ways — and this is now the
-    only path a session takes, so a fault reported by the CLI alone is a fault nobody sees. Unlike the
-    retired-`SY_*` half of the CLI's report (see the module docstring), this names no config key, so it
-    opens no second resolution path for one. It reads only the environment: the value is never read,
-    only its presence.
+    Presence only — the value is never read — and nothing resolved is needed.
     """
     if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
         return [
@@ -749,6 +652,66 @@ def _outranking_env_conflicts() -> list[str]:
             "would silently reroute every agent off the model this config resolved. Unset it."
         ]
     return []
+
+
+def _legacy_env_conflicts() -> list[str]:
+    """Retired `SY_*` names still set in the environment, compared against what they now resolve to.
+
+    Needs a resolved configuration for the values to compare against, and lets a `ConfigError` reach
+    `validate()`'s guard rather than reporting fewer names than exist. The names themselves come from
+    every shipped adapter rather than the resolved one, because this report is the whole migration
+    worklist and a migration is read before the incoming tracker is selected.
+    """
+    errors: list[str] = []
+    flat = _flatten(resolve()[0])
+    legacy = _legacy_env_map()
+    for name, path in sorted(legacy.items()):
+        raw = os.environ.get(name)
+        if raw in (None, ""):
+            continue
+        resolved = flat.get(path)
+        if resolved in (None, "") or str(resolved) != raw:
+            errors.append(
+                f"{name} is set in the environment (to {raw!r}) and disagrees with {path}, which resolves to "
+                f"{resolved!r}. Environment variables are reserved for secrets, so this is an error rather than an "
+                f"override: put {raw!r} in {CONFIG_DIRNAME}/{CONFIG_FILENAME} as {path} and unset {name}."
+            )
+        else:
+            errors.append(
+                f"{name} is set in the environment and agrees with {path}, but is now redundant and must be unset: "
+                f"leaving it set keeps two resolution paths alive for one key."
+            )
+    for name in sorted(os.environ):
+        if re.fullmatch(r"SY_[A-Z0-9_]+", name) and name not in legacy and not name.startswith("SY_TEST_"):
+            errors.append(
+                f"{name} is set but is not a Shipyard setting. Every setting now lives in "
+                f"{CONFIG_DIRNAME}/{CONFIG_FILENAME}; unset it or correct the name."
+            )
+    return errors
+
+
+def _legacy_env_map() -> dict[str, str]:
+    """Tracker-neutral legacy names plus every legacy name any shipped adapter declares.
+
+    Every adapter's, not only the selected one's, because this map is what `validate()` reports a
+    migration worklist from and a migration's *starting* state is the tracker being migrated away
+    from. Resolved against the shipped default, a repo exporting the incoming adapter's legacy names
+    had them fall through to the unknown-`SY_*` branch and be reported as "not a Shipyard setting" —
+    telling the operator to delete the two values they were migrating.
+    """
+    return dict(LEGACY_ENV) | _all_adapters_legacy_env()
+
+
+def _all_adapters_legacy_env() -> dict[str, str]:
+    """The union of every shipped adapter's `legacy_env`, so the report is adapter-agnostic."""
+    # Unioned the same way `_known_secret_env_names()` unions `secret_env`, and uncached for the same
+    # reason `adapter_map()` is: `validate()` runs once per report, not per read.
+    merged: dict[str, str] = {}
+    tracker_dir = plugin_root() / "skills" / "tracker"
+    if tracker_dir.is_dir():
+        for config_map in sorted(tracker_dir.glob("*/config-map.json")):
+            merged.update(_load_json(config_map).get("legacy_env", {}))
+    return merged
 
 
 def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> list[str]:
@@ -766,11 +729,9 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
             f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
         )
     for path_key in (*REQUIRED_PATHS, *adapter_map().get("required", [])):
-        # Whitespace-only counts as unset, because that is how the resolved value's own consumers read
-        # it: `tracker.column_names()` treats `str(value or "").strip()` as absent. Testing `in (None,
-        # "")` here reported `columns.ready: "   "` as configured — schema-valid, since `columns.*` is
-        # `["string", "null"]` with no `minLength` — and the session then failed its first status read
-        # with "missing required column name(s)". Validation clean, broken on first use.
+        # Whitespace-only is unset, because that is how the value's own consumers read it. Testing
+        # `in (None, "")` reported `columns.ready: "   "` as configured — schema-valid, no `minLength` —
+        # and the session then failed its first status read: validation clean, broken on first use.
         if not str(flat.get(path_key) or "").strip():
             errors.append(f"{path_key} is required and unset.")
     # Presence only: the name is reported, the value is never read into a variable or a message.
@@ -785,16 +746,10 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
 
 
 def _known_trackers() -> list[str]:
-    """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
-
-    Mirrors `scripts/sy_config.py::_known_trackers`. A configured `tracker` is checked against these
-    enumerated names rather than by asking whether `skills/tracker/<value>/` exists: `".."` and `"."`
-    both name existing directories, so the path-existence form reported a clean config and then found no
-    `config-map.json` for them, silently skipping every `required` and `secret_env` check this validator
-    exists to enforce, while `"../tracker/<name>"` traversed to a real adapter's map under a name no
-    adapter answers to. `sy_tools/tracker/__init__.py` refuses all three at tool-call time, which is the
-    point: `validate_config` is what is supposed to catch them before a tool call ever runs.
-    """
+    """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names."""
+    # Enumerated, never "does `skills/tracker/<value>/` exist": `"."` and `".."` name existing
+    # directories, so the path-existence form validated clean and then silently skipped every `required`
+    # and `secret_env` check, and `"../tracker/<name>"` traversed to a real map under a false name.
     tracker_dir = plugin_root() / "skills" / "tracker"
     return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []
 
@@ -807,11 +762,9 @@ def adapter_map() -> dict:
 
 
 def extra_secret_words() -> frozenset[str]:
-    """`redaction.extra_words`, read off the resolved values directly.
-
-    Read raw rather than through `get()`: `get()` consults this list to decide whether a key is
-    credential-shaped, so routing it through `get()` would recurse into the gate it extends.
-    """
+    """`redaction.extra_words`, read off the resolved values directly."""
+    # Not through `get()`: `get()` consults this list to decide whether a key is credential-shaped, so
+    # routing it through `get()` would recurse into the gate it extends.
     words = _flatten(resolve()[0]).get("redaction.extra_words", [])
     return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
 
@@ -819,20 +772,12 @@ def extra_secret_words() -> frozenset[str]:
 def env_present(name: str) -> bool:
     """Whether an environment variable is set and non-empty. The value itself is never returned or logged.
 
-    The presence-only idiom `_post_resolution_violations` already applies to each declared
-    `secret_env` name, lifted out so a caller diagnosing a missing credential has something to ask
-    that has no value to leak: `os.environ.get` reads it only to test truthiness — it is never
-    returned or logged — only whether the variable is set at all. An empty string counts as absent,
-    exactly as that loop reads it, since a variable exported empty is indistinguishable in effect
-    from one never exported.
-
-    A name the environment cannot even encode — an unpaired surrogate such as `"\\ud800"` — is absent,
-    not a crash: `os.environ.get` raises `UnicodeEncodeError` on one, which reached `check_env`'s caller
-    as an internal server error instead of an answer. Nothing can export such a name, so "not present"
-    is both the safe answer and the true one.
+    An empty string counts as absent: exported empty is indistinguishable in effect from never exported.
     """
     try:
         return bool(os.environ.get(name))
+    # An unpaired surrogate such as "\ud800" cannot be exported at all, so "not present" is both the safe
+    # answer and the true one; unhandled, it reached `check_env`'s caller as an internal server error.
     except UnicodeEncodeError:
         return False
 
@@ -840,10 +785,8 @@ def env_present(name: str) -> bool:
 def resolved_root() -> Path:
     """The consuming repository the hot configuration resolved against.
 
-    `repo_root()` re-derives; this reports what the live values were actually resolved from, so
-    `validate` names the same layer paths it read and a caller that must act *inside* the consumer's
-    checkout — a subprocess whose own working directory would otherwise decide which repository it
-    talks to — cannot pick a different one than the configuration did.
+    `repo_root()` re-derives; this reports what the live values were actually resolved from, so a caller
+    acting *inside* the consumer's checkout cannot pick a different one than the configuration did.
     """
     resolve()
     assert _STATE is not None
@@ -1045,8 +988,8 @@ def _load_json(path: Path) -> dict:
     except FileNotFoundError:
         raise ConfigError(f"missing required file {path}") from None
     except OSError as exc:
-        # An unreadable layer (a bad mode, a dead symlink target) is a configuration fault like any
-        # other, and `validate()`'s whole contract is to report one rather than raise on it.
+        # An unreadable layer (a bad mode, a dead symlink target) is a configuration fault like any other,
+        # and `validate()`'s contract is to report one rather than raise on it.
         raise ConfigError(f"{path} could not be read: {exc}") from None
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} is not valid JSON: {exc}") from None

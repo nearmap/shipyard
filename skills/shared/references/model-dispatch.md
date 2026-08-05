@@ -4,13 +4,13 @@ Every subagent's model is configurable per repo, and this is the one place that 
 
 ## The rule
 
-Resolve the model for the agent you are about to dispatch, by its own name:
+Resolve the model for the agent you are about to dispatch, by its own name, through the `sy` MCP server's `agent_model` tool (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
-```bash
-MODEL=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent <agent-name>)
+```
+agent_model {"name": "<agent-name>"}
 ```
 
-Pass `MODEL` as the `Agent` invocation's **actual model override parameter**, never as prompt text — an agent told in prose which model to be is still running whatever the frontmatter said. Record it as the dispatch's requested model.
+It returns the binding report for that agent: the model to dispatch with, the effort policy, what config requested, and whether either was clamped up to a floor. Pass the reported **model** as the `Agent` invocation's **actual model override parameter**, never as prompt text — an agent told in prose which model to be is still running whatever the frontmatter said. Record it as the dispatch's requested model.
 
 Three properties of the mechanism make this non-optional rather than a nicety:
 
@@ -23,14 +23,14 @@ Three properties of the mechanism make this non-optional rather than a nicety:
 `CLAUDE_CODE_SUBAGENT_MODEL` outranks the per-invocation parameter, and an org model allowlist can silently drop an excluded model back to the inherited one. Both mean a dispatch can run on a model nobody asked for, with no error. So requested and observed are separate facts:
 
 - record the resolved value as `<phase>_model_requested` when you dispatch;
-- read the transcript-observed model back from the usage JSON's `by_agent` entry (`${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py`) and record it as `<phase>_model_observed`;
+- read the transcript-observed model back from the `by_agent` entry of the `usage_summarize` tool's roll-up and record it as `<phase>_model_observed`;
 - if they disagree, stop and investigate rather than claiming the requested agent ran.
 
-`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate` fails when `CLAUDE_CODE_SUBAGENT_MODEL` is set, so the common cause is caught at the front door rather than discovered in accounting.
+The `validate_config` tool fails when `CLAUDE_CODE_SUBAGENT_MODEL` is set, so the common cause is caught at the front door rather than discovered in accounting.
 
 ## Unavailability falls back once, and says so
 
-If a dispatch returns no usable result because the requested model is unavailable — a spend cap, a rate limit, a `<synthetic>` refusal in place of real work — do not retry the same model and do not read the empty return as success. Re-dispatch once at `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier_fallback`, set the observed model to what actually ran, and note the substitution. If the fallback also cannot run, return `blocked` naming the model, never a silent pass.
+If a dispatch returns no usable result because the requested model is unavailable — a spend cap, a rate limit, a `<synthetic>` refusal in place of real work — do not retry the same model and do not read the empty return as success. Re-dispatch once at the value `get_config {"key": "models.tiers.frontier_fallback"}` reports, set the observed model to what actually ran, and note the substitution. If the fallback also cannot run, return `blocked` naming the model, never a silent pass.
 
 ## Effort is not symmetrical with model, and must not be described as if it were
 

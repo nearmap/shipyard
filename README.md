@@ -73,7 +73,7 @@ The workflow skills stay small and delegate expensive reads and builds to a flee
 
 The issue tracker is the one pluggable part. Core skills and agents speak a single [tracker contract](skills/tracker/CONTRACT.md) — canonical verbs, five lifecycle statuses (named per repo), and canonical types — and a thin adapter maps that to Jira or to GitHub Projects. The `tracker` config key selects one, and a validator keeps tracker-specific vocabulary out of every core file. The GitHub tracker needs **no organization**: it drives issue Type and Status as Projects v2 fields, which work the same on a personal board.
 
-Some lessons outlive a single ticket — a CLI flag with inverted semantics, a model that silently falls back to a default. Those go into a small, user-global memory store (`scripts/sy_memory.py`, one file per lesson plus a greppable index) rather than a ticket comment or a repo's `CLAUDE.md`. `/sy:plan` and `/sy:spec` read it during early research and `/sy:ship` at start; new lessons get written, at most a few at a time, during ship's retrospective. It is cross-repo by design, so a trap learned once does not have to be relearned in the next repo next month.
+Some lessons outlive a single ticket — a CLI flag with inverted semantics, a model that silently falls back to a default. Those go into a small, user-global memory store (the `sy` server's memory tools over one file per lesson plus a greppable index) rather than a ticket comment or a repo's `CLAUDE.md`. `/sy:plan` and `/sy:spec` read it during early research and `/sy:ship` at start; new lessons get written, at most a few at a time, during ship's retrospective. It is cross-repo by design, so a trap learned once does not have to be relearned in the next repo next month.
 
 ## Install and configure
 
@@ -92,7 +92,7 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 `./install.sh` validates the plugin and prints these instructions with a tracker-aware preflight. The details live in the docs:
 
 - [`docs/installation.md`](docs/installation.md) — loading the plugin and the CLI tools it needs.
-- [`docs/configuration.md`](docs/configuration.md) — every setting, the three-layer merge chain, per-agent model floors, and the migration off the old `env` block.
+- [`docs/configuration.md`](docs/configuration.md) — every setting, the three-layer merge chain, per-agent model floors, and how to retire the old `env` block.
 - [`docs/github-setup.md`](docs/github-setup.md) — one-time GitHub Projects board setup.
 - [`docs/usage.md`](docs/usage.md) — the day-to-day loop and the session-naming pattern.
 
@@ -109,9 +109,10 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 
 ```text
 shipyard/
-  .claude-plugin/plugin.json      # name: sy, version 1.0.0
+  .claude-plugin/plugin.json      # name: sy, plus the version `claude plugin update` gates on
   hooks/hooks.json                # review guard + usage accounting (plugin-level)
-  scripts/                        # tracker-agnostic: validate.py, session_usage.py, review_guard.py, sy_memory.py, ci_poll.sh
+  sy_tools/                       # the sy MCP server: the tool surface, config resolution, guards, tracker adapters
+  scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}
   skills/
     plan/ spec/ ship/ spike/ pr/ ci/ standards/ explain/ help/

@@ -1,14 +1,11 @@
 """Two-pass artifact sanitisation: known-value scrub first, then a pattern scanner.
 
-Port of `scripts/scrub_known_secrets.py` plus the scanner orchestration that the selected
-adapter's attachments reference under `skills/tracker/` prescribes as prose. The two passes are
-complementary and the order is load-bearing, so this module never exposes a way to run one
-without the other: the scrub catches a credential this process actually holds, verbatim,
-whatever shape it has; the scanner catches a shape it recognises whether or not this process
-ever held the value.
+The order is load-bearing and there is no way to run one pass without the other: the scrub catches a
+credential this process actually holds, verbatim, whatever shape it has; the scanner catches a shape
+it recognises whether or not this process ever held the value. `skills/tracker/CONTRACT.md` states
+the same contract for the two verbs that upload through it.
 
-Nothing here ever returns, logs, or embeds a credential value — only variable names and
-occurrence counts.
+Nothing here returns, logs, or embeds a credential value — only variable names and occurrence counts.
 """
 from __future__ import annotations
 
@@ -24,8 +21,8 @@ DEFAULT_MIN_LENGTH = 6
 SCANNER = "gitleaks"
 SCANNER_TIMEOUT_SECONDS = 60
 
-# Kept in step with `scripts/secret_words.py`; duplicated rather than imported so this package
-# stands alone (see the module docstring in `sy_tools/__init__.py`).
+# The one home of the credential-name word set: every consumer reaches it through
+# `looks_like_secret_name`, never through a copy of its own.
 SECRET_WORDS = frozenset({
     "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
     "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",
@@ -39,8 +36,8 @@ class SanitizeError(RuntimeError):
 def looks_like_secret_name(name: str, extra: frozenset[str] = frozenset()) -> bool:
     """True when a variable or config key name is credential-shaped, by word rather than substring.
 
-    Word-split so `A_TOKEN` matches while `TOKENIZER_PATH` does not. `extra` merges in
-    org-specific fragments (the `redaction.extra_words` config key) on top of the built-in set.
+    `A_TOKEN` matches, `TOKENIZER_PATH` does not. `extra` merges org-specific words
+    (`redaction.extra_words`) on top of the built-in set.
     """
     words = re.split(r"[^A-Za-z0-9]+", name.upper())
     all_words = SECRET_WORDS if not extra else SECRET_WORDS | extra
@@ -50,11 +47,8 @@ def looks_like_secret_name(name: str, extra: frozenset[str] = frozenset()) -> bo
 def discover_secret_vars(
     min_length: int = DEFAULT_MIN_LENGTH, extra_words: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
-    """Every environment variable whose *name* is credential-shaped, with a value long enough to matter.
-
-    Name-based, not value-based: scrubbing on value shape alone would redact ordinary long
-    strings (paths, URLs, ids) that happen to be in the environment.
-    """
+    """Every environment variable whose *name* is credential-shaped, with a value long enough to matter."""
+    # Name-based, not value-based: value shape alone would redact ordinary long paths, URLs and ids.
     return {
         name: value
         for name, value in os.environ.items()
@@ -63,12 +57,9 @@ def discover_secret_vars(
 
 
 def scrub_text(text: str, secrets: dict[str, str]) -> tuple[str, dict[str, int]]:
-    """Replace every literal occurrence of each secret value with its redaction marker.
-
-    Longest value first, so a secret that is a substring of another is consumed whole by the
-    longer replacement rather than fragmenting it.
-    """
+    """Replace every literal occurrence of each secret value with its redaction marker."""
     counts: dict[str, int] = {}
+    # Longest value first: a secret that is a substring of another is consumed whole, not fragmented.
     for name, value in sorted(secrets.items(), key=lambda kv: len(kv[1]), reverse=True):
         occurrences = text.count(value)
         if occurrences:
@@ -86,14 +77,7 @@ def scrub_file(path: Path, secrets: dict[str, str]) -> dict[str, int]:
 
 
 def scan_file(path: Path) -> list[dict]:
-    """Run the pattern scanner over an already-scrubbed file and return its findings.
-
-    `--redact` is mandatory and `--verbose` is never passed: an unredacted scanner report would
-    write the matched value straight back out, re-leaking exactly what this exists to prevent.
-
-    `stdin` is closed, as it is on every subprocess this server spawns: the server's own stdin is the
-    JSON-RPC transport, and a child that inherits it can eat a frame the server was going to read.
-    """
+    """Run the pattern scanner over an already-scrubbed file and return its findings."""
     if not shutil.which(SCANNER):
         raise SanitizeError(
             f"{SCANNER} is not installed, so the second sanitisation pass cannot run. "
@@ -102,6 +86,9 @@ def scan_file(path: Path) -> list[dict]:
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.json"
         try:
+            # `--redact`, never `--verbose`: an unredacted report writes the matched value back out.
+            # `stdin` is closed as on every subprocess this server spawns — its own stdin is the
+            # JSON-RPC transport, and a child that inherits it can eat a frame the server was to read.
             proc = subprocess.run(
                 [SCANNER, "dir", str(path), "--redact", "--report-format", "json",
                  "--report-path", str(report), "--exit-code", "0", "--log-level", "error"],
@@ -139,9 +126,8 @@ def sanitize(
 ) -> dict:
     """Both passes, in order, over `path` in place. Raises rather than returning an unsafe file.
 
-    `require` names variables that must actually resolve to a scrubbable value in this process's
-    environment; an absent one is a loud failure, because auto-discovery alone would otherwise
-    report a silent, clean zero-redaction run for exactly the credential it was asked to strip.
+    `require` names variables that must resolve to a scrubbable value in this process's environment;
+    an absent one is a loud failure rather than a clean zero-redaction run.
     """
     if not path.is_file():
         raise SanitizeError(f"artifact not found: {path}")

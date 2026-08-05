@@ -1,13 +1,10 @@
 """Offline tests for the Jira adapter and its in-process rich-text conversion: no network, no
 real credential.
 
-The credential test is the load-bearing one. The fake token is planted in the environment the
-same way the real one lives there, and every surface the call produces — the returned dict, the
-exception message, the URL, the request body, the non-auth headers, stdout — is asserted clean.
-The `Authorization` header is the single place it is allowed to appear.
-
-The transport tests go through a real `httpx2.MockTransport` rather than a stub of `request`, so
-the adapter's own exception mapping and its own timeout are what get exercised.
+The fake token is planted in the environment the same way the real one lives there, and the
+`Authorization` header is the single surface it is allowed to appear on. The transport tests go
+through a real `httpx2.MockTransport` rather than a stub of `request`, so the adapter's own
+exception mapping and its own timeout are what get exercised.
 """
 from __future__ import annotations
 
@@ -70,18 +67,12 @@ def artifact(tmp_path) -> Path:
 def _transport(monkeypatch, *responses: object) -> list[dict]:
     """Replace the module's request helper with a recorder answering `responses` in order.
 
-    A single response answers every call, which is all a one-call verb needs; several are handed out
-    in order and the last one repeats, which is what the read-write-verify verbs need. A response
-    given as a `(status, body)` pair sets the status too — Jira answers most writes 204 with no body,
-    and a verb that asserts that status has to be able to see it.
-
-    A response given as an exception is raised rather than returned. That is how a test drives the
-    failure of one call in a sequence: the real helper turns a non-2xx status, a stall and an
-    unreachable host alike into a `TrackerError`, so a verb whose safety depends on *which* call failed
-    can only be exercised by failing one.
-
-    `binary` is recorded rather than ignored: it is the one flag that changes how the transport reads a
-    response, so which call path asked for bytes is part of what a test asserts.
+    One response answers every call; several are handed out in order and the last one repeats, which is
+    what the read-write-verify verbs need. A `(status, body)` pair sets the status too, since Jira answers
+    most writes 204 with no body. An exception is raised rather than returned: `request` maps a non-2xx, a
+    stall and an unreachable host alike onto `TrackerError`, so a verb whose safety depends on *which* call
+    failed can only be exercised by failing one. `binary` is recorded because it is the one flag that
+    changes how the transport reads a response.
     """
     calls: list[dict] = []
     queue = list(responses) or [None]
@@ -102,10 +93,8 @@ def _transport(monkeypatch, *responses: object) -> list[dict]:
 def _routed(monkeypatch, *matched: tuple[str, object]) -> list[dict]:
     """Like `_transport`, but answering each call by the first URL fragment that matches it, in order.
 
-    A positional queue is the right shape for a verb whose calls are fixed, and the wrong shape for a
-    test about a call the adapter should have made: skipping one hands the next its predecessor's
-    response, and the verb fails on a shape mismatch instead of on the answer it built from what it
-    did read. Matching the URL keeps that failure the assertion's own.
+    For a test about a call the adapter should have made: under a positional queue, skipping one call hands
+    the next its predecessor's response and the verb fails on a shape mismatch rather than on the assertion.
     """
     calls: list[dict] = []
 
@@ -195,9 +184,8 @@ async def test_a_confirmation_without_an_id_is_not_reported_as_attached(credenti
 async def test_a_filename_that_could_forge_multipart_headers_is_refused(credentials, monkeypatch, tmp_path, name):
     """The multipart header is hand-built, so these four characters are header injection, not names.
 
-    All are legal in a POSIX filename: a quote closes `filename="..."` early, a backslash can escape
-    into the quoted string, and a CR or LF starts a header line — or a whole extra part — that the
-    caller never asked to send.
+    All four are legal in a POSIX filename: a quote closes `filename="..."` early, a backslash escapes into
+    the quoted string, and a CR or LF starts a header line — or a whole extra part — nobody asked to send.
     """
     hostile = tmp_path / name
     hostile.write_bytes(b"payload")
@@ -233,6 +221,8 @@ async def test_the_credential_appears_only_in_the_authorization_header(credentia
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "raised",
+    # both families: `TimeoutException` subclasses `RequestError`, so a mapping that caught the family
+    # first would still pass a timeout-only test
     [
         httpx2.ReadTimeout("timed out reading the response"),
         httpx2.ConnectError("connection refused"),
@@ -240,15 +230,11 @@ async def test_the_credential_appears_only_in_the_authorization_header(credentia
     ids=["read-stall", "connect-stall"],
 )
 async def test_a_stalled_call_is_bounded_and_becomes_a_tracker_error(raised):
-    """No REST call may hang unbounded, and no transport failure may escape as an httpx2 exception.
-
-    Both families are checked because `TimeoutException` is a subclass of `RequestError`: a mapping
-    that caught the family first would still pass a timeout-only test. The bound is read off the
-    request the client actually handed the transport, not off the constant.
-    """
+    """No REST call may hang unbounded, and no transport failure may escape as an httpx2 exception."""
     bounds: list[dict] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
+        # read off the request the client actually handed the transport, never off the constant
         bounds.append(dict(request.extensions["timeout"]))
         raise raised
 
@@ -310,8 +296,7 @@ async def test_missing_inputs_name_what_is_missing(credentials, artifact, monkey
 async def test_a_site_carrying_userinfo_is_refused_without_echoing_it(monkeypatch, artifact, site):
     """A `user:pass@host` site would ride in every request URL, every browse link and every failure.
 
-    Refused where the site is first turned into a base URL, so no verb can build one — and the
-    rejection must not quote the value, which would put the embedded secret in the message instead.
+    Refused where the site is first turned into a base URL, so no verb can build one at all.
     """
     values = {"tracker_config.email": FAKE_EMAIL, "tracker_config.site": site, "tracker_config.project": FAKE_PROJECT}
     monkeypatch.setattr(adapter.config, "get", lambda path, *, default=None: values.get(path, default))
@@ -329,10 +314,8 @@ async def test_a_site_carrying_userinfo_is_refused_without_echoing_it(monkeypatc
 
 # ---- the canonical verbs -------------------------------------------------------------------------
 #
-# Every verb is driven through the recorder above, so what is asserted is the request that would have
-# gone to Jira — method, URL and body — and the dict the verb hands back. The response fixtures are
-# the shapes the real API returns (measured against a live instance), trimmed to the fields the
-# adapter reads.
+# The response fixtures below are the shapes the real API returns, measured against a live instance and
+# trimmed to the fields the adapter reads.
 
 ADF_BODY = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
     {"type": "text", "text": "Body line."}]}]}
@@ -346,12 +329,10 @@ ISSUE: dict[str, Any] = {
         "status": {"name": "In Review"},
         "issuetype": {"name": "Task"},
         "parent": {"key": "PROJ-1", "fields": {"summary": "The epic"}},
-        # A Task's `subtasks`, which is the only kind of child that field ever carries: genuine
-        # Sub-tasks of a Task. An Epic's children never appear here, whatever is parented beneath it,
-        # which is why an Epic read takes the `parent = <key>` search instead (see the Epic test below).
+        # `subtasks` carries only genuine Sub-tasks of a Task; an Epic's children never appear here
         "subtasks": [{"key": "PROJ-8"}, {"key": "PROJ-9"}],
-        # Read semantics measured live: a counterpart under `outwardIssue` blocks this issue, one
-        # under `inwardIssue` is blocked BY it. So PROJ-5 is the blocker and PROJ-6 is downstream.
+        # measured live: a counterpart under `outwardIssue` blocks this issue, one under `inwardIssue`
+        # is blocked BY it. So PROJ-5 is the blocker and PROJ-6 is downstream.
         "issuelinks": [
             {"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}},
             {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-6"}},
@@ -397,12 +378,10 @@ PROJECT_BODY = {"id": "10000", "key": FAKE_PROJECT, "name": "Shipyard"}
 
 @pytest.mark.anyio
 async def test_preflight_reads_the_account_and_the_configured_project(credentials, monkeypatch):
-    """Both identifiers are read, not merely present: only one of the two used to be checked.
+    """Both identifiers are read, not merely present, so a wrong project key is reported here.
 
-    A project key nothing reads is the misconfiguration no other verb reports — Jira answers a JQL
-    search naming an unknown or invisible project with zero issues rather than an error, so
-    `find-issues` says "nothing to pick up" about a board that has work on it, and the key is not
-    noticed until a create fails much later.
+    Jira answers a JQL search naming an unknown or invisible project with zero issues rather than an error,
+    so no other verb reports it: `find-issues` says "nothing to pick up" about a board that has work on it.
     """
     calls = _transport(monkeypatch, MYSELF_BODY, PROJECT_BODY)
 
@@ -459,12 +438,10 @@ async def test_preflight_fails_naming_the_project_it_could_not_confirm(credentia
 async def test_preflight_blames_the_project_key_only_when_jira_answered_not_found(
     credentials, monkeypatch, failure, detail, blamed
 ):
-    """A stall and a mistyped key both failed the project read, and both used to read as a bad key.
+    """A stall and a mistyped key both fail the project read, and only one of them is a bad key.
 
     `request` raises one exception class for a status, a stall and an unreachable host alike, so catching
-    `TrackerError` here rewrote every one of them into "check the key against the projects this account
-    can see" — a diagnosis nothing measured, pointing at a setting that was right, while the fault that
-    actually happened disappeared from the message.
+    `TrackerError` here diagnosed every one of them as a wrong project key while the real fault vanished.
     """
     _transport(monkeypatch, MYSELF_BODY, failure)
 
@@ -522,11 +499,9 @@ async def test_a_create_that_returns_no_key_is_not_reported_as_created(credentia
 async def test_get_issue_reads_canonical_fields_markdown_and_only_the_blockers(credentials, monkeypatch):
     """`dependencies` is what blocks this issue: the counterpart arriving as the link's OUTWARD end.
 
-    The direction was measured against real linked issues, not inferred — a read carries only the
-    counterpart, and the field it arrives under names that counterpart's absolute role, so the
-    blocker of this issue is its outward end. The fixture carries one link each way plus an
-    unrelated type, because reporting the wrong end inverts every dependency downstream reasoning
-    then depends on, while every call still succeeds.
+    Measured against real linked issues, not inferred: a read carries only the counterpart, and the field
+    it arrives under names that counterpart's absolute role. Reporting the wrong end inverts every
+    dependency downstream while every call still succeeds, so the fixture carries one link each way.
     """
     calls = _transport(monkeypatch, ISSUE, THREAD)
 
@@ -581,6 +556,8 @@ async def test_get_issue_survives_an_issue_with_no_body_no_children_and_no_comme
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("thread", "truncated"),
+    # the two signals Jira offers: `startAt` plus the page short of `total`, and a `total` missing
+    # entirely where a page that came back full is all there is to go on
     [
         (THREAD, False),
         ({**THREAD, "total": 120}, True),
@@ -591,12 +568,7 @@ async def test_get_issue_survives_an_issue_with_no_body_no_children_and_no_comme
 async def test_get_issue_says_whether_the_comment_page_left_anything_out(
     credentials, monkeypatch, thread, truncated
 ):
-    """A clipped thread reads exactly like a quiet issue, so the bound has to be visible.
-
-    Both signals Jira offers are covered: the counted case, where `startAt` plus the page is short of
-    `total`, and the case where `total` is missing entirely and a page that came back full is all
-    there is to go on.
-    """
+    """A clipped thread reads exactly like a quiet issue, so the bound has to be visible."""
     _transport(monkeypatch, ISSUE, thread)
 
     full = await adapter.JiraAdapter().get_issue("PROJ-7")
@@ -611,11 +583,7 @@ async def test_get_issue_says_whether_the_comment_page_left_anything_out(
 @pytest.mark.anyio
 @pytest.mark.parametrize("malformed", ["a bare string", ["nested"], None], ids=["string", "list", "null"])
 async def test_a_comment_entry_of_the_wrong_shape_fails_rather_than_vanishing(credentials, monkeypatch, malformed):
-    """Skipping the entry returned a short thread that `total` and `startAt` still called complete.
-
-    A comment silently missing from a read is exactly what the truncation signal exists to prevent, and
-    the search read in the same module already refuses this drift.
-    """
+    """Skipping the entry returned a short thread that `total` and `startAt` still called complete."""
     thread = {"comments": [THREAD["comments"][0], malformed], "startAt": 0, "total": 2}
     _transport(monkeypatch, ISSUE, thread)
 
@@ -638,8 +606,7 @@ EPIC: dict[str, Any] = {
         "description": ADF_BODY,
         "status": {"name": "In Progress"},
         "issuetype": {"name": "Epic"},
-        # Jira really does return this: an Epic's Tasks are parented to it, and `subtasks` is the
-        # sub-task-level relation, so it is empty on every Epic however decomposed the Epic is.
+        # `subtasks` is the sub-task-level relation, so Jira answers it empty on every Epic
         "subtasks": [],
         "issuelinks": [],
         "labels": ["decomposed"],
@@ -666,9 +633,8 @@ EPIC_CHILDREN = {
 async def test_get_issue_finds_an_epics_children_through_the_parent_search(credentials, monkeypatch, page, truncated):
     """`subtasks` is empty on every Epic, so reading children from it reported a decomposed Epic as bare.
 
-    That is the answer the duplicate-work and decomposition checks above this seam read as "nothing has
-    been planned here yet" — on the one issue type Shipyard hangs all execution off. The children come
-    from the same `parent = <key>` search `find-issues` serves, and a page that left any out says so.
+    The duplicate-work and decomposition checks above this seam read that as "nothing has been planned
+    here yet", on the one issue type Shipyard hangs all execution off.
     """
     calls = _transport(monkeypatch, EPIC, page, THREAD)
 
@@ -708,10 +674,8 @@ async def test_get_issue_searches_for_the_children_of_any_type_that_is_not_a_kno
 ):
     """`canonical_type` passes an unmapped native name straight through, so "is not an Epic" is not a test.
 
-    A level above Epic, a custom hierarchy level, and an issue whose `issuetype` is missing altogether all
-    failed that test, were read from `subtasks` — empty on every one of them — and came back as
-    `children: []` with `children_truncated: False`: a decomposed parent reported as childless, with
-    nothing in the answer to suggest the emptiness was manufactured here rather than measured in Jira.
+    Every type here failed that test, was read from `subtasks` — empty on all of them — and came back as a
+    decomposed parent reported childless, with nothing saying the emptiness was manufactured here.
     """
     unplaceable = {"key": "PROJ-1", "fields": {**EPIC["fields"], "issuetype": issuetype, "subtasks": []}}
     calls = _routed(monkeypatch, ("/comment", THREAD), ("/search/jql", EPIC_CHILDREN), ("/issue/", unplaceable))
@@ -737,10 +701,9 @@ OTHER_PROJECT_CHILDREN = {
 async def test_get_issue_reads_the_children_of_an_epic_outside_the_configured_project(credentials, monkeypatch):
     """`get-issue` reads any key; only `find-issues` is about the configured board.
 
-    Following a `dependencies` link routinely lands on an Epic in another project. The child search was
-    scoped to `tracker_config.project` regardless, so the JQL named a project the key does not belong to,
-    matched nothing, and reported a decomposed cross-project Epic as childless — Jira answers such a
-    search with zero issues rather than an error, so nothing else could notice.
+    Following a `dependencies` link routinely lands on an Epic in another project, and a child search
+    scoped to `tracker_config.project` regardless named a project the key does not belong to. Jira answers
+    such a search with zero issues rather than an error, so nothing else could notice.
     """
     epic = {"key": "OTHER-1", "fields": EPIC["fields"]}
     calls = _routed(
@@ -767,11 +730,9 @@ MIGRATED_CHILDREN = {
 async def test_get_issue_reads_children_whose_project_differs_from_the_parents_key_prefix(credentials, monkeypatch):
     """`parent = <key>` names one issue, so a project clause on top of it can only subtract real children.
 
-    A key prefix is not a project: an issue moved between projects keeps the prefix it was created with,
-    and Advanced Roadmaps parents children across projects outright. Deriving a `project =` clause from
-    the parent's prefix therefore excluded the very children the search exists to find, and Jira answers a
-    search that matched nothing with zero issues rather than an error — `children: []` with
-    `children_truncated: False`, indistinguishable from a parent nobody has decomposed yet.
+    A key prefix is not a project: an issue moved between projects keeps the prefix it was created with, and
+    Advanced Roadmaps parents children across projects outright. A `project =` clause derived from the
+    prefix therefore excluded the children the search exists to find, indistinguishable from none existing.
     """
     epic = {"key": "MOVED-1", "fields": EPIC["fields"]}
     calls = _routed(monkeypatch, ("/comment", THREAD), ("/search/jql", MIGRATED_CHILDREN), ("/issue/", epic))
@@ -811,9 +772,7 @@ async def test_a_relational_field_that_is_not_a_list_fails_instead_of_reading_as
 ):
     """`dependencies: []` is what a caller reads as "not blocked", and `children: []` as "not decomposed".
 
-    Both used to be what a field of the wrong shape produced, indistinguishable from an issue that
-    really has no relations. The message names the field so the drift can be found, and names shapes
-    only — never the payload, never the credential.
+    A field of the wrong shape produced both, indistinguishable from an issue that really has no relations.
     """
     drifted = {**ISSUE, "fields": {**ISSUE["fields"], field: value}}
     _transport(monkeypatch, drifted, THREAD)
@@ -850,10 +809,9 @@ async def test_a_relational_field_jira_omits_still_reads_as_no_relations(credent
 async def test_a_labels_field_that_is_not_a_list_of_strings_fails_the_read(credentials, monkeypatch, labels):
     """Filtering the field to the strings in it invented labels, dropped labels, or crashed outright.
 
-    A bare string was iterated into its own characters, an entry that was an object vanished from a
-    list that still looked plausible, and a number raised a `TypeError` past every `TrackerError` this
-    module promises. `add_label` already refuses this exact shape rather than writing it back, so the
-    read that feeds it has to refuse it too — otherwise the two disagree about the same field.
+    A bare string was iterated into its own characters, an object entry vanished from a list that still
+    looked plausible, and a number raised a `TypeError` past every `TrackerError` this module promises.
+    `add_label` refuses this shape rather than writing it back, so the read that feeds it must too.
     """
     drifted = {**ISSUE, "fields": {**ISSUE["fields"], "labels": labels}}
     _transport(monkeypatch, drifted, THREAD)
@@ -869,17 +827,13 @@ async def test_a_labels_field_that_is_not_a_list_of_strings_fails_the_read(crede
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "entry",
+    # `nested-key`: `_field` coerced a non-string `key` into a truthy `"{'nested': 1}"`, so the guard
+    # passed and a fabricated key naming no real issue landed in `children`
     [{"id": "10099"}, "PROJ-9", None, {"key": {"nested": 1}}],
     ids=["object-with-no-key", "bare-string", "null", "nested-key"],
 )
 async def test_a_child_entry_carrying_no_key_fails_instead_of_being_dropped(credentials, monkeypatch, entry):
-    """A skipped entry returned a shorter list while `children_truncated` still reported `False`.
-
-    That is a read claiming to be complete with a real child missing from it — the drift the per-comment
-    refusal already exists for, one field over. `nested-key` is the case the refusal could not see while
-    `_field` read the key: a non-string `key` coerced into a truthy `"{'nested': 1}"`, so the guard passed
-    and a fabricated key landed in `children` — worse than the drop, because it names an issue nobody has.
-    """
+    """A skipped entry returned a shorter list while `children_truncated` still reported `False`."""
     drifted = {**ISSUE, "fields": {**ISSUE["fields"], "subtasks": [{"key": "PROJ-8"}, entry]}}
     _transport(monkeypatch, drifted, THREAD)
 
@@ -924,16 +878,11 @@ async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blockin
 ):
     """ "No type name to compare" and "compared, and it is not Blocks" are different answers.
 
-    `(_field(link.get("type"), "name") or "").lower() != BLOCKS` collapsed them into one: Jira's own spec
-    marks `type` required on an `IssueLink` without guaranteeing a `name` inside it, so a drifted type
-    shape filtered out as if the link had been read and found irrelevant, and the issue came back with
-    `dependencies: []` — indistinguishable from a genuinely unblocked one, which is exactly what this
-    function's docstring refuses.
-
-    `nested-name` is the truthiness half of that same collapse, and it survived the first fix: `_field`
-    coerced a non-string `name` into a truthy `"{'nested': 1}"`, which walked straight past the gate and
-    lost the comparison instead, so a Blocks link whose type name drifted still read as unrelated.
-    `_str_field` is what reads the name now.
+    Jira's own spec marks `type` required on an `IssueLink` without guaranteeing a `name` inside it, so
+    `(_field(link.get("type"), "name") or "").lower() != BLOCKS` filtered a drifted type shape out as if the
+    link had been read and found irrelevant: `dependencies: []` for an issue that may well be blocked.
+    `nested-name` is the truthiness half — a non-string `name` coerced into a truthy string lost the
+    comparison instead of failing it, which is why `_str_field` reads the name now.
     """
     entry = {"type": link_type, "outwardIssue": {"key": "PROJ-5"}}
     _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
@@ -950,12 +899,9 @@ async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blockin
 async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(credentials, monkeypatch):
     """A read carries one side of each link, so the other direction being empty is honest, not drift.
 
-    "This direction does not apply" is what is guarded here, and it is the ordinary case: a Blocks link
-    arrives under exactly one of the two sides `_linked` is asked for, so raising on an absent side would
-    fail every real read. An `id`-only counterpart is legitimate too — Jira's spec documents `key` as
-    required only when `id` is not given, so that object is addressable, just not by the key this
-    returns. The distinct case, an object that is *present* and names no issue at all, is drift and the
-    test below refuses it; those two used to share one silent `continue`.
+    A Blocks link arrives under exactly one of the two sides `_linked` is asked for, so raising on an absent
+    side would fail every real read. An `id`-only counterpart is legitimate too: Jira's spec documents `key`
+    as required only when `id` is not given, so that object is addressable, just not by the key this returns.
     """
     for entry, expected in (
         ({"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}, ["PROJ-5"]),
@@ -980,17 +926,12 @@ async def test_a_blocks_link_whose_counterpart_names_no_issue_is_not_reported_as
 ):
     """A counterpart that is present and unaddressable is drift, not the absent side above.
 
-    `if key:` collapsed those two answers into one silent `continue`, so a Blocks link whose
-    `outwardIssue` carries neither `key` nor `id` came back as `dependencies: []` — indistinguishable
-    from a genuinely unblocked issue, in the one field a caller reads to decide whether it is blocked,
-    and with no truncation channel on `get_issue` to signal the drop. Jira's REST v3 spec documents
-    `key` on this object as required when `id` is not provided, the same specification the link-type
-    check cites, and `_keys` here plus github's `_refs` already raise on the equivalent per-entry drift.
-
-    The nested shapes are the truthiness half of the same answer: `str(member) if member else None` made
-    `{"key": {...}}` read as the issue key `"{'nested': 1}"` and any truthy `id` read as "addressable, so
-    skip", so an addressability decision rested on a value being non-empty rather than on it being the
-    string the spec types it as. `_str_field` is what reads both members now.
+    Jira's REST v3 spec documents `key` on this object as required when `id` is not provided, so a
+    counterpart carrying neither is drift — but `if key:` collapsed it into the absent side's silent
+    `continue`, answering `dependencies: []` with no truncation channel on `get_issue` to signal the drop.
+    The nested shapes are the truthiness half: `str(member) if member else None` rested addressability on a
+    value being non-empty rather than on it being the string the spec types it as, so `_str_field` reads both
+    members now.
     """
     entry = {"type": {"name": "Blocks"}, "outwardIssue": counterpart}
     _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
@@ -1097,12 +1038,10 @@ async def test_find_issues_sends_a_returned_cursor_back_and_omits_it_on_a_first_
 
 @pytest.mark.anyio
 async def test_find_issues_fails_on_a_result_with_no_key(credentials, monkeypatch):
-    """Found by review: a search result missing `key` was passed through as an id-less, unaddressable row.
+    """A search result missing `key` was passed through as an id-less, unaddressable row.
 
-    `_field(entry, "key") or ""` defaulted a missing key to an empty string, so `_summary` built an entry
-    with `id: ""` and a `url` truncated to `.../browse/` — a row that reads as a found issue but cannot be
-    acted on. The `fields` block just above already fails loudly on the identical kind of drift; the key
-    must too.
+    `_field(entry, "key") or ""` defaulted it to an empty string, so `_summary` built an entry with `id: ""`
+    and a `url` truncated to `.../browse/` — a row that reads as a found issue but cannot be acted on.
     """
     fields = {
         "summary": "Ship the thing",
@@ -1121,9 +1060,8 @@ async def test_find_issues_fails_on_a_result_with_no_key(credentials, monkeypatc
 async def test_find_issues_fails_on_a_result_whose_key_is_not_really_a_string(credentials, monkeypatch):
     """Same coercion hole `_linked`/`_keys` closed with `_str_field`, one call site over.
 
-    `_field(entry, "key")` would `str()`-coerce a nested/malformed `key` shape into a fabricated,
-    truthy key instead of the missing one this file already refuses — a search result would read as
-    a found, addressable issue under a key nobody can look up.
+    `_field(entry, "key")` would `str()`-coerce a nested `key` shape into a fabricated, truthy key, so a
+    search result read as a found, addressable issue under a key nobody can look up.
     """
     fields = {
         "summary": "Ship the thing",
@@ -1162,11 +1100,7 @@ async def test_find_issues_bounds_the_page_size(credentials, monkeypatch):
 
 @pytest.mark.anyio
 async def test_a_search_with_no_project_and_no_parent_refuses_rather_than_reading_unbounded(credentials, monkeypatch):
-    """The project scope is optional so the child search can drop it; an empty JQL is not the fallback.
-
-    Neither `project` nor `parent` bounds the query to one board or one issue's children, so the
-    search refuses before it is sent rather than let an unbounded query reach Jira's API.
-    """
+    """The project scope is optional so the child search can drop it; an empty JQL is not the fallback."""
     calls = _transport(monkeypatch, {"issues": [], "isLast": True})
 
     with pytest.raises(TrackerError, match="neither project nor parent"):
@@ -1313,19 +1247,16 @@ async def test_add_dependency_fails_when_the_direction_is_not_confirmed(credenti
         {"type": {"name": "Relates"}},
         "not a link object",
     ],
+    # `unreadable-type` and `other-type` leave `_linked` by different routes: a `type` with no `name`
+    # reaches the strict gate, a well-formed `Relates` exits through the ordinary Blocks filter
     ids=["unaddressable", "nested-key", "unreadable-type", "other-type", "not-an-object"],
 )
 async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(credentials, monkeypatch, unrelated):
     """The POST has already landed by the verification read, so drift in another link must not fail it.
 
-    Raising over the whole list reported failure for a link that really was created — with no indication
-    it existed — which invites a retry that creates a second one. The verification only needs the entry it
-    just wrote, so an entry it cannot parse is simply not that entry. `get_issue`'s strict read of the
-    same list is the test below, unchanged: there a skipped entry is a dependency silently missing.
-
-    `unreadable-type` and `other-type` are separate cases because they leave `_linked` by different
-    routes: a `type` object with no `name` in it reaches the strict unreadable-type gate, while a
-    well-formed `Relates` link exits through the ordinary Blocks filter and never gets there.
+    Raising over the whole list reported failure for a link that really was created, with no indication it
+    existed — which invites a retry that creates a second one. The verification only needs the entry it just
+    wrote, so an entry it cannot parse is simply not that entry.
     """
     confirming = {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}
     _transport(monkeypatch, (201, None), {"fields": {"issuelinks": [unrelated, confirming]}})
@@ -1462,6 +1393,22 @@ async def test_attachment_download_fetches_the_resolved_content_url_and_writes_t
 
 
 @pytest.mark.anyio
+async def test_a_destination_that_cannot_be_written_reaches_the_caller_as_a_tracker_error(
+    credentials, monkeypatch, tmp_path
+):
+    """Every other failure in this verb is a `TrackerError`; the write was the one raising raw `OSError`.
+
+    A caller of a tracker verb handles `TrackerError`, so a bare `FileNotFoundError` out of the write
+    crossed the seam as something nothing above it catches — the download's only unwrapped failure path.
+    """
+    _transport(monkeypatch, _attachments(_attachment()), (200, ARTIFACT_BYTES))
+    destination = tmp_path / "no-such-directory" / "downloaded.txt"
+
+    with pytest.raises(TrackerError, match="could not be written to"):
+        await adapter.JiraAdapter().attachment_download("PROJ-7", ARTIFACT_NAME, destination)
+
+
+@pytest.mark.anyio
 async def test_an_attachment_with_no_content_url_is_refused_rather_than_written_as_an_empty_file(
     credentials, monkeypatch, tmp_path
 ):
@@ -1524,9 +1471,8 @@ async def test_an_attachment_still_on_the_issue_after_a_204_is_a_failed_replace(
 ):
     """The 204 says Jira accepted the delete; only the re-read says the old file is off the issue.
 
-    Exercised through `attachment_update`, which supersedes every same-named attachment: the shared
-    `_delete_attachment` verification this pins has no other public caller now that there is no
-    standalone `attachment-delete` verb.
+    Driven through `attachment_update` because the shared `_delete_attachment` verification this pins has
+    no other public caller: there is no standalone delete verb on the seam.
     """
     echoed = [{"id": "10999", "filename": ARTIFACT_NAME}]
     _transport(
@@ -1625,9 +1571,8 @@ async def test_attachment_update_refuses_a_missing_file_before_it_deletes_the_ol
 async def test_an_upload_that_fails_leaves_the_previous_artifact_on_the_issue(credentials, monkeypatch, artifact):
     """A refused upload must cost the issue nothing, which only the upload-first order can promise.
 
-    Every refusal made before the request is checked elsewhere; this is the one that cannot be: a
-    timeout, a 413 or a permission change on the upload itself. Deleting first, the issue was left with
-    no artifact at all — a total loss, strictly worse than the stale transcript it started with.
+    The one refusal that cannot be made before the request: a timeout, a 413, a permission change on the
+    upload itself. Deleting first left the issue with no artifact at all — worse than a stale transcript.
     """
     calls = _transport(
         monkeypatch, _attachments(_attachment("10501")), TrackerError("HTTP 413 from POST /attachments: too large")
@@ -1646,10 +1591,9 @@ async def test_an_upload_that_fails_leaves_the_previous_artifact_on_the_issue(cr
 async def test_a_binary_fetch_follows_the_redirect_and_drops_the_credential_crossing_it():
     """An attachment's content URL answers a redirect to media storage, which one call path follows.
 
-    The credential must not follow with it: the storage URL is a different origin carrying its own
-    pre-signed query, so httpx2 strips `Authorization` — asserted rather than assumed, because the flag
-    that follows the redirect is the flag that would otherwise forward the token to another host. The
-    default is pinned too: every other call must still treat a 302 as a failure.
+    The storage URL is a different origin carrying its own pre-signed query, so httpx2 strips
+    `Authorization` — asserted rather than assumed, because the flag that follows the redirect is the flag
+    that would otherwise forward the token to another host. The default is pinned too: a 302 is a failure.
     """
     signed = "https://media.example.net/file/abc/binary?token=presigned"
     seen: list[tuple[str, str | None]] = []
@@ -1713,11 +1657,10 @@ async def test_no_verb_leaks_the_credential_or_writes_to_stdout(
 
 # ---- in-process rich-text conversion ------------------------------------------------------------
 #
-# The round-trip test is the load-bearing one. Lists and code blocks are exactly the node classes a
-# client-side Markdown parser is known to drop silently (atlassian/homebrew-acli#45), so it asserts
-# they exist as document nodes going out and that their content is still there coming back, rather
-# than asserting on the whole document — the converter's own cosmetic spacing choices are not a
-# contract, the surviving content is.
+# Lists and code blocks are the node classes a client-side Markdown parser drops silently (upstream bug
+# atlassian/homebrew-acli#45), so the round trip asserts those nodes exist going out and their content
+# survives coming back, rather than asserting the whole document: the converter's cosmetic spacing is not
+# a contract, the surviving content is.
 
 RICH_TEXT = """Intro paragraph.
 

@@ -1,15 +1,10 @@
 """A real MCP handshake against the real server process, over a real stdio pipe.
 
-Everything else in this suite talks to the server in-process. This does not: it spawns
-`python -m sy_tools.server` as a child, connects the SDK's own stdio client transport to its
-pipes, and drives `initialize` -> `tools/list` -> `tools/call` across them. The point is to catch
-the class of breakage that only exists on the wire and that an in-memory client cannot see — a
-module that fails to import under `-m`, a startup path that writes to stdout before the first
-frame, an entry point that never starts the transport at all.
-
-It is deliberately a test rather than a manual step: the pixi environment makes the interpreter
-that runs the suite the same one the server is launched with, so `sys.executable` is the honest
-command and this runs identically in CI.
+Everything else in this suite talks to the server in-process. This spawns `python -m sy_tools.server`
+as a child and drives `initialize` -> `tools/list` -> `tools/call` over its pipes, which is the only
+way to catch breakage that exists on the wire alone: a module that fails to import under `-m`, a
+startup path that writes to stdout before the first frame, an entry point that never starts the
+transport at all.
 """
 from __future__ import annotations
 
@@ -34,6 +29,8 @@ def anyio_backend() -> str:
 
 def _server_process() -> StdioServerParameters:
     """The same module entry point `.mcp.json`'s task reaches, spawned directly rather than via pixi."""
+    # The pixi environment makes the suite's own interpreter the one the server is launched with, so
+    # `sys.executable` is the honest command and this runs identically in CI.
     return StdioServerParameters(
         command=sys.executable, args=["-m", "sy_tools.server"], cwd=str(PLUGIN_ROOT)
     )
@@ -60,17 +57,14 @@ async def test_a_real_client_handshakes_with_a_real_server_process():
 
 @pytest.mark.anyio
 async def test_a_failing_call_leaves_the_stdio_stream_usable():
-    """stdout is protocol-only, and the proof is that the session survives a diagnostic.
+    """stdout is protocol-only, and the surviving second call is the proof.
 
-    A failing tool makes the server log a traceback. If any of that reached stdout it would land
-    mid-frame and desynchronise this client, so the surviving second call is the assertion: the
-    diagnostic went to stderr and the stream is still parseable.
-
-    `kind="report"` is deliberate. It is the one artifact kind the gate lets straight through, so
-    the missing file is reached and raised over the wire whatever `transcript.attach` resolves to
-    in the environment this happens to run in.
+    A failing tool makes the server log a traceback: anything of it reaching stdout would land
+    mid-frame and desynchronise this client.
     """
     async with mcp.Client(stdio_client(_server_process())) as client:
+        # `report` clears the artifact gate, so the missing path is reached whatever
+        # `transcript.attach` resolves to in the environment this runs in.
         failed = await client.call_tool(
             "attach-artifact", {"issue": "PROJ-1", "path": "/nonexistent/x", "kind": "report"}
         )

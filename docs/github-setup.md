@@ -72,11 +72,13 @@ Put this in the repo's `.claude/settings.json` `env` block — it is per-repo, s
 
 ## 6. Verify, then smoke-test
 
-Confirm the configuration resolves and the credential reaches the board (read-only):
+Confirm the configuration resolves and the credential reaches the board (read-only). The `validate_config` tool is the first half — every problem, each naming its key and layer (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT:-.}/scripts/sy_config.py" validate
 ```
+validate_config {}
+```
+
+That is a tool call, not a terminal command: run `/sy:config` in a session to get the same report with explanation, or ask the agent to call it. From a checkout of the plugin, `./install.sh` also validates the resolved configuration on the way through.
 
 Then call the `preflight` verb, which is the live half: it proves `gh` is authenticated and that Projects v2 is actually reachable with this credential, not just that config is present. Once it succeeds, `docs/smoke_mcp.py` exercises every canonical verb end to end (it creates real issues; see the script header for the opt-in and the cleanup switch).
 

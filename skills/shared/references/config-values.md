@@ -3,11 +3,25 @@
 A bullet that names a dotted config key (`limits.max_depth_agents`, `ship.merge_strategy`,
 `spec.light_tier_max_files`, and similar) is documentation, not execution: text in a skill file is
 read, never run. Naming the key in backticks does not resolve it. Before treating the value as
-authoritative for a decision in this run, resolve it for real:
+authoritative for a decision in this run, resolve it for real, with the `sy` MCP server's
+`get_config` tool:
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get <dotted.key>
 ```
+get_config {"key": "<dotted.key>"}
+```
+
+It returns `{"key": ..., "value": ...}` — the `value` is the resolved setting. A key an adapter
+documents as optional has no entry to resolve, so a caller that knows it is optional passes
+`default` as well; without one, an unknown key is an error, which is what a caller who believes the
+key exists wants. There is deliberately no CLI form of this read to fall back on.
+
+**Resolving a tool's name.** Every `sy` tool named anywhere in these skills — `get_config`,
+`show_config`, `validate_config`, `agent_model`, `scratch_dir`, `fingerprint_config`, the memory and
+transcript tools, and every tracker verb — is named plainly here and in every other skill file, but
+its *exposed* name carries a deployment-dependent prefix: `mcp__plugin_sy_sy__get_config` for a
+marketplace install, `mcp__sy__get_config` where a project-level `.mcp.json` provides the server
+instead. Resolve the name from the tools actually available to you rather than typing a literal
+identifier; both prefixes point at the same tool, and hardcoding either breaks the other deployment.
 
 This applies specifically to a value with **no other enforcement point** — a concurrency cap, a
 threshold, an escalation count — where the orchestrating session reading this prose is the only
@@ -39,6 +53,6 @@ own introduction.
 "resolve it for real" above doesn't apply to them — there is no run to resolve it in. The
 "never restate a default" rule still does, though: name the config key so a reader knows the
 behavior is configurable, without asserting a specific number. `config/defaults.json` is the one
-file a value actually lives in; `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show` is how a
-human looks up what it currently resolves to in a given repo. Every mention anywhere else just
-points there — never to a restated number.
+file a value actually lives in; `/sy:config show` — which reports every resolved value with the
+layer it came from, via the `show_config` tool — is how a human looks up what it currently resolves
+to in a given repo. Every mention anywhere else just points there — never to a restated number.

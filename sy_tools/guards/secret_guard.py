@@ -3,9 +3,9 @@
 
 Once any command prints a secret, that value is a permanent, byte-for-byte part of this session's
 transcript from that point on — every later render (a HANDOFF attachment, an export) reproduces it,
-regardless of whether it was ever used or uploaded anywhere. `scrub_known_secrets.py` cleans this up
-after the fact, right before a rendered transcript is scanned and attached; this hook exists to make
-the most likely way of getting there awkward in the first place.
+regardless of whether it was ever used or uploaded anywhere. `sy_tools/secrets.py`'s `sanitize()`
+cleans this up after the fact, right before a rendered transcript is scanned and attached; this hook
+exists to make the most likely way of getting there awkward in the first place.
 
 Scope, stated plainly: this is best-effort defence in depth over a small named set of command shapes.
 It is not a soundness guarantee, not a completeness claim, and not a shell sandbox. What it covers is:
@@ -32,9 +32,9 @@ therefore not this hook, and two controls that do not depend on classifying a co
   (`create-issue`, `update-issue`, `post-comment`), which scrub known secret values out of what they
   send.
 
-Name-based, not value-based, like `scrub_known_secrets.py`'s own discovery: this hook never reads the
-actual environment, only the command string, so it fires the same way whether or not a secret happens
-to be set right now.
+Name-based, not value-based, like `sy_tools/secrets.py`'s own `discover_secret_vars()`: this hook never
+reads the actual environment, only the command string, so it fires the same way whether or not a secret
+happens to be set right now.
 
 Failing to reach a decision is a deny, never a silent return. A `PreToolUse` hook that writes nothing
 is read as no decision at all, which runs the command with the check skipped — so an input this hook
@@ -53,7 +53,7 @@ import re
 import shlex
 import sys
 
-from secret_words import looks_like_secret_name as _base_looks_like_secret_name
+from sy_tools.secrets import looks_like_secret_name as _base_looks_like_secret_name
 
 _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
     "sudo": frozenset({
@@ -89,8 +89,7 @@ _ADVICE = (
     "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
     "variable is set, never its value — or, with no MCP session available, the shell equivalent "
     '`[ -n "$THE_VAR" ]`, which tests presence without printing anything. For the tracker: '
-    "`sy_preflight.py check` / the adapter's `preflight` command, which names what's missing or dead "
-    "without ever printing a value."
+    "the `preflight` MCP tool, which names what's missing or dead without ever printing a value."
 )
 MAX_COMMAND_CHARS = 20_000
 _TOO_LONG = (
@@ -147,7 +146,7 @@ Claude Code sets this field, so reachability is low; consistency with the siblin
 def emit(reason: str | None, warning: str | None) -> None:
     """The hook's one JSON object on stdout: the deny decision, the degraded-config warning, or both.
 
-    `reason` names an env var (e.g. "ACLI_TOKEN") found in the command string; no secret value is
+    `reason` names an env var (e.g. "EXAMPLE_TOKEN") found in the command string; no secret value is
     ever read from the environment or printed here. `warning` goes in the top-level `systemMessage`
     field, which per Claude Code's documented hook-output contract is surfaced to the user on an allow
     decision too — unlike stderr, which that contract describes as reaching only an opt-in debug log on
@@ -174,7 +173,7 @@ def decision(tool: object, args: dict) -> str | None:
     review_guard's concern, not this hook's), which was a bypass twice over: matched against the
     whole command string, prefixing any denied command with a harmless `sed -i` allowed the whole
     thing, and matched against a segment's text, the token needed no command of its own to appear,
-    so `echo "sed -i" $ACLI_TOKEN` disarmed the check for the segment that was the leak. Scoped
+    so `echo "sed -i" $EXAMPLE_TOKEN` disarmed the check for the segment that was the leak. Scoped
     finally to a segment's actually-invoked command it became unreachable — no segment can lead with
     `sed`/`perl` and with one of the printing or dumping commands `_segment_reason` denies — so it is
     gone rather than left wired up to fail open again the day that denied set grows.
@@ -183,8 +182,8 @@ def decision(tool: object, args: dict) -> str | None:
     read in the shape it expects is not an input it has cleared. Command text past
     `MAX_COMMAND_CHARS` is refused because every check below scales with it and not all of them
     linearly. A `command` that is not a string is refused rather than coerced — `str()` on an
-    unexpected shape does not raise, so a list-shaped `{"command": ["echo $ACLI_TOKEN"]}` became the
-    text `['echo $ACLI_TOKEN']`, whose bracket-and-quote punctuation matches none of the patterns
+    unexpected shape does not raise, so a list-shaped `{"command": ["echo $EXAMPLE_TOKEN"]}` became the
+    text `['echo $EXAMPLE_TOKEN']`, whose bracket-and-quote punctuation matches none of the patterns
     below, and the leak was allowed. A non-string `tool` is refused for the same reason:
     `tool != "Bash"` is a correct allow for every other tool, and was therefore an allow for a
     malformed value too.
@@ -308,7 +307,7 @@ def _env_reason(cmd: str, rest: list[str]) -> str | None:
     segment of its own rather than blanket-allowed: `env echo $VAR` and `env printenv VAR` deny for
     exactly the reasons their unwrapped forms do, and a genuine wrapper use stays allowed because the
     wrapped command is allowed. A few `env` flags (`-u`/`-C`/`-S` and long forms) consume the *next*
-    token as their own argument rather than naming the command to run — `env -u ACLI_SITE` alone still
+    token as their own argument rather than naming the command to run — `env -u EXAMPLE_SITE` alone still
     dumps the environment."""
     names: list[str] = []
     i = 0
@@ -378,11 +377,12 @@ def _extra_words() -> frozenset[str]:
     """`redaction.extra_words` from resolved config, cached for this process.
 
     Resolved in-process (not via subprocess — this hook already pays full interpreter startup on
-    every `Bash` call, so importing `sy_config` costs nothing beyond that). A misconfigured repo
+    every `Bash` call, so importing `sy_tools.config` costs nothing beyond that). A misconfigured repo
     must not turn every command into a hard failure: fall back to the built-in word list alone,
-    exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
+    exactly as an unresolvable `debug.evals` does in `sy_tools/eval_events.py`.
 
-    Every resolution failure degrades, including an `OSError`. `SystemExit` alone was not enough: the
+    Every resolution failure degrades, including an `OSError` and the `ConfigError` that is the shape
+    every `sy_tools.config` refusal takes. `SystemExit` alone was not enough: the
     resolver shells out to `git rev-parse`, so a `git` missing from `PATH` raised `FileNotFoundError`
     straight through this catch and crashed the hook process — and a crashed `PreToolUse` hook is
     fail-open, so the *whole* gate went quiet, not just the configured extra words. That is the
@@ -400,9 +400,10 @@ def _extra_words() -> frozenset[str]:
     global _EXTRA_WORDS, _CONFIG_WARNING
     if _EXTRA_WORDS is None:
         try:
-            from sy_config import get as _config_get
+            from sy_tools.config import ConfigError
+            from sy_tools.config import get as _config_get
             words = _config_get("redaction.extra_words", default=[])
-        except (SystemExit, OSError) as exc:
+        except (SystemExit, ConfigError, OSError) as exc:
             _CONFIG_WARNING = (
                 f"secret_guard: redaction.extra_words could not be resolved, so only the built-in secret "
                 f"word list applies for this command: {exc}"
@@ -429,7 +430,7 @@ def _self_test() -> None:
         "set -euo pipefail", "set -x", "set -- a b c",
         "export FOO=bar", "export PATH=$PATH:/usr/local/bin",
         "env FOO=bar python script.py", "env -i FOO=bar somecmd",
-        "env -u ACLI_SITE python script.py", "env --unset=ACLI_SITE somecmd",
+        "env -u EXAMPLE_SITE python script.py", "env --unset=EXAMPLE_SITE somecmd",
         "env FOO=bar echo hello", "sudo env FOO=bar python script.py",
         "printenv PATH", "printenv HOME SHELL",
         "timeout 5 ls", "timeout --signal SIGKILL 5 ls", "timeout -k 1 5 pytest -q",
@@ -437,38 +438,38 @@ def _self_test() -> None:
         "sudo -u root ls", "sudo -- ls", "stdbuf -o0 pytest -q", "stdbuf -o 0 pytest -q",
         "sudo timeout 5 git status", "nohup python script.py",
         "echo hello", "echo $HOME", 'echo "path is $PATH"',
-        '[ -n "$ACLI_TOKEN" ]', "[ -z \"$GITHUB_TOKEN\" ] && echo missing",
-        'python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN',
-        "acli jira auth status",
+        '[ -n "$EXAMPLE_TOKEN" ]', "[ -z \"$SERVICE_TOKEN\" ] && echo missing",
+        "python -m sy_tools.preflight check --tracker example --vars EXAMPLE_TOKEN",
+        "tracker-cli auth status",
         "python script.py --flag value",
-        '''python -c "import requests; requests.get(u, headers={'Authorization': os.environ['ACLI_TOKEN']})"''',
+        '''python -c "import requests; requests.get(u, headers={'Authorization': os.environ['EXAMPLE_TOKEN']})"''',
         '''node -e "console.log(42)"''',
     ]
     deny_cases = [
-        "env", "env | grep -i acli", "env | grep -i token",
+        "env", "env | grep -i secret", "env | grep -i token",
         "printenv", "printenv -0",
-        "printenv ACLI_TOKEN", "printenv HOME ACLI_TOKEN",
+        "printenv EXAMPLE_TOKEN", "printenv HOME EXAMPLE_TOKEN",
         "set", "set;",
         "export", "export -p",
-        "echo $ACLI_TOKEN", 'echo "$ACLI_TOKEN"', "echo ${ACLI_TOKEN}",
-        "echo $GITHUB_TOKEN", "echo $AWS_SECRET_ACCESS_KEY",
-        "printf '%s\\n' \"$ACLI_TOKEN\"",
+        "echo $EXAMPLE_TOKEN", 'echo "$EXAMPLE_TOKEN"', "echo ${EXAMPLE_TOKEN}",
+        "echo $SERVICE_TOKEN", "echo $AWS_SECRET_ACCESS_KEY",
+        "printf '%s\\n' \"$EXAMPLE_TOKEN\"",
         "cd /tmp && env",
-        "echo $ACLI_TOKEN > /dev/null",
-        "env -u ACLI_SITE", "env -u ACLI_SITE -u ACLI_EMAIL",
-        "timeout 5 echo $ACLI_TOKEN", "timeout --signal SIGKILL 5 echo $ACLI_TOKEN",
-        "timeout --signal=SIGKILL 5 printenv ACLI_TOKEN", "timeout -k 1 5 env",
-        "nice -n 10 echo $ACLI_TOKEN", "nice -n10 echo $ACLI_TOKEN",
-        "ionice -c 3 echo $ACLI_TOKEN",
-        "stdbuf -o0 echo $ACLI_TOKEN", "stdbuf -o 0 echo $ACLI_TOKEN",
-        "sudo -u root echo $ACLI_TOKEN", "sudo --user=root echo $ACLI_TOKEN",
-        "sudo -- echo $ACLI_TOKEN", "sudo -n printenv ACLI_TOKEN",
-        "env echo $ACLI_TOKEN", "env printenv ACLI_TOKEN", "env FOO=bar echo $ACLI_TOKEN",
-        "sudo env echo $ACLI_TOKEN", "sudo timeout 5 env",
-        '''python -c "import os; print(os.environ['ACLI_TOKEN'])"''',
-        '''node -e "console.log(process.env.GITHUB_TOKEN)"''',
-        '''node -e "console.log(process.env['GITHUB_TOKEN'])"''',
-        '''python3 -c "import os, sys; sys.stdout.write(os.getenv('ACLI_TOKEN'))"''',
+        "echo $EXAMPLE_TOKEN > /dev/null",
+        "env -u EXAMPLE_SITE", "env -u EXAMPLE_SITE -u EXAMPLE_EMAIL",
+        "timeout 5 echo $EXAMPLE_TOKEN", "timeout --signal SIGKILL 5 echo $EXAMPLE_TOKEN",
+        "timeout --signal=SIGKILL 5 printenv EXAMPLE_TOKEN", "timeout -k 1 5 env",
+        "nice -n 10 echo $EXAMPLE_TOKEN", "nice -n10 echo $EXAMPLE_TOKEN",
+        "ionice -c 3 echo $EXAMPLE_TOKEN",
+        "stdbuf -o0 echo $EXAMPLE_TOKEN", "stdbuf -o 0 echo $EXAMPLE_TOKEN",
+        "sudo -u root echo $EXAMPLE_TOKEN", "sudo --user=root echo $EXAMPLE_TOKEN",
+        "sudo -- echo $EXAMPLE_TOKEN", "sudo -n printenv EXAMPLE_TOKEN",
+        "env echo $EXAMPLE_TOKEN", "env printenv EXAMPLE_TOKEN", "env FOO=bar echo $EXAMPLE_TOKEN",
+        "sudo env echo $EXAMPLE_TOKEN", "sudo timeout 5 env",
+        '''python -c "import os; print(os.environ['EXAMPLE_TOKEN'])"''',
+        '''node -e "console.log(process.env.SERVICE_TOKEN)"''',
+        '''node -e "console.log(process.env['SERVICE_TOKEN'])"''',
+        '''python3 -c "import os, sys; sys.stdout.write(os.getenv('EXAMPLE_TOKEN'))"''',
     ]
     for command in allow:
         got = decision("Bash", {"command": command})
@@ -477,9 +478,9 @@ def _self_test() -> None:
         got = decision("Bash", {"command": command})
         assert got is not None, f"expected deny for {command!r}"
     assert decision("Write", {"command": "env"}) is None, "non-Bash tools are out of scope"
-    assert _looks_like_secret_name("ACLI_TOKEN")
-    assert _looks_like_secret_name("GITHUB_TOKEN")
-    assert not _looks_like_secret_name("ACLI_SITE")
+    assert _looks_like_secret_name("EXAMPLE_TOKEN")
+    assert _looks_like_secret_name("SERVICE_TOKEN")
+    assert not _looks_like_secret_name("EXAMPLE_SITE")
     assert not _looks_like_secret_name("PATH")
     _EXTRA_WORDS = saved_extra_words
 
@@ -506,14 +507,14 @@ def _test_an_in_place_edit_excuses_no_segment_and_denies_none() -> None:
     _EXTRA_WORDS = frozenset()
     try:
         for command in (
-            "sed -i.bak s/a/b/ f && echo $ACLI_TOKEN",
-            "perl -pi -e x f ; echo $ACLI_TOKEN",
+            "sed -i.bak s/a/b/ f && echo $EXAMPLE_TOKEN",
+            "perl -pi -e x f ; echo $EXAMPLE_TOKEN",
             "sed -i s/x/y/ f | env",
-            "sed -i s/x/y/ f && printenv GITHUB_TOKEN",
-            'echo "sed -i" $ACLI_TOKEN',
-            "echo $ACLI_TOKEN # sed -i",
-            'printf "ran sed -i %s" "$ACLI_TOKEN"',
-            "echo $ACLI_TOKEN # perl -pi",
+            "sed -i s/x/y/ f && printenv SERVICE_TOKEN",
+            'echo "sed -i" $EXAMPLE_TOKEN',
+            "echo $EXAMPLE_TOKEN # sed -i",
+            'printf "ran sed -i %s" "$EXAMPLE_TOKEN"',
+            "echo $EXAMPLE_TOKEN # perl -pi",
         ):
             assert decision("Bash", {"command": command}) is not None, (
                 f"an in-place edit, run or merely mentioned, must not excuse a secret-bearing segment: {command!r}"
@@ -570,7 +571,7 @@ def _test_an_oversized_command_is_refused_instead_of_scanned() -> None:
         compound = " && ".join(["git status", "pytest -q -k something_fairly_long", "ruff check ."] * 40)
         assert len(compound) < MAX_COMMAND_CHARS // 4, f"a real compound command is small: {len(compound)}"
         assert decision("Bash", {"command": compound}) is None, "and must not trip the ceiling"
-        assert decision("Bash", {"command": f"{compound} && echo $ACLI_TOKEN"}) is not None, (
+        assert decision("Bash", {"command": f"{compound} && echo $EXAMPLE_TOKEN"}) is not None, (
             "a leak in a long-but-admitted command is still scanned and still denied"
         )
     finally:
@@ -633,7 +634,7 @@ def _test_an_input_that_cannot_be_read_or_evaluated_denies_rather_than_returning
 def _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced() -> None:
     """`str()` on an unexpected shape does not raise, so a crash backstop never covered this one.
 
-    `{"command": ["echo $ACLI_TOKEN"]}` stringified to `['echo $ACLI_TOKEN']`, and the bracket-and-quote
+    `{"command": ["echo $EXAMPLE_TOKEN"]}` stringified to `['echo $EXAMPLE_TOKEN']`, and the bracket-and-quote
     punctuation around the text means none of the deny patterns matched what is plainly the leak — an
     allow reached without any exception for `main()` to catch. An absent `command` is a different thing
     and still allows: a Bash call with nothing to run has nothing to leak.
@@ -645,7 +646,7 @@ def _test_a_command_that_is_not_a_string_denies_rather_than_being_coerced() -> N
     saved = _EXTRA_WORDS
     _EXTRA_WORDS = frozenset()
     try:
-        for shape in (["echo $ACLI_TOKEN"], {"cmd": "env"}, 5, True, ["env"]):
+        for shape in (["echo $EXAMPLE_TOKEN"], {"cmd": "env"}, 5, True, ["env"]):
             got = decision("Bash", {"command": shape})
             assert got == _UNREADABLE_COMMAND, f"a {type(shape).__name__}-shaped command must deny: {got!r}"
         assert decision("Bash", {}) is None, "an absent command has nothing to run and nothing to leak"
@@ -664,7 +665,7 @@ def _test_extra_words_from_config() -> None:
     from pathlib import Path
     import tempfile
 
-    import sy_config
+    from sy_tools import config as sy_config
 
     global _EXTRA_WORDS
     saved = _EXTRA_WORDS
@@ -674,8 +675,8 @@ def _test_extra_words_from_config() -> None:
         repo = Path(tmp) / "repo"
         (home / ".shipyard").mkdir(parents=True)
         (repo / ".shipyard").mkdir(parents=True)
-        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
-        sy_config.repo_root = lambda: repo
+        Path.home = staticmethod(lambda: home)  # ty: ignore[invalid-assignment]
+        sy_config.repo_root = lambda: repo  # ty: ignore[invalid-assignment]
         sy_config.reset_cache()
         _EXTRA_WORDS = None
         try:
@@ -689,7 +690,7 @@ def _test_extra_words_from_config() -> None:
             assert _looks_like_secret_name("NM_BEARER"), "redaction.extra_words must widen the gate"
             assert decision("Bash", {"command": "echo $NM_BEARER"}) is not None
         finally:
-            Path.home = original_home  # type: ignore[method-assign]
+            Path.home = original_home  # ty: ignore[invalid-assignment]
             sy_config.repo_root = original_repo_root
             sy_config.reset_cache()
             _EXTRA_WORDS = saved
@@ -709,7 +710,7 @@ def _test_unresolvable_config_warns_rather_than_dropping_silently() -> None:
     from pathlib import Path
     import tempfile
 
-    import sy_config
+    from sy_tools import config as sy_config
 
     global _EXTRA_WORDS, _CONFIG_WARNING
     saved, saved_warning = _EXTRA_WORDS, _CONFIG_WARNING
@@ -724,7 +725,7 @@ def _test_unresolvable_config_warns_rather_than_dropping_silently() -> None:
             assert "redaction.extra_words" in warning, f"the drop must be reported: {warning!r}"
             assert "CLAUDE_PROJECT_DIR" in warning, f"the warning must name the cause: {warning!r}"
             assert decision("Bash", {"command": "git status"}) is None, "the guard must keep working"
-            assert decision("Bash", {"command": "echo $ACLI_TOKEN"}) is not None, "built-ins still deny"
+            assert decision("Bash", {"command": "echo $EXAMPLE_TOKEN"}) is not None, "built-ins still deny"
         finally:
             if saved_pointer is None:
                 os.environ.pop("CLAUDE_PROJECT_DIR", None)

@@ -13,15 +13,19 @@ Delegate the mechanics to the tracker skill (`${CLAUDE_PLUGIN_ROOT}/skills/track
 3. The selected adapter's own required configuration is present — each adapter declares and self-checks its list, in its `config-map.json`'s `required` (non-secret config keys) and `secret_env` (environment-only credential names) — both checked, the config keys against resolved config and the secrets against `os.environ` directly.
 4. A **liveness** check — presence is not enough. A credential can be set and still be dead: revoked, expired, or never actually logged in to begin with. The adapter performs a real, minimal read against the tracker to tell the two apart, exactly the "validate with a real work-item read" guidance each `ADAPTER.md` already gives for its own operations, just run once up front instead of discovered mid-write.
 
-Steps 1–3 are one command — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate` — which names every offending key or missing secret and the layer (or "the environment") it should have come from, so a misconfiguration is one read rather than three separate discoveries.
+Steps 1–3 are one call — the `validate_config` tool — which names every offending key or missing secret and the layer (or "the environment") it should have come from, so a misconfiguration is one read rather than three separate discoveries.
 
 ## The liveness check is cached, not repeated
 
-A live read on every invocation is neither quick nor free, and what it verifies changes rarely, so the result is cached (`${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py`) against a fingerprint of the plugin build, the selected tracker, the resolved config, and any secret the adapter names, with a short TTL. A cache hit skips the network call entirely; a miss — first run, changed config, expired TTL — runs the adapter's live check once and records success for next time. The fingerprint/cache/TTL mechanics are tracker-agnostic and live in `scripts/`; what "a real read" means for a given tracker is adapter knowledge and stays in that adapter's own `ADAPTER.md`, never here.
+A live read on every invocation is neither quick nor free, and what it verifies changes rarely, so the `preflight` tool caches its own result rather than re-reading: the cache is keyed on a fingerprint of the plugin build, the selected tracker, the resolved config, and any secret the adapter names, with a short TTL. A hit skips the network call entirely and is reported as cached; a miss — first run, changed config, expired TTL — runs the adapter's live check once and records success itself, so the next call gets the hit.
+
+The caller's whole obligation is therefore **one `preflight` call**. There is no separate check-then-record pair to sequence, forget half of, or get the order of wrong — the tool decides whether the live read is needed and records it when it runs. Only one case needs more than that: a caller that has just changed the config knows a still-fresh entry predates the change and is stale by construction, and passes `force` to demand the live read regardless of the cache.
+
+The fingerprint, cache and TTL mechanics are tracker-agnostic and live inside the tool (`sy_tools/`); what "a real read" means for a given tracker is adapter knowledge and stays in that adapter's own `ADAPTER.md`, never here.
 
 ## On failure: name it once, then stop
 
-A failed check — presence or liveness — never surfaces as a raw crash from inside a helper script partway through a run. It closes the turn with exactly one `## Action needed` block (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), stating:
+A failed check — presence or liveness — never surfaces as a raw tool error partway through a run. It closes the turn with exactly one `## Action needed` block (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), stating:
 
 - exactly which variable, file, or command is missing — the adapter's own error text, verbatim, since it already names the specific gap;
 - the one-line fix — set the key in `.shipyard/config.json`, export the adapter's credential, run its one-time login command, or run `/sy:init-repo`;

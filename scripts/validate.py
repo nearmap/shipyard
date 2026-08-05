@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Validate the Shipyard plugin: structure, frontmatter, the tracker seam, and contract completeness.
 
-Run before loading or releasing the plugin. The seam check is the load-bearing one: it fails if any
-core file (outside skills/tracker/) names a specific tracker, which is what stops the abstraction
-eroding the first time something gets patched in a hurry.
+Run before loading or releasing the plugin. Every check appends to one error list; main() prints them
+all and exits 1 if any check failed.
 """
 from __future__ import annotations
 
@@ -36,22 +35,25 @@ COLUMN_KEYS = {
     "columns.backlog", "columns.ready", "columns.in_progress", "columns.in_review", "columns.done",
 }
 
-# Settings that used to be environment variables. `scripts/sy_config.py` is now the only reader;
-# any other file naming one is either a missed cut-over or a second resolution path for one key.
+# `sy_tools/config.py` is the only legal reader: a name elsewhere is a missed cut-over, or a second
+# code path resolving one key.
 LEGACY_CONFIG_ENV = {
     "SY_TRACKER", "SY_WORKTREE_ROOT", "SY_MEMORY_DIR", "SY_DEBUG_EVALS", "SY_CI_POLL_TIMEOUT",
     "SY_BACKLOG_COLNAME", "SY_READY_COLNAME", "SY_IN_PROGRESS_COLNAME", "SY_IN_REVIEW_COLNAME",
     "SY_DONE_COLNAME", "SY_FRONTIER_MODEL", "SY_FRONTIER_FALLBACK", "SY_IMAGE_MODEL",
     "SY_DEBATE_MODEL", "SY_GH_PROJECT", "SY_GH_REPO",
 }
-# The resolver owns the legacy map; the adapters own their own names; the docs explain the
-# migration. Everything else must go through `sy_config.py get`.
-_SCRATCH_HINT = '`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <identifier>`'
+# Every spelling of "give this agent the whole `sy` server": the bare server name under either
+# deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
+SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
+_SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
 
+# Exempt because each owns a name: the resolver the legacy map, the adapters their own, the docs the
+# by-hand move.
 CONFIG_ENV_ALLOWED = {
-    "scripts/sy_config.py",
+    "sy_tools/config.py",
     "scripts/validate.py",
     "docs/configuration.md",
     "skills/tracker/jira/config-map.json",
@@ -77,19 +79,17 @@ REQUIRED = {
     "config/floors.json",
     "config/schema.json",
     "docs/configuration.md",
-    "scripts/sy_config.py",
     "skills/config/SKILL.md",
     "skills/tracker/jira/config-map.json",
     "skills/tracker/github/config-map.json",
-    "scripts/session_usage.py",
-    "scripts/review_guard.py",
-    "scripts/eval_events.py",
     "scripts/ci_poll.sh",
-    "scripts/sy_memory.py",
-    "scripts/sy_preflight.py",
-    "scripts/scrub_known_secrets.py",
-    "scripts/secret_guard.py",
-    "scripts/secret_words.py",
+    "sy_tools/usage.py",
+    "sy_tools/eval_events.py",
+    "sy_tools/memory.py",
+    "sy_tools/preflight.py",
+    "sy_tools/secrets.py",
+    "sy_tools/guards/secret_guard.py",
+    "sy_tools/guards/review_guard.py",
     "skills/tracker/SKILL.md",
     "skills/tracker/CONTRACT.md",
     "skills/tracker/jira/ADAPTER.md",
@@ -146,12 +146,10 @@ def frontmatter(path: Path, errors: list[str]) -> None:
 
 
 def _frontmatter_field(text: str, field: str) -> str:
-    """Return a frontmatter field's value, joining an indented YAML block list into one string.
-
-    Malformed frontmatter yields "" rather than raising: `frontmatter()` already records those two
-    delimiter failures as errors, and a raise here would abort main() before it prints the list.
-    """
+    """Return a frontmatter field's value, joining an indented YAML block list into one string."""
     if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+        # "" rather than raising: `frontmatter()` already reports both delimiter failures, and a raise
+        # here would abort main() before it prints the collected list.
         return ""
     block = text.split("---", 2)[1]
     match = re.search(rf"^{field}:(.*)$", block, re.M)
@@ -166,15 +164,12 @@ def _frontmatter_field(text: str, field: str) -> str:
 
 
 def _component_md(seam_only: bool) -> list[Path]:
-    """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only.
-
-    `.scratch` is excluded at any depth for the same reason `check_config_seam` and
-    `check_no_repo_scratch_refs` exclude it: it is not Shipyard's to read, and its content is not
-    guaranteed to be UTF-8 decodable.
-    """
+    """Core component markdown: agents/ + skills/, excluding the tracker legal zone when seam_only."""
     paths: list[Path] = []
     for base in ("agents", "skills"):
         for p in (ROOT / base).rglob("*.md"):
+            # Excluded at any depth, as in the two seam checks below: not Shipyard's to read, and not
+            # guaranteed to be UTF-8 decodable.
             if ".scratch" in p.relative_to(ROOT).parts:
                 continue
             if seam_only and "skills/tracker/" in p.as_posix():
@@ -218,10 +213,9 @@ def check_no_home_paths(errors: list[str]) -> None:
 
 
 def check_seam(errors: list[str]) -> None:
-    scan = _component_md(seam_only=True) + [
-        ROOT / "scripts/session_usage.py", ROOT / "scripts/review_guard.py", ROOT / "scripts/ci_poll.sh",
-        ROOT / "scripts/sy_memory.py", ROOT / "scripts/sy_preflight.py", ROOT / "scripts/eval_events.py",
-    ]
+    # The check that stops the abstraction eroding under time pressure; the list below is exhaustive
+    # because `sy_tools/tests/test_tracker_seam.py` scans that whole package, leaving one executable.
+    scan = _component_md(seam_only=True) + [ROOT / "scripts/ci_poll.sh"]
     for p in scan:
         text = p.read_text(encoding="utf-8", errors="replace")
         for pattern in TRACKER_TOKENS:
@@ -233,12 +227,7 @@ def check_seam(errors: list[str]) -> None:
 
 
 def check_config_seam(errors: list[str]) -> None:
-    """No file but the resolver may name a config setting's old environment variable.
-
-    Same shape as check_seam: one mechanical rule replacing a promise that a settings value is
-    read in exactly one place. A stray name here means two code paths resolve one key, which is
-    what made the old secret/config boundary illegible.
-    """
+    """No file but the resolver may name a config setting's old environment variable."""
     for p in sorted(ROOT.rglob("*")):
         if not p.is_file() or p.suffix not in {".md", ".py", ".sh", ".json"}:
             continue
@@ -252,7 +241,7 @@ def check_config_seam(errors: list[str]) -> None:
                 line = text[: text.index(var)].count("\n") + 1
                 fail(
                     f"CONFIG SEAM: {rel}:{line}: names retired env var {var}; read it with "
-                    f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" get <key>` instead",
+                    "the `sy` server's `get_config` tool instead",
                     errors,
                 )
                 break
@@ -261,31 +250,21 @@ def check_config_seam(errors: list[str]) -> None:
 def check_no_repo_scratch_refs(errors: list[str]) -> None:
     """No file Shipyard ships may name a repo-relative scratch directory.
 
-    Scratch lives under the resolved `scratch.dir` now, keyed per identifier. A reintroduced
-    repo-relative path in Shipyard's own agents/scripts/skill docs is not cosmetic: it is fragile
-    exactly where it is used most, discarded with every `/sy:ship` worktree it was written in, and
-    — for `review_guard.py`'s hunt sandbox — a boundary the guard and the agent it guards would
-    resolve two different ways.
-
-    This walks every file in the checkout by suffix — not a git-tracked-files query, so a gitignored
-    file is scanned too — and never asks whether a `.scratch/` directory exists at all: that
-    directory is not Shipyard's to police. Something else on this machine may depend on it for
-    entirely unrelated reasons, so `.gitignore` keeps excluding it (it is not this migration's to
-    remove either) and this check does not scan its contents, at any depth: whatever is in there
-    belongs to whoever put it there, not to Shipyard.
-
-    `.pixi/` is skipped because it is gitignored but materialised on disk once an environment is
-    installed, and `errors="replace"` is not decoration either: an undecodable byte anywhere under a
-    directory nobody authored would raise out of this check and discard every error the whole run had
-    already collected.
+    Not cosmetic: such a path is discarded with every `/sy:ship` worktree it was written in, and for
+    `review_guard.py`'s hunt sandbox the guard and the agent it guards resolve it two different ways.
     """
+    # Every file on disk by suffix, not a git-tracked query, so a gitignored file is scanned too.
     for p in sorted(ROOT.rglob("*")):
         if not p.is_file() or p.suffix not in _SCRATCH_REF_SUFFIXES:
             continue
         parts = p.relative_to(ROOT).parts
         rel = "/".join(parts)
+        # Exempt: this file holds the pattern; a scratch directory's contents belong to whoever put them
+        # there, not to Shipyard; `.pixi/` is gitignored but on disk once an environment is installed.
         if rel == "scripts/validate.py" or ".scratch" in parts or parts[0] in {".shipyard", ".git", ".pixi"}:
             continue
+        # `errors="replace"`: one undecodable byte under a directory nobody authored would raise out and
+        # discard every error collected so far.
         text = p.read_text(encoding="utf-8", errors="replace")
         m = _SCRATCH_REF_PATTERN.search(text)
         if m:
@@ -298,12 +277,9 @@ def check_no_repo_scratch_refs(errors: list[str]) -> None:
 
 
 def check_agent_floors(errors: list[str]) -> None:
-    """Every agent has a declared floor and a default binding, and its frontmatter honours both.
+    """Every agent has a declared floor and a default binding, and the binding honours the floor.
 
-    Shipyard's central invariant — model tier is a quality floor, not a cost dial — lived only in
-    prose across six files. This is the deterministic half: the shipped default may not sit below
-    the shipped floor, and every agent must appear in both files so a new agent cannot ship
-    unbounded.
+    Every agent must appear in both config files, so a new one cannot ship unbounded.
     """
     order = ("haiku", "sonnet", "opus", "fable")
     efforts = ("low", "medium", "high", "xhigh", "max")
@@ -324,6 +300,7 @@ def check_agent_floors(errors: list[str]) -> None:
             continue
         floor_model = tiers.get(floors[agent].get("min_model"), floors[agent].get("min_model"))
         bound_model = tiers.get(bindings[agent].get("model"), bindings[agent].get("model"))
+        # Model tier is a quality floor, not a cost dial: a default under the floor ships weaker silently.
         if floor_model in order and bound_model in order and order.index(bound_model) < order.index(floor_model):
             fail(
                 f"config/defaults.json: {agent} defaults to {bound_model!r}, below its declared floor "
@@ -345,11 +322,7 @@ def check_agent_floors(errors: list[str]) -> None:
 
 
 def check_agent_frontmatter_tiers(errors: list[str]) -> None:
-    """Every agent declares both model and effort, and neither sits below its floor.
-
-    Frontmatter is the load-time floor: model is overridden at dispatch from resolved config, but
-    effort cannot be, so a missing or below-floor `effort:` is the one that silently ships weaker.
-    """
+    """Every agent declares both model and effort in frontmatter, and neither sits below its floor."""
     order = ("haiku", "sonnet", "opus", "fable")
     efforts = ("low", "medium", "high", "xhigh", "max")
     try:
@@ -386,6 +359,49 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
                 )
 
 
+def check_agent_mcp_allowlists(errors: list[str]) -> None:
+    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, and never by wildcard."""
+    for p in sorted((ROOT / "agents").glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
+        declared = re.search(r"^tools:\s*(.+)$", block, re.M)
+        if not declared:
+            continue
+        named = [entry.strip() for entry in declared.group(1).split(",")]
+        for entry in named:
+            # Both spellings, because Claude Code documents `mcp__<server>__*` as granting every tool
+            # from that server exactly as the bare server name does — and the pair
+            # `mcp__sy__*, mcp__plugin_sy_sy__*` also satisfies the twin check below, so the
+            # bare-name-only form of this check let a full server grant through clean.
+            if SERVER_WILDCARD.fullmatch(entry):
+                fail(
+                    f"{p.relative_to(ROOT)}: tools names the server-level wildcard {entry!r}, which grants "
+                    "every tool including the tracker's mutation verbs; name individual tools instead",
+                    errors,
+                )
+            elif entry.startswith("mcp__") and "*" in entry:
+                # Not one of the two documented `tools:` forms above (an exact name or a server-level
+                # `mcp__<server>`/`mcp__<server>__*` pattern) -- refuse rather than let an unrecognised
+                # glob shape reach the server unnoticed, whether it would over-grant or silently strip
+                # the tool it looks like it names.
+                fail(
+                    f"{p.relative_to(ROOT)}: tools names {entry!r}, neither an exact tool name nor a "
+                    "documented server-level pattern; name individual tools instead",
+                    errors,
+                )
+        # `mcp__plugin_sy_sy__` is a marketplace install's prefix, `mcp__sy__` a project `.mcp.json`'s, and an
+        # explicit `tools:` list grants nothing it does not name: one prefix silently strands the other.
+        for entry in named:
+            for prefix, twin in (("mcp__sy__", "mcp__plugin_sy_sy__"), ("mcp__plugin_sy_sy__", "mcp__sy__")):
+                if entry.startswith(prefix) and twin + entry[len(prefix):] not in named:
+                    fail(
+                        f"{p.relative_to(ROOT)}: tools names {entry!r} but not its other-deployment twin "
+                        f"{twin + entry[len(prefix):]!r}; both prefixes must be listed or one deployment "
+                        "cannot reach the tool",
+                        errors,
+                    )
+
+
 def check_contract_completeness(errors: list[str]) -> None:
     contract = (ROOT / "skills/tracker/CONTRACT.md").read_text(encoding="utf-8")
     jira = (ROOT / "skills/tracker/jira/ADAPTER.md").read_text(encoding="utf-8")
@@ -407,18 +423,36 @@ def check_contract_completeness(errors: list[str]) -> None:
 def check_hooks(errors: list[str]) -> None:
     text = (ROOT / "hooks/hooks.json").read_text(encoding="utf-8")
     try:
-        json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         fail(f"hooks/hooks.json invalid JSON: {exc}", errors)
         return
-    if "review_guard.py" not in text:
-        fail("hooks/hooks.json must wire scripts/review_guard.py (PreToolUse)", errors)
-    if "secret_guard.py" not in text:
-        fail("hooks/hooks.json must wire scripts/secret_guard.py (PreToolUse)", errors)
-    if "session_usage.py" not in text:
-        fail("hooks/hooks.json must wire scripts/session_usage.py (Stop/SubagentStop)", errors)
-    if "eval_events.py" not in text:
-        fail("hooks/hooks.json must wire scripts/eval_events.py (PreToolUse/SubagentStop/Stop)", errors)
+    # Decoded command strings, not the raw file: each embeds a quoted `${CLAUDE_PLUGIN_ROOT}`, so on disk
+    # the quotes are backslash-escaped and a substring test against the file text never matches.
+    commands = [
+        hook.get("command", "")
+        for matchers in parsed.get("hooks", {}).values()
+        for matcher in matchers
+        for hook in matcher.get("hooks", [])
+    ]
+    joined = "\n".join(commands)
+    # Matched as `python -m <module>`, not as a bare module name: the hook modules live inside a package,
+    # so a plain script path naming one would satisfy a substring test yet not be runnable.
+    for module, where in (
+        ("sy_tools.guards.review_guard", "PreToolUse"),
+        ("sy_tools.guards.secret_guard", "PreToolUse"),
+        ("sy_tools.usage", "Stop/SubagentStop"),
+        ("sy_tools.eval_events", "PreToolUse/SubagentStop/Stop"),
+    ):
+        if f"python -m {module}" not in joined:
+            fail(f"hooks/hooks.json must wire `python -m {module}` ({where})", errors)
+    # The plugin root has to reach `sys.path` for `python -m sy_tools.…` to resolve at all, and a hook runs
+    # on bare `python`: `pixi run` would make every hook depend on a resolved environment in the caller's repo.
+    for command in commands:
+        if 'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}"' not in command:
+            fail(f"hooks/hooks.json: {command!r} must put the plugin root on PYTHONPATH", errors)
+        if "pixi run" in command:
+            fail(f"hooks/hooks.json: {command!r} must not route a hook through `pixi run`", errors)
 
 
 def check_invariants(errors: list[str]) -> None:
@@ -457,7 +491,7 @@ def check_invariants(errors: list[str]) -> None:
         fail("merge path missing atomic head guard (--match-head-commit)", errors)
     if "decomposed/superseded closure is not delivery" not in ship.lower():
         fail("ship missing decomposed-closure-is-not-delivery rule", errors)
-    if "main_plus_subagents" not in handoff or "--require-agent" not in handoff:
+    if "main_plus_subagents" not in handoff or "require_agent" not in handoff:
         fail("ship accounting must aggregate and validate subagent usage", errors)
     if "standalone" not in contract.lower():
         fail("contract must require standalone machine-log comments", errors)
@@ -471,8 +505,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("handoff must scale records by process tier", errors)
     if "design contract" not in gate or "verification obligation" not in gate:
         fail("gate must verify the design contract and verification obligations", errors)
-    if "agent img-inspector" not in img_ref or "img-inspector" not in img_ref:
-        fail("image-inspection reference must resolve the inspector model via sy_config.py agent img-inspector", errors)
+    if 'agent_model {"name": "img-inspector"}' not in img_ref:
+        fail("image-inspection reference must resolve the inspector model via the agent_model tool", errors)
     if "img-inspector" not in gate:
         fail("gate must protect the image-inspection invariant (no image Reads; delegate to sy:img-inspector)", errors)
     if "img-inspector" not in impl:
@@ -505,23 +539,25 @@ def check_invariants(errors: list[str]) -> None:
 
     if "## Action needed" not in preflight_ref or "docs/configuration.md" not in preflight_ref:
         fail("preflight reference must define the Action-needed failure shape and link docs/configuration.md", errors)
-    if "sy_preflight.py" not in preflight_ref or "cache" not in preflight_ref.lower():
-        fail("preflight reference must describe the cached liveness check (sy_preflight.py)", errors)
-    if "sy_preflight.py" not in tracker_skill:
-        fail("tracker skill must wire the cached liveness check (sy_preflight.py) into its fail-fast section", errors)
+    # The regression these three catch: a doc describing a separate check-then-record pair rather than
+    # the one `preflight` call that caches itself.
+    if "`preflight` tool" not in preflight_ref or "cache" not in preflight_ref.lower():
+        fail("preflight reference must describe the `preflight` tool's own cached liveness check", errors)
+    if "shared cache" not in tracker_skill:
+        fail("tracker skill must wire the cached liveness check into its fail-fast section", errors)
     for name, text in (("jira", jira_adapter), ("github", github_adapter)):
-        if "sy_preflight.py" not in text:
-            fail(f"{name} adapter must declare its preflight hook, cached through sy_preflight.py", errors)
+        if "shared cache" not in text:
+            fail(f"{name} adapter must declare its preflight hook, cached inside the preflight tool", errors)
     for name, text in (("plan", plan), ("spec", spec), ("ship", ship), ("spike", spike)):
         if "preflight.md" not in text:
             fail(f"{name} must run the tracker preflight (preflight.md) before other work", errors)
     if "config.local.json" not in init_repo or "config.json" not in init_repo:
         fail("init-repo must split shared vs per-person config between config.json and config.local.json", errors)
-    if "migrate --settings" not in init_repo:
-        fail("init-repo must offer the legacy env-block migration step (sy_config.py migrate)", errors)
+    if "retired variable left set is a hard validation failure" not in init_repo:
+        fail("init-repo must state that a retired setting variable left set is a hard failure, not an override", errors)
     if "Secrets never go in either file" not in init_repo:
         fail("init-repo must state that a secret never lands in a config file", errors)
-    if "preflight.md" not in init_repo or "sy_preflight.py" not in init_repo:
+    if "preflight.md" not in init_repo or 'preflight {"force": true}' not in init_repo:
         fail("init-repo must prove config live via the same preflight mechanism other commands use", errors)
 
     if "scope extension" not in scope or "justify itself" not in scope:
@@ -555,8 +591,6 @@ def check_invariants(errors: list[str]) -> None:
         if "unconditionally" not in text.lower():
             fail(f"{name} must run the sy:debate pass unconditionally, not gated on a pre-identified fork", errors)
 
-    # The spec-gate checklist has exactly one copy and its reviewer dispatches nothing; both were
-    # prose invariants until asserted here, and a restated checklist drifts invisibly.
     spec_gate = read("agents/spec-gate.md")
     if "spec-gate.md" not in spec:
         fail("spec must run the pre-sign-off spec-gate pass and cite spec-gate.md", errors)
@@ -580,10 +614,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
     if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
         fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)
-    # Section-scoped on purpose: §2 legitimately permits a research-phase body edit, so a whole-file
-    # check passes on §2's prose alone after the guarantee is dropped from the post-approval procedure.
-    # The guarantee is asserted in Step 2 (where the writes happen) rather than across all of §7,
-    # where Step 1's consent sentence would satisfy it on its own.
+    # Section-scoped on purpose: a whole-file check passes on §2's prose (which legitimately permits a
+    # research-phase body edit), a whole-§7 one on Step 1's consent sentence. Widening either disables it.
     spec_s7 = spec.partition("## 7.")[2].partition("## 8.")[0]
     if "update-issue" in spec_s7:
         fail("spec §7 must not reach for update-issue; after approval it posts comments and sets status only", errors)
@@ -609,8 +641,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("model-dispatch must state that a nested Agent call does not inherit a model override", errors)
     if "no effort parameter on the `Agent` tool" not in dispatch_ref:
         fail("model-dispatch must state plainly that effort cannot be set at dispatch time", errors)
-    if "sy_config.py" not in dispatch_ref or "agent <agent-name>" not in dispatch_ref:
-        fail("model-dispatch must resolve the model through sy_config.py agent <name>", errors)
+    if 'agent_model {"name": "<agent-name>"}' not in dispatch_ref:
+        fail("model-dispatch must resolve the model through the agent_model tool", errors)
     for name, text in (
         ("gate", read("agents/gate.md")), ("debate", read("agents/debate.md")),
         ("ship-build", read("agents/ship-build.md")), ("ship-gate", read("agents/ship-gate.md")),
@@ -623,11 +655,13 @@ def check_invariants(errors: list[str]) -> None:
     if "config/floors.json" not in read("skills/spec/SKILL.md"):
         fail("spec SKILL must point the quality-floor invariant at config/floors.json, not prose alone", errors)
 
+    # Read side and write side check different tools on purpose: `memory_add` alone never reads memory
+    # back, and `memory_list` alone never writes the lesson.
     for name, text in (("plan", plan), ("spec", spec), ("ship start", start)):
-        if "sy_memory.py" not in text or "memory.md" not in text:
-            fail(f"{name} must read durable cross-session memory back (sy_memory.py, per memory.md)", errors)
-    if "sy_memory.py" not in handoff or "memory.md" not in handoff:
-        fail("ship handoff retro must distill durable lessons into cross-session memory (sy_memory.py, per memory.md)", errors)
+        if "memory_list" not in text or "memory.md" not in text:
+            fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
+    if "memory_add" not in handoff or "memory.md" not in handoff:
+        fail("ship handoff retro must distill durable lessons into cross-session memory (memory_add, per memory.md)", errors)
     if "close with evidence" not in spec.lower() or "shelve" not in spec.lower():
         fail("spec must bless the shelve terminal state (close with evidence, no plan)", errors)
     for name, text in (
@@ -642,8 +676,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("gate agent must allow the Skill tool", errors)
     if re.search(r"^skills:\s*$", gate_fm, re.M):
         fail("gate must not preload standards; conformance review is invoked lazily", errors)
-    if "agent gate" not in gate_ref:
-        fail("immutable-gate must resolve the reviewer via sy_config.py agent gate", errors)
+    if 'agent_model {"name": "gate"}' not in gate_ref:
+        fail("immutable-gate must resolve the reviewer via the agent_model tool", errors)
     if "models.tiers.frontier_fallback" not in gate_ref:
         fail("immutable-gate must resolve the one-shot reviewer fallback from models.tiers.frontier_fallback", errors)
     if "START <model> / BUILD <model> / GATE <model>" not in spec:
@@ -659,9 +693,8 @@ def check_invariants(errors: list[str]) -> None:
         if missing:
             fail(f"{name} must resolve the {phase} model and pass it as the Agent invocation's model override (missing: {', '.join(missing)})", errors)
 
-    # AM-1220: every site that used to hardcode one of these behaviors must instead name the
-    # live config key, mirroring the worktree.root pattern above — a literal number/behavior
-    # re-pasted at the site instead of resolved is exactly the drift this ticket closed off.
+    # A value re-pasted at the site instead of resolved drifts from the shipped config silently, and
+    # nothing else catches it.
     config_values_ref = read("skills/shared/references/config-values.md")
     for name, text in (
         ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),
@@ -761,19 +794,13 @@ def main() -> int:
     check_no_repo_scratch_refs(errors)
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
+    check_agent_mcp_allowlists(errors)
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)
 
-    run_self_test("scripts/review_guard.py", errors)
-    run_self_test("scripts/secret_guard.py", errors)
-    run_self_test("scripts/session_usage.py", errors)
-    run_self_test("scripts/eval_events.py", errors)
-    run_self_test("scripts/sy_memory.py", errors)
-    run_self_test("scripts/sy_preflight.py", errors)
-    run_self_test("scripts/sy_config.py", errors)
-    run_self_test("scripts/scrub_known_secrets.py", errors)
-    run_self_test("scripts/secret_words.py", errors)
+    # Here rather than in pytest because neither is reachable there: one is bash, and the other sits
+    # outside the `sy_tools` tree pytest's `testpaths` collects.
     run_self_test("scripts/ci_poll.sh", errors)
     run_self_test("docs/smoke_mcp.py", errors)
 

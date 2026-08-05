@@ -6,8 +6,8 @@ This phase runs as the `sy:ship-start` worker: it initializes or resumes ownersh
 2. Read parent Epic only enough for sibling interfaces/blockers; use `sy:sweep` for a large tail.
 3. Ship profile (the plan's explicit per-phase models, plus effort and process tier) is a parent precondition verified before dispatch; if the parent's own running session is below plan it stops and asks via `AskUserQuestion` (raise the profile / proceed at plan floor / other) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. That check concerns the parent's own session tier only; how each phase's model reaches its worker is the separate dispatch mechanism in `## Resolve start model` below. The profile floors worker models (may raise, never lower, so BUILD keeps its opus tier) and sets worker effort to match the work; it never lowers review effort (`sy:gate` stays max). Do not prompt the user from the worker.
 4. Resolve standards in a delegate (subagent running `/sy:standards resolve <task scope>`, added to `agents_used`) that returns only the retained contract — authority, implementation contract, primitives, risk lenses; rule-file reads stay out of the ship context.
-5. Read durable cross-session memory — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" list` (or `search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the state brief as a known anchor.
-6. Load `$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$TASK_KEY")/ship-state.yaml` if present.
+5. Read durable cross-session memory — `memory_list` (or `memory_search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the state brief as a known anchor.
+6. Load `ship-state.yaml` from the task's resolved scratch directory — `scratch_dir {"identifier": "$TASK_KEY"}`, whose reported `path` is that directory — if present.
 
 Classify:
 
@@ -23,9 +23,9 @@ Suggest, as a single optional aside (not an `## Action needed` block, per `${CLA
 
 Parent-owned, resolved once before START is dispatched (this worker never picks its own model), from the plan's ship profile and the actual process environment:
 
-```text
-START_MODEL=<the plan's stated START model, literally, or `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier` when it states "frontier">
-START_MODEL_FALLBACK=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier_fallback)
+```
+START_MODEL          = <the plan's stated START model, literally, or the value `get_config {"key": "models.tiers.frontier"}` reports when it states "frontier">
+START_MODEL_FALLBACK = the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
 ```
 
 Pass `START_MODEL` as the Agent invocation's **model override**, not merely as prompt text: with the override omitted, `sy:ship-start`'s own frontmatter model wins and START silently runs below the plan's tier — a failure only visible later through usage-transcript archaeology. Never resolve below `ship-start`'s floor in `config/floors.json`; a lower stated model is clamped up to it by the resolver (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`). The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it. Record the resolved model as `start_model_requested`; the usage transcript later provides `start_model_observed`, so do not claim they match until observed.
@@ -38,7 +38,7 @@ If START cannot run at the requested model — a spend cap, a rate limit, or a `
 2. run the sibling/stacked-PR scan: list open PRs, local and remote branches, and existing worktrees that touch the same surface. Overlap with an open sibling or stacked PR is resolved before branching — coordinate with it, stack on it explicitly, or stop — and the scan result is recorded in state so later phases inherit it;
 3. check plan-base freshness: diff the plan's `PLAN_BASE_SHA` against the fresh target/integration branch (`origin/main` where that is the target). Unrelated drift → continue. Drift touching plan anchors/dependencies → inspect those changes before building. Material contract or architecture drift → stop and return to `/sy:spec`;
 4. branch from the fresh target/integration branch;
-5. create the dedicated build worktree under the resolved worktree root (`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get worktree.root`; defaults to the sibling directory beside the repo, never inside it) and record its absolute path;
+5. create the dedicated build worktree under the resolved worktree root (`get_config {"key": "worktree.root"}`; defaults to the sibling directory beside the repo, never inside it) and record its absolute path;
 6. write local resume state, stamping the resolved-config fingerprint alongside the pinned SHAs — same discipline, same reason: a setting that changes mid-run silently changes what later phases do, so it is pinned and compared rather than re-read:
 
 ```yaml
@@ -47,7 +47,7 @@ branch: task-123-example
 worktree: /abs/path
 plan_base_sha: <from ACTIVE plan>
 ship_base_sha: <fresh origin/main>
-config_fingerprint: <python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" fingerprint>
+config_fingerprint: <the `fingerprint` that `fingerprint_config {}` reports>
 process_tier: full
 pr: null
 head_sha: null

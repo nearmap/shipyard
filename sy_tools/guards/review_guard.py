@@ -72,10 +72,11 @@ def scratch_root(cwd: str) -> Path | None:
 
     None means the root could not be resolved at all, and every caller treats it as deny: a guard
     that cannot say where the sandbox is must not grant a write into it. `SystemExit` is caught
-    explicitly because that is how `sy_config` refuses.
+    explicitly because it is no `Exception` subclass and so would escape the catch below; the
+    `ConfigError` that is how `sy_tools.config` refuses lands there.
     """
     try:
-        import sy_config
+        from sy_tools import config as sy_config
         return sy_config.repo_scratch_dir(Path(cwd))
     except (SystemExit, Exception):
         return None
@@ -217,9 +218,9 @@ def _git_subcommand(rest: list[str]) -> str | None:
 def _self_test() -> None:
     """Containment is asserted against a temporary sandbox root swapped in for the resolved one.
 
-    Monkeypatched rather than resolved, mirroring `sy_preflight.py::_self_test`'s save/restore, so the
-    cases assert this guard's own logic and not whatever `scratch.dir` this checkout happens to
-    configure — and so the unresolvable-root case is reachable at all.
+    The root is monkeypatched and restored rather than resolved, so the cases assert this guard's own
+    logic and not whatever `scratch.dir` this checkout happens to configure — and so the
+    unresolvable-root case is reachable at all.
     """
     import tempfile
 

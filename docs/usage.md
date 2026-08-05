@@ -18,7 +18,7 @@ The trailing argument is the first prompt, so the session opens straight into th
 /sy:init-repo
 ```
 
-Every other command checks the tracker is genuinely usable — configured *and* live, not just present — as its first step, and stops with a named `## Action needed` block if it is not. `/sy:init-repo` is the fast path to fixing that: it reads whatever config already resolves, migrates any legacy `env` block, asks only for what is actually missing, and writes each value to the right layer. On a repo someone already configured, joining it is usually just exporting your own credential; on a brand-new repo, it is the full interview. See [`configuration.md`](configuration.md) for what every value means and where it's allowed to live.
+Every other command checks the tracker is genuinely usable — configured *and* live, not just present — as its first step, and stops with a named `## Action needed` block if it is not. `/sy:init-repo` is the fast path to fixing that: it reads whatever config already resolves, names any leftover `SY_*` variable still waiting to be retired by hand, asks only for what is actually missing, and writes each value to the right layer. On a repo someone already configured, joining it is usually just exporting your own credential; on a brand-new repo, it is the full interview. See [`configuration.md`](configuration.md) for what every value means and where it's allowed to live.
 
 ## 1. Plan
 

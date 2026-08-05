@@ -1,17 +1,12 @@
 """Markdown in, Jira rich text out — converted in this process.
 
-The conversion is two function calls in the server's own process, with no staging file and no
-converter to provision: `marklas` is a declared dependency of this package and is locked in
-`pixi.lock`. It replaced a shipped CLI helper that re-executed itself inside a hash-locked virtual
-environment on every comment, because a skill script could not assume the converter was importable —
-a subprocess hop that bought nothing here and cost an interpreter start per write.
+Two calls into `marklas`, a declared dependency of this package locked in `pixi.lock`: no staging file
+and no converter to provision. Every failure is a `TrackerError`, never a `SystemExit`, and nothing
+here writes to stdout — this runs inside a server process whose stdout carries JSON-RPC frames.
 
-Every failure is a `TrackerError`, never a `SystemExit`, which would end a server process that still
-has other calls to serve. Nothing here writes to stdout — stdout carries JSON-RPC frames.
-
-The read path converts with `plain=True`, dropping the `adf="…"` attributes `marklas` uses to make
-its own round-trip lossless. `skills/tracker/CONTRACT.md` says rich text crossing this seam is
-Markdown, so tracker-native markup must not ride out on it.
+The read path converts with `plain=True`: `marklas` keeps `adf="…"` attributes to make its own
+round-trip lossless, and `skills/tracker/CONTRACT.md` says rich text crossing this seam is Markdown,
+so tracker-native markup must not ride out on it.
 """
 from __future__ import annotations
 

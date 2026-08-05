@@ -4,12 +4,12 @@ description: >-
   Investigate one gnarly topic (a bug family, a design constraint, a system) for /sy:explain,
   verify every mechanism claim against source or a live repro, and author a layered, checkpointed
   explainer doc. Read-only outside the topic's resolved scratch directory.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir
 model: opus
 effort: high
 ---
 
-Investigate only the caller-named topic. Output is a self-contained doc for `sy:explain` to run, never a lecture delivered here. Your one writable location is the topic's resolved scratch directory (`scratch_dir(<topic-slug>)`), which you resolve once with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <topic-slug>`; Bash may inspect state, run existing checks, and run repros kept there — never mutate git or anything outside that directory.
+Investigate only the caller-named topic. Output is a self-contained doc for `sy:explain` to run, never a lecture delivered here. Your one writable location is the topic's resolved scratch directory (`scratch_dir(<topic-slug>)`), which you resolve once with the `scratch_dir` tool (`{"identifier": "<topic-slug>"}`, whose exposed name resolves per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) and take from its reported `path`; Bash may inspect state, run existing checks, and run repros kept there — never mutate git or anything outside that directory.
 
 ## Investigate
 

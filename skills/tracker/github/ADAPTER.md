@@ -10,10 +10,11 @@ Every canonical verb is one call to the `sy` MCP server's tool of the same name;
 
 1. **`gh` ≥ 2.94.0** — sub-issue and dependency flags landed in the CLI there. Check `gh --version`.
 2. **Authenticated:** `gh auth status` with `project` + `read:project` scopes (`gh auth refresh -s project,read:project` if missing).
-3. **Config present** — one command covers this and step 4: `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate`. Resolve the two values once and reuse them:
-   ```bash
-   PROJECT=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker_config.project)   # <owner>/<number>, the Projects v2 board. Required.
-   REPO=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker_config.repo)          # <owner>/<repo>. Optional; empty means the current repo.
+3. **Config present** — one call covers this and step 4: the `validate_config` tool. Resolve the two values once and reuse them:
+   ```
+   PROJECT = get_config {"key": "tracker_config.project"}            → <owner>/<number>, the Projects v2 board. Required.
+   REPO    = get_config {"key": "tracker_config.repo", "default": ""} → <owner>/<repo>. Optional, so it is read with a
+                                                                       default; empty means the current repo.
    ```
    Board owner is `@me` or your login for a user-owned board, or the org login for an org board. Pass `gh -R "$REPO"` on every issue command when `REPO` is non-empty.
 4. **The five column names are set** (shared across trackers; from `.shipyard/config.json`): `columns.backlog`, `columns.ready`, `columns.in_progress`, `columns.in_review`, `columns.done`. The helper fails loudly if any is unset.
@@ -21,15 +22,7 @@ Every canonical verb is one call to the `sy` MCP server's tool of the same name;
    - **`Status`** with an option for each of the five columns above (names matched case-insensitively).
    - **`Type`** with options `Epic`, `Task`, `Bug`.
 
-**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** The canonical `preflight` verb is the real, live check: it confirms `gh` is installed and authenticated, and confirms Projects v2 is actually reachable rather than merely named — every `set-status` and every `Type` write goes through the board, so a `repo`-only credential passes an authentication check and then dies on the first board write. Reachability is confirmed by reading the configured board, on every path: a scope is a property of the credential, and the board it points at can still have been deleted, renamed, or made invisible to it. It also checks the `project` scope where the token has scopes to check, as the cheap pre-check that names the one credential fault diagnosable without touching the board; where it does not (a fine-grained PAT or an App token prints no `Token scopes:` line at all, which cannot be read as "unscoped" without failing a working setup) the board read is the whole of the evidence and `scopes` comes back as null rather than as an invented list. Gate it behind the shared cache so it does not repeat on every invocation:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker github
-# exit 0 → cached fresh, nothing to do. (No --vars: this adapter holds no secret in the
-# environment, and the config fingerprint already covers the board and repo.)
-# exit 2 → call the `preflight` tool now; on success:
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker github
-```
+**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** The canonical `preflight` verb is the real, live check: it confirms `gh` is installed and authenticated, and confirms Projects v2 is actually reachable rather than merely named — every `set-status` and every `Type` write goes through the board, so a `repo`-only credential passes an authentication check and then dies on the first board write. Reachability is confirmed by reading the configured board, on every path: a scope is a property of the credential, and the board it points at can still have been deleted, renamed, or made invisible to it. It also checks the `project` scope where the token has scopes to check, as the cheap pre-check that names the one credential fault diagnosable without touching the board; where it does not (a fine-grained PAT or an App token prints no `Token scopes:` line at all, which cannot be read as "unscoped" without failing a working setup) the board read is the whole of the evidence and `scopes` comes back as null rather than as an invented list. The board read does not repeat on every invocation, because the `preflight` tool gates itself on the shared cache and records its own success, so one call is the caller's whole obligation and `force` is how a caller whose config just changed demands the live read anyway (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`). This adapter names no secret in the environment, so the cache here is keyed on the plugin build, `github` and the resolved config alone — which already covers the board and the repo.
 
 Unlike Jira, `gh auth` is the single mechanism both this board read and `/sy:pr`'s code-host operations share, so a working `gh auth status` (step 2) is rarely a fresh gap by the time someone reaches this adapter — the board reachability check is the part actually specific to Shipyard's config and worth caching.
 

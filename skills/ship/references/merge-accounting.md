@@ -27,7 +27,7 @@ The delta gate runs at the same resolved frontier review model and max effort as
 
 ## Merge
 
-Resolve the configured strategy — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get ship.merge_strategy` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and merge atomically against the verified head:
+Resolve the configured strategy — `get_config {"key": "ship.merge_strategy"}` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and merge atomically against the verified head:
 
 ```bash
 gh pr merge <pr> --match-head-commit "$VERIFIED_HEAD_SHA" --<resolved strategy>
@@ -35,7 +35,7 @@ gh pr merge <pr> --match-head-commit "$VERIFIED_HEAD_SHA" --<resolved strategy>
 
 For a squash merge, compose the subject and body from the PR's own description per `/sy:pr` §4 rather than letting GitHub concatenate every branch commit subject into the message; a merge/rebase strategy has no subject/body to compose and this step does not apply to it.
 
-Then verify merged state, set the task `done` via the `tracker` skill, and remove only build/slice/review worktrees (under the resolved worktree root, `sy_config.py get worktree.root`) and branches recorded by this run.
+Then verify merged state, set the task `done` via the `tracker` skill, and remove only build/slice/review worktrees (under the resolved `worktree.root`) and branches recorded by this run.
 
 Close with the end-of-run hygiene assertion: every worktree recorded by this run is gone from `git worktree list`, and no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing). A leftover is a loud failure to clean and re-assert, never something to close over.
 

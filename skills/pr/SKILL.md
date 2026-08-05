@@ -39,7 +39,7 @@ Title: `<TICKET> - <imperative summary>` when branch carries a ticket key.
 
 ## 3. Review threads
 
-Resolve `ship.request_ci_reviewer` — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get ship.request_ci_reviewer` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — before marking the PR ready. This gates only the automated-reviewer *request* below; it is additive to, never a substitute for, `sy:gate`'s own independent review, which always runs regardless of this setting.
+Resolve `ship.request_ci_reviewer` — `get_config {"key": "ship.request_ci_reviewer"}` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — before marking the PR ready. This gates only the automated-reviewer *request* below; it is additive to, never a substitute for, `sy:gate`'s own independent review, which always runs regardless of this setting.
 
 When it resolves false, mark the PR ready with `gh pr ready <pr>` and skip straight to "Only then read the thread list" below — there is no bot request to make or confirm.
 
@@ -83,7 +83,7 @@ Caller reads decisive threads and writes replies. Stage each reply body as a fil
 
 ## 4. Merge (verified-head only)
 
-Merging is `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), not part of the normal create/promote/cleanup flow. Resolve the configured strategy once — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get ship.merge_strategy` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and gate every merge on the exact validated commit regardless of strategy:
+Merging is `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), not part of the normal create/promote/cleanup flow. Resolve the configured strategy once — `get_config {"key": "ship.merge_strategy"}` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and gate every merge on the exact validated commit regardless of strategy:
 
 ```bash
 # squash: compose the message from the PR's own description (§2) rather than accepting GitHub's

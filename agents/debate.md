@@ -5,7 +5,7 @@ description: >-
   `/sy:plan` roadmap, `/sy:spec` plan, or `/sy:spike` verdict via `sy:debater`,
   and returns only the synthesized findings — never the raw exchange — for the
   user to steer.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Agent
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Agent, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model
 model: opus
 effort: high
 ---

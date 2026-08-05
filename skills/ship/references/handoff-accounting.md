@@ -22,29 +22,27 @@ Post `# Ship retrospective` as clear prose:
 
 Do **not** embed token or metrics JSON in this comment.
 
-While writing the retro, distill any durable, cross-cutting, tool/skill-level lesson (not repo trivia) into cross-session memory — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_memory.py" add ...` per the write bar in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`. The retro records what happened here; the memory write is what `/sy:plan`, `/sy:spec`, and `/sy:ship` START read back in unrelated future sessions.
+While writing the retro, distill any durable, cross-cutting, tool/skill-level lesson (not repo trivia) into cross-session memory — `memory_add` per the write bar in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`. The retro records what happened here; the memory write is what `/sy:plan`, `/sy:spec`, and `/sy:ship` START read back in unrelated future sessions.
 
 ## 2. Standalone token-usage JSON comment
 
 Token accounting must include the parent ship session and every nested subagent transcript (`sy:slice`, `sy:gate`, nested `sy:hunt`, `sy:sweep`, fallbacks, etc.). Claude stores subagent transcripts separately, so do not derive totals from parent export text alone.
 
-Generate the report from the full transcript tree. This example assumes `sy:slice` was used; repeat/remove `--require-agent` flags to match local `agents_used`:
+Generate the report from the full transcript tree with the `usage_summarize` tool. This example assumes `sy:slice` was used; match `require_agent` to local `agents_used`:
 
-```bash
-python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py summarize \
-  --session-id "$SHIP_SESSION_ID" \
-  --phase ship \
-  --task "$TASK_KEY" \
-  --require-agent gate \
-  --require-agent slice \
-  --output "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$TASK_KEY")/claude-usage-$TASK_KEY.json"
 ```
+usage_summarize {"session_id": "$SHIP_SESSION_ID", "phase": "ship", "task": "$TASK_KEY",
+                 "require_agent": ["gate", "slice"],
+                 "output": "<scratch_dir($TASK_KEY)>/claude-usage-$TASK_KEY.json"}
+```
+
+Give `session_id` or an explicit `transcript` path, not both and not neither. `<scratch_dir($TASK_KEY)>` is the `path` the `scratch_dir` tool reports for `{"identifier": "$TASK_KEY"}`; pass that literal path, since the tool expands no substitution of its own. The summary comes back from the call as well as being written to `output`.
 
 Inspect the JSON before posting:
 
 - `scope` must be `main_plus_subagents`;
 - `transcripts.subagents` must be consistent with the agents actually used;
-- run with one `--require-agent` per directly used agent in `agents_used`; the command must fail if any is absent;
+- name one `require_agent` entry per directly used agent in `agents_used`; the call must fail if any is absent;
 - `by_agent` must include nested agents when present;
 - totals must not be manually reconstructed or inferred.
 
@@ -105,21 +103,19 @@ These are settled definitions, not restatements: several of them were being coun
 
 ## 4. Transcript attachment (full tier only, and only when enabled)
 
-This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true — `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get transcript.attach` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). When `transcript.attach` is false, skip this record on `full` tier exactly as `light` tier already does — same `transcript_attachment: null` in the metrics JSON.
+This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true — `get_config {"key": "transcript.attach"}` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). When `transcript.attach` is false, skip this record on `full` tier exactly as `light` tier already does — same `transcript_attachment: null` in the metrics JSON.
 
 When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders and uploads the transcript straight from the on-disk session tree, so nothing session-bound and no by-hand `/export` is involved. It renders the whole tree — main plus every nested subagent — into one readable file:
 
-```bash
-python ${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py export \
-  --session-id "$SHIP_SESSION_ID" \
-  --task "$TASK_KEY" \
-  --output "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir "$TASK_KEY")/$TASK_KEY-ship-transcript.txt"
+```
+export_transcript {"session_id": "$SHIP_SESSION_ID", "task": "$TASK_KEY",
+                   "output": "<scratch_dir($TASK_KEY)>/$TASK_KEY-ship-transcript.txt"}
 ```
 
-The renderer truncates bulky tool output and strips raw-JSONL noise, so the result is an audit-readable transcript, not a machine dump; token accounting still comes from `session_usage.py summarize`. The delegate then runs the deterministic scan (known-secret scrub, then `gitleaks`), contextual review, and redaction, uploads exactly one attachment, and verifies it, per `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` and the `tracker` skill's attachment flow. Run it as late as possible (after an authorized merge) so the captured tail is maximal; because it reads on-disk transcripts it can also run on a resumed session. The rendered transcript is never read back into the ship context.
+`output` is mandatory and the rendered text is never returned — the file is scanned and uploaded by path, never read back. The renderer truncates bulky tool output and strips raw-JSONL noise, so the result is an audit-readable transcript, not a machine dump; token accounting still comes from `usage_summarize`. The delegate then runs the deterministic scan (known-secret scrub, then `gitleaks`), contextual review, and redaction, uploads exactly one attachment, and verifies it, per `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` and the `tracker` skill's attachment flow. Run it as late as possible (after an authorized merge) so the captured tail is maximal; because it reads on-disk transcripts it can also run on a resumed session. The rendered transcript is never read back into the ship context.
 
-Subagent delegation is the primary path. When it is denied under auto-mode — the delegation itself is refused rather than the attachment — the identical operation may run inline as an explicit permitted fallback: execute the same `session_usage.py export` above, then the deterministic scan and redaction, then upload the single attachment through the `tracker` skill's attachment flow, all directly in the caller. This is the authorized-alternate-route case of the denied-write boundary in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: it is the same documented render-and-attach, not a reroute to force a write the operator blocked. The invariant is unchanged — the rendered transcript file is written, scanned, and uploaded by path only, and its text is never read back into the caller context. The fallback's scan is deterministic-only — it drops the contextual-review step of the primary path, since reading the transcript to review it would defeat the isolation invariant it exists to preserve — so treat a clean result here as evidence, not proof, per the `tracker` skill's attachment flow. If neither path can complete, surface it loudly (do not silently skip the attachment) per the same boundary.
+Subagent delegation is the primary path. When it is denied under auto-mode — the delegation itself is refused rather than the attachment — the identical operation may run inline as an explicit permitted fallback: make the same `export_transcript` call above, then the deterministic scan and redaction, then upload the single attachment through the `tracker` skill's attachment flow, all directly in the caller. This is the authorized-alternate-route case of the denied-write boundary in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: it is the same documented render-and-attach, not a reroute to force a write the operator blocked. The invariant is unchanged — the rendered transcript file is written, scanned, and uploaded by path only, and its text is never read back into the caller context. The fallback's scan is deterministic-only — it drops the contextual-review step of the primary path, since reading the transcript to review it would defeat the isolation invariant it exists to preserve — so treat a clean result here as evidence, not proof, per the `tracker` skill's attachment flow. If neither path can complete, surface it loudly (do not silently skip the attachment) per the same boundary.
 
 ## Handoff
 
-Task stays `in-review` until merge. Before reporting, run this phase's end-of-run hygiene assertion: no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing), and this run's recorded worktrees all exist while nothing this run created is unrecorded (recorded build/review worktrees — under the resolved worktree root, `sy_config.py get worktree.root` — remain until an authorized merge cleans them; the primary checkout and any sibling run's worktrees are out of scope; a mismatch in this run's set is drift to fix loudly, not to report around). Report PR URL, tracker status, acceptance state, coverage SHAs/requested+observed gate, start, and build models, usage/metrics comment status, transcript attachment status, and owned-worktree/hygiene status as a status update, then close the turn with an isolated `## Action needed` block (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`) stating the PR is ready and merge awaits your explicit authorization — never let that wait get lost among the status facts above it. Front-load the follow-on mutations in that same block so consent is informed and no later write is a surprise: name that on your go-ahead the run will merge the verified head, reply to any review thread that newly surfaces before merge (drafted and posted for you, never left for you to write), apply the proposed standards-doc edit above if the retro named one, attach the scanned transcript if `transcript.attach` resolves true, and set the task done. Under auto-mode this is the one consent point covering every one of those mutations, so it must enumerate them rather than authorize a bare "merge"; the three contingent ones are named here precisely so they are never a surprise write if their trigger occurs.
+Task stays `in-review` until merge. Before reporting, run this phase's end-of-run hygiene assertion: no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing), and this run's recorded worktrees all exist while nothing this run created is unrecorded (recorded build/review worktrees — under the resolved `worktree.root` — remain until an authorized merge cleans them; the primary checkout and any sibling run's worktrees are out of scope; a mismatch in this run's set is drift to fix loudly, not to report around). Report PR URL, tracker status, acceptance state, coverage SHAs/requested+observed gate, start, and build models, usage/metrics comment status, transcript attachment status, and owned-worktree/hygiene status as a status update, then close the turn with an isolated `## Action needed` block (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`) stating the PR is ready and merge awaits your explicit authorization — never let that wait get lost among the status facts above it. Front-load the follow-on mutations in that same block so consent is informed and no later write is a surprise: name that on your go-ahead the run will merge the verified head, reply to any review thread that newly surfaces before merge (drafted and posted for you, never left for you to write), apply the proposed standards-doc edit above if the retro named one, attach the scanned transcript if `transcript.attach` resolves true, and set the task done. Under auto-mode this is the one consent point covering every one of those mutations, so it must enumerate them rather than authorize a bare "merge"; the three contingent ones are named here precisely so they are never a surprise write if their trigger occurs.

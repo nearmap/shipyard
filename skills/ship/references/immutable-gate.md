@@ -4,14 +4,14 @@ This phase is a convergence loop owned by a lightweight controller: the frontier
 
 ## Resolve gate model
 
-Resolve once from the actual process environment:
+Resolve once, live through the resolver:
 
-```text
-REVIEW_MODEL=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent gate)
-REVIEW_MODEL_FALLBACK=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get models.tiers.frontier_fallback)
+```
+REVIEW_MODEL          = the model `agent_model {"name": "gate"}` reports
+REVIEW_MODEL_FALLBACK = the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
 ```
 
-Before resolving, compare `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" fingerprint` against the `config_fingerprint` recorded at START. A mismatch means configuration changed mid-run: **stop and report** rather than reviewing at quietly different settings, because a reviewer whose model changed between fix rounds invalidates the comparison this gate exists to make. Re-running `/sy:ship` after an intentional change is the supported path.
+Before resolving, compare the `fingerprint` that `fingerprint_config {}` reports against the `config_fingerprint` recorded at START. A mismatch means configuration changed mid-run: **stop and report** rather than reviewing at quietly different settings, because a reviewer whose model changed between fix rounds invalidates the comparison this gate exists to make. Re-running `/sy:ship` after an intentional change is the supported path.
 
 Pass `REVIEW_MODEL` as the Agent invocation's **model override**, not merely as prompt text, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Record it as `review_model_requested`. The usage transcript later provides `review_model_observed`; do not claim they match until observed. The resolver has already clamped the value up to `gate`'s floor, so a config attempting a weaker reviewer never reaches here.
 
@@ -27,7 +27,7 @@ REVIEWED_SHA=<current PR head SHA>
 TARGET_SHA=<origin/<target branch> SHA at pin time>
 ```
 
-Create a detached review worktree, under the resolved worktree root (`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get worktree.root`; defaults to the sibling directory beside the repo), pinned to `REVIEWED_SHA`. Invoke `sy:gate` there with purpose, acceptance criteria, exact SHAs, standards authority, risk lenses, verification obligations, and the compact design contract (plan invariants plus `accepted_deviations` from state). Add `sy:gate` to `agents_used`. Gate verifies HEAD before reviewing.
+Create a detached review worktree, under the resolved worktree root (`get_config {"key": "worktree.root"}`; defaults to the sibling directory beside the repo), pinned to `REVIEWED_SHA`. Invoke `sy:gate` there with purpose, acceptance criteria, exact SHAs, standards authority, risk lenses, verification obligations, and the compact design contract (plan invariants plus `accepted_deviations` from state). Add `sy:gate` to `agents_used`. Gate verifies HEAD before reviewing.
 
 CI may run concurrently. Separate waiting from triage. Never poll `gh pr checks` or `gh run watch` once per reasoning turn, and never let a monitor self-resume at a turn-budget boundary — on a large matrix that bleeds tokens and the phase never returns. Wait with the single shared token-free background poller — launch `${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr>` with `run_in_background`; it sleeps between checks and exits when nothing is pending, spending no reasoning turns while it waits, and no phase hand-writes its own poller; only once CI is terminal, delegate the diagnosis to a `/sy:ci` subagent (added to `agents_used`) that returns a compact result rather than tailing raw logs. If CI cannot reach a terminal state within a sane bound (`ci.poll_timeout`, default 1800s — raise it for repos/matrices known to run long so one poll call spans the wait), return `blocked` (CI pending) with an idempotent checkpoint and the pending run id rather than looping. Never apply fixes to the review checkout. If code changes, finish/cancel stale review, fix in build worktree, push, and create a new immutable review scope.
 

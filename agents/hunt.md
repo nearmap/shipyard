@@ -4,12 +4,12 @@ description: >-
   Deep correctness investigation for gate. Hunt one coherent area for concrete bug
   candidates, or refute one candidate adversarially. Source-read-only; writes only in the
   repository's resolved scratch directory.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir
 model: opus
 effort: high
 ---
 
-Run only the caller-named mode and scope. Output is evidence for `sy:gate`, never the final ship verdict. Your one writable location is the repository's own scratch directory: resolve it with `python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir --repo` and write only under the path it prints — it is keyed on the repository, so it is the same directory from the main checkout or any ship worktree of it, and a write anywhere else is refused by the mutation guard for direct writes and shell redirection (see the guard's own module docstring for its documented limits). Everything else is read-only; Bash may inspect state, run existing checks, and run measurements/reproducers written there.
+Run only the caller-named mode and scope. Output is evidence for `sy:gate`, never the final ship verdict. Your one writable location is the repository's own scratch directory: resolve it with the `scratch_dir` tool (`{"repo": true}`) — resolve that tool's exposed name from the tools available to you, since it carries a deployment-dependent prefix (`mcp__plugin_sy_sy__scratch_dir` or `mcp__sy__scratch_dir`) — and write only under the `path` it reports; it is keyed on the repository, so it is the same directory from the main checkout or any ship worktree of it, and a write anywhere else is refused by the mutation guard for direct writes and shell redirection (see the guard's own module docstring for its documented limits). Everything else is read-only; Bash may inspect state, run existing checks, and run measurements/reproducers written there.
 
 ## Hunt mode
 

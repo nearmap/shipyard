@@ -16,10 +16,10 @@ $ARGUMENTS
 
 ## 1. Read what already exists
 
-Read the resolved configuration and the layer each value came from:
+Read the resolved configuration and the layer each value came from, with the `show_config` tool (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
+```
+show_config {}
 ```
 
 Anything already resolved from the `repo-committed` layer is **shared, committed config** — never re-ask for it, never overwrite it without saying so first. This is what makes the common case fast: a teammate joining a repo someone already configured has almost everything already answered, and this run is short.
@@ -61,13 +61,14 @@ Separately, and only if `worktree.root` still resolves from `derived-default`, a
 
 ## 6. Prove it live
 
-Run the adapter's real preflight read directly (skip the cache check — the config just changed, so a hit would be stale by construction), then record success so the very next command gets the cached fast path:
+Run every presence check, then the adapter's real preflight read with the cache forced past — the config just changed, so a cache hit would be stale by construction — which also records success, so the very next command gets the cached fast path:
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate                       # every presence check, naming key and layer
-<adapter's live-check command, from its ADAPTER.md>
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker "$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker)" --vars <adapter's secret env vars, if any>
 ```
+validate_config {}          # every presence check, naming key and layer
+preflight {"force": true}   # the adapter's own live read, run now rather than answered from the cache
+```
+
+`preflight` runs the adapter's live check and records it in one call — there is no separate record step to remember here, and `force` is what makes it read rather than trust the entry the pre-edit config left behind (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).
 
 A failure here is the same `## Action needed` shape as step 3 — name the exact thing that is still wrong (per the adapter's own error text) and stop; do not report success on unverified config.
 

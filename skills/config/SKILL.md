@@ -9,7 +9,7 @@ argument-hint: "[show | validate | reload | set <key> <value> [--scope user|repo
 disable-model-invocation: true
 ---
 
-Everything non-secret about how Shipyard behaves in this repo lives in a layered config file that `scripts/sy_config.py` is the only reader of. This skill is the human front end to that resolver. It never reads a credential: secrets stay in the environment, and the resolver refuses a credential-shaped key in either direction.
+Everything non-secret about how Shipyard behaves in this repo lives in a layered config file that the `sy` MCP server's resolver (`sy_tools/config.py`) is the only reader of, reached through that server's config tools and nothing else. This skill is the human front end to them. It never reads a credential: secrets stay in the environment, and the resolver refuses a credential-shaped key in either direction. Resolve each tool's exposed name from the tools actually available to you rather than typing a literal identifier, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`.
 
 $ARGUMENTS
 
@@ -17,21 +17,21 @@ With no argument, do `show`.
 
 ## show
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
+```
+show_config {}
 ```
 
 Report it as a status update. Lead with the three layers and which exist, because "my change did nothing" is nearly always a layer question — a value set in the committed layer while the gitignored local layer overrides it, or a user-global default that no repo layer touches. Then give the resolved values with their provenance, and call out anything resolving from `derived-default` (computed from the repo, not written anywhere) so the user knows it is not in a file they can grep.
 
-For one value, `get <key>`. For a machine-readable dump including the fingerprint, `show --json`.
+For one value, `get_config`. `show_config` is already machine-readable and reports the digest of the resolved values and the layer chain on disk alongside them, so there is no separate dump to ask for.
 
 ## validate
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate
+```
+validate_config {}
 ```
 
-Exit 0 prints the fingerprint. Exit 1 lists every problem, each naming its key and the layer it came from. Relay the errors verbatim — they are written to be actionable — and do not paraphrase a floor refusal into "the model is too weak": the message already names the agent, the floor, and why that floor exists.
+`valid: true` comes back with the fingerprint. `valid: false` comes back with an `errors` list naming every problem, each with its key and the layer it came from. Relay the errors verbatim — they are written to be actionable — and do not paraphrase a floor refusal into "the model is too weak": the message already names the agent, the floor, and why that floor exists.
 
 Four failure classes are worth recognising on sight, because each has a different fix:
 
@@ -42,12 +42,15 @@ Four failure classes are worth recognising on sight, because each has a differen
 
 ## reload
 
-A config edit needs no restart, because nothing caches a resolved value on disk: every consumer reads through the resolver at call time. What goes stale is the resolved block sitting in this session's context, and any preflight cache keyed on the old values.
+A config edit needs no restart, because nothing caches a resolved value on disk: every consumer reads through the resolver. What goes stale is the resolver's own hot copy inside the running server, the resolved block sitting in this session's context, and any preflight cache keyed on the old values.
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
 ```
+reload_config {}
+validate_config {}
+show_config {}
+```
+
+`reload_config` re-resolves the layer chain from disk, which is what makes the edit visible to every later tool call in this session without a restart.
 
 Then state the scope boundary plainly, because it is the part users get wrong: **workers already dispatched keep what they were given.** The boundary is the next dispatch. A reload mid-`/sy:ship` does not retroactively change the model a running BUILD is using, and it must not silently change the reviewer between fix rounds — see below.
 
@@ -59,11 +62,11 @@ Report the new fingerprint and name which keys changed provenance or value since
 
 ## set
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get <key>     # confirm the current value and layer first
+```
+get_config {"key": "<key>"}     # confirm the current value and layer first
 ```
 
-There is no `set` subcommand on the resolver, deliberately — writing config is a small, legible JSON edit, and a generated writer would only obscure which layer changed. Edit the file directly with `Edit`, choosing the layer by what the value *is*, not by convenience:
+There is no `set` tool on the resolver, deliberately — writing config is a small, legible JSON edit, and a generated writer would only obscure which layer changed. Edit the file directly with `Edit`, choosing the layer by what the value *is*, not by convenience:
 
 | Scope | File | For |
 |---|---|---|
@@ -75,8 +78,8 @@ Include `"$schema"` in a newly created file so editors validate it. After any ed
 
 ## agent
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent <name> --json
+```
+agent_model {"name": "<name>"}
 ```
 
 Answers "what will `sy:hunt` actually run at, and why". The binding reports the resolved model, the effort policy, what config requested, and whether either was clamped up to a floor. Use it to explain a surprise: a `model_clamped: true` means config asked for something below the floor and the floor won.

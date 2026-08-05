@@ -6,20 +6,13 @@ Every canonical verb is one call to the `sy` MCP server's tool of the same name;
 
 ## Configuration (self-check before any work)
 
-Required config (`.shipyard/config.json`): `tracker_config.email`, `tracker_config.site`, `tracker_config.project`. Required secret, environment only: `ACLI_TOKEN`. The split is declared machine-readably in this directory's `config-map.json`, which `sy_config.py validate` enforces. Never put a token in a config file or in a command argument.
+Required config (`.shipyard/config.json`): `tracker_config.email`, `tracker_config.site`, `tracker_config.project`. Required secret, environment only: `ACLI_TOKEN`. The split is declared machine-readably in this directory's `config-map.json`, which the `validate_config` tool enforces. Never put a token in a config file or in a command argument.
 
 `tracker_config.email` is per-person but not a secret — it belongs in the gitignored `.shipyard/config.local.json` layer. `ACLI_TOKEN` is a personal Atlassian API token that stays in the environment, so no `cat` of a committed file can burn it into transcript history. The server inherits it from the launching process's environment and puts it in an `Authorization` header and nowhere else: never a URL, never a returned value, never a failure message.
 
 **One auth mechanism.** The adapter authenticates with `tracker_config.email` plus `ACLI_TOKEN` over REST, and that is the whole story. `acli`'s own separate login session — established with `acli jira auth login` and cached under `~/.config/acli/`, entirely outside Shipyard's config — used to be a second thing to verify because most verbs shelled out to `acli`. Nothing on this path shells `acli` any more, so that check is inapplicable: `acli` being logged out no longer breaks anything Shipyard does, and `acli jira auth status` passing no longer evidences that Shipyard can reach Jira.
 
-**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** A credential can be present and still be dead, and a project key can be set and still name a board this account cannot see, so the canonical `preflight` verb performs two real authenticated reads rather than a presence check — `/myself` for the account, and the configured project itself — and reports the site, account id and project key without ever naming a secret value. The project read is not decoration: Jira answers a search naming an unknown or invisible project with zero issues rather than an error, so nothing else here notices a wrong key. Gate it behind the shared cache so it does not repeat on every invocation:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN
-# exit 0 → cached fresh, nothing to do.
-# exit 2 → call the `preflight` tool now; on success:
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker jira --vars ACLI_TOKEN
-```
+**Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** A credential can be present and still be dead, and a project key can be set and still name a board this account cannot see, so the canonical `preflight` verb performs two real authenticated reads rather than a presence check — `/myself` for the account, and the configured project itself — and reports the site, account id and project key without ever naming a secret value. The project read is not decoration: Jira answers a search naming an unknown or invisible project with zero issues rather than an error, so nothing else here notices a wrong key. The two reads do not repeat on every invocation, because the `preflight` tool gates itself on the shared cache — keyed here on the plugin build, `jira`, the resolved config and `ACLI_TOKEN`, with a short TTL — and records its own success, so one call is the caller's whole obligation and `force` is how a caller whose config just changed demands the live reads anyway (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).
 
 A missing or invalid `ACLI_TOKEN`, `tracker_config.email`, `tracker_config.site`, or `tracker_config.project` fails `preflight` with an error naming which one, and that text is exactly what `preflight.md`'s `## Action needed` block relays — never a bare crash discovered later inside an attachment upload.
 

@@ -16,20 +16,18 @@ $ARGUMENTS
 
 Resolve the tracker through the config resolver, which owns the layer precedence:
 
-```bash
-TRACKER=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" get tracker)
 ```
+get_config {"key": "tracker"}
+```
+
+The `value` it reports is `<tracker>` below. `CONTRACT.md` states how a tool's exposed name resolves; the same rule covers every tool named in this file.
 
 Then load exactly two files and use nothing else for tracker mechanics:
 
 1. `${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md` — the canonical verbs, statuses, and types.
-2. `${CLAUDE_PLUGIN_ROOT}/skills/tracker/${TRACKER}/ADAPTER.md` — the native implementation.
+2. `${CLAUDE_PLUGIN_ROOT}/skills/tracker/<tracker>/ADAPTER.md` — the native implementation.
 
-This is the **single point** where tracker selection happens. No other skill or agent branches on the tracker. One command covers every presence check below, and fails with the offending key and the layer it came from:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate
-```
+This is the **single point** where tracker selection happens. No other skill or agent branches on the tracker. One call — the `validate_config` tool — covers every presence check below, and fails with the offending key and the layer it came from.
 
 It fails fast before any work when:
 
@@ -42,17 +40,7 @@ Report the actionable error and stop; never fall through to a default that silen
 
 ### Liveness: cached, not just presence
 
-The presence checks above do not prove the config is *live* — a credential can be set and still be dead. Once presence passes, run the adapter's declared preflight hook (its own `ADAPTER.md` documents what "a real read" means for that tracker), gated by the shared cache so the network read does not repeat on every invocation:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker "$TRACKER" --vars <adapter's secret env var list, comma-separated; omit if it has none>
-```
-
-Exit `0` means a prior live check for this exact tracker/config is still fresh — proceed with no network call. Exit `2` means run the adapter's live-check command now; on success, record it so the next invocation gets the cached exit:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" record --tracker "$TRACKER" --vars <same list>
-```
+The presence checks above do not prove the config is *live* — a credential can be set and still be dead. Once presence passes, call the canonical `preflight` verb **once**. It gates itself on the shared cache so the network read does not repeat on every invocation: a still-fresh entry for this exact tracker, resolved config and named secrets returns with no network call and says it was cached, and a miss runs the adapter's declared live check (its own `ADAPTER.md` documents what "a real read" means for that tracker) and records success itself, so the next invocation gets the hit. There is no separate check-then-record step to sequence. Pass `force` only when a hit would be stale by construction — the config just changed. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`.
 
 A failure at any step — presence or liveness — stops here with the single named `## Action needed` block `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md` defines; never a fall-through and never a crash discovered later inside a write.
 
@@ -62,7 +50,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 
 ## Conventions that live here, not in an adapter
 
-- **Standalone machine logs.** `post-log` output (`# Claude Code usage`, `# Claude Code ship metrics`) is its own comment, never merged into prose. Generate usage from the transcript tree with `${CLAUDE_PLUGIN_ROOT}/scripts/session_usage.py`.
+- **Standalone machine logs.** `post-log` output (`# Claude Code usage`, `# Claude Code ship metrics`) is its own comment, never merged into prose. Generate usage from the transcript tree with the `usage_summarize` tool.
 - **Exactly one ACTIVE plan** per task/bug; supersede explicitly and re-read to confirm.
 - **Closure is not delivery.** Merged/delivered closure satisfies a dependency; decomposed or superseded closure does not — follow replacement links until delivered capability is reached.
 - **Canonical decomposition** when replacing one task with smaller ones:
@@ -95,4 +83,4 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 
 ## References: load only when needed
 
-- `${TRACKER}/references/*` — adapter-specific cookbooks and setup.
+- `<tracker>/references/*` — adapter-specific cookbooks and setup.

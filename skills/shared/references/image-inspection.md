@@ -6,10 +6,10 @@ Rendered figures, screenshots, plots, and marketing visuals carry large image-to
 
 ## Resolve the image model
 
-Resolve once from the actual process environment:
+Resolve once, live through the resolver rather than from this file:
 
-```text
-IMAGE_MODEL=$(python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" agent img-inspector)
+```
+IMAGE_MODEL = the model `agent_model {"name": "img-inspector"}` reports
 ```
 
 Pass `IMAGE_MODEL` as the `sy:img-inspector` Agent invocation's **model override**, not merely as prompt text, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. It is a quality floor, not a cost dial, and `config/floors.json` enforces that rather than this sentence alone.

@@ -60,7 +60,7 @@ from typing import Annotated, Any, Literal
 from mcp.server import MCPServer
 from pydantic import Field, ValidationError
 
-from . import SERVER_NAME, SERVER_VERSION, config, secrets, tracker, usage
+from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, tracker, usage
 from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 
@@ -1114,6 +1114,91 @@ def export_transcript(
     except OSError as exc:
         raise ToolError(f"transcript could not be written to {output}: {exc}") from None
     return {"path": str(destination), "bytes": len(text.encode("utf-8")), "lines": text.count("\n")}
+
+
+MEMORY_REFUSALS = (ValueError, config.ConfigError)
+"""What the memory store raises for the caller's own mistake, described once for all three tools.
+
+A rejected field and a `memory.dir` that will not resolve are both answers the caller has to see as a
+tool result, so they are surfaced as `ToolError`; anything else (an unwritable root, say) is a real
+failure and propagates."""
+
+
+@mcp.tool(name="memory_add")
+def memory_add(
+    title: Annotated[
+        str,
+        Field(
+            description="The lesson in one line. Becomes the kebab-slug filename, so re-using a title "
+            "already stored replaces that lesson instead of adding a second copy of it."
+        ),
+    ],
+    scope: Annotated[
+        str,
+        Field(description="Where the lesson applies, e.g. a tool, skill, or workflow area."),
+    ],
+    body: Annotated[
+        str,
+        Field(description="The lesson itself: what to do differently next time, and why."),
+    ],
+    tags: Annotated[
+        str,
+        Field(description="Comma-separated tags, stored as frontmatter and searchable like the body."),
+    ] = "",
+) -> dict[str, Any]:
+    """Store one durable lesson in cross-session memory and report the file it landed in.
+
+    For a tool/skill-level trap that outlives this repo and this session; repo trivia belongs in that
+    repo instead. The store is user-global, so a lesson written here is what an unrelated session in
+    another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add
+    under an existing title, because the write is idempotent by title rather than append-only. An
+    empty title, scope, or body is refused, and so is a title with no letters or digits in it, since
+    it would leave the lesson under a nameless file.
+    """
+    try:
+        return {"path": str(memory.add(title, scope, tags, body))}
+    except MEMORY_REFUSALS as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="memory_search")
+def memory_search(
+    query: Annotated[
+        str,
+        Field(
+            description="Substring to look for, matched case-insensitively against each lesson's whole "
+            "text and its filename. Not a regex and not a word search."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Find stored lessons whose text or filename contains a substring.
+
+    Each match is one `path: title` line, so a caller can read the interesting ones by path without
+    pulling the whole store into context. `root` is the store the search actually ran against, which
+    is what makes an empty `matches` diagnosable: no lesson matched a populated store, rather than the
+    resolver having pointed at a root the lessons are not in. An empty query is refused, because it
+    matches everything and `memory_list` is the way to ask for that.
+    """
+    try:
+        return {"query": query, "root": str(memory.root()), "matches": memory.search(query)}
+    except MEMORY_REFUSALS as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="memory_list")
+def memory_list() -> dict[str, Any]:
+    """Report the whole memory index: every stored lesson with its scope, tags, and date.
+
+    The cheap way to see what memory holds before a search, and what `/sy:plan`, `/sy:spec`, and
+    `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, which
+    is rebuilt first whenever it disagrees with the lessons on disk, so a lesson deleted by hand is
+    absent here rather than a dead link; an empty store reports `(no entries)`. `root` is the store it
+    was read from.
+    """
+    try:
+        return {"root": str(memory.root()), "index": memory.index_text()}
+    except MEMORY_REFUSALS as exc:
+        raise ToolError(str(exc)) from None
 
 
 if __name__ == "__main__":

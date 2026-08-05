@@ -85,6 +85,7 @@ REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
 UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
     "fingerprint_config", "usage_summarize", "export_transcript",
+    "memory_add", "memory_search", "memory_list",
 })
 """Tools the server registers that this scenario deliberately does not call.
 
@@ -100,7 +101,12 @@ chain rather than whatever the running machine happens to be configured to.
 `usage_summarize` and `export_transcript` are here for a different reason: both read the caller's own
 on-disk transcript tree, whose contents are whatever session happens to be running the smoke, so a
 live call proves nothing repeatable and an export would write a copy of this very session to disk.
-`sy_tools/tests/test_usage.py` covers both against a synthetic tree instead."""
+`sy_tools/tests/test_usage.py` covers both against a synthetic tree instead.
+
+The three `memory_*` tools are here for the same shape of reason: they read and write the operator's
+real user-global memory root, so a live run would either pollute the durable store with scenario
+lessons or report whatever that machine happens to hold. `sy_tools/tests/test_memory.py` covers them
+against a temporary root instead."""
 
 SERVER_SOURCE = PLUGIN_ROOT / "sy_tools" / "server.py"
 TOOL_REGISTRATION = re.compile(r"""@mcp\.tool\(name=["']([^"']+)["']\)""")

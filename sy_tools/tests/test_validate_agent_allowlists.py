@@ -2,17 +2,22 @@
 
 Nothing else in the suite imports `scripts/`; it is a standalone CLI, not a package. `ROOT` is
 monkeypatched onto a throwaway `agents/` directory rather than the real one, so these cases can be
-synthetic and the real 14 agents stay untouched.
+synthetic and the real 14 agents stay untouched. Loaded via `importlib` rather than a `sys.path`
+insert, so this module never mutates import resolution for the rest of the pytest session.
 """
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
-import sys
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-import validate  # ty: ignore[unresolved-import]
+_spec = importlib.util.spec_from_file_location(
+    "validate", Path(__file__).resolve().parents[2] / "scripts" / "validate.py"
+)
+assert _spec is not None and _spec.loader is not None
+validate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(validate)
 
 
 def _check(tmp_path: Path, tools_line: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:

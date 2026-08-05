@@ -1,8 +1,7 @@
 """Offline tests for the GitHub adapter: the `gh` transport is replaced, never invoked.
 
-The verbs are awaited, but the seam under test is unchanged: the sync helpers still call
-`subprocess.run`, so monkeypatching `adapter.subprocess` still intercepts every `gh` call — now
-from the worker thread the verb offloads to.
+The verbs are awaited, but the sync helpers still call `subprocess.run`, so monkeypatching
+`adapter.subprocess` intercepts every `gh` call from the worker thread the verb offloads to.
 """
 from __future__ import annotations
 
@@ -77,20 +76,13 @@ class _FakeSubprocess:
 
 
 class _BoardReads(_FakeSubprocess):
-    """A fake that answers a board-filtered search: the board, then one `issue view` per candidate.
+    """A fake board-filtered search: the board, its fields, then one `issue view` per candidate.
 
-    `gh issue list` is refused outright, because that call is what used to bound the candidate set and
-    both of its bounds dropped board items invisibly: its own `--limit` hid anything older than the
-    newest rows, and behind `--search` the Search API caps at 1,000 rows with nothing in the `--json`
-    output to say so.
-
-    `resolved_repo` is what `gh repo view` answers: the search's repository is resolved by `gh` for a
-    configured value as well as for an unset one, because only `gh` knows every spelling its own `--repo`
-    accepts. A slug is a reference `gh` resolved, `""` is one it refused — an unresolvable working
-    directory, or a value that is not a repository reference at all.
-
-    The board's fields are answered too, because the filter is now checked against the board's real
-    `Status` and `Type` options before any card is matched by one; `fields` is how a test drifts them.
+    `gh issue list` is refused outright, because both of its bounds drop board items invisibly — its own
+    `--limit` hides anything older than the newest rows, and behind `--search` the Search API caps at 1,000
+    rows with nothing in the `--json` output to say so. `resolved_repo` is what `gh repo view` answers, a
+    slug being a reference `gh` resolved and `""` one it refused; `fields` is how a test drifts a board
+    option away from the configured column names.
     """
 
     def __init__(
@@ -133,9 +125,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, *results: tuple[int, str, str]) ->
 def _configure(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
     """Patch the config every board-touching verb reads, overriding named keys.
 
-    Keyword names are the config paths with dots replaced by nothing usable, so callers pass them as
-    `**{"tracker_config.repo": ...}`; the overrides exist because the repo value's spelling — and its
-    absence — is itself under test.
+    A config path is not a valid keyword name, so callers pass overrides as `**{"tracker_config.repo": ...}`.
     """
     values: dict[str, object] = {
         **COLUMNS, "tracker_config.project": PROJECT, "tracker_config.repo": REPO, **overrides
@@ -152,8 +142,7 @@ def _configure(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
 def board(monkeypatch: pytest.MonkeyPatch) -> None:
     """The config every board-touching verb reads: this repo's column names, the board and the repo.
 
-    One fixture rather than per-test patching, because the `gh` call sequence a verb makes depends
-    on these values and a test that quietly disagrees with another about them proves nothing.
+    One fixture rather than per-test patching: the `gh` call sequence a verb makes depends on these values.
     """
     _configure(monkeypatch)
 
@@ -194,9 +183,7 @@ def _fields(
 def _board_fields(**overrides: tuple[str, ...]) -> dict:
     """The `field-list` a correctly configured board answers with: a column per configured name.
 
-    A board-filtered search now checks the column and type name it is about to match cards by against the
-    board's real options, so every such search reads the fields as a write does. `overrides` is how a test
-    drifts one of them away from the config.
+    `overrides` drifts one option away from the config, which is what a board-filtered search checks against.
     """
     return _fields(**{"status_options": tuple(COLUMNS.values()), **overrides})
 
@@ -209,8 +196,7 @@ def _resolution() -> tuple[tuple[int, str, str], ...]:
 def _content(number: int, url: str, kind: str | None) -> dict:
     """A card's `content`, carrying the `Issue`/`PullRequest`/`DraftIssue` type `gh` reports.
 
-    `kind=None` omits the key, which is the malformed case: a card `gh` reports with a URL but no
-    content type cannot be classified, and must not be guessed at in either direction.
+    `kind=None` omits the key: the malformed case, a card with a URL but no type to classify it by.
     """
     content: dict[str, object] = {"number": number, "title": TITLE, "url": url}
     return content if kind is None else {**content, "type": kind}
@@ -283,10 +269,9 @@ def _artifact(tmp_path: Path) -> Path:
 def _artifact_comment(filename: str = ARTIFACT_NAME, gist_url: str = GIST_URL, comment_id: str = "IC_1") -> dict:
     """One artifact comment as `gh issue view --json comments` reports it, worded literally.
 
-    Spelled out rather than formatted through `adapter.ARTIFACT_COMMENT`, because that comment is this
-    tracker's entire index of which gist holds which artifact: a reworded template the resolver's pattern
-    no longer matches has to fail here, not leave every lifecycle verb reporting an issue as having no
-    artifacts while its transcripts sit in gists nothing can find again.
+    Spelled out rather than built from `adapter.ARTIFACT_COMMENT`: that comment is this tracker's entire
+    index of which gist holds which artifact, so a rewording the resolver's pattern no longer matches has to
+    fail here rather than leave every lifecycle verb reporting an issue as having no artifacts.
     """
     return {
         "id": comment_id,
@@ -380,11 +365,10 @@ async def test_a_filename_the_artifact_index_cannot_hold_is_refused_before_the_u
 ):
     """The linking comment is this tracker's whole artifact index, and it has no escaping to spend.
 
-    `ARTIFACT_LINK` reads the filename back from between backticks on one line, so either character
-    breaks the round-trip silently: the upload reported success, and the next `attachment-update` then
-    matched nothing and uploaded a second gist beside the first while `attachment-download` reported the
-    issue had no artifacts at all. Both are legal in a POSIX filename, so this is a refusal, not a
-    theoretical one — and it must land before a gist exists to be orphaned.
+    `ARTIFACT_LINK` reads the filename back from between backticks on one line, so either character breaks
+    the round trip silently: the upload reports success, the next `attachment-update` matches nothing and
+    uploads a second gist beside the first, and `attachment-download` reports no artifacts at all. Both are
+    legal in a POSIX filename, and the refusal must land before a gist exists to be orphaned.
     """
     hostile = tmp_path / name
     hostile.write_text(ARTIFACT_TEXT, encoding="utf-8")
@@ -455,10 +439,9 @@ async def test_preflight_reports_facts_without_the_token(monkeypatch, board):
 async def test_preflight_fails_a_scoped_token_whose_board_is_not_reachable(monkeypatch, board):
     """A scope is a property of the credential; reachability is a property of the board.
 
-    A token that reports `project` still fails every board write if `tracker_config.project` names a
-    board that has been deleted, renamed, or made invisible to it — and checking only the scope string
-    passed that token, deferring the failure to the first real `set-status`, which is the half-finished
-    workflow this verb exists to prevent. So the board is read on this path too.
+    A token that reports `project` still fails every board write if `tracker_config.project` names a board
+    that has been deleted, renamed or made invisible to it, so checking the scope string alone deferred the
+    failure to the first real `set-status`. The board is therefore read on this path too.
     """
     fake = _install(
         monkeypatch,
@@ -588,20 +571,19 @@ async def test_missing_gh_is_an_actionable_preflight_failure(monkeypatch):
 @pytest.mark.anyio
 @pytest.mark.parametrize("case", ["a root that does not exist", "a root that is not a directory"])
 async def test_an_unusable_resolved_root_is_not_reported_as_a_missing_gh(monkeypatch, tmp_path, case):
-    """`subprocess.run` blames a `cwd` that does not exist with `FileNotFoundError` — the missing-binary
-    class the test above pins — so a resolved root pointing at nothing was reported as "install the
-    GitHub CLI", sending whoever read it after a tool that is already installed. A root that exists but
-    is not a directory raises `NotADirectoryError`, which nothing here caught, escaping the adapter as a
-    raw `OSError` against its contract that every failure is a `TrackerError`. Both are configuration
-    faults and must name the root instead.
+    """A resolved root that does not exist, or is not a directory, must be named as the fault it is.
+
+    `subprocess.run` blames a missing `cwd` with `FileNotFoundError` — the missing-binary class the test
+    above pins — so such a root was reported as "install the GitHub CLI"; a root that exists but is not a
+    directory raises `NotADirectoryError`, which nothing caught, escaping as a raw `OSError` against this
+    adapter's contract that every failure is a `TrackerError`.
     """
     unusable = tmp_path / "no-such-checkout"
     if case == "a root that is not a directory":
         unusable.write_text("", encoding="utf-8")
     monkeypatch.setattr(adapter.config, "resolved_root", lambda: unusable)
-    # The real `subprocess`, deliberately: what is under test is which exception Python itself raises
-    # for this `cwd`, which a fake would decide rather than reveal. Nothing is executed — the check
-    # fires first, and even without it the child never reaches `exec`.
+    # the real `subprocess`, deliberately: which exception Python raises for this `cwd` is what is under
+    # test, and a fake would decide it rather than reveal it. Nothing is executed either way.
 
     with pytest.raises(TrackerError) as raised:
         await adapter.GithubAdapter().preflight()
@@ -644,11 +626,10 @@ async def test_set_status_resolves_the_board_case_insensitively_and_reads_the_mo
 
 @pytest.mark.anyio
 async def test_a_board_write_is_re_read_until_the_eventually_consistent_list_catches_up(monkeypatch, board):
-    """Found live: the item list can miss a card that was just added, then show it a second later.
+    """Measured live: the item list can miss a card that was just added, then show it a second later.
 
-    Failing on the first read reported a write that had landed as a failure. The first two reads here
-    are what a lagging board really returns — the card absent entirely, then present but unset — and
-    the verb must still succeed on the third.
+    Failing on the first read reported a landed write as a failure. The first two reads here are what a
+    lagging board really returns — the card absent entirely, then present but unset.
     """
     monkeypatch.setattr(adapter.time, "sleep", lambda _seconds: None)
     fake = _install(
@@ -864,20 +845,15 @@ async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencie
 
 
 @pytest.mark.anyio
+# both counts: the drop is reported from `_refs`'s own tally, so a `totalCount` drifting down to agree with
+# the shortened list must still read as truncated — length arithmetic alone would call it complete
 @pytest.mark.parametrize("total", [2, 1], ids=["count-sees-the-shortfall", "count-agrees-with-the-short-list"])
 async def test_a_relation_node_that_names_no_issue_is_reported_truncated_not_raised(monkeypatch, board, total):
-    """Found by review: raising per entry here failed `get_issue` whole over one unreadable relation node.
+    """Raising per entry here failed `get_issue` whole over one unreadable relation node.
 
-    `_item_index` already settled this trade for the board — a card the credential may not view is skipped,
-    because raising broke every read of every issue over one invisible card — and `_refs` sits inside
-    `get_issue` on two *optional* relations, so a raise there costs the whole issue read as well. What the
-    relation has that the board page did not is `totalCount`, so the node can be skipped and the shortfall
-    reported instead of traded away: the invariant is that no dropped node is claimed complete, not that
-    reading one must fail.
-
-    Both counts are parametrised because the drop is reported from `_refs`'s own tally, not inferred from
-    the lengths: a `totalCount` that drifts down to agree with the shortened list is precisely the silent
-    completeness this guards, and length arithmetic alone would call it complete.
+    `_refs` sits inside `get_issue` on two *optional* relations, and what the relation has that the board
+    page did not is `totalCount` — so the node is skipped and the shortfall reported instead: the invariant
+    is that no dropped node is claimed complete, not that reading one must fail.
     """
     nodes = [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}]
     _install(
@@ -897,6 +873,7 @@ async def test_a_relation_node_that_names_no_issue_is_reported_truncated_not_rai
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "relation",
+    # both countless shapes, because the tolerant branch keys off the count's presence, not the nesting
     [
         {"nodes": [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}]},
         [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}],
@@ -908,12 +885,8 @@ async def test_an_unreadable_relation_node_with_no_count_to_report_it_from_fails
 ):
     """The tolerance above is bought with `totalCount`; without one there is nothing to signal the drop.
 
-    `dependencies_truncated` is how a skipped node stays honest, and `_relation` derives it from the count
-    the relation carries — so a shape that carries no count has no channel to report the shortfall through,
-    and skipping there would answer with a shorter `dependencies` list marked complete: a real blocker
-    silently gone from the one field a caller reads to decide whether an issue is blocked. Both countless
-    shapes are checked, the bare list and the wrapper that omits the key, because the tolerant branch keys
-    off the count's presence rather than the payload's nesting.
+    `_relation` derives `dependencies_truncated` from the count the relation carries, so skipping a node in
+    a shape that carries none would answer with a shorter `dependencies` list marked complete.
     """
     _install(monkeypatch, _json({**_issue_view(), "blockedBy": relation}), _json(_items()))
 
@@ -933,9 +906,8 @@ async def test_a_label_entry_with_no_readable_name_fails_the_read_rather_than_dr
 ):
     """Parity with jira's `_summary`, which refuses this same shape drift on its own `labels` field.
 
-    Both adapters answer one protocol, so an entry one of them refuses cannot be the other's silent
-    shortening: a filtered list reads as the issue's real labels, which is what a caller checks to decide
-    whether an issue is already decomposed or already shipped.
+    A filtered list reads as the issue's real labels, which is what a caller checks to decide whether an
+    issue is already decomposed or already shipped.
     """
     drifted = {**_issue_view(), "labels": [{"name": "shipyard"}, entry]}
     _install(monkeypatch, _json(drifted), _json(_items()))
@@ -951,15 +923,9 @@ async def test_a_label_entry_with_no_readable_name_fails_the_read_rather_than_dr
 async def test_a_field_gh_did_not_return_as_a_list_is_never_read_as_an_empty_one(monkeypatch, board, field):
     """The per-entry refusals above are reached through `_as_list`, which never raises.
 
-    So the entries were checked and the field holding them was not: `labels: "shipyard"` and
-    `comments: "a note"` both became `[]`, an issue reporting no labels and no comments at all —
-    indistinguishable from one that genuinely has neither, which is the same silence the per-entry
-    refusals exist to prevent, one level out. Jira's `_summary` has always refused its whole `labels`
-    field; this is the half of that parity github was missing.
-
-    The nesting `gh` really uses is checked in the same test, because the field-level check sits ahead of
-    the one parser that unwraps it: refusing everything but a bare list would have broken the `{field:
-    [...]}` wrapper `_as_list` exists for, and that regression is silent in the other direction.
+    So the entries were checked and the field holding them was not: `labels: "shipyard"` became `[]`, an
+    issue reporting no labels at all and indistinguishable from one that genuinely has none. Jira's
+    `_summary` has always refused its whole `labels` field; this is the half of that parity github lacked.
     """
     drifted = {**_issue_view(), field: "shipyard"}
     _install(monkeypatch, _json(drifted), _json(_items()))
@@ -967,6 +933,8 @@ async def test_a_field_gh_did_not_return_as_a_list_is_never_read_as_an_empty_one
     with pytest.raises(TrackerError, match=f"{field} field read back as str"):
         await adapter.GithubAdapter().get_issue("7")
 
+    # the field check sits ahead of the parser that unwraps `gh`'s own `{field: [...]}` nesting, so
+    # refusing everything but a bare list breaks that wrapper — silent in the other direction
     nested = {**_issue_view(), field: {field: _issue_view()[field]}}
     _install(monkeypatch, _json(nested), _json(_items()))
     issue = await adapter.GithubAdapter().get_issue("7")
@@ -982,9 +950,8 @@ async def test_a_malformed_comment_entry_fails_the_read_rather_than_leaving_the_
 ):
     """Parity with jira's `_comments`, which refuses this same drift on its own thread.
 
-    Dropping the entry returned a thread one comment short of what `gh` sent while the read still
-    reported itself whole — and on this tracker those comments are also the only index of which gist
-    holds which artifact, so the dropped one read as an artifact that was never attached.
+    On this tracker the comments are also the only index of which gist holds which artifact, so a dropped
+    entry read as an artifact that was never attached, in a thread still reporting itself whole.
     """
     drifted = {**_issue_view(), "comments": [*_issue_view()["comments"], entry]}
     _install(monkeypatch, _json(drifted), _json(_items()))
@@ -1002,9 +969,8 @@ async def test_a_comment_author_of_the_wrong_shape_raises_a_tracker_error_not_an
 ):
     """`(author or {}).get("login")` was a raw `AttributeError` for any non-dict author.
 
-    Every caller of this adapter guards `TrackerError`, so a bare `AttributeError` escapes as an
-    unhandled crash rather than the refusal this module promises — the same failure the entry and
-    field checks around it close, in the one field they left open.
+    Every caller of this adapter guards `TrackerError`, so that escapes as an unhandled crash rather than
+    the refusal this module promises.
     """
     first, *rest = _issue_view()["comments"]
     drifted = {**_issue_view(), "comments": [{**first, "author": author}, *rest]}
@@ -1091,10 +1057,8 @@ async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(
 async def test_find_issues_accepts_a_page_token_and_still_reports_no_cursor(monkeypatch, board):
     """The canonical signature carries a cursor, and this adapter has none to resume.
 
-    `gh` exposes no cursor, so the parameter is accepted for protocol parity and ignored rather than
-    faked: reporting `next_page_token: None` means there is never a token of this adapter's own to send
-    back, and a caller looping on the two paging keys behaves correctly without asking which tracker
-    it has. What must not happen is a rejected call for passing a parameter every adapter accepts.
+    `gh` exposes no cursor, so the parameter is accepted for protocol parity and ignored rather than faked:
+    a caller looping on the two paging keys then behaves correctly without asking which tracker it has.
     """
     fake = _install(monkeypatch, _json([_list_row()]), _json(_items()))
 
@@ -1108,13 +1072,11 @@ async def test_find_issues_accepts_a_page_token_and_still_reports_no_cursor(monk
 
 @pytest.mark.anyio
 async def test_a_board_issue_outside_any_issue_list_window_is_still_found(monkeypatch, board):
-    """Found by review, twice: the candidate set must be bounded by the board, not by a repo read.
+    """The candidate set must be bounded by the board, not by a repo read.
 
-    `--limit limit` on `gh issue list` hid the wanted issue behind newer ones and reported `count: 0`
-    from a board that has work on it; widening that read to the repository put the candidate set behind
-    the Search API's silent 1,000-row cap instead, so items were dropped with `is_last: true`. Neither
-    bound can bite once the board itself is the candidate set — which is why the fake refuses to answer
-    `issue list` at all.
+    `--limit limit` on `gh issue list` hid the wanted issue behind newer ones and answered `count: 0` from a
+    board that has work on it; widening that read to the repository put the candidate set behind the Search
+    API's silent 1,000-row cap instead. Neither bound can bite once the board is the candidate set.
     """
     fake = _BoardReads(_items(status="Ready"), {ISSUE_URL: _list_row()})
     monkeypatch.setattr(adapter, "subprocess", fake)
@@ -1192,14 +1154,12 @@ async def test_text_with_a_board_filter_matches_the_title_or_body_of_board_candi
     ],
 )
 async def test_every_repo_spelling_gh_accepts_finds_the_same_board_cards(monkeypatch, configured):
-    """Found by review, twice: a repo filter this file parses by hand is always a spelling short.
+    """A repo filter this file parses by hand is always a spelling short.
 
-    Every spelling here is one `gh --repo` takes and one `_repo_args()` already hands it for every other
-    verb, so each names the repository the board cards live in. Comparing raw strings emptied the page for
-    most of them; a hand-written normaliser then still missed the `.git` suffix and the scp-like SSH form —
-    each miss a correctly configured repo reported as an empty queue, the one wrong answer a caller cannot
-    tell from the truth. So the value is handed to `gh repo view` verbatim and `gh`'s own answer is what
-    the cards are matched against: no spelling can be missed that `--repo` would have accepted.
+    Every spelling here is one `gh --repo` takes and `_repo_args()` already hands it for every other verb.
+    Comparing raw strings emptied the page for most of them, and a hand-written normaliser still missed the
+    `.git` suffix and the scp-like SSH form — each miss a correctly configured repo reported as an empty
+    queue. So the value goes to `gh repo view` verbatim and `gh`'s own answer is what cards are matched on.
     """
     _configure(monkeypatch, **{"tracker_config.repo": configured})
     fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: _list_row()})
@@ -1221,11 +1181,9 @@ async def test_every_repo_spelling_gh_accepts_finds_the_same_board_cards(monkeyp
 async def test_a_repo_value_gh_refuses_fails_before_the_board_is_read(monkeypatch, configured):
     """A value `gh` will not resolve is a misconfiguration, not something to normalise into a match.
 
-    An issue URL is the case a hand-written parser got wrong in the direction that hides: taking its last
-    two path segments made `tracker_config.repo` read as the repository `issues/7`, which matches no card,
-    so a misconfigured repo answered `count: 0, is_last: true`. `gh repo view` refuses an issue path
-    outright, and refusing is the whole point — the caller is told the query has no repository rather than
-    told the queue is empty.
+    An issue URL is the case a hand-written parser got wrong in the direction that hides: its last two path
+    segments read as the repository `issues/7`, which matches no card, so a misconfigured repo answered
+    `count: 0, is_last: true`. `gh repo view` refuses an issue path outright, and refusing is the point.
     """
     _configure(monkeypatch, **{"tracker_config.repo": configured})
     fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: _list_row()}, resolved_repo="")
@@ -1274,6 +1232,7 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
         (f"x-access-token:{CANARY}@{HOST}:{REPO}.git", f"{HOST}:{REPO}.git"),
         ("a note about a@b.example and x: y", "a note about a@b.example and x: y"),
         (f"x-access-token:{CANARY}@{HOST}/{REPO}", f"{HOST}/{REPO}"),
+        # more than one `//` authority in one value or output line: every one is stripped, not just the first
         (
             f"see https://{HOST}/{REPO} and https://x-access-token:{CANARY}@{HOST}/octocat/other",
             f"see https://{HOST}/{REPO} and https://{HOST}/octocat/other",
@@ -1283,6 +1242,7 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
             f"GraphQL: no repo\nhttps://{HOST}/{REPO}\nhttps://{HOST}/{REPO}",
         ),
         (f"https://x-access-token:tok%40{CANARY}@ghe.example.com:8443/{REPO}", f"https://ghe.example.com:8443/{REPO}"),
+        # the opening quote goes with the userinfo: the cosmetic half of the trade for removing the secret
         (
             f"Could not resolve to a Repository with the name 'x-access-token:{CANARY}@{HOST}:{REPO}.git'. (repo)",
             f"Could not resolve to a Repository with the name {HOST}:{REPO}.git'. (repo)",
@@ -1299,27 +1259,16 @@ async def test_a_repo_value_gh_would_read_as_a_flag_is_refused_before_gh_is_call
     ],
 )
 def test_stripping_credentials_survives_a_userinfo_that_holds_a_slash_or_a_second_at(value, expected):
-    """The round-5 regex assumed the userinfo held neither `/` nor `@`, and stopped at either.
+    """A userinfo can hold `/` or `@`, so a regex that stops at either strips out of its own bounds.
 
-    So a hostile or merely hand-mangled value walked the strip out of its own bounds and the remainder
-    printed. The authority component is bounded before the credential is looked for, and a value whose
-    authority is then not a host at all is over-stripped rather than trusted — better a value the
-    operator has to squint at than a password with a slash in it in a log.
+    The authority is bounded before the credential is looked for, and an authority that then is not a host
+    at all is over-stripped rather than trusted: better a value the operator has to squint at than a
+    password with a slash in it in a log. Stripping is per whitespace-separated token rather than per whole
+    value, because `gh` quotes the reference it refused inside a sentence and a `--body` wraps prose around
+    whatever the caller wrote, so a schemeless `userinfo@host/path` never fullmatched anything.
 
-    Two shapes were still carried through whole afterwards, and both are reachable: a value or an output
-    line holding more than one `//` authority had only its first stripped, so a clean URL followed by a
-    credentialed one printed the second in cleartext; and a schemeless `userinfo@host/path` was not the
-    scp form the second branch matched, which wants a colon after the host.
-
-    Both schemeless spellings were then matched against the *whole* value, which is not the shape they
-    arrive in: `gh` quotes the reference it refused inside a sentence, and a `--body` wraps prose around
-    whatever the caller wrote, so neither ever fullmatched and both printed the token. Stripping is now per
-    whitespace-separated token, and the last three rows are those two prose shapes plus a body — the
-    opening quote goes with the userinfo, which is the cosmetic half of a trade for removing the secret.
-
-    The controls: a bare `OWNER/REPO`, `@me` and `@me/abc` (a legitimate self-reference, not an empty
-    userinfo to strip), an address followed by a colon in prose, and the clean URL beside the credentialed
-    one, all left exactly as they were.
+    The rows that come back unchanged are the controls: `OWNER/REPO`, `@me` and `@me/abc` (a legitimate
+    self-reference, not an empty userinfo to strip), and an address followed by a colon in prose.
     """
     assert adapter._stripped_of_credentials(value) == expected, "a credential-bearing shape was mis-stripped"
 
@@ -1338,10 +1287,6 @@ async def test_a_credential_in_the_configured_repo_never_reaches_the_error_messa
 
     So a misconfigured `tracker_config.repo` can hold a token, and the failure that names the bad value
     printed it verbatim. What is left is still what the operator has to fix.
-
-    The canary is deliberately absent from this process's environment: planting it there proved only that
-    `_safe` redacts what this process holds, which is not what a token in a config value is, and the
-    URL-userinfo strip this covers could have been removed with the test still passing.
     """
     _configure(monkeypatch, **{"tracker_config.repo": configured})
     monkeypatch.setattr(adapter, "subprocess", _BoardReads(_board_items([ISSUE_URL]), {}, resolved_repo=""))
@@ -1359,11 +1304,10 @@ async def test_a_credential_in_the_configured_repo_never_reaches_the_error_messa
 
 @pytest.mark.anyio
 async def test_a_credential_in_the_configured_repo_never_reaches_another_verbs_failure(monkeypatch):
-    """Found by review: the strip covered the two messages about the value, not the argv it rides in.
+    """The strip covered the two messages about the value, not the argv it rides in.
 
-    `_repo_args()` hands `tracker_config.repo` to *every* verb, and every `gh` failure and timeout in
-    this adapter renders its own argv, so a 404 on a read printed the token the repo-resolution failure
-    no longer did. The strip therefore belongs on the argv, which is where all of those messages meet.
+    `_repo_args()` hands `tracker_config.repo` to *every* verb and every `gh` failure renders its own argv,
+    so the strip belongs on the argv, which is where all of those messages meet.
     """
     _configure(monkeypatch, **{"tracker_config.repo": f"https://x-access-token:{CANARY}@{HOST}/{REPO}.git"})
     _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
@@ -1384,13 +1328,11 @@ async def test_a_credential_in_the_configured_repo_never_reaches_another_verbs_f
     ],
 )
 async def test_a_credential_gh_echoes_back_in_its_own_stderr_never_reaches_the_error(monkeypatch, echoed):
-    """Found by review: the argv strip cannot cover the text `gh` writes about the argv.
+    """The argv strip cannot cover the text `gh` writes about the argv.
 
-    Real `gh` (2.96.0) quotes a credentialed `--repo` value back in its own error output for several
-    reachable shapes — a GraphQL resolution failure, an HTTP error naming the URL, an argument error on a
-    malformed one — and that stream went through scrubbing only, which redacts the credentials this
-    process holds in its environment and can know nothing about one that only ever existed in
-    `tracker_config.repo`. Every verb carries that value in its argv, so every verb's stderr could echo it.
+    Real `gh` (2.96.0) quotes a credentialed `--repo` value back in its own error output for all three
+    shapes here, and that stream went through scrubbing only — which redacts the credentials this process
+    holds in its environment and can know nothing about one that only ever existed in `tracker_config.repo`.
     """
     configured = f"https://x-access-token:{CANARY}@{HOST}/{REPO}.git"
     _configure(monkeypatch, **{"tracker_config.repo": configured})
@@ -1409,13 +1351,12 @@ async def test_a_credential_gh_echoes_back_in_its_own_stderr_never_reaches_the_e
     "configured", [f"x-access-token:{CANARY}@{HOST}:{REPO}.git", f"x-access-token:{CANARY}@{HOST}/{REPO}"]
 )
 async def test_a_credential_gh_quotes_back_inside_a_sentence_never_reaches_the_error(monkeypatch, configured):
-    """Found by review: `gh` does not echo the refused reference alone, it quotes it inside a sentence.
+    """`gh` does not echo the refused reference alone, it quotes it inside a sentence.
 
-    Real `gh` (2.96.0) answers a credentialed `--repo` with `Could not resolve to a Repository with the
-    name '<value>'. (repository)`, and the two schemeless spellings a git remote can take — scp
-    `user:pass@host:path` and `user:pass@host/path` — were recognised only when they matched the whole
-    string, which surrounding prose and `gh`'s own quotes and trailing period make impossible. Both are
-    values `tracker_config.repo` accepts, so both reached this message with the token in them.
+    Real `gh` (2.96.0) answers a credentialed `--repo` with `Could not resolve to a Repository with the name
+    '<value>'. (repository)`, and the two schemeless spellings a git remote can take — scp
+    `user:pass@host:path` and `user:pass@host/path`, both values `tracker_config.repo` accepts — were
+    recognised only on a whole-string match, which those quotes and that trailing period make impossible.
     """
     _configure(monkeypatch, **{"tracker_config.repo": configured})
     _install(monkeypatch, (1, "", f"GraphQL: Could not resolve to a Repository with the name '{configured}'. (repo)"))
@@ -1430,12 +1371,11 @@ async def test_a_credential_gh_quotes_back_inside_a_sentence_never_reaches_the_e
 
 @pytest.mark.anyio
 async def test_a_pathless_credentialed_authority_never_reaches_the_error(monkeypatch):
-    """Found by review, round 9: `user:pass@host` with no path or port at all was not stripped.
+    """A `user:pass@host` with no path or port at all was not stripped.
 
     `git credential fill`/`.netrc` hand back exactly this shape, and so does a GHE operator pasting a
-    credentialed base host against `--repo`'s `HOST/OWNER/REPO` grammar. The prior two schemeless patterns
-    both required something after the host (a path or a `:port`); this one has neither, so distinguishing
-    it from a bare `user@host` address needs the colon inside the userinfo the two share.
+    credentialed base host against `--repo`'s `HOST/OWNER/REPO` grammar. The other schemeless patterns each
+    require something after the host, so telling this from a bare `user@host` address needs the colon.
     """
     configured = f"x-access-token:{CANARY}@{HOST}"
     _configure(monkeypatch, **{"tracker_config.repo": configured})
@@ -1451,13 +1391,12 @@ async def test_a_pathless_credentialed_authority_never_reaches_the_error(monkeyp
 
 @pytest.mark.anyio
 async def test_a_colon_less_pathless_credential_never_reaches_the_error(monkeypatch):
-    """Found by review, round 10: a bare `<token>@host` with no colon was still not stripped.
+    """A bare `<token>@host` with no colon was still not stripped.
 
-    GitHub's own documented PAT-in-URL form uses the token itself as the username with nothing after it —
-    `https://<PAT>@github.com/...` — and that shape is identical to a real email address once free of its
-    scheme and path, so no generic pattern can tell them apart in arbitrary text without also mangling a
-    genuine address elsewhere. `tracker_config.repo` is never legitimately an email address, though, so
-    this is caught by matching its own configured value directly rather than guessing at its shape.
+    GitHub's own documented PAT-in-URL form uses the token as the username with nothing after it —
+    `https://<PAT>@github.com/...` — which is identical to an email address once free of its scheme and path,
+    so no generic pattern can tell them apart without mangling genuine addresses. `tracker_config.repo` is
+    never legitimately an email, so this is caught by matching its configured value directly.
     """
     configured = f"{CANARY}@{HOST}"
     _configure(monkeypatch, **{"tracker_config.repo": configured})
@@ -1473,11 +1412,10 @@ async def test_a_colon_less_pathless_credential_never_reaches_the_error(monkeypa
 
 @pytest.mark.anyio
 async def test_a_real_email_address_in_a_comment_body_is_still_left_alone(monkeypatch, board):
-    """Control for the round-10 fix: the exact-match pass must not catch ordinary content.
+    """Control for the exact-match pass: it must not catch ordinary content.
 
-    `tracker_config.repo`/`.project` hold no credential in this test, so the new pass has nothing to
-    match, and a real address pasted into a comment body must survive exactly as free-text stripping
-    already left it — this is the case the generic pattern deliberately does not touch either.
+    Nothing here holds a credential for that pass to match, and a real address in a comment body is the case
+    the generic pattern deliberately does not touch either.
     """
     _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
 
@@ -1493,9 +1431,8 @@ async def test_a_real_email_address_in_a_comment_body_is_still_left_alone(monkey
 async def test_a_credential_embedded_in_a_comment_body_never_reaches_the_error(monkeypatch, board):
     """A `--body` is free-form caller text, so a credentialed reference in it sits mid-sentence.
 
-    Same gap as `gh`'s own prose, from the other direction: the body reaches every `gh` failure through
-    `_shown`, and a reference pasted into the middle of one never matched a whole-value pattern. The text
-    around it survives, because the failure is only useful if it still shows which comment failed.
+    The body reaches every `gh` failure through `_shown`, and a reference pasted mid-sentence never matched a
+    whole-value pattern. The text around it survives, or the failure cannot say which comment failed.
     """
     _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
 
@@ -1511,9 +1448,8 @@ async def test_a_credential_embedded_in_a_comment_body_never_reaches_the_error(m
 async def test_a_project_value_holding_the_self_reference_syntax_is_reported_verbatim(monkeypatch):
     """`@me` is legitimate syntax, and an empty userinfo is not a credential to strip.
 
-    The schemeless pattern allowed zero characters before the `@`, so `@me/abc` was reported back to
-    whoever has to fix it as `me/abc` — a value they never set, in the one message whose whole job is to
-    name the value that is wrong.
+    The schemeless pattern allowed zero characters before the `@`, so `@me/abc` was reported back as
+    `me/abc` — a value nobody set, in the one message whose whole job is to name the value that is wrong.
     """
     _configure(monkeypatch, **{"tracker_config.project": "@me/abc"})
     fake = _install(monkeypatch)
@@ -1536,11 +1472,9 @@ async def test_a_project_value_holding_the_self_reference_syntax_is_reported_ver
 async def test_a_credential_in_the_configured_project_never_reaches_the_error_message(monkeypatch, configured):
     """`tracker_config.project` is the other configured value, and it reaches more messages than one.
 
-    The first spelling is refused as malformed, the second parses as `<owner>/<number>` with the whole URL
-    as the owner — and the owner is named by the failure of every board read, write and verification here,
-    none of which could recognise a credential inside it. So the owner is checked to be shaped like a login
-    (or `@me`), which is all `gh --owner` takes, and the one message that prints the configured value goes
-    through the same strip `tracker_config.repo`'s failures do.
+    The first spelling is refused as malformed; the second parses as `<owner>/<number>` with the whole URL as
+    the owner, and the owner is named by the failure of every board read, write and verification here. So the
+    owner must be shaped like a login or `@me`, which is all `gh --owner` takes.
     """
     _configure(monkeypatch, **{"tracker_config.project": configured})
     fake = _install(monkeypatch)
@@ -1560,11 +1494,11 @@ async def test_a_credential_in_the_configured_project_never_reaches_the_error_me
 async def test_only_issue_cards_answer_an_issue_search(monkeypatch):
     """`find_issues` owes the caller issues, and a board column holds PR and draft cards too.
 
-    `gh issue view` reads a pull request URL without complaint, so a PR card used to come back as an
-    issue — which the duplicate-work checks in the plan and spec skills read as prior work. The PR here
-    has no `issue view` answer at all, so a read of it fails the test rather than passing quietly.
+    `gh issue view` reads a pull request URL without complaint, so a PR card came back as an issue — which
+    the duplicate-work checks in the plan and spec skills read as prior work.
     """
     _configure(monkeypatch)
+    # the fake answers no `issue view` for this URL, so reading it fails the test rather than passing quietly
     pull = "https://github.com/octocat/repo/pull/8"
     items = {
         "items": [
@@ -1604,11 +1538,10 @@ async def test_a_card_with_no_content_type_is_a_failure_rather_than_a_guess(monk
 
 @pytest.mark.anyio
 async def test_a_card_with_neither_a_content_type_nor_a_url_is_a_failure_not_a_silent_drop(monkeypatch):
-    """Found by review: the url-less drop swallowed the malformed card before the type check saw it.
+    """The url-less drop swallowed the malformed card before the type check saw it.
 
-    A `DraftIssue` legitimately has no URL and is excluded silently, as it must be — nothing here can read
-    one. A card with no URL *and* no content type is not a draft, it is a shape this adapter cannot read,
-    and dropping it as though it were one takes a card off a page that still reports itself complete.
+    A `DraftIssue` legitimately has no URL and is excluded silently, since nothing here can read one. A card
+    with no URL *and* no content type is not a draft, so dropping it takes a card off a complete page.
     """
     _configure(monkeypatch)
     draft = {"id": "ITEM_1", "status": "Ready", "type": "Task", "content": {"type": "DraftIssue"}}
@@ -1639,14 +1572,12 @@ async def test_a_card_with_neither_a_content_type_nor_a_url_is_a_failure_not_a_s
     ],
 )
 async def test_a_card_the_token_may_not_view_is_skipped_rather_than_failing_every_read(monkeypatch, card, reason):
-    """Found by review: the url-less guard could not tell a documented board state from a broken payload.
+    """The url-less guard could not tell a documented board state from a broken payload.
 
-    Projects v2 returns an item the credential may not view as `REDACTED`, and `gh` renders that card's
-    `content` as `null` — no type, no URL, nothing any verb here could address. Raising on it failed the
-    whole board, so one invisible card broke `find_issues` and, because the index is built for the entire
-    board, `get_issue` on every other issue too. A `content` object that is present but empty is still the
-    unreadable shape the sibling test above covers; only "no content object at all" is skipped — including
-    a `content` that is not an object, which must not reach the board index as an `AttributeError` either.
+    Projects v2 returns an item the credential may not view as `REDACTED` and `gh` renders that card's
+    `content` as `null`, so raising on it broke `find_issues` and — the index being built for the whole board
+    — `get_issue` on every other issue too. Only "no content object at all" is skipped, including a `content`
+    that is not an object; a `content` present but empty is still the unreadable shape the test above covers.
     """
     _configure(monkeypatch)
     issue = {"id": "ITEM_2", "status": "Ready", "type": "Task", "content": _content(7, ISSUE_URL, "Issue")}
@@ -1765,9 +1696,8 @@ async def test_a_column_wider_than_the_read_bound_still_answers_a_plain_page(mon
 async def test_the_read_bound_reached_with_a_full_page_returns_it_as_a_truncated_page(monkeypatch):
     """A page the caller asked for is not worth discarding, and must not be called complete either.
 
-    Two matches fill the page of two, then the bound stops the read that would have decided whether a
-    third exists. Raising here would throw away results that are correct; `is_last: true` would claim
-    the board holds nothing else, which is the false-completeness bug this whole path keeps growing.
+    Raising here would throw away results that are correct; `is_last: true` would claim the board holds
+    nothing else, which is the false completeness this whole path keeps growing.
     """
     _configure(monkeypatch)
     monkeypatch.setattr(adapter, "MAX_BOARD_READS", 3)
@@ -1814,9 +1744,8 @@ async def test_an_unrecognised_status_or_type_token_is_refused_not_answered_with
 ):
     """A token that matches no card is a bad query, and this was the only verb here answering it as data.
 
-    `in_progress` for `in-progress` matched nothing and came back `count: 0, is_last: true`, which the
-    duplicate-work checks in the plan and spec skills read as "no prior work on this". Every other verb
-    already refuses an unknown canonical token through `native_status`/`native_type`; so does this one now.
+    `in_progress` for `in-progress` matched nothing and answered `count: 0, is_last: true`, which the
+    duplicate-work checks in the plan and spec skills read as "no prior work on this".
     """
     fake = _install(monkeypatch)
 
@@ -1837,17 +1766,16 @@ async def test_an_unrecognised_status_or_type_token_is_refused_not_answered_with
 async def test_a_board_name_the_config_does_not_match_fails_instead_of_emptying_the_page(
     monkeypatch, filters, drift, field, requested
 ):
-    """Found by review: only the write path noticed board/config drift; the read path went quiet.
+    """Only the write path noticed board/config drift; the read path went quiet.
 
-    A canonical token maps to a native board name through the `columns.*` config, and the write path checks
-    that name against the board's real field options before writing. The read path compared canonical
-    tokens instead — and `canonical_status`/`canonical_type` pass a board value no configured column names
-    through unchanged, so a renamed column or a `Type` option outside `Epic`/`Task`/`Bug` matched no card
-    and `find_issues` answered `count: 0, is_last: true` from a board with work on it. The card here is
-    deliberately sitting in the drifted column: it is the work the caller would have been told was absent.
+    The write path checks the native name the `columns.*` config maps to against the board's real field
+    options. The read path compared canonical tokens instead, and `canonical_status`/`canonical_type` pass a
+    board value no configured column names through unchanged — so a renamed column, or a `Type` option
+    outside `Epic`/`Task`/`Bug`, matched no card and answered `count: 0, is_last: true` from a live board.
     """
     _configure(monkeypatch)
     fake = _BoardReads(
+        # the card sits in the drifted column on purpose: it is the work the caller would be told is absent
         _board_items([ISSUE_URL], status="Up Next", issue_type="Chore"),
         {ISSUE_URL: _list_row()},
         fields=_board_fields(**drift),
@@ -1873,12 +1801,11 @@ async def test_a_board_name_the_config_does_not_match_fails_instead_of_emptying_
 @pytest.mark.anyio
 @pytest.mark.parametrize("fields", [{"totalCount": 5}, {"fields": {}}, {}])
 async def test_a_field_list_with_no_field_list_is_a_failure_not_a_boardless_board(monkeypatch, fields):
-    """Found by review: `field-list` was read with the same tolerant helper the board-drift check exists to
-    catch drift through, so an unreadable `field-list` answer misdiagnosed itself as `columns.*` drift.
+    """A board whose field options cannot be read must not read as a board with none.
 
-    `_as_list` stays tolerant on purpose elsewhere, but a board this adapter could not read its own field
-    options from must not read as a board with none — that is indistinguishable from a genuine drift and
-    sends whoever reads the failure to fix configuration that was never wrong.
+    `field-list` went through the same tolerant `_as_list` the board-drift check exists to catch drift
+    through, so an unreadable answer misdiagnosed itself as `columns.*` drift and sent whoever read the
+    failure to fix configuration that was never wrong. `_as_list` stays tolerant on purpose elsewhere.
     """
     _configure(monkeypatch)
     fake = _BoardReads(_board_items([ISSUE_URL]), {ISSUE_URL: _list_row()}, fields=fields)
@@ -1890,11 +1817,10 @@ async def test_a_field_list_with_no_field_list_is_a_failure_not_a_boardless_boar
 
 @pytest.mark.anyio
 async def test_a_card_whose_url_holds_no_repository_is_a_failure_not_a_silent_drop(monkeypatch):
-    """Found by review, sweeping for the pattern: an unreadable URL was dropped like another repo's card.
+    """An unreadable URL was dropped like another repo's card.
 
-    The repository comparison runs before the issue-card check and treated "no pair in this URL" as "not
-    this repository", so such a card left the candidate set without a word and the page still reported
-    itself complete — and the unclassifiable-card failure never saw it either.
+    The repository comparison runs before the issue-card check and read "no pair in this URL" as "not this
+    repository", so the card left the candidate set silently and the unclassifiable-card failure never saw it.
     """
     _configure(monkeypatch)
     fake = _BoardReads(_board_items(["https://github.com/issues"]), {})
@@ -1926,10 +1852,9 @@ async def test_a_board_whose_names_match_the_config_still_answers_with_its_match
 async def test_a_board_larger_than_one_read_fails_instead_of_answering_from_its_first_page(monkeypatch, board):
     """`item-list` reports the board's `totalCount` beside a list `--limit ITEM_LIMIT` has truncated.
 
-    Every caller of the board read treats it as the whole board — `is_last`, the preflight's reachability
-    check, the write-back verification's "the card is not there" — so a truncated read is the same
-    false completeness this path keeps growing, one level lower down. Verified against the real `gh`: a
-    board of 65 items answers `--limit 3` with three items and `totalCount: 65`.
+    Measured against the real `gh`: a board of 65 items answers `--limit 3` with three items and
+    `totalCount: 65`. Every caller of the board read treats it as the whole board — `is_last`, the
+    preflight's reachability check, the write-back verification's "the card is not there".
     """
     truncated = {**_board_items([ISSUE_URL]), "totalCount": 2}
     fake = _install(monkeypatch, _repo_view(), _json(truncated))
@@ -1953,12 +1878,11 @@ async def test_a_board_larger_than_one_read_fails_instead_of_answering_from_its_
 async def test_a_board_read_whose_item_count_is_unreadable_is_a_failure_not_a_skipped_check(
     monkeypatch, board, count
 ):
-    """Found by review: the completeness check fired only for a clean `int`, so drift bypassed it.
+    """The completeness check fired only for a clean `int`, so drift bypassed it.
 
-    A `totalCount` of `"65"` — or a float, a bool, a null, or an absent key — skipped the guard entirely
-    and the truncated read was answered from as though it were the whole board: the same false
-    completeness this check exists to prevent, one type away from where it was fixed. `gh` prints the
-    count for every board, so an unreadable one is a shape this adapter must not read a board out of.
+    A `totalCount` of `"65"` — or a float, a bool, a null, or an absent key — skipped the guard and the
+    truncated read was answered from as though it were whole. `gh` prints the count for every board, so an
+    unreadable one is a shape this adapter must not read a board out of.
     """
     _install(monkeypatch, _repo_view(), _json({"items": _board_items([ISSUE_URL])["items"], **count}))
 
@@ -1971,9 +1895,8 @@ async def test_a_board_read_whose_item_count_is_unreadable_is_a_failure_not_a_sk
 async def test_a_board_read_with_no_item_list_is_a_failure_not_an_empty_board(monkeypatch, board, payload):
     """`_as_list` is tolerant by design, and tolerance here reads an unreadable board as an empty one.
 
-    The shared helper stays tolerant — the relations it also parses are legitimately absent — so the check
-    lives in `_raw_items`, where a missing `items` key means the board was not read at all. That is not the
-    same answer as a board which genuinely holds nothing, and a caller cannot tell the two apart.
+    The shared helper stays tolerant, because the relations it also parses are legitimately absent, so the
+    check lives in `_raw_items` where a missing `items` key means the board was not read at all.
     """
     _install(monkeypatch, _repo_view(), _json(payload))
 
@@ -2025,13 +1948,12 @@ async def test_a_genuinely_empty_board_is_still_an_empty_page(monkeypatch, board
 
 @pytest.mark.anyio
 async def test_the_write_verification_retry_tolerates_a_board_read_the_search_paths_refuse(monkeypatch, board):
-    """The verifying re-read is retried because the item list is eventually consistent, and a board `gh`
-    pages through internally can transiently answer with a `totalCount` its items disagree with.
+    """The write's verifying re-read must tolerate a board payload a search is right to refuse.
 
-    Raising on that inside the retry loop aborts the retry on its first attempt and reports a write that
-    landed as failed — the exact failure the retry exists to prevent, reintroduced one level down. The
-    same payload must still fail a search and the preflight, where completeness is what makes the answer
-    true rather than something a later read can correct.
+    A board `gh` pages through internally can transiently answer with a `totalCount` its items disagree with,
+    so raising inside the retry loop aborts the retry on its first attempt and reports a landed write as
+    failed. On a search and the preflight the same payload must still fail, because there completeness is
+    what makes the answer true rather than something a later read can correct.
     """
     monkeypatch.setattr(adapter.time, "sleep", lambda _seconds: None)
     hiccup, malformed = {"items": [], "totalCount": 3}, {"items": {}, "totalCount": 0}
@@ -2063,9 +1985,8 @@ async def test_the_write_verification_retry_tolerates_a_board_read_the_search_pa
 async def test_a_board_read_failure_that_is_not_about_scopes_keeps_its_own_preflight_message(monkeypatch, board):
     """The scopeless-token fallback reads the board, and only `gh` refusing that read is a scope problem.
 
-    A board too large to read in one call, or a payload this adapter will not parse as a board, is a
-    correctly credentialled setup with a different fault, and relabelling it sends whoever reads the
-    preflight to `gh auth refresh` over something no grant will fix.
+    A board too large for one call, or a payload this adapter will not parse, is a correctly credentialled
+    setup with a different fault; relabelling it sends the reader to `gh auth refresh` for nothing.
     """
     _install(
         monkeypatch, (0, "gh version 2.96.0 (2025-01-01)\n", ""), (0, _auth_status(), ""), _json({"totalCount": 5})
@@ -2091,11 +2012,10 @@ async def test_a_board_read_failure_that_is_not_about_scopes_keeps_its_own_prefl
     ],
 )
 async def test_an_unreadable_issue_list_is_a_failure_not_an_empty_page(monkeypatch, board, result, expected):
-    """The path with no board filter never got the hardening the board-filtered path was given four times.
+    """The path with no board filter never got the hardening the board-filtered path has.
 
     `gh issue list` went through the deliberately tolerant `_as_list`, so a response this cannot read came
-    back as `count: 0, is_last: true` — a caller told the repository holds nothing matching, which is the
-    one wrong answer it cannot tell from the truth.
+    back as `count: 0, is_last: true` — the one wrong answer a caller cannot tell from the truth.
     """
     _install(monkeypatch, result)
 
@@ -2105,11 +2025,10 @@ async def test_an_unreadable_issue_list_is_a_failure_not_an_empty_page(monkeypat
 
 @pytest.mark.anyio
 async def test_a_listed_row_with_no_url_is_a_failure_not_an_unaddressable_result(monkeypatch, board):
-    """Found by review: the url-less row the board path and `get_issue` both refuse was a found issue here.
+    """The url-less row the board path and `get_issue` both refuse was a found issue here.
 
-    It came back as `{"id": "", "url": ""}` — a result naming an issue the caller cannot then read, comment
-    on or move, because `_checked_ref` rejects the empty reference every follow-up call would pass. A row
-    `gh issue list --json url` reports without one is a shape problem, so it fails like its siblings.
+    It came back as `{"id": "", "url": ""}`: a result the caller cannot then read, comment on or move,
+    because `_checked_ref` rejects the empty reference every follow-up call would pass.
     """
     fake = _install(monkeypatch, _json([{key: value for key, value in _list_row().items() if key != "url"}]))
 
@@ -2123,11 +2042,10 @@ async def test_a_listed_row_with_no_url_is_a_failure_not_an_unaddressable_result
 
 @pytest.mark.anyio
 async def test_a_card_whose_content_is_not_an_object_does_not_break_a_board_write(monkeypatch, board):
-    """Found by review: the non-dict-`content` guard covered one of the three sites that read `content`.
+    """The non-dict-`content` guard covered one of the three sites that read `content`.
 
-    The board index got it last round; the board-item lookup a write does and the write's verifying re-read
-    did not, so the same `content: "REDACTED"` card that `find_issues` now tolerates crossed the tool
-    boundary from `set_status` as a raw `AttributeError` instead of a `TrackerError`.
+    The board-item lookup a write does and the write's verifying re-read did not have it, so the same
+    `content: "REDACTED"` card `find_issues` tolerates left `set_status` as a raw `AttributeError`.
     """
     unviewable = {"id": "ITEM_9", "status": "Ready", "type": "Task", "content": "REDACTED"}
     board_read = {"items": [unviewable, *_items(status="In progress")["items"]], "totalCount": 2}
@@ -2416,12 +2334,10 @@ GIST_DESCRIPTION = "shipyard artifact 7"
 class _RealisticGist(_FakeSubprocess):
     """A fake `gh` that reproduces the one `gist view` behaviour a canned reply cannot: the header.
 
-    Real `gh gist view <id> --raw` prepends the gist's *description* and a blank line; naming the file
-    with `--filename` returns that file's bytes alone. The canned fakes above answer the same content
-    for either argv, which is why both gist readers shipped without `--filename` and their tests agreed
-    with them — the download wrote the description into the artifact and the update's read-back could
-    never match, and only a live run disagreed. This fake encodes the distinction so the mock can no
-    longer be satisfied by the wrong call, on either read path.
+    Real `gh gist view <id> --raw` prepends the gist's *description* and a blank line; naming the file with
+    `--filename` returns that file's bytes alone. The canned fakes above answer the same content for either
+    argv, so both gist readers shipped without `--filename` and their tests agreed with them until a live run
+    disagreed. This fake encodes the distinction so a mock cannot be satisfied by the wrong call.
     """
 
     def __init__(self, comments: tuple[int, str, str], content: str) -> None:
@@ -2453,10 +2369,9 @@ async def test_a_gist_read_that_omits_the_filename_reads_the_description_into_th
 ):
     """Both gist readers must name the file. Driven over a fake that tells the two argvs apart.
 
-    Found by a live run, not by the offline suite: the download wrote `<description>\n\n<transcript>`
-    to disk and still reported success, and the update's read-back compared against a header it had
-    itself asked for and called a landed replacement unconfirmed. This asserts the outcome each bug
-    produced, not merely the flag, so a future refactor that drops `--filename` fails on content.
+    Measured by a live run, not by the offline suite: the download wrote `<description>\n\n<transcript>` to
+    disk and still reported success, and the update's read-back compared against a header it had itself asked
+    for. The outcome each bug produced is asserted, not merely the flag, so dropping `--filename` fails here.
     """
     destination = tmp_path / "downloaded.txt"
     fake = _RealisticGist(_json({"comments": [_artifact_comment()]}), ARTIFACT_TEXT)

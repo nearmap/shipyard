@@ -13,12 +13,11 @@ so the seam cannot be evaded by choosing a directory.
 This file is the third exemption, for the same reason `check_seam` exempts `validate.py`
 (`scripts/validate.py:631`): the scanner has to spell out the tokens it looks for.
 
-`sy_tools/guards/` is the fourth. The hook guards' self-test corpora are lists of command strings a
-contributor actually types, and the credential-dump shapes worth denying are the ones the tracker
-CLIs produce (`acli jira auth status`, `env | grep -i acli`), so a realistic corpus names a tracker
-where a paraphrase would stop covering the case. The exemption licenses that vocabulary only: the
-guards reach a tracker through nothing, importing `sy_tools.config` and `sy_tools.secrets` and no
-adapter, which is the coupling this rule exists to prevent.
+There is no fourth. `sy_tools/guards/` is scanned like any other core module: a hook guard's
+self-test corpus needs command strings of a realistic *shape*, not a real tracker's name, and a
+tracker-neutral stand-in covers the same case — so the guards' corpora name none. Retiring
+`scripts/secret_guard.py`'s accidental escape from the scan (it was never in `check_seam`'s list)
+tightens the rule rather than widening it.
 """
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ import re
 MCP_ROOT = Path(__file__).resolve().parents[1]
 LEGAL_ZONE = MCP_ROOT / "tracker"
 ADAPTER_TESTS = MCP_ROOT / "tests" / "tracker"
-GUARDS = MCP_ROOT / "guards"
 
 TRACKER_TOKENS = [
     re.compile(p, f) for p, f in [
@@ -41,12 +39,10 @@ TRACKER_TOKENS = [
 
 
 def _exempt(path: Path) -> bool:
-    """Whether `path` may name a concrete tracker: the adapters, their tests, the guards, or this file."""
+    """Whether `path` may name a concrete tracker: the adapters, their tests, or this file."""
     if LEGAL_ZONE in path.parents:
         return True
     if path.parent == ADAPTER_TESTS and path.name.startswith("test_"):
-        return True
-    if path.parent == GUARDS:
         return True
     return path.resolve() == Path(__file__).resolve()
 

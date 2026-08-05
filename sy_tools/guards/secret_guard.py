@@ -440,14 +440,14 @@ def _self_test() -> None:
         "sudo timeout 5 git status", "nohup python script.py",
         "echo hello", "echo $HOME", 'echo "path is $PATH"',
         '[ -n "$ACLI_TOKEN" ]', "[ -z \"$GITHUB_TOKEN\" ] && echo missing",
-        'python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_preflight.py" check --tracker jira --vars ACLI_TOKEN',
-        "acli jira auth status",
+        "python -m sy_tools.preflight check --tracker example --vars ACLI_TOKEN",
+        "tracker-cli auth status",
         "python script.py --flag value",
         '''python -c "import requests; requests.get(u, headers={'Authorization': os.environ['ACLI_TOKEN']})"''',
         '''node -e "console.log(42)"''',
     ]
     deny_cases = [
-        "env", "env | grep -i acli", "env | grep -i token",
+        "env", "env | grep -i secret", "env | grep -i token",
         "printenv", "printenv -0",
         "printenv ACLI_TOKEN", "printenv HOME ACLI_TOKEN",
         "set", "set;",

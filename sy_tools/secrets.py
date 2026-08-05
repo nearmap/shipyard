@@ -1,6 +1,6 @@
 """Two-pass artifact sanitisation: known-value scrub first, then a pattern scanner.
 
-Port of `scripts/scrub_known_secrets.py` plus the scanner orchestration that the selected
+Carries what the retired `scripts/scrub_known_secrets.py` did, plus the scanner orchestration that the selected
 adapter's attachments reference under `skills/tracker/` prescribes as prose. The two passes are
 complementary and the order is load-bearing, so this module never exposes a way to run one
 without the other: the scrub catches a credential this process actually holds, verbatim,

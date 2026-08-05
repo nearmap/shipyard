@@ -36,6 +36,28 @@ def test_name_heuristic_is_word_based():
     assert secrets.looks_like_secret_name("NM_BEARER", extra=frozenset({"BEARER"})), "extra must widen the match"
 
 
+def test_discovery_needs_both_a_secret_shaped_name_and_a_long_enough_value(monkeypatch):
+    monkeypatch.setenv("SY_TEST_DISCOVER_TOKEN", "abcdef0123456789secretvalue")
+    monkeypatch.setenv("SY_TEST_DISCOVER_SHORT_KEY", "ab")
+    monkeypatch.setenv("SY_TEST_DISCOVER_NOTASECRET", "this-name-is-not-secret-shaped-but-is-long-enough")
+    monkeypatch.setenv("SY_TEST_DISCOVER_BEARER", "abcdef0123456789bearervalue")
+
+    found = secrets.discover_secret_vars()
+    assert found["SY_TEST_DISCOVER_TOKEN"] == "abcdef0123456789secretvalue"
+    assert "SY_TEST_DISCOVER_SHORT_KEY" not in found, "a value below the min-length floor must be skipped"
+    assert "SY_TEST_DISCOVER_NOTASECRET" not in found, "a non-secret-shaped name must be skipped whatever its length"
+    assert "SY_TEST_DISCOVER_BEARER" not in found, "a fragment outside the built-in set is not a false positive"
+
+    widened = secrets.discover_secret_vars(extra_words=frozenset({"BEARER"}))
+    assert "SY_TEST_DISCOVER_BEARER" in widened, "extra_words must widen discovery, not just the name heuristic"
+
+
+def test_scrubbing_an_already_scrubbed_file_finds_nothing(planted):
+    found = {FAKE_VAR: FAKE_TOKEN}
+    assert secrets.scrub_file(planted, found) == {FAKE_VAR: 2}
+    assert secrets.scrub_file(planted, found) == {}, "a second pass must be a no-op, not a re-redaction"
+
+
 def test_longest_value_first_prevents_a_fragmented_redaction():
     found = {"SHORT_TOKEN": "abc123secret", "LONG_TOKEN": "prefix-abc123secret-suffix"}
     scrubbed, counts = secrets.scrub_text("value: prefix-abc123secret-suffix\n", found)

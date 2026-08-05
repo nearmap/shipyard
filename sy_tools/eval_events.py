@@ -19,10 +19,17 @@ That hook runs on bare `python` with no environment of its own, so **this module
 stay standard library only** — `sy_tools.config` is admissible because it is stdlib-only too, and
 nothing here may reach the MCP server or anything the server needs. `sy_tools/usage.py` and
 `sy_tools/guards/secret_guard.py` are the siblings under the same constraint.
+
+"Bare `python`" is also whatever interpreter the operator has on `PATH`, which is why the timestamp
+below spells `timezone.utc` rather than the 3.11+ `datetime.UTC` the linter would prefer: this module's
+whole contract is to cost nothing when it is off, and an `ImportError` on an older interpreter is a
+non-zero exit from a `PreToolUse` hook — the one failure mode a disabled-by-default event log must not
+have. The rest of the graph (`sy_tools.config`, the sibling hook modules) imports on 3.9 today, so this
+one line was the only thing narrowing the floor.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -78,7 +85,7 @@ def build_event(payload: dict) -> dict | None:
         return None
     event: dict = {
         "schema": SCHEMA,
-        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),  # noqa: UP017 -- see module docstring
         "session_id": session_id,
         "hook_event": payload.get("hook_event_name"),
         "agent_type": normalize_agent_type(payload.get("agent_type") or payload.get("agentType")),

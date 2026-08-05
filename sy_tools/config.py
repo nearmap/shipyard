@@ -1,17 +1,18 @@
-"""Resolved Shipyard configuration, held hot in memory for the life of the server process.
+"""Resolved Shipyard configuration: the resolver every `sy` tool call reads a setting through.
 
-`scripts/sy_config.py` is a CLI: every read is a fresh process that re-reads up to four JSON files
-and shells out to git. A long-lived MCP server resolves the same layer chain once — the shipped
-defaults, then the user-global, repo-committed and repo-local `.shipyard/config.json` layers,
-deep-merged in that order — and serves every tool call from memory; `reload()` (the `reload_config`
-tool) is the only way to re-read, so a config edit is picked up deliberately rather than racing
-mid-call.
+The layer chain, lowest precedence first: the shipped defaults, then the user-global, repo-committed
+and repo-local `.shipyard/config.json` layers, deep-merged in that order. It resolves once and serves
+every later read from memory for the life of the server process; `reload()` — the `reload_config`
+tool — is the only way to re-read, so a config edit is picked up deliberately rather than racing a
+call mid-flight.
 
 Served alongside the values: the layer each key came from, the per-agent model and effort bindings
 after floor clamping, the scratch directories, a digest of the whole resolved config, and
 `validate()`'s report of every reason that config must be rejected.
 
-`migrate` is deliberately absent — it is a one-time CLI affordance with no meaning in a server.
+Two invariants a caller can rely on. Every refusal is a `ConfigError`, including the environment
+faults — an unrunnable `git`, an unreadable layer — that reaching a value at all depends on. And no
+accessor here returns a credential-shaped value: a config layer is not where a secret lives.
 """
 from __future__ import annotations
 
@@ -65,8 +66,8 @@ LEGACY_ENV = {
 # resolution, one `_git_common_dir`, five for `_logical_repo`, five more for the `worktree.root` derived
 # default's own `_logical_repo`, one closing `_git_toplevel`), so a git slow enough to answer just under
 # the bound every time costs 13x this number, where a *wedged* one refuses at the first site it reaches.
-# Same shape and number as `scripts/sy_config.py::GIT_TIMEOUT_SECONDS`, whose own hot path is the
-# `PreToolUse` secret gate, and as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
+# Same shape and number as `scripts/sy_config.py::GIT_TIMEOUT_SECONDS`, whose one caller is the
+# `migrate` bootstrap, and as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
 GIT_TIMEOUT_SECONDS = 5
 
 
@@ -215,10 +216,10 @@ def _git_toplevel(start: Path) -> Path | None:
 
     A `git` that *hangs* is refused the same way, and only `timeout=` can refuse it: an unbounded wait
     is not an exception any `except` clause here catches, it is the server never answering. This resolver
-    is the twin of `scripts/sy_config.py::_git_toplevel`, which was bounded first because the secret
-    gate's fail-open reaches it, but this is the hotter of the two — it runs on every tool call, not once
-    per CLI process — so the same bound belongs here, degrading to this module's own `ConfigError`
-    exactly as the unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
+    is the deliberate twin of `scripts/sy_config.py::_git_toplevel`, which carries the same bound for the
+    `migrate` bootstrap, but this is the hotter of the two — it runs on every tool call, not once per CLI
+    process — so the same bound belongs here, degrading to this module's own `ConfigError` exactly as the
+    unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
     the missing binary does not, because only one of the two can come out differently on the next call and
     `repo_root` memoizes accordingly.
 
@@ -470,7 +471,8 @@ def show() -> dict:
     that shape one key at a time; this is the same refusal for all of them, before a single value is
     read. Only the offending key names are reported.
 
-    Same shape as `scripts/sy_config.py show --json`.
+    Keyed `values`, `provenance`, `fingerprint`, and `layers` — the last a list of
+    `{label, path, present}`, in precedence order, so an absent layer is still reported.
     """
     values, provenance = resolve()
     credential_keys = sorted(key for key in _flatten(values) if _looks_like_secret(key.replace(".", "_")))
@@ -789,12 +791,9 @@ def validate() -> list[str]:
 def _outranking_env_conflicts() -> list[str]:
     """A variable Claude Code lets outrank this resolver: an error, never an override.
 
-    Mirrors `scripts/sy_config.py::_outranking_env_conflicts`, message included, because the CLI's
-    `validate` and the `validate_config` tool are one contract read two ways — and this is now the
-    only path a session takes, so a fault reported by the CLI alone is a fault nobody sees. Split from
-    the retired-name checks because it depends on the environment alone, so `validate()` can keep
-    reporting it when the configuration cannot be resolved at all. It reads only the environment: the
-    value is never read, only its presence.
+    Split from the retired-name checks because it depends on the environment alone, so `validate()` can
+    keep reporting it when the configuration cannot be resolved at all. It reads only the environment:
+    the value is never read, only its presence.
     """
     if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
         return [
@@ -811,9 +810,6 @@ def _legacy_env_conflicts() -> list[str]:
     legacy names — so `validate()` only asks once resolution has succeeded, and a `ConfigError` raised
     reading the adapter's map is reported by `validate()`'s own guard rather than swallowed here into
     a report that silently covers fewer names than exist.
-
-    Mirrors `scripts/sy_config.py::_legacy_env_conflicts`, messages included, because the CLI's
-    `validate` and the `validate_config` tool are one contract read two ways.
     """
     errors: list[str] = []
     flat = _flatten(resolve()[0])
@@ -884,13 +880,14 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
 def _known_trackers() -> list[str]:
     """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
 
-    Mirrors `scripts/sy_config.py::_known_trackers`. A configured `tracker` is checked against these
-    enumerated names rather than by asking whether `skills/tracker/<value>/` exists: `".."` and `"."`
-    both name existing directories, so the path-existence form reported a clean config and then found no
-    `config-map.json` for them, silently skipping every `required` and `secret_env` check this validator
-    exists to enforce, while `"../tracker/<name>"` traversed to a real adapter's map under a name no
-    adapter answers to. `sy_tools/tracker/__init__.py` refuses all three at tool-call time, which is the
-    point: `validate_config` is what is supposed to catch them before a tool call ever runs.
+    `scripts/sy_config.py::_known_trackers` is the deliberate twin, needed by `migrate` for the same
+    check. A configured `tracker` is checked against these enumerated names rather than by asking whether
+    `skills/tracker/<value>/` exists: `".."` and `"."` both name existing directories, so the
+    path-existence form reported a clean config and then found no `config-map.json` for them, silently
+    skipping every `required` and `secret_env` check this validator exists to enforce, while
+    `"../tracker/<name>"` traversed to a real adapter's map under a name no adapter answers to.
+    `sy_tools/tracker/__init__.py` refuses all three at tool-call time, which is the point:
+    `validate_config` is what is supposed to catch them before a tool call ever runs.
     """
     tracker_dir = plugin_root() / "skills" / "tracker"
     return sorted(p.parent.name for p in tracker_dir.glob("*/config-map.json")) if tracker_dir.is_dir() else []

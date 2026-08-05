@@ -1,11 +1,10 @@
 """Two-pass artifact sanitisation: known-value scrub first, then a pattern scanner.
 
-Carries what the retired `scripts/scrub_known_secrets.py` did, plus the scanner orchestration that the selected
-adapter's attachments reference under `skills/tracker/` prescribes as prose. The two passes are
-complementary and the order is load-bearing, so this module never exposes a way to run one
-without the other: the scrub catches a credential this process actually holds, verbatim,
+The two passes are complementary and the order is load-bearing, so this module never exposes a way
+to run one without the other: the scrub catches a credential this process actually holds, verbatim,
 whatever shape it has; the scanner catches a shape it recognises whether or not this process
-ever held the value.
+ever held the value. `skills/tracker/CONTRACT.md` states the same contract for the two verbs that
+upload through it.
 
 Nothing here ever returns, logs, or embeds a credential value — only variable names and
 occurrence counts.
@@ -24,8 +23,10 @@ DEFAULT_MIN_LENGTH = 6
 SCANNER = "gitleaks"
 SCANNER_TIMEOUT_SECONDS = 60
 
-# Kept in step with `scripts/secret_words.py`; duplicated rather than imported so this package
-# stands alone (see the module docstring in `sy_tools/__init__.py`).
+# The canonical copy of the credential-name word set: `sy_tools/guards/secret_guard.py` imports it
+# from here, and `scripts/sy_config.py` carries a deliberate second copy rather than importing it,
+# because `migrate` runs as bare python with `sys.path[0]` at `scripts/`, where `sy_tools` is not
+# importable at all. Keep the two copies in step: a word added to one belongs in the other.
 SECRET_WORDS = frozenset({
     "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
     "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",

@@ -521,97 +521,54 @@ def _validate_machine_log(body: str) -> None:
     Every caller that accepts a body runs this — `post-comment`, `create-issue`, `update-issue` — so
     its refusals name the body, not a comment: an issue body is gated identically to a comment's.
 
-    Naming the schema id anywhere in the body arms this check, and so does carrying a fenced block
-    that parses as this schema however it spelled the id; a body that does either must then carry
-    exactly one fenced block that validates against it. Everything else — prose, a code sample,
-    another machine log's schema id — never claims this id and passes through untouched.
+    A body *claims* this schema when it names the id anywhere, in any JSON spelling, or carries a fenced
+    block that parses as this schema however that block spelled the id. A body that claims it must carry
+    exactly one fenced JSON object that validates against the schema and nothing else that claims it: a
+    second block, or a bare mention outside every block, is refused as ambiguous rather than resolved for
+    the caller. So prose quoting earlier metrics has to leave the literal id out — say "the ship metrics
+    log" — and the machine log is posted on its own.
 
-    Arming on the id rather than only on a *valid* block is deliberate, and is what closes the
-    bypasses this had: a trailing comma inside the fence, a CRLF body whose closing fence the pattern
-    cannot see, a heading with the block pasted as prose, all reached the tracker unvalidated because
-    each one failed to produce a block to validate and a missing block was read as "nothing to check".
-    The cost is that a prose comment quoting the schema id must now carry a valid block or be reworded;
-    the incident this closes off is a metrics comment that landed with a field name nobody noticed was
-    wrong and was read as authoritative afterwards, and an unparseable one is that same incident.
-
-    *Exactly* one, because two candidate blocks are ambiguous rather than one to validate and one to
-    ignore: a body quoting an earlier valid metrics block above the new one it means to post would
-    otherwise validate off whichever came first and post the other unread, which is the same
-    unvalidated-block incident wearing a valid block as cover. Nothing is chosen for the caller —
-    the comment is refused and the extra block has to go.
-
-    A block whose content will not parse counts as claiming the schema when its *raw text* names the
-    id — the same reason the body-level check arms on the id. Counting only blocks that parsed
-    into a matching object reopened the bypass one level down: a valid block beside a second block
-    that named this id but held a trailing comma left the malformed one invisible to both the
-    ambiguity count and the schema check, so the valid one validated alone and the comment posted
-    carrying an unread machine log. Unparseable-but-claiming is a refusal, never a block to skip.
-
-    Counting only what `_fenced_contents` finds left that same bypass open one level further down, since
-    a block is only found once its closing marker is a bare fence on a line of its own: an unclosed
-    fence, or a closing marker with text after it, produced nothing to tally at all. So the id is also
-    looked for in what is left of the body after every found block is cut out, and a mention there is
-    a refusal on its own terms — with a valid block beside it, that mention is one more candidate the
-    caller has to resolve, and without one it is the malformed-log case the body-level arming already
-    caught. The narrowness that keeps this usable is unchanged: unfenced *text* is only a candidate
-    when it names this id, so quoting someone else's broken JSON beside a valid log still posts.
-
-    "Raw text" means the block's *content*, and the split between content and delimiter is where that
-    bypass surfaced next: a fence's opening line can carry text after the marker, and that text is not
-    content, so it is never parsed or validated. Tallying candidates off the whole block counted a
-    fence whose info string held a complete second machine log — while validating only the content
-    beside it, which was itself valid — so the comment posted with the info string's log inside it
-    verbatim. Both halves of the answer are one change: candidates are counted in the content span,
-    and `_outside_fences` cuts only that span, which leaves the info string to the stray-mention
-    check. A plain language tag mentions nothing and changes nothing.
-
-    All of which was decided by *literal text* while what counts as the record was decided by a
-    *parse* — two rules for one question, and the bypass lives in the gap between them, because JSON
-    can spell the same string many ways. A block reading `{"schema": "shipyard.ship_metrics.v\\u0031",
-    ...}` holds no literal occurrence of the id at all, so it armed nothing and posted whole: blank
-    task, negative counts, misspelled field names, none of it looked at. Beside a valid block it was
-    worse, being invisible to the tally too, so the valid one validated alone. So identity is settled
-    once, on the parsed value (`_record`), for both arming and counting — immune to any escaping,
-    because `json.loads` has already undone it. Literal text survives only as the *fallback* for
-    content a parse cannot speak to, which is what keeps an unparseable claim a refusal, and as the
-    only available signal for a stray mention, which is text and nothing else.
-
-    One rule, one question, at every depth: `_claims_within` looks for that same parsed identity below
-    the top level too, because the fallback catches `[{"schema": "shipyard.ship_metrics.v1"}]` on its
-    text while the top-level parse alone would let the escaped spelling of that same block through —
-    the gap this closes, reopened one level down. Such a claim is counted but never validated: what a
-    machine log *is* stays the top-level object, so a buried one is refused as no block at all.
-
-    And one rule in every *shape*, because settling identity on a parse only answers the shapes where a
-    parse happens — a properly closed fence holding clean JSON. Everywhere else this reads text and
-    nothing else: arming, an unparseable block's claim, a mention outside the fences. Each of those was
-    a plain substring search, so the escaped spelling walked through every shape that produces no block
-    to parse — an unclosed fence, a closing marker with trailing text, a CRLF body, unfenced prose — and
-    through one that produces a block `json.loads` refuses, a leading BOM being enough. So every one of
-    those searches asks `_json_unescaped` first: the fallback answers the escaped spelling exactly as it
-    answers the literal one, which is the whole of the rule the parse settles for content it can read.
+    A body that claims nothing passes through untouched: prose, a code sample, another schema's id.
     """
     # A JSON string decodes to this id either by naming it outright or by escaping part of it, and every
     # JSON escape is a backslash — so a body with neither cannot hold a claim in any spelling, and is
     # answered without scanning or unescaping it at all. Almost every body is this one.
     if SCHEMA_ID not in body and "\\" not in body:
         return
+    # Arming on the id rather than only on a valid block: a trailing comma, a CRLF body whose closing
+    # fence the pattern cannot see, a block pasted as prose each produce nothing to validate, and a
+    # missing block read as "nothing to check" is how an unvalidated log reached the tracker. Every text
+    # search here goes through `_json_unescaped` for the same reason `_record` settles identity on the
+    # parsed value: a JSON string can spell the id's last character as an escape and so decode to the id
+    # while holding no literal occurrence of it, which walked past every plain substring search.
     named = SCHEMA_ID in _json_unescaped(body)
     spans = _fenced_contents(body)
     records: list[dict[Any, Any]] = []
     unread = 0
     for start, end in spans:
+        # The content span, never the whole block: a fence's opening line can carry text after the marker
+        # and that text is never parsed or validated, so an info string holding a second complete machine
+        # log posted verbatim beside a valid one. `_outside_fences` cuts this same span, which leaves an
+        # info string to the stray check rather than to nothing.
         content = body[start:end]
         parsed = _as_json(content)
         record = _record(parsed)
         if record is not None:
             records.append(record)
+        # A block that claims the id but will not parse is a candidate, never a block to skip: tallying
+        # only parsed matches left a malformed block invisible to both this count and the schema check,
+        # so a valid one beside it validated alone. `_claims_within` catches a claim nested below the top
+        # level — counted, never validated, because a machine log *is* the top-level object.
         elif SCHEMA_ID in _json_unescaped(content) or _claims_within(parsed):
             unread += 1
     # The other half of arming: a body that never names the id in plain text is still this check's
     # business the moment a block claims this schema, which is the escaped-record case.
     if not named and not records and not unread:
         return
+    # A block is only *found* once its closing marker is a bare fence on its own line, so an unclosed
+    # fence or a closing marker with trailing text yields nothing to tally at all. A claim in what is
+    # left over is therefore a candidate on its own terms. This stays narrow enough to be usable because
+    # unfenced text only counts when it names this id: quoting someone else's broken JSON still posts.
     stray = SCHEMA_ID in _json_unescaped(_outside_fences(body, spans))
     blocks = len(records) + unread
     if blocks + stray > 1:
@@ -850,8 +807,8 @@ def check_env(
 
     For diagnosing a missing credential without printing one. Dumping the environment or echoing a
     variable prints the value into that command's own tool-call result, which is permanent transcript
-    history from that point on; the `PreToolUse` guard in `scripts/secret_guard.py` denies those
-    commands and names this tool as the safe alternative, and this is it. Neither the result nor any
+    history from that point on; the `PreToolUse` guard in `sy_tools/guards/secret_guard.py` denies
+    those commands and names this tool as the safe alternative, and this is it. Neither the result nor any
     error it raises can carry the value: `config.env_present` reads it only to test truthiness, never
     returns it, and never logs it — only whether the variable is set and non-empty. A variable exported
     empty reports as unset.

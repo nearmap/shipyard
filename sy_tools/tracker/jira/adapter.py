@@ -885,8 +885,8 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
     an unaddressable object, not about the shape this function happens to want.
 
     This was measured, not assumed, because getting it backwards is silent and inverts every
-    dependency: a link posted as "AM-1245 blocks AM-1246" reads back on AM-1246 with AM-1245 under
-    `outwardIssue`, and on AM-1245 with AM-1246 under `inwardIssue`. Confirmed against real linked
+    dependency: a link posted as "BLOCKER blocks BLOCKED" reads back on BLOCKED with BLOCKER under
+    `outwardIssue`, and on BLOCKER with BLOCKED under `inwardIssue`. Confirmed against real linked
     issues whose summaries make the intended direction unambiguous.
 
     An absent field means no links, honestly: Jira omits a relation an issue has none of. A field that

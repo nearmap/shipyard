@@ -1,23 +1,24 @@
 """The tracker seam, at the MCP package's location: only `sy_tools/tracker/` names a real tracker.
 
 CONTRIBUTING.md's rule is that exactly one place knows how to talk to a specific tracker.
-`scripts/validate.py`'s `check_seam` enforces that for `skills/tracker/`; this enforces the same
-rule for `sy_tools/`, where the legal zone is `sy_tools/tracker/`. It is a pytest check rather than a new
-entry in `check_seam`'s scan list so `scripts/validate.py` stays untouched by this change.
+`scripts/validate.py`'s `check_seam` enforces that over the docs zone's markdown; this enforces the
+same rule over the package's Python, where the legal zone is `sy_tools/tracker/`. Two scans rather
+than one because each walks a different tree by a different rule, and a single list of files would
+have to be kept complete by hand — this one globs the package, so a new module is covered the moment
+it is written.
 
 Adapter *tests* are the second legal zone: a test that exercises one concrete adapter has to name
 it. That exemption is deliberately narrow — only `test_*.py` directly under
 `sy_tools/tests/tracker/`. A non-test module dropped there is still core code and is still scanned,
 so the seam cannot be evaded by choosing a directory.
 
-This file is the third exemption, for the same reason `check_seam` exempts `validate.py`
-(`scripts/validate.py:631`): the scanner has to spell out the tokens it looks for.
+This file is the third exemption, and it has to be: the scanner spells out the tokens it looks for,
+so it necessarily names them.
 
-There is no fourth. `sy_tools/guards/` is scanned like any other core module: a hook guard's
+There is no fourth. `sy_tools/guards/` is scanned like any other core module — a hook guard's
 self-test corpus needs command strings of a realistic *shape*, not a real tracker's name, and a
-tracker-neutral stand-in covers the same case — so the guards' corpora name none. Retiring
-`scripts/secret_guard.py`'s accidental escape from the scan (it was never in `check_seam`'s list)
-tightens the rule rather than widening it.
+tracker-neutral stand-in covers the same case, so the guards' corpora name none. A guard living
+outside the package escaped the seam scan entirely, which is the fault the package-wide glob closes.
 """
 from __future__ import annotations
 

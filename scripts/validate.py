@@ -421,9 +421,9 @@ def check_hooks(errors: list[str]) -> None:
         for hook in matcher.get("hooks", [])
     ]
     joined = "\n".join(commands)
-    # Matched as `python -m <module>` rather than as a filename: the hook modules now live inside a
-    # package, so a bare `review_guard` substring would also match a stale `scripts/review_guard.py`
-    # path and pass on a registration that cannot run.
+    # Matched as `python -m <module>` rather than as a filename: the hook modules live inside a package,
+    # so a bare `review_guard` substring would also match a leftover pre-package script path under
+    # `scripts/` and pass on a registration that cannot run.
     for module, where in (
         ("sy_tools.guards.review_guard", "PreToolUse"),
         ("sy_tools.guards.secret_guard", "PreToolUse"),
@@ -685,9 +685,9 @@ def check_invariants(errors: list[str]) -> None:
         if missing:
             fail(f"{name} must resolve the {phase} model and pass it as the Agent invocation's model override (missing: {', '.join(missing)})", errors)
 
-    # AM-1220: every site that used to hardcode one of these behaviors must instead name the
-    # live config key, mirroring the worktree.root pattern above — a literal number/behavior
-    # re-pasted at the site instead of resolved is exactly the drift this ticket closed off.
+    # Every site that could hardcode one of these behaviours must name the live config key instead,
+    # mirroring the worktree.root pattern above: a literal number or behaviour re-pasted at the site
+    # rather than resolved drifts from the config silently, and nothing else would catch it.
     config_values_ref = read("skills/shared/references/config-values.md")
     for name, text in (
         ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),

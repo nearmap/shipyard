@@ -244,7 +244,7 @@ def test_an_unresolvable_config_falls_back_instead_of_crashing_the_render(tmp_pa
     """A render usually happens late in a session, so a broken config must cost the override, not the run.
 
     The refusal is asserted first: `sy_tools.config` raises `ConfigError` where `scripts/sy_config.py`
-    raised `SystemExit`, so this pins that the degradation catches the exception actually thrown rather
+    raises `SystemExit`, so this pins that the degradation catches the exception actually thrown rather
     than passing vacuously because nothing was raised at all.
     """
     from sy_tools import config as sy_config

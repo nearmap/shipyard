@@ -394,8 +394,8 @@ def render_limits() -> dict[str, int]:
     The import stays inside the function so the `hook` command — the hot path, one process per Stop
     and SubagentStop firing — never pays for `sy_tools.config` at all: it records a ledger line and
     resolves nothing. `ConfigError` is the shape every `sy_tools.config` refusal takes, including the
-    environment faults (an unrunnable `git`, an unreadable layer) that `scripts/sy_config.py` used to
-    raise `SystemExit` for, so it is what this degradation catches.
+    environment faults (an unrunnable `git`, an unreadable layer) that `scripts/sy_config.py` raises
+    `SystemExit` for, so it is what this degradation catches.
     """
     global _RENDER_LIMITS
     if _RENDER_LIMITS is None:

@@ -445,10 +445,11 @@ def test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctl
 
 
 def test_logical_repo_resolves_a_plain_separate_git_dir_checkout_without_raising(fixture_repo):
-    """`--separate-git-dir` is an ordinary, documented git feature with no submodule involved at all,
-    and previously raised outright here (a real regression: no `sy_config` invocation at all -- not
-    just scratch/worktree resolution -- could succeed from such a checkout, with a misleading
-    "run `git submodule update --init`" message on a repo with no submodules).
+    """`--separate-git-dir` is an ordinary documented git feature with no submodule involved at all.
+
+    It raised outright here, which was a real regression: no configuration resolution at all — not just
+    scratch and worktree resolution — could succeed from such a checkout, and the refusal said "run `git
+    submodule update --init`" on a repo with no submodules.
 
     `core.worktree` is never set for a plain `--separate-git-dir` checkout, and the directory holding
     the detached gitdir is not itself a working tree, so this correctly falls through to the final,

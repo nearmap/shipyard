@@ -218,9 +218,9 @@ def _git_subcommand(rest: list[str]) -> str | None:
 def _self_test() -> None:
     """Containment is asserted against a temporary sandbox root swapped in for the resolved one.
 
-    Monkeypatched rather than resolved, mirroring `sy_preflight.py::_self_test`'s save/restore, so the
-    cases assert this guard's own logic and not whatever `scratch.dir` this checkout happens to
-    configure — and so the unresolvable-root case is reachable at all.
+    The root is monkeypatched and restored rather than resolved, so the cases assert this guard's own
+    logic and not whatever `scratch.dir` this checkout happens to configure — and so the
+    unresolvable-root case is reachable at all.
     """
     import tempfile
 

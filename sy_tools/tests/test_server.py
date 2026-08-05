@@ -366,7 +366,7 @@ async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch, tmp_pat
 
 @pytest.mark.anyio
 async def test_gate_off_is_a_no_op_skip(monkeypatch):
-    """AM-1220 coupling: with `transcript.attach` off, nothing is read, scrubbed, or uploaded."""
+    """With `transcript.attach` off, nothing is read, scrubbed, scanned, or uploaded."""
     def explode(*_args, **_kwargs):
         raise AssertionError("gate-off must skip before any render/scrub/scan/upload work")
 

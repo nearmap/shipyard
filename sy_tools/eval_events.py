@@ -50,8 +50,8 @@ def enabled() -> bool:
     hard failure: an unresolvable config leaves the log off, exactly as an unset var used to.
 
     `ConfigError` is the shape every `sy_tools.config` refusal takes, where `scripts/sy_config.py`
-    raised `SystemExit` — catching the old one here would turn this documented degradation into a
-    crashed `PreToolUse` hook, which is worse than a lost trace. `OSError` degrades for the same
+    raises `SystemExit` — catching `SystemExit` here instead would turn this documented degradation
+    into a crashed `PreToolUse` hook, which is worse than a lost trace. `OSError` degrades for the same
     reason `sy_tools/guards/secret_guard.py` catches it: the resolver shells out to `git` and reads
     layer files, and an environment fault it does not manage to name must still leave the log off.
     """

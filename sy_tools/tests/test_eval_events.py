@@ -58,7 +58,7 @@ def test_enabled_degrades_to_off_when_the_config_cannot_be_resolved(tmp_path, mo
     """An unresolvable config must leave the log off, never crash a hook that fires on every tool call.
 
     The refusal is asserted first, so this cannot pass vacuously: `sy_tools.config` raises
-    `ConfigError` where `scripts/sy_config.py` raised `SystemExit`, and catching only the old one would
+    `ConfigError` where `scripts/sy_config.py` raises `SystemExit`, and catching only `SystemExit` would
     turn this documented degradation into a crashed `PreToolUse` hook — which is fail-open, so the
     whole gate around it would go quiet too.
     """

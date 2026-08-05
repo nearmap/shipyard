@@ -166,7 +166,7 @@ def _migrate(settings_path: Path, out_path: Path | None) -> int:
 def _write_atomically(path: Path, text: str) -> None:
     """Write `text` to `path` through a sibling temporary file and one `os.replace`, or refuse by name.
 
-    The same temp-write-then-replace pattern as `scripts/sy_memory.py::_atomic_write`, for a stronger
+    The same temp-write-then-replace pattern as `sy_tools/memory.py::_atomic_write`, for a stronger
     reason: `migrate --out` is pointed straight at a repo's `.shipyard/config.json` by the documented
     flow, and a plain `write_text` truncates the destination before it writes a byte. A write that then
     fails partway — a full disk, a quota, a file-size limit — left that file cut off mid-value and

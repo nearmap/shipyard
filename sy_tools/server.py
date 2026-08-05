@@ -831,11 +831,13 @@ def scratch_dir(
 
 @mcp.tool(name="fingerprint_config")
 def fingerprint_config() -> dict[str, Any]:
-    """A stable digest of every resolved configuration value, disclosing none of them.
+    """A stable digest of every resolved configuration value and the plugin build, disclosing neither.
 
-    Equal digests mean the resolved configuration has not changed, so a caller holding one can tell
-    whether an edit landed without re-reading anything. It changes with any resolved value, including
-    one derived rather than written, and is not a hash of any single file.
+    Equal digests mean neither the resolved configuration nor the plugin changed, so a caller holding one
+    can tell whether an edit landed without re-reading anything. It changes with any resolved value,
+    including one derived rather than written, and with the plugin's own build identifier — which is what
+    covers the config-relevant inputs that are not resolved values, `config/floors.json`'s floors and
+    `agents/*.md`'s `effort:` frontmatter. It is not a hash of any single file.
     """
     try:
         return {"fingerprint": config.fingerprint()}

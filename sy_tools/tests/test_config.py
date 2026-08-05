@@ -1113,6 +1113,36 @@ def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):
     assert config.reload()["changed"] is False, "a reload with no edit must report no change"
 
 
+def test_the_fingerprint_moves_with_the_plugin_build_and_not_only_with_the_values(
+    fixture_repo, tmp_path, monkeypatch,
+):
+    """`/sy:ship`'s mid-run drift guard compares this digest, so it has to cover the whole plugin.
+
+    `config/floors.json`'s model and effort floors and `agents/*.md`'s `effort:` frontmatter are
+    config-relevant without being resolved values: a digest over the values alone reported no drift when
+    either changed under a running session, which is the one thing that comparison exists to catch. The
+    build identifier covers them all, because they ship together.
+    """
+    values = config.resolve()[0]
+    first = config.fingerprint()
+    assert first == config.fingerprint(), "the digest must be stable for one build and one config"
+
+    plugin = tmp_path / "other-plugin"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin))
+    try:
+        assert config.plugin_build() == "9.9.9", "a non-checkout plugin root must identify by version"
+        # No `reload()` between the two digests: resolution stays memoized, so the values below are
+        # provably the same object the first digest was taken over, and the build is the only difference.
+        assert config.resolve()[0] == values, "no resolved value changed, only the build"
+        assert config.fingerprint() != first, "a changed build must move the digest with identical values"
+    finally:
+        # Restored inside the test, not left to teardown: the fixture's own teardown re-resolves, and it
+        # runs before `monkeypatch` unwinds, so a plugin root with no shipped defaults would refuse there.
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
+
+
 def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_repo, monkeypatch):
     """Config resolution runs inside the MCP server, whose stdin is the JSON-RPC transport.
 

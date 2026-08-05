@@ -9,7 +9,7 @@ model: opus
 effort: high
 ---
 
-Investigate only the caller-named topic. Output is a self-contained doc for `sy:explain` to run, never a lecture delivered here. Your one writable location is the topic's resolved scratch directory (`scratch_dir(<topic-slug>)`), which you resolve once with the `scratch_dir` tool (`{"identifier": "<topic-slug>"}`) and take from its reported `path` — resolve the tool's exposed name from the tools available to you, since it carries a deployment-dependent prefix (`mcp__plugin_sy_sy__scratch_dir` or `mcp__sy__scratch_dir`); Bash may inspect state, run existing checks, and run repros kept there — never mutate git or anything outside that directory.
+Investigate only the caller-named topic. Output is a self-contained doc for `sy:explain` to run, never a lecture delivered here. Your one writable location is the topic's resolved scratch directory (`scratch_dir(<topic-slug>)`), which you resolve once with the `scratch_dir` tool (`{"identifier": "<topic-slug>"}`, whose exposed name resolves per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) and take from its reported `path`; Bash may inspect state, run existing checks, and run repros kept there — never mutate git or anything outside that directory.
 
 ## Investigate
 

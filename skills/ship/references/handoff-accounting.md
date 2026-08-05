@@ -28,7 +28,7 @@ While writing the retro, distill any durable, cross-cutting, tool/skill-level le
 
 Token accounting must include the parent ship session and every nested subagent transcript (`sy:slice`, `sy:gate`, nested `sy:hunt`, `sy:sweep`, fallbacks, etc.). Claude stores subagent transcripts separately, so do not derive totals from parent export text alone.
 
-Generate the report from the full transcript tree with the `usage_summarize` tool. This example assumes `sy:slice` was used; match `require_agent` to local `agents_used`:
+Generate the report from the full transcript tree with the `usage_summarize` tool (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). This example assumes `sy:slice` was used; match `require_agent` to local `agents_used`:
 
 ```
 usage_summarize {"session_id": "$SHIP_SESSION_ID", "phase": "ship", "task": "$TASK_KEY",

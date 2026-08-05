@@ -4,7 +4,7 @@ This phase is a convergence loop owned by a lightweight controller: the frontier
 
 ## Resolve gate model
 
-Resolve once, live through the resolver:
+Resolve once, live through the resolver (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
 ```
 REVIEW_MODEL          = the model `agent_model {"name": "gate"}` reports

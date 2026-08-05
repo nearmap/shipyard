@@ -8,7 +8,7 @@ An adjacent issue you surface mid-build that sits outside the plan's declared fi
 
 ## Resolve build model
 
-Parent-owned, resolved once before BUILD is dispatched (this worker never picks its own model), from the plan's ship profile and the actual process environment:
+Parent-owned, resolved once before BUILD is dispatched (this worker never picks its own model), from the plan's ship profile and the resolver, live (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
 ```
 BUILD_MODEL          = <the plan's stated BUILD model, literally, or the value `get_config {"key": "models.tiers.frontier"}` reports when it states "frontier">

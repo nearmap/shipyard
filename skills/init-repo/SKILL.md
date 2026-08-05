@@ -3,9 +3,9 @@ name: init-repo
 description: >-
   Get this repo's Shipyard config from zero (or partially done) to genuinely usable: write
   `.shipyard/config.json` (shared, tracked) and `.shipyard/config.local.json` (personal,
-  gitignored), migrate any legacy `env` block, then prove it live with the same preflight check
-  every other command runs. Asks only for what is actually missing, so a teammate joining an
-  already-configured repo is a short exchange, not a full interview.
+  gitignored), retire any leftover `SY_*` variables from a legacy `env` block, then prove it live
+  with the same preflight check every other command runs. Asks only for what is actually missing,
+  so a teammate joining an already-configured repo is a short exchange, not a full interview.
 argument-hint: "[optional tracker override]"
 disable-model-invocation: true
 ---
@@ -24,15 +24,15 @@ show_config {}
 
 Anything already resolved from the `repo-committed` layer is **shared, committed config** — never re-ask for it, never overwrite it without saying so first. This is what makes the common case fast: a teammate joining a repo someone already configured has almost everything already answered, and this run is short.
 
-### 1b. Migrate a legacy `env` block, if one is still there
+### 1b. Retire a legacy `env` block, if one is still there
 
-Shipyard used to be configured through the `env` block of `.claude/settings.json`. If either settings file still carries `SY_*` keys, convert them rather than asking the user to retype them:
+Shipyard used to be configured through the `env` block of `.claude/settings.json`. If either settings file still carries `SY_*` keys, there is no converter to run — the move is by hand, and the validator writes the worklist:
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" migrate --settings .claude/settings.json --out .shipyard/config.json
+```
+validate_config {}
 ```
 
-It maps every recognised legacy name to its config key, coerces numbers and booleans, and refuses to copy anything credential-shaped — secrets stay in the environment. It merges into `.shipyard/config.json` rather than overwriting it, so running it here cannot cost a key step 1 already reported, and it refuses rather than converting a subset if the block names a tracker with no adapter. This step runs before the tracker is resolved on purpose: the block's own tracker value decides which adapter-specific names are converted, so there is nothing to answer first. Report all three of what the summary distinguishes — which keys moved, which were left in the environment because they are credential-shaped, and which matched no config key at all (a typo, or a stale setting) — then remove the migrated keys from the `env` block: leaving both in place is a hard validation failure by design, because two resolution paths for one key is exactly what this replaced. Move genuinely per-person values (an account email, a machine-specific worktree root) down into `.shipyard/config.local.json`.
+It names, per variable, the retired name that is still set and the config key it now resolves to, plus any `SY_*` name no setting answers to at all (a typo, or something stale). Move each value into the file step 5 would put it in, then unset the variable and delete the key from the `env` block: a retired variable left set is a hard validation failure rather than an override, because two live resolution paths for one key is exactly what this replaced. Two exceptions to where a value lands: a credential stays in the environment and never enters a config file at all, and a genuinely per-person value (an account email, a machine-specific worktree root) goes down into `.shipyard/config.local.json` rather than the shared file. `docs/configuration.md` carries the full retired-name-to-key table.
 
 ## 2. Resolve the tracker
 

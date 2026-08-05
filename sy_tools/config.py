@@ -66,8 +66,6 @@ LEGACY_ENV = {
 # resolution, one `_git_common_dir`, five for `_logical_repo`, five more for the `worktree.root` derived
 # default's own `_logical_repo`, one closing `_git_toplevel`), so a git slow enough to answer just under
 # the bound every time costs 13x this number, where a *wedged* one refuses at the first site it reaches.
-# Same shape and number as `scripts/sy_config.py::GIT_TIMEOUT_SECONDS`, whose one caller is the
-# `migrate` bootstrap, and as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
 GIT_TIMEOUT_SECONDS = 5
 
 
@@ -91,8 +89,8 @@ class _TransientConfigError(ConfigError):
     """A resolution failure a later attempt can still succeed at, so it is never memoized.
 
     A `ConfigError` to every caller — nothing above this module needs to tell the two apart — and
-    subclassed only so `repo_root` can decline to remember one. See its docstring for why that
-    distinction exists here and not in the CLI-side twin.
+    subclassed only so `repo_root` can decline to remember one. See its docstring for why a timeout is
+    not a verdict worth memoizing.
     """
 
 
@@ -130,10 +128,9 @@ def repo_root() -> Path:
 
     A *settled* refusal is memoized alongside an answer, so root resolution runs git at most once per
     process, the same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without
-    it this resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, so
-    the wait a caller actually sat through under a wedged git was a multiple of `GIT_TIMEOUT_SECONDS` rather
-    than the single root resolution that constant's own accounting counts. The sibling
-    `scripts/sy_config.py::repo_root` memoizes its own `SystemExit` refusal for the same reason.
+    it this resolver — reached by every tool call — re-shelled out per call, so the wait a caller actually
+    sat through under a wedged git was a multiple of `GIT_TIMEOUT_SECONDS` rather than the single root
+    resolution that constant's own accounting counts.
 
     What is remembered is the refusal's *message*, and each call raises a freshly built `ConfigError` from
     it. Re-raising the one cached instance appended two traceback frames to that instance every time it was
@@ -143,18 +140,17 @@ def repo_root() -> Path:
     whole chain. Repeat-call consistency is what memoizing is for here, and an equal message on an equal
     class is that; object identity was never the property anything needed, only the cheapest way to spell it.
 
-    A `_TransientConfigError` is the exception, and it is where this parts company with that sibling: a git
-    that timed out has said nothing about the repository, only that it did not answer in five seconds — a
-    momentary index lock or a slow network filesystem — and this module backs a long-lived MCP server, not a
-    one-shot CLI process. Memoizing that verdict turned one hiccup into a server that refused every
-    subsequent tool call for the rest of its uptime. `reset_cache()` *is* reachable without a restart —
+    A `_TransientConfigError` is the exception: a git that timed out has said nothing about the repository,
+    only that it did not answer in five seconds — a momentary index lock or a slow network filesystem — and
+    this module backs a long-lived MCP server, not a one-shot process that ends with the command it ran.
+    Memoizing that verdict turned one hiccup into a server that refused every subsequent tool call for the
+    rest of its uptime. `reset_cache()` *is* reachable without a restart —
     the `reload_config` tool calls `reload()`, which clears all three caches, and that is the documented
     recovery from the non-transient refusal this function does memoize — but nothing tells a client that a
     five-second git hiccup is what it is now stuck on, so recovery would depend on someone guessing to
     reload the configuration. Retrying instead needs no client to know anything: a timeout costs the one
-    call it happened on. That is the right trade for this side, a bounded, self-clearing slowness against a
-    refusal that clears only on request. The CLI twin keeps memoizing, correctly, because its process ends
-    with the command.
+    call it happened on. That is the right trade here, a bounded, self-clearing slowness against a refusal
+    that clears only on request.
 
     The bill for that retry is unmemoized repetition *within* one tool call, and it is larger than one
     extra wait: each attempt pays a fresh `GIT_TIMEOUT_SECONDS`, and a single call can resolve the root
@@ -215,11 +211,9 @@ def _git_toplevel(start: Path) -> Path | None:
     binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
 
     A `git` that *hangs* is refused the same way, and only `timeout=` can refuse it: an unbounded wait
-    is not an exception any `except` clause here catches, it is the server never answering. This resolver
-    is the deliberate twin of `scripts/sy_config.py::_git_toplevel`, which carries the same bound for the
-    `migrate` bootstrap, but this is the hotter of the two — it runs on every tool call, not once per CLI
-    process — so the same bound belongs here, degrading to this module's own `ConfigError` exactly as the
-    unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
+    is not an exception any `except` clause here catches, it is the server never answering — and this runs
+    on every tool call, so the wait is every caller's. It degrades to this module's own `ConfigError`
+    exactly as the unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
     the missing binary does not, because only one of the two can come out differently on the next call and
     `repo_root` memoizes accordingly.
 
@@ -413,8 +407,7 @@ def reset_cache() -> None:
     One function rather than a bare `_STATE = None`, because the repository root is memoized too and a
     second, un-cleared cache would leave `reload()` re-reading the layers of whichever repo the *first*
     resolution found: the pointer that names the repo is read once, and clearing only half of it makes a
-    reload after a `CLAUDE_PROJECT_DIR` change silently a no-op. Mirrors `scripts/sy_config.py`'s own
-    `reset_cache()`, which clears the same three.
+    reload after a `CLAUDE_PROJECT_DIR` change silently a no-op.
     """
     global _STATE, _REPO_ROOT, _REPO_ROOT_REFUSAL
     _STATE = None
@@ -753,23 +746,20 @@ def validate() -> list[str]:
     """Every reason the resolved configuration must be rejected. Side-effect-free.
 
     A configuration that cannot be resolved at all — an unusable repository root, a layer file that
-    cannot be read or parsed — is returned as one error rather than raised, exactly as
-    `sy_config.validate()` does it: `validate_config`'s contract is to report a broken config, and an
-    exception escaping here reaches the operator as a traceback string instead of a report. Resolution
-    is therefore asked before the per-layer schema pass.
+    cannot be read or parsed — is returned as one error rather than raised: `validate_config`'s contract
+    is to report a broken config, and an exception escaping here reaches the operator as a traceback
+    string instead of a report. Resolution is therefore asked before the per-layer schema pass.
 
-    Guarding `resolve()` alone is not enough here, and that is the difference between this deployment
-    and the CLI's. The CLI resolves once per process, so a layer the resolver just read successfully
-    reads again in the schema pass. This server resolves once per *process lifetime* and then serves
+    Guarding `resolve()` alone is not enough. This server resolves once per *process lifetime* and serves
     memory, so once the hot copy is warm the schema pass — plus `adapter_map()`, the floors and the
     schema — are the only things still touching disk, and a layer edited into invalid JSON after that
     point raised out of the one tool whose whole job is diagnosing exactly this fault. Everything after
     resolution therefore reports its own read failure as an error too, on any call, warm or cold.
 
     The one check that needs nothing resolved — an environment variable Claude Code lets outrank this
-    resolver — runs first and survives a resolution failure, exactly as in the CLI: a root that will
-    not resolve is no reason to hide a live problem that has nothing to do with it. The retired-`SY_*`
-    checks are the other half of that ordering: they absorb a resolution failure into an empty config
+    resolver — runs first and survives a resolution failure: a root that will not resolve is no reason to
+    hide a live problem that has nothing to do with it. The retired-`SY_*` checks are the other half of
+    that ordering: they absorb a resolution failure into an empty config
     and would then report every retired name as disagreeing with a key that "resolves to None" — a
     derived, factually wrong line burying the one real cause — so they are asked only once resolution
     has succeeded.
@@ -880,8 +870,7 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
 def _known_trackers() -> list[str]:
     """Every tracker that ships a `config-map.json`: the membership test, and the list a refusal names.
 
-    `scripts/sy_config.py::_known_trackers` is the deliberate twin, needed by `migrate` for the same
-    check. A configured `tracker` is checked against these enumerated names rather than by asking whether
+    A configured `tracker` is checked against these enumerated names rather than by asking whether
     `skills/tracker/<value>/` exists: `".."` and `"."` both name existing directories, so the
     path-existence form reported a clean config and then found no `config-map.json` for them, silently
     skipping every `required` and `secret_env` check this validator exists to enforce, while

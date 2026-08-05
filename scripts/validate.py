@@ -36,7 +36,7 @@ COLUMN_KEYS = {
     "columns.backlog", "columns.ready", "columns.in_progress", "columns.in_review", "columns.done",
 }
 
-# Settings that used to be environment variables. The two resolvers are now the only readers; any
+# Settings that used to be environment variables. `sy_tools/config.py` is now the only reader; any
 # other file naming one is either a missed cut-over or a second resolution path for one key.
 LEGACY_CONFIG_ENV = {
     "SY_TRACKER", "SY_WORKTREE_ROOT", "SY_MEMORY_DIR", "SY_DEBUG_EVALS", "SY_CI_POLL_TIMEOUT",
@@ -44,14 +44,13 @@ LEGACY_CONFIG_ENV = {
     "SY_DONE_COLNAME", "SY_FRONTIER_MODEL", "SY_FRONTIER_FALLBACK", "SY_IMAGE_MODEL",
     "SY_DEBATE_MODEL", "SY_GH_PROJECT", "SY_GH_REPO",
 }
-# The resolvers own the legacy map; the adapters own their own names; the docs explain the
-# migration. Everything else must go through a resolver.
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
 
+# The resolver owns the legacy map; the adapters own their own names; the docs explain the by-hand
+# move. Everything else must read the setting through the resolver.
 CONFIG_ENV_ALLOWED = {
-    "scripts/sy_config.py",
     "sy_tools/config.py",
     "scripts/validate.py",
     "docs/configuration.md",
@@ -78,7 +77,6 @@ REQUIRED = {
     "config/floors.json",
     "config/schema.json",
     "docs/configuration.md",
-    "scripts/sy_config.py",
     "skills/config/SKILL.md",
     "skills/tracker/jira/config-map.json",
     "skills/tracker/github/config-map.json",
@@ -578,8 +576,8 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must run the tracker preflight (preflight.md) before other work", errors)
     if "config.local.json" not in init_repo or "config.json" not in init_repo:
         fail("init-repo must split shared vs per-person config between config.json and config.local.json", errors)
-    if "migrate --settings" not in init_repo:
-        fail("init-repo must offer the legacy env-block migration step (sy_config.py migrate)", errors)
+    if "retired variable left set is a hard validation failure" not in init_repo:
+        fail("init-repo must state that a retired setting variable left set is a hard failure, not an override", errors)
     if "Secrets never go in either file" not in init_repo:
         fail("init-repo must state that a secret never lands in a config file", errors)
     if "preflight.md" not in init_repo or 'preflight {"force": true}' not in init_repo:
@@ -829,12 +827,11 @@ def main() -> int:
     check_hooks(errors)
     check_invariants(errors)
 
-    # Nine calls left with the scripts they tested. Everything they covered is now `sy_tools/` code,
-    # where the convention is pytest under `sy_tools/tests/` mirroring the source path and
+    # Only two self-tests are left, and these are the two: everything the others covered is `sy_tools/`
+    # code now, where the convention is pytest under `sy_tools/tests/` mirroring the source path and
     # `test_layout.py` enforces the mirroring — so re-running those assertions here would be a second
-    # runner for one body of tests. `scripts/sy_config.py` is the odd one out: it survives, thinned to
-    # `migrate`, but its `self-test` subcommand went with the resolution it no longer exposes, and
-    # `migrate` is covered by the CLI-driving tests in `sy_tools/tests/test_config.py`.
+    # runner for one body of tests. Neither of these two is reachable that way: one is bash, and the
+    # other sits outside the `sy_tools` tree pytest's `testpaths` collects.
     run_self_test("scripts/ci_poll.sh", errors)
     run_self_test("docs/smoke_mcp.py", errors)
 

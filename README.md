@@ -92,7 +92,7 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 `./install.sh` validates the plugin and prints these instructions with a tracker-aware preflight. The details live in the docs:
 
 - [`docs/installation.md`](docs/installation.md) — loading the plugin and the CLI tools it needs.
-- [`docs/configuration.md`](docs/configuration.md) — every setting, the three-layer merge chain, per-agent model floors, and the migration off the old `env` block.
+- [`docs/configuration.md`](docs/configuration.md) — every setting, the three-layer merge chain, per-agent model floors, and how to retire the old `env` block.
 - [`docs/github-setup.md`](docs/github-setup.md) — one-time GitHub Projects board setup.
 - [`docs/usage.md`](docs/usage.md) — the day-to-day loop and the session-naming pattern.
 
@@ -112,7 +112,7 @@ shipyard/
   .claude-plugin/plugin.json      # name: sy, plus the version `claude plugin update` gates on
   hooks/hooks.json                # review guard + usage accounting (plugin-level)
   sy_tools/                       # the sy MCP server: the tool surface, config resolution, guards, tracker adapters
-  scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh, sy_config.py migrate
+  scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}
   skills/
     plan/ spec/ ship/ spike/ pr/ ci/ standards/ explain/ help/

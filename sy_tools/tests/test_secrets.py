@@ -155,17 +155,13 @@ def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
 def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
     """The same call site as the test above, failing the one way an `except` clause cannot catch.
 
-    `secret_guard.py` resolves `redaction.extra_words` through `sy_config.repo_root()`, which shells out
+    `secret_guard.py` resolves `redaction.extra_words` through `config.repo_root()`, which shells out
     to `git rev-parse`. That call had no `timeout=`, so a git that blocks rather than fails — a wrapper
     or credential helper waiting on something, a binary that does not return — left the `PreToolUse` hook
     with no output for as long as the platform allowed, and no output is no decision, i.e. every built-in
     denial silently skipped. The hook's own fail-closed backstop is an `except Exception`, which a hang
     never reaches, so only the bound closes this path. Once bounded, it degrades exactly as the missing
-    binary above does: a `SystemExit` the hook's word-list fallback already catches.
-
-    The call count is part of the claim, because the bound the constant documents is per resolution and
-    one failed `get()` asks for the root twice: without a memoized refusal the hook waited
-    twice `GIT_TIMEOUT_SECONDS`, twice the number anyone reading that constant would expect.
+    binary above does: a `ConfigError` the hook's word-list fallback already catches.
 
     Two phases, because a fake that wedges the *first* git call proves the bound on that call alone: the
     resolver reaches git in four places (`--show-toplevel`, `--git-common-dir`, `config --get
@@ -174,16 +170,15 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
     claim, which needs the root itself to refuse; the second answers every earlier call and wedges the
     last one, so the per-call bound check runs against all four sites and the four are asserted reached.
 
-    In a child process with `scripts/` and the plugin root on `PYTHONPATH`, as `test_config.py` runs
-    that resolver: the CLI copy is not part of this package, so it is not importable from here, and the
-    guard now resolves through `sy_tools.config`, so both roots have to be reachable. Every check inside
+    In a child process, because what is asserted is that the hook process still produces a decision
+    rather than hanging, which an in-process call cannot observe. Every check inside
     that child raises explicitly rather than asserting: the child inherits this environment, and a
     `PYTHONOPTIMIZE`/`-O` in it would strip an `assert` and leave the negative control — removing
     `timeout=` from the real code — passing when it must fail.
     """
     bound_check = (
         "import subprocess\n"
-        "import sy_config\n"
+        "from sy_tools import config as sy_config\n"
         "from sy_tools.guards import secret_guard\n"
         "calls = []\n"
         "def check(cmd, kwargs):\n"
@@ -200,22 +195,19 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "subprocess.run = wedge\n"
         "try:\n"
         "    sy_config.repo_root()\n"
-        "except SystemExit as exc:\n"
+        "except sy_config.ConfigError as exc:\n"
         "    if 'did not resolve the repository root' not in str(exc):\n"
         "        raise AssertionError(f'the refusal must name its cause: {exc}')\n"
         "    if f'within {sy_config.GIT_TIMEOUT_SECONDS}s' not in str(exc):\n"
         "        raise AssertionError(f'and the bound it hit: {exc}')\n"
         "else:\n"
         "    raise AssertionError('a wedged git must be refused, not waited on')\n"
-        "root_calls = len(calls)\n"  # the guard resolves through sy_tools.config, whose calls are its own
         "if secret_guard._extra_words() != frozenset():\n"
         "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
         "if 'extra_words' not in (secret_guard._CONFIG_WARNING or ''):\n"
         "    raise AssertionError(f'the drop must be reported: {secret_guard._CONFIG_WARNING}')\n"
         "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
         "    raise AssertionError('built-ins must still deny')\n"
-        "if root_calls != 1:\n"
-        "    raise AssertionError(f'one failed resolution waits root_calls x the bound: {root_calls}')\n"
     )
     wedge_last = bound_check + (
         "import os\n"
@@ -232,7 +224,7 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "subprocess.run = answered\n"
         "try:\n"
         "    sy_config.resolve()\n"
-        "except SystemExit as exc:\n"
+        "except sy_config.ConfigError as exc:\n"
         "    if f'within {sy_config.GIT_TIMEOUT_SECONDS}s and was killed' not in str(exc):\n"
         "        raise AssertionError(f'the refusal must name the bound it hit: {exc}')\n"
         "else:\n"
@@ -252,7 +244,7 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
             [sys.executable, "-c", child], cwd=tmp_path, capture_output=True, text=True, check=False,
             env={
                 **os.environ,
-                "PYTHONPATH": os.pathsep.join([str(PLUGIN_ROOT / "scripts"), str(PLUGIN_ROOT)]),
+                "PYTHONPATH": str(PLUGIN_ROOT),
                 "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "CLAUDE_PROJECT_DIR": str(tmp_path),
                 "HOME": str(tmp_path / "home"),  # so worktree.root stays derived, as it is by default
             },

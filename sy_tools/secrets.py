@@ -23,10 +23,8 @@ DEFAULT_MIN_LENGTH = 6
 SCANNER = "gitleaks"
 SCANNER_TIMEOUT_SECONDS = 60
 
-# The canonical copy of the credential-name word set: `sy_tools/guards/secret_guard.py` imports it
-# from here, and `scripts/sy_config.py` carries a deliberate second copy rather than importing it,
-# because `migrate` runs as bare python with `sys.path[0]` at `scripts/`, where `sy_tools` is not
-# importable at all. Keep the two copies in step: a word added to one belongs in the other.
+# The one home of the credential-name word set: the secret guard, the transcript scrub pass and the
+# resolver's own credential gate all reach it through `looks_like_secret_name`, never their own copy.
 SECRET_WORDS = frozenset({
     "TOKEN", "SECRET", "SECRETS", "KEY", "KEYS", "APIKEY", "PASSWORD", "PASSWD",
     "CREDENTIAL", "CREDENTIALS", "PAT", "AUTH",

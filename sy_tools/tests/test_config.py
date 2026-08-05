@@ -2,9 +2,8 @@
 
 Almost everything here runs against a throwaway git checkout carrying its own layer chain, so what
 is asserted is the resolver's own behaviour rather than whatever the developer's `.shipyard/` happens
-to say. `scripts/sy_config.py` resolves the same chain for one reason only — `migrate`, the bootstrap
-conversion that runs before there is a server to ask — so the tests that subprocess it all drive
-`migrate`, and every other subcommand's coverage now belongs to this module's own resolver.
+to say. This is the only resolver there is: nothing else reads the layer chain, so every case below
+drives this module in-process.
 """
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
 
@@ -33,40 +31,22 @@ FIXTURE_LAYER = {
 }
 
 
-def _agreed_repo_root() -> Path | None:
-    """The repo root both resolvers derive from the current environment, or None if both refuse.
-
-    Asked of the two together because the failure this guards is a *disagreement*: the CLI runs in the
-    same cwd and the same environment as this process, so the only thing that can separate them is
-    their own resolution logic. One resolving while the other refuses is a disagreement too, and fails.
-
-    The memoized root is dropped first, because the callers below change `CLAUDE_PROJECT_DIR` and then ask
-    — the CLI side is a fresh process and reads the new pointer, this side would answer from the previous
-    test's root and the comparison would fail on a cache rather than on a disagreement. `reset_cache()`
-    and not `reload()`: `reload()` resolves eagerly, so it would raise `ConfigError` out of this helper
-    before the refusal branch below could assert that both sides refuse the same bogus pointer.
-    """
+def _resolved_repo_root() -> Path | None:
+    """The repo root resolved from the current environment, or None when the pointer was refused."""
+    # The memoized root is dropped first, because the callers below change `CLAUDE_PROJECT_DIR` and then
+    # ask, where this would otherwise answer from the previous test's root. `reset_cache()` and not
+    # `reload()`: `reload()` resolves eagerly, so it would raise before the refusal could be inspected.
     config.reset_cache()
-    proc = subprocess.run(
-        [sys.executable, "-c", "import sy_config; print(sy_config.repo_root())"],
-        capture_output=True, text=True, check=False,
-        env={**os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts")},
-    )
-    if proc.returncode != 0:
-        with pytest.raises(config.ConfigError, match="CLAUDE_PROJECT_DIR"):
-            config.repo_root()
-        assert "CLAUDE_PROJECT_DIR" in proc.stderr, proc.stderr
+    try:
+        return config.repo_root()
+    except config.ConfigError as refusal:
+        assert "CLAUDE_PROJECT_DIR" in str(refusal), f"a refusal must name the pointer it read: {refusal}"
         return None
-    resolved = config.repo_root()
-    assert resolved == Path(proc.stdout.strip()), (
-        f"the resolvers disagree: sy_tools.config says {resolved}, sy_config.py says {proc.stdout.strip()!r}"
-    )
-    return resolved
 
 
 @pytest.fixture
 def fixture_repo(tmp_path, monkeypatch):
-    """A throwaway git checkout carrying one committed config layer, with both resolvers pointed at it."""
+    """A throwaway git checkout carrying one committed config layer, with the resolver pointed at it."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".shipyard").mkdir()
     (tmp_path / ".shipyard" / "config.json").write_text(json.dumps(FIXTURE_LAYER), encoding="utf-8")
@@ -92,7 +72,7 @@ def test_repo_root_prefers_claude_project_dir_over_cwd(fixture_repo, tmp_path, m
     subprocess.run(["git", "init", "-q"], cwd=other, check=True)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(other / "deep" / "nested"))
 
-    assert _agreed_repo_root() == other.resolve(), "a subdirectory pointer must resolve to the checkout root"
+    assert _resolved_repo_root() == other.resolve(), "a subdirectory pointer must resolve to the checkout root"
     assert fixture_repo != other, "the fixture must actually be a different directory than cwd"
 
 
@@ -104,7 +84,7 @@ def test_a_claude_project_dir_that_names_no_checkout_is_refused(fixture_repo, tm
     """
     for bogus in (tmp_path / "definitely-not-a-repo", tmp_path / "not-a-repo" / "either"):
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(bogus))
-        assert _agreed_repo_root() is None, f"{bogus} resolved to something rather than being refused"
+        assert _resolved_repo_root() is None, f"{bogus} resolved to something rather than being refused"
     monkeypatch.delenv("CLAUDE_PROJECT_DIR")  # the fixture teardown re-resolves before monkeypatch unwinds
 
 
@@ -112,7 +92,7 @@ def test_repo_root_falls_back_to_git_toplevel_without_the_env_var(fixture_repo):
     """Every invocation Claude Code doesn't launch (manual `pixi run sy-server`, `docs/smoke_mcp.py`,
     pytest itself) has no `CLAUDE_PROJECT_DIR` to read, so `repo_root()` must keep resolving from cwd.
     """
-    assert _agreed_repo_root() == fixture_repo.resolve()
+    assert _resolved_repo_root() == fixture_repo.resolve()
 
 
 def test_the_whole_layer_chain_merges_in_precedence_order_and_reports_each_key_s_layer(fixture_repo):
@@ -634,8 +614,8 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
 
     # detached_work is its own, unrelated checkout (not a worktree of fixture_repo), so its own
     # .shipyard/config.json -- not fixture_repo's -- is what a fresh resolver anchored there would
-    # read. Written there, and cwd moved there, so the in-process and CLI resolvers agree on what a
-    # real invocation from detached_work would see.
+    # read. Written there, and cwd moved there, so what is asserted is what a real invocation from
+    # detached_work would see.
     (detached_work / ".shipyard").mkdir()
     layer = {**FIXTURE_LAYER, "scratch": {"dir": str(checkouts_parent)}}
     (detached_work / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
@@ -908,160 +888,6 @@ def test_the_config_read_tools_serve_the_resolved_values_and_hold_their_argument
         server.scratch_dir(identifier="..")
 
 
-def test_migrate_refuses_rather_than_writing_a_config_missing_the_adapter_variables(tmp_path):
-    """`migrate` is a one-time, data-preserving conversion, so a partial result must be a refusal.
-
-    Half the legacy map is the selected adapter's own `legacy_env` block, reached through
-    `_adapter_map()`, which degrades to `{}` on any resolution failure — best-effort is right for a
-    caller that only wants tracker metadata, and wrong here. With `git` off `PATH` that degradation
-    made `migrate` exit 0 having quietly dropped every `tracker_config.*` variable from the file whose
-    entire purpose is to carry them across: the same inputs migrated the adapter's keys with `git`
-    present and omitted them without it, with nothing printed about what vanished.
-    """
-    tracker, legacy = _an_adapter_declaring_legacy_env()
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".shipyard").mkdir()
-    (tmp_path / ".shipyard" / "config.json").write_text(json.dumps({"tracker": tracker}), encoding="utf-8")
-    values = {name: f"legacy-value-{i}" for i, name in enumerate(sorted(legacy))}
-    (tmp_path / "settings.json").write_text(json.dumps({"env": values}), encoding="utf-8")
-
-    with_git = _migrate_probe(tmp_path)
-    assert with_git.returncode == 0, with_git.stderr
-    for value in values.values():
-        assert value in with_git.stdout, f"{value} never migrated at all: {with_git.stdout!r}"
-
-    without_git = _migrate_probe(tmp_path, PATH=str(_empty_bin(tmp_path)))
-    assert without_git.returncode != 0, (
-        f"migrate wrote a config missing the adapter's own keys: {without_git.stdout!r}"
-    )
-    assert without_git.stdout == "", f"a refusal must not also emit a partial config: {without_git.stdout!r}"
-    assert "git could not be run" in without_git.stderr, without_git.stderr
-
-
-def test_migrate_reads_the_adapter_map_from_the_tracker_the_settings_block_names(tmp_path):
-    """The adapter half of the legacy map belongs to the tracker being migrated *to*, not the resolved one.
-
-    `skills/init-repo/SKILL.md` runs `migrate` at step 1b, before step 2 resolves a tracker at all, so
-    on the documented path there is no `.shipyard/config.json` yet and the resolved value is whatever
-    the shipped default says. Deriving the adapter's `legacy_env` names from that resolved value wrote
-    a config carrying `tracker` and nothing else adapter-specific — every `tracker_config.*` variable in
-    the block silently dropped, exit 0 — on the one path that is guaranteed rather than an edge case.
-    """
-    tracker, legacy = _a_tracker_the_shipped_defaults_do_not_select()
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    values = {
-        _legacy_env_name("tracker"): tracker,
-        **{name: f"legacy-value-{i}" for i, name in enumerate(sorted(legacy))},
-    }
-    (tmp_path / "settings.json").write_text(json.dumps({"env": values}), encoding="utf-8")
-
-    probe = _migrate_probe(tmp_path)
-    assert probe.returncode == 0, probe.stderr
-    migrated = json.loads(probe.stdout)
-    assert migrated["tracker"] == tracker
-    for name, key in sorted(legacy.items()):
-        node = migrated
-        for part in key.split("."):
-            assert isinstance(node, dict) and part in node, f"{key} was dropped: {probe.stdout!r}"
-            node = node[part]
-        assert node == values[name], f"{key} migrated the wrong value: {probe.stdout!r}"
-
-
-def test_migrate_refuses_a_tracker_no_shipped_adapter_implements(tmp_path):
-    """A typo'd tracker name reached the same silent drop by a different route.
-
-    The lenient adapter lookup answers `{}` for a tracker with no `config-map.json`, which is right for
-    a caller that only wants tracker metadata and wrong for a one-time conversion: it turned a
-    misspelling into a config file that looked complete and had lost every adapter-specific value.
-    """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    settings = {"env": {_legacy_env_name("tracker"): "no-such-tracker"}}
-    (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
-
-    probe = _migrate_probe(tmp_path)
-    assert probe.returncode != 0, f"a tracker with no adapter must refuse: {probe.stdout!r}"
-    assert probe.stdout == "", f"a refusal must not also emit a partial config: {probe.stdout!r}"
-    assert "names no adapter" in probe.stderr, probe.stderr
-
-
-def test_migrate_merges_into_an_existing_out_file_rather_than_truncating_it(tmp_path):
-    """`--out` is pointed straight at `.shipyard/config.json` by the documented command.
-
-    `write_text` overwrote it unconditionally, so migrating a single leftover variable onto an
-    already-configured repo destroyed every key that was there — the tracker, the column names, the
-    adapter's own settings — and exited 0 with nothing said. `docs/configuration.md` treats a config
-    file coexisting with a lingering `env` block as a real state, and SKILL.md's instruction for this
-    exact file is to preserve every existing key, so the migrated values merge over what is there.
-    """
-    tracker, _ = _a_tracker_the_shipped_defaults_do_not_select()
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".shipyard").mkdir()
-    out = tmp_path / ".shipyard" / "config.json"
-    existing = {"tracker": tracker, "columns": {"ready": "Ready", "done": "Done"}, "ci": {"poll_interval": 15}}
-    out.write_text(json.dumps(existing), encoding="utf-8")
-    settings = {"env": {_legacy_env_name("ci.poll_timeout"): "45"}}
-    (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
-
-    probe = _migrate_probe(tmp_path, "--out", str(out))
-    assert probe.returncode == 0, probe.stderr
-    after = json.loads(out.read_text(encoding="utf-8"))
-    assert after["tracker"] == tracker, f"the destination was truncated: {after!r}"
-    assert after["columns"] == existing["columns"], f"pre-existing keys must survive: {after!r}"
-    assert after["ci"]["poll_interval"] == 15, f"a sibling of a migrated key must survive: {after!r}"
-    assert after["ci"]["poll_timeout"] == 45, f"the migrated value must still land: {after!r}"
-    assert "columns.done" in json.loads(probe.stdout)["preserved"], probe.stdout
-
-
-def test_migrate_leaves_an_existing_out_file_intact_when_the_write_fails(tmp_path):
-    """`--out` is pointed at the repo's own `.shipyard/config.json`, so a half-written merge destroys it.
-
-    `write_text` truncates the destination before it writes a byte, so a write that fails partway — a full
-    disk, a quota, the file-size limit this probe imposes — left that file cut off mid-value and
-    unparseable, every later read of it a refusal, while the operator got a raw `OSError` traceback saying
-    nothing about the destination now being broken. Written through a sibling temporary file and one
-    `os.replace` instead: the destination either carries the whole merge or is byte-identical to before.
-    """
-    tracker, _ = _a_tracker_the_shipped_defaults_do_not_select()
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".shipyard").mkdir()
-    out = tmp_path / ".shipyard" / "config.json"
-    out.write_text(json.dumps({"tracker": tracker, "columns": FIXTURE_COLUMNS}, indent=2) + "\n", encoding="utf-8")
-    before = out.read_bytes()
-    settings = {"env": {_legacy_env_name("ci.poll_timeout"): "45"}}
-    (tmp_path / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
-
-    probe = _size_limited_migrate_probe(tmp_path, out, limit=64)
-    assert probe.returncode != 0, f"a write that could not complete must refuse: {probe.stdout!r}"
-    assert "Traceback" not in probe.stderr, f"raw traceback from the CLI: {probe.stderr!r}"
-    assert "could not be written" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
-    assert probe.stdout == "", f"a refusal must not also report a file it wrote: {probe.stdout!r}"
-    assert out.read_bytes() == before, "the destination was modified by a migration that failed"
-    json.loads(out.read_text(encoding="utf-8"))  # raises if the destination was left truncated
-    assert not list(out.parent.glob("*.tmp")), "a failed write must not leave its temporary file behind"
-
-
-def _size_limited_migrate_probe(cwd: Path, out: Path, *, limit: int) -> subprocess.CompletedProcess:
-    """`sy_config.py migrate --out` in a child process whose writes fail past `limit` bytes.
-
-    The limit is imposed after the import, so it constrains the migration's own write rather than
-    anything on the way in, and `SIGXFSZ` is ignored so exceeding it arrives as the `OSError` a full disk
-    or a quota would raise instead of killing the child on the signal Linux delivers alongside it.
-    """
-    probe = (
-        "import resource, signal, sy_config\n"
-        "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
-        f"resource.setrlimit(resource.RLIMIT_FSIZE, ({limit}, {limit}))\n"
-        f"raise SystemExit(sy_config.main(['migrate', '--settings', 'settings.json', '--out', {str(out)!r}]))\n"
-    )
-    return subprocess.run(
-        [sys.executable, "-c", probe], cwd=cwd, capture_output=True, text=True, check=False,
-        env={
-            **os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
-            "CLAUDE_PROJECT_DIR": str(cwd), "HOME": str(cwd / "home"),
-        },
-    )
-
-
 def test_the_validator_reports_two_columns_configured_under_one_name(fixture_repo):
     """The collision the canonical vocabulary refuses on, which the validator has to name up front.
 
@@ -1132,11 +958,8 @@ def test_the_validator_refuses_a_tracker_that_only_resolves_as_a_path(fixture_re
     further and loaded a real adapter's map under a name no adapter answers to. `sy_tools/tracker`
     refuses all three at tool-call time, so nothing is broken end to end — but catching them *before*
     runtime is the whole purpose of this check.
-
-    `scripts/sy_config.py::_migrating_tracker` carries the same enumerated check for the same reason,
-    covered by `test_migrate_refuses_a_tracker_no_shipped_adapter_implements`.
     """
-    adapter, _ = _a_tracker_the_shipped_defaults_do_not_select()
+    adapter = _a_shipped_adapter_name()
     layer = fixture_repo / ".shipyard" / "config.json"
     try:
         for bogus in (".", "..", f"../tracker/{adapter}"):
@@ -1153,60 +976,14 @@ def test_the_validator_refuses_a_tracker_that_only_resolves_as_a_path(fixture_re
         config.reload()
 
 
-def _a_tracker_the_shipped_defaults_do_not_select() -> tuple[str, dict[str, str]]:
-    """A shipped adapter declaring legacy names that is *not* the tracker `defaults.json` selects.
-
-    A block naming the default tracker cannot show the bug: the resolved answer and the block's own
-    answer agree, so a resolver reading the wrong one still looks correct. Both sides are read rather
-    than spelled — the names are the adapter's own vocabulary, which `scripts/validate.py`'s config
-    seam fails any file but the resolver and the adapters for naming.
-    """
-    default = json.loads((PLUGIN_ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))["tracker"]
-    for config_map in sorted((PLUGIN_ROOT / "skills" / "tracker").glob("*/config-map.json")):
-        legacy = json.loads(config_map.read_text(encoding="utf-8")).get("legacy_env", {})
-        if legacy and config_map.parent.name != default:
-            return config_map.parent.name, legacy
-    pytest.fail("no shipped adapter declaring legacy_env differs from the default tracker")
-
-
-def _legacy_env_name(config_key: str) -> str:
-    """The retired environment variable name for one config key, read out of the resolver's own map."""
-    proc = subprocess.run(
-        [sys.executable, "-c", (
-            f"import sy_config; print(next(n for n, p in sy_config.LEGACY_ENV.items() if p == {config_key!r}))"
-        )],
-        capture_output=True, text=True, check=True,
-        env={**os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts")},
-    )
-    return proc.stdout.strip()
-
-
-def _an_adapter_declaring_legacy_env() -> tuple[str, dict[str, str]]:
-    """One shipped tracker adapter that declares legacy variable names of its own, read from the adapter.
-
-    Read rather than spelled: those names are the adapter's own vocabulary, and `scripts/validate.py`'s
-    config seam fails any file but the resolver and the adapters themselves for naming one.
-    """
-    for config_map in sorted((PLUGIN_ROOT / "skills" / "tracker").glob("*/config-map.json")):
-        legacy = json.loads(config_map.read_text(encoding="utf-8")).get("legacy_env", {})
-        if legacy:
-            return config_map.parent.name, legacy
-    pytest.fail("no shipped tracker adapter declares legacy_env")
-
-
-def _migrate_probe(cwd: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
-    """`sy_config.py migrate` onto stdout by default, where a partial conversion is visible in full."""
-    return subprocess.run(
-        [
-            sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"),
-            "migrate", "--settings", "settings.json", *args,
-        ],
-        cwd=cwd, capture_output=True, text=True, check=False,
-        env={
-            **os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "CLAUDE_PROJECT_DIR": str(cwd),
-            "HOME": str(cwd / "home"), **env,
-        },
-    )
+def _a_shipped_adapter_name() -> str:
+    """The name of one tracker adapter this checkout actually ships."""
+    # Read rather than spelled: an adapter's own name is vocabulary `scripts/validate.py`'s config seam
+    # fails every file but the resolver and the adapters themselves for carrying.
+    names = sorted(p.parent.name for p in (PLUGIN_ROOT / "skills" / "tracker").glob("*/config-map.json"))
+    if not names:
+        pytest.fail("no shipped tracker adapter declares a config-map.json")
+    return names[0]
 
 
 def test_the_server_validator_collects_an_unreadable_layer_rather_than_raising(fixture_repo):
@@ -1214,8 +991,7 @@ def test_the_server_validator_collects_an_unreadable_layer_rather_than_raising(f
 
     `_load_json` named a missing file and invalid JSON but let `PermissionError` through, so the SDK
     turned it into an `isError` result carrying a raw traceback string instead of the clean report the
-    tool promises. The CLI resolver guards this; the module docstring claims the two resolve
-    identically, and error handling is part of that.
+    tool promises. Every other unreadable-layer case is already named; this one was not.
     """
     layer = fixture_repo / ".shipyard" / "config.json"
     layer.chmod(0o000)
@@ -1311,9 +1087,7 @@ def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, m
 
     A `git` that blocks rather than fails — a wrapper or credential helper waiting on something, a binary
     that does not return — is not an exception this resolver could have handled: it is the server never
-    answering. And this resolver is the hotter of the two twins, because every tool call reaches a
-    resolved value through it, where the CLI's own `_git_toplevel` runs once per process; the CLI's was
-    bounded first only because the secret gate's fail-open reaches that one. So the bound is asserted on
+    answering, on the path every tool call takes to a resolved value. So the bound is asserted on
     the call's own kwargs, not just on the refusal: `TimeoutExpired` is raised here by the fake either
     way, so removing `timeout=` from the real code would still produce a `ConfigError` and pass a test
     that only checked that. What proves the hang is actually bounded is that the real call asks for it.
@@ -1403,7 +1177,7 @@ def test_the_repo_root_resolves_once_per_process_refusal_included(fixture_repo, 
     `get()` asks for the root twice — the credential-shape gate resolves first and the value's own
     `resolve()` asks again — so an unmemoized refusal made the real wait on a wedged git twice the
     number anyone reading that constant would expect. The refusal is therefore memoized alongside the
-    answer, exactly as `scripts/sy_config.py::repo_root` memoizes its own `SystemExit`.
+    answer.
 
     Spawn counts are the assertion because a returned value cannot tell a fresh resolution from a cached
     one, and `reset_cache()` clearing *both* is the other half: a root that outlived the cache it is
@@ -1451,9 +1225,8 @@ def test_a_git_timeout_is_retried_on_the_next_call_rather_than_refusing_the_sess
     without a restart — the `reload_config` tool reaches it through `config.reload()`, and that is the
     recovery path for the settled refusal which is memoized — but nothing tells a client that a five-second
     git hiccup is what it is now stuck on, so clearing it would depend on someone guessing to reload the
-    configuration, where the retry needs no client to know anything. The CLI twin in `scripts/sy_config.py`
-    keeps memoizing its own, correctly: its process ends with the command. A settled refusal is still
-    memoized here — the case above covers that — so this pins the distinction, not a blanket un-memoizing.
+    configuration, where the retry needs no client to know anything. A settled refusal is still memoized
+    here — the case above covers that — so this pins the distinction, not a blanket un-memoizing.
     """
     real_run = subprocess.run
     wedged = [True]

@@ -2,7 +2,7 @@
 
 Shipyard is configured through a layered JSON file that it owns and resolves itself. `sy_tools/config.py` is the only reader — the `sy` MCP server exposes it as the config tools below, and nothing else parses config, and nothing else supplies a default.
 
-Environment variables are reserved for **secrets**. A setting left in the environment is an error, not an override — see [Migrating](#migrating-from-the-env-block).
+Environment variables are reserved for **secrets**. A setting left in the environment is an error, not an override — see [Retiring the `env` block](#retiring-the-env-block).
 
 Two tools answer "what is configured" (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — `show_config` reports every value with the layer it came from, `validate_config` reports every problem, each naming its key and layer:
 
@@ -171,16 +171,9 @@ The resolver enforces the boundary three ways: `get_config` refuses to *read* a 
 
 Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env` (e.g. jira's is `ACLI_TOKEN`; github currently declares none), and its `ADAPTER.md` explains the one-time login it needs beyond that. `validate_config` also checks that every name an adapter lists there is actually *present* in `os.environ` — set, non-empty — reporting it by name if not, the same way it reports a missing required config key. This is presence, not liveness: a token can be set and still be revoked or expired, which only the adapter's own liveness check (below) can tell.
 
-## Migrating from the `env` block
+## Retiring the `env` block
 
-Shipyard used to be configured through the `env` block of `.claude/settings.json`. Convert it rather than retyping:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" migrate \
-  --settings .claude/settings.json --out .shipyard/config.json
-```
-
-It maps every recognised legacy name to its config key, coerces numbers and booleans, and refuses to copy anything credential-shaped. Half the map is one adapter's own (below), and which adapter is the `env` block's own answer: the `SY_TRACKER` in the block being converted, falling back to the currently resolved tracker only if the block names none. That distinction is load-bearing because `migrate` normally runs *before* any tracker has been configured, so the resolved value is still the shipped default — deriving the adapter's names from it dropped every `tracker_config.*` variable in the block. `migrate` resolves the configuration first and refuses outright if it cannot, and refuses a tracker that names no adapter rather than converting a subset: a conversion that dropped the adapter's keys and still wrote the file would look complete and would not be. An `--out` file that already exists is **merged into**, never overwritten — migrated values win on conflict, every other key already in the file survives, and a destination that is not valid JSON is a refusal rather than a file this command replaces. The summary names three separate outcomes, never one list: what migrated, what was deliberately left in the environment because it is credential-shaped, and what matched no config key at all (a typo, or a stale setting). Then **remove the migrated keys from the `env` block** — leaving both in place is a deliberate hard failure. `/sy:init-repo` does all of this interactively, including splitting per-person values into the local layer.
+Shipyard used to be configured through the `env` block of `.claude/settings.json`. There is no converter: the move is by hand, and `validate_config` is the worklist. It reports every retired variable that is still set by name, together with the config key that variable now resolves to, and reports an `SY_*` name that matches no setting at all too (a typo, or something stale). Move each value to the key the table below names — `.shipyard/config.json` for shared values, `.shipyard/config.local.json` for per-person ones — then unset the variable and delete the key from the `env` block: leaving both in place is a deliberate hard failure. The credential is the one row that does not move; it stays in the environment. `/sy:init-repo` walks all of this interactively.
 
 The mapping:
 

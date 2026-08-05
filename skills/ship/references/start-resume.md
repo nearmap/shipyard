@@ -28,7 +28,7 @@ START_MODEL          = <the plan's stated START model, literally, or the value `
 START_MODEL_FALLBACK = the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
 ```
 
-Pass `START_MODEL` as the Agent invocation's **model override** and record/reconcile it as `start_model_requested`/`start_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — clamped up to `ship-start`'s floor (`sonnet`) in `config/floors.json` rather than resolved via a generic `agent_model` call, since this phase's model comes from the plan's stated profile instead. The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
+Pass `START_MODEL` as the Agent invocation's **model override** and record/reconcile it as `start_model_requested`/`start_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — clamped up to `ship-start`'s `cheap` floor in `config/floors.json` (`sonnet` by default) rather than resolved via a generic `agent_model` call, since this phase's model comes from the plan's stated profile instead. The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
 
 If START cannot run at the requested model, re-dispatch once at `START_MODEL_FALLBACK` clamped up to the `sonnet` floor and set `start_model_observed` to the model that actually ran, per model-dispatch.md's "Unavailability falls back once". A plan written in the old single-word profile format, or one whose START tier is otherwise ambiguous, is never guessed upward: it resolves to the `sonnet` floor.
 

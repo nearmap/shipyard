@@ -15,7 +15,7 @@ BUILD_MODEL          = <the plan's stated BUILD model, literally, or the value `
 BUILD_MODEL_FALLBACK = the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
 ```
 
-Pass `BUILD_MODEL` as the Agent invocation's **model override** and record/reconcile it as `build_model_requested`/`build_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — clamped up to `ship-build`'s floor (`opus`) in `config/floors.json` rather than resolved via a generic `agent_model` call, since this phase's model comes from the plan's stated profile instead. The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
+Pass `BUILD_MODEL` as the Agent invocation's **model override** and record/reconcile it as `build_model_requested`/`build_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — clamped up to `ship-build`'s `standard` floor in `config/floors.json` (`opus` by default) rather than resolved via a generic `agent_model` call, since this phase's model comes from the plan's stated profile instead. The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
 
 If BUILD cannot run at the requested model, re-dispatch once at `BUILD_MODEL_FALLBACK` clamped up to the `opus` floor and set `build_model_observed` to the model that actually ran, per model-dispatch.md's "Unavailability falls back once". A plan written in the old single-word profile format, or one whose BUILD tier is otherwise ambiguous, is never guessed upward: it resolves to the `opus` floor.
 

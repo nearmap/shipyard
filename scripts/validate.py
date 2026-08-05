@@ -112,6 +112,7 @@ REQUIRED = {
     "skills/shared/references/spec-gate.md",
     "skills/shared/references/model-dispatch.md",
     "skills/shared/references/config-values.md",
+    "skills/shared/references/transcript-attach.md",
     "skills/plan/references/new-objective.md",
     "skills/plan/references/reentry.md",
     "skills/plan/references/roadmap-shaping.md",

@@ -1,15 +1,9 @@
 """Jira REST, spoken by a long-lived server process. This is the implementation, not a wrapper.
 
-Every canonical verb of `skills/tracker/CONTRACT.md` is served from here, and the shape of that
-service is set by where it runs: inside the MCP server stdout carries JSON-RPC frames, so a stray
-print desynchronises the client, and a `SystemExit` would end a process that still has other calls
-to serve. So everything here returns a dict or raises `TrackerError`, and nothing in this module
-writes to stdout.
-
-The transport is async httpx2, and the canonical verbs are `async` because the server serves calls
-concurrently: an upload waiting on Jira must not block an unrelated tool call. Only the transport
-awaits — the multipart body is assembled synchronously, byte-for-byte, because Jira validates the
-hand-built boundary.
+Every canonical verb of `skills/tracker/CONTRACT.md` is served from here. All of them return a dict
+or raise `TrackerError`, never print and never `SystemExit`: inside the MCP server stdout carries
+JSON-RPC frames, and an exit would end a process that still has other calls to serve. The verbs are
+`async` over httpx2 so an upload waiting on Jira does not block an unrelated tool call.
 
 Account identifiers come from resolved config; the credential is read from the environment only,
 is put into the `Authorization` header and nowhere else, and never appears in a URL, in a
@@ -90,10 +84,8 @@ NOT_FOUND = 404
 class JiraStatusError(TrackerError):
     """A `TrackerError` for a call Jira actually answered, carrying the status it answered with.
 
-    A stall, an unreachable host and a 404 all reach a caller as a `TrackerError`, and one caller has
-    to tell them apart: the project preflight rewrites a not-found into "the configured project key is
-    wrong", which is a fabricated diagnosis when the real cause was a timeout. The status rides on the
-    exception rather than being parsed back out of its message.
+    `_project_key` has to tell a 404 from a stall before it blames the configured project key, so the
+    status rides on the exception rather than being parsed back out of its message.
     """
 
     def __init__(self, message: str, status: int) -> None:
@@ -112,16 +104,14 @@ class JiraAdapter:
     async def create_issue(self, issue_type: str, title: str, body: str = "", parent: str | None = None) -> dict:
         """Create an issue of a canonical type in the configured project; `parent` makes it a child.
 
-        `reporter` is listed as required by Jira's own `createmeta` but is deliberately not sent:
-        omitting it makes Jira default the reporter to the authenticated account, and sending it
-        would let a shared config file decide who a person's issues are reported by.
-
-        Jira enforces its own hierarchy here — a type that cannot be parented to `parent`'s type is
-        rejected with a 400 naming the field, which surfaces as that same detail on a `TrackerError`.
+        Jira enforces its own hierarchy: a type that cannot be parented to `parent`'s type comes back
+        as a `TrackerError` carrying Jira's own 400 detail naming the field.
         """
         project = _project()
         native = native_type(issue_type)
         base, auth = _credentials()
+        # `reporter` is required by Jira's `createmeta` but deliberately omitted: Jira then defaults it
+        # to the authenticated account, where sending it lets a shared config file decide whose issue.
         fields: dict[str, object] = {
             "project": {"key": project},
             "issuetype": {"name": native},
@@ -139,16 +129,10 @@ class JiraAdapter:
     async def get_issue(self, issue: str) -> dict:
         """Read one issue and its comments, with rich text as Markdown and statuses canonicalised.
 
-        Two calls, because Jira serves comments from their own endpoint: the field read is scoped to
-        `ISSUE_FIELDS`, and the comment read is bounded and newest-first.
-
-        Children take a third call on anything that is not a known leaf type, for the reasons
-        `_children` documents; on a Task or a Bug they come from the field read.
-
-        `comments_truncated` reports whether that bound actually cut anything off, and
-        `children_truncated` does the same for a child list read one page at a time. A silently short
-        thread reads as a complete ship log, so a caller deciding on the strength of "no one raised
-        this" has to be able to tell a quiet issue from a clipped page.
+        Three calls at most: the field read scoped to `ISSUE_FIELDS`, a bounded newest-first comment
+        read, and a child search on anything that is not a `LEAF_TYPES` type. `comments_truncated` and
+        `children_truncated` report whether either bound cut anything off — a clipped page and a
+        genuinely quiet issue read identically otherwise.
         """
         base, auth = _credentials()
         fields = await _read_fields(base, auth, issue, ISSUE_FIELDS)
@@ -184,22 +168,11 @@ class JiraAdapter:
         limit: int = 50,
         page_token: str | None = None,
     ) -> dict:
-        """One page of issues in the configured project matching the given filters, newest API only.
+        """One page of issues in the configured project matching the given filters.
 
-        The classic `GET /search` endpoint is gone (410), so this posts JQL to `/search/jql`, which
-        pages by opaque token and reports no total. Only one page is fetched: a caller that wants
-        more asks again with the returned token as `page_token` rather than having this verb walk the
-        board. That token was advertised before it could be sent back, which made the cursor this
-        verb reports unusable and the board effectively one page deep.
-
-        `is_last` is derived from the absence of `nextPageToken`, not from `isLast`: the current
-        spec does document `isLast`, and it was present in every live response, but `nextPageToken`
-        is the field this verb's own pagination story depends on either way, so deriving `is_last`
-        from it keeps one source of truth instead of two that could disagree if `isLast` were ever
-        absent or wrong.
-
-        Every interpolated value is a quoted JQL literal, so a title containing a quote cannot break
-        out of its clause and widen the search.
+        Paging is by opaque token and reports no total: exactly one page is fetched, and a caller that
+        wants more asks again with the returned `next_page_token` rather than having this verb walk the
+        whole board.
         """
         return await self._search(
             _project(), status=status, issue_type=issue_type, parent=parent, text=text, limit=limit,
@@ -219,18 +192,9 @@ class JiraAdapter:
     ) -> dict:
         """One page of issues matching the given filters: the search both readers share.
 
-        `page_token` is Jira's own `nextPageToken`, sent back only when a caller supplies one: the
-        request for a first page carries no such key at all, because the endpoint reads the field's
-        presence rather than its value and an empty token is not the same request as no token.
-
-        `project` is a parameter rather than a read of config, and an optional one, because the two
-        callers scope differently. `find-issues` is a verb about the configured board, so it passes
-        `_project()`. `get-issue` reads any issue by key whatever project it lives in, and scopes its
-        child search by `parent = <key>` alone, which already names one specific issue: any project
-        clause on top of that can only ever subtract, and it subtracted real children — an issue moved
-        between projects keeps its original key prefix, and Advanced Roadmaps parents children across
-        projects outright, so either one turned a decomposed parent into `children: []`. Jira reports no
-        error for a search that matched nothing, so nothing downstream could tell that from a bare issue.
+        `project` is optional because the two callers scope differently: `find-issues` is about the
+        configured board, while `get-issue`'s child search scopes by `parent = <key>` alone.
+        `page_token` is Jira's own `nextPageToken`.
         """
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
@@ -256,8 +220,11 @@ class JiraAdapter:
             "maxResults": min(limit, RESULT_CEILING),
             "fields": list(SUMMARY_FIELDS),
         }
+        # Sent only when a caller supplies one: the endpoint reads this key's presence, not its value,
+        # so a first-page request carrying an empty token is not the same request as one carrying none.
         if page_token:
             payload["nextPageToken"] = page_token
+        # The classic `GET /search` endpoint is gone (410), so the JQL is POSTed to `/search/jql`.
         page = await _send_json("POST", f"{base}{API}/search/jql", auth, payload, expect=(200,))
         entries = page.get("issues") if isinstance(page, dict) else None
         if not isinstance(page, dict) or not isinstance(entries, list):
@@ -274,6 +241,8 @@ class JiraAdapter:
         return {
             "issues": items,
             "count": len(items),
+            # Derived from `nextPageToken`, not the spec's own `isLast`: both were present in every live
+            # response, and paging on one source of truth cannot disagree with itself.
             "is_last": not _field(page, "nextPageToken"),
             "next_page_token": _field(page, "nextPageToken"),
         }
@@ -281,11 +250,8 @@ class JiraAdapter:
     async def set_status(self, issue: str, status: str) -> dict:
         """Move `issue` to the column this repo uses for a canonical status, verified by reading back.
 
-        The target is matched on each transition's `to.name`, never on the transition's own `name`:
-        they often coincide, but they are different fields and matching the wrong one is a silent
-        move to the wrong column. When nothing reachable matches, this fails listing the reachable
-        targets rather than retrying blind or accepting the current status — a workflow gap has to be
-        seen, not absorbed.
+        When nothing reachable matches, this fails listing the reachable targets rather than retrying
+        blind or accepting the current status: a workflow gap has to be seen, not absorbed.
         """
         target = native_status(status)
         base, auth = _credentials()
@@ -294,6 +260,8 @@ class JiraAdapter:
         if not isinstance(available, list) or not available:
             raise TrackerError(f"no transitions are available on {issue}; got {_shape(listing)}")
         wanted = target.strip().lower()
+        # Keyed on each transition's `to.name`, never the transition's own `name`: they often coincide,
+        # but they are different fields and matching the wrong one moves the issue to the wrong column.
         reachable = {_field(t.get("to"), "name") or "?": _field(t, "id") for t in available if isinstance(t, dict)}
         matched = next((tid for name, tid in reachable.items() if name.strip().lower() == wanted), None)
         if not matched:
@@ -311,11 +279,7 @@ class JiraAdapter:
         return {"id": issue, "status": status, "native": moved}
 
     async def assign(self, issue: str, assignee: str = "@me") -> dict:
-        """Assign `issue` to the authenticated account. Only self-assignment is supported.
-
-        Any other assignee is refused rather than quietly self-assigned: an assignment silently
-        landing on the wrong person is worse than a failure that names the limit.
-        """
+        """Assign `issue` to the authenticated account; any other assignee is refused, not coerced."""
         if assignee != "@me":
             raise TrackerError(
                 f"only self-assignment is supported by this adapter; got {assignee!r}, expected '@me'"
@@ -334,24 +298,12 @@ class JiraAdapter:
     async def add_dependency(self, issue: str, blocked_by: str) -> dict:
         """Record that `blocked_by` blocks `issue`, then re-read to prove the direction really took.
 
-        Direction comes straight from Jira's REST model, which is unambiguous: the outward issue
-        performs the type's outward action, so for `Blocks` the outward issue is the blocker. The
-        verification read is not belt-and-braces — a reversed dependency reads as plausible and
-        misleads every later decomposition, so a link whose direction cannot be confirmed is a
-        failure rather than a warning.
-
-        That verification reads the *whole* `blocked_by` list, so it is asked for tolerantly
-        (`strict=False`): the POST above has already landed by the time it runs, and a per-entry drift in
-        some unrelated, pre-existing link on the same issue would otherwise abort a write that succeeded —
-        reporting failure for a real link, and inviting a retry that creates a second one. What this step
-        needs is only whether the entry just written is there, so an entry it cannot parse is one that is
-        not the entry it is looking for. Field-level drift still fails here, because a `blocked_by` field
-        that does not read back as a list of links leaves the direction genuinely unconfirmed, which is
-        exactly what this check exists to refuse. The general read path (`get_issue`) keeps the strict
-        answer: there, an unparseable link is a dependency silently missing from what a caller reads to
-        decide whether an issue is blocked.
+        A reversed dependency reads as entirely plausible and misleads every later decomposition, so a
+        link whose direction cannot be confirmed is a failure here rather than a warning.
         """
         base, auth = _credentials()
+        # Jira's REST model is unambiguous: the outward issue performs the type's outward action, so on
+        # a `Blocks` link the outward issue is the blocker.
         payload = {
             "type": {"name": BLOCKS},
             BLOCKER_SIDE: {"key": blocked_by},
@@ -359,6 +311,8 @@ class JiraAdapter:
         }
         await _send_json("POST", f"{base}{API}/issueLink", auth, payload, expect=(200, 201, 204))
         links = (await _read_fields(base, auth, blocked_by, ("issuelinks",))).get("issuelinks")
+        # `strict=False`: the POST has already landed, so drift in some unrelated pre-existing link must
+        # not fail a write that succeeded and invite a retry that duplicates it. Field drift still raises.
         if issue not in _linked(links, BLOCKED_SIDE, "issuelinks", strict=False):
             raise TrackerError(
                 f"direction not confirmed after creating the link: reading {blocked_by} shows no "
@@ -371,11 +325,11 @@ class JiraAdapter:
         """Add `label` to `issue`, preserving the labels already there.
 
         Jira has no append: the field is replaced wholesale, so the current set is read and written
-        back with `label` unioned in. A labels field that does not read back as a list of strings
-        aborts the write instead of being coerced — coercing it would delete labels.
+        back with `label` unioned in.
         """
         base, auth = _credentials()
         current = (await _read_fields(base, auth, issue, ("labels",))).get("labels") or []
+        # Aborted rather than coerced: coercing an unreadable labels field into a list deletes labels.
         if not isinstance(current, list) or not all(isinstance(x, str) for x in current):
             raise TrackerError(
                 f"{issue} returned a labels field that is not a list of strings; refusing to write it "
@@ -386,13 +340,10 @@ class JiraAdapter:
         return {"id": issue, "labels": intended}
 
     async def post_comment(self, issue: str, body: str) -> dict:
-        """Comment on `issue` with `body` converted from Markdown to Jira rich text.
-
-        The conversion happens here rather than client-side because the node classes a Markdown-ish
-        client drops silently — bullet lists and fenced code — are exactly the ones a ship log is
-        made of.
-        """
+        """Comment on `issue` with `body` converted from Markdown to Jira rich text."""
         base, auth = _credentials()
+        # Converted here rather than client-side: the node classes a Markdown-ish client drops silently —
+        # bullet lists and fenced code — are exactly the ones a ship log is made of.
         created = await _send_json(
             "POST", f"{base}{API}/issue/{issue}/comment", auth, {"body": adf.markdown_to_adf(body)}, expect=(200, 201)
         )
@@ -409,14 +360,9 @@ class JiraAdapter:
     async def type_convert(self, issue: str, issue_type: str) -> dict:
         """Change `issue`'s type to a canonical type, verified by reading the type back.
 
-        A Jira workflow can accept the field write and leave the type where it was, so the re-read is
-        not belt-and-braces: an unverified conversion is reported as a failure naming the type the
-        issue still carries, because a caller told an issue is now an Epic will decompose it as one.
-
-        `issue_type` is a canonical token mapped through `native_type`, so an unknown one fails before
-        the write. That is a deliberate improvement on the raw native name this used to take: a caller
-        above this seam names types in one vocabulary, and a native name that no longer exists on the
-        board otherwise reached Jira as a 400 rather than being refused here.
+        A Jira workflow can accept the field write and leave the type where it was, so an unverified
+        conversion fails naming the type the issue still carries: a caller told an issue is now an Epic
+        will decompose it as one.
         """
         native = native_type(issue_type)
         base, auth = _credentials()
@@ -430,23 +376,18 @@ class JiraAdapter:
         return {"id": issue, "type": issue_type, "native": actual}
 
     async def attachment_download(self, issue: str, filename_or_id: str, output_path: Path) -> dict:
-        """Write the one attachment on `issue` matching `filename_or_id` to `output_path`.
-
-        The download is a second authenticated call to the `content` URL Jira reports for the
-        attachment, not to a path built here: that URL redirects to media storage with its own
-        pre-signed query, which is why this is the one call in the module that follows redirects.
-
-        An attachment carrying no `content` URL is a failure rather than an empty file: a zero-byte
-        artifact on disk reads exactly like an artifact that was never uploaded.
-        """
+        """Write the one attachment on `issue` matching `filename_or_id` to `output_path`."""
         base, auth = _credentials()
         found = _resolve_attachment(await _get_attachments(base, auth, issue), filename_or_id, issue)
         content_url = found.get("content")
+        # A failure, not an empty file: a zero-byte artifact on disk reads exactly like one never uploaded.
         if not isinstance(content_url, str) or not content_url:
             raise TrackerError(
                 f"attachment {_field(found, 'id') or '?'} on {issue} carries no content URL, so there is "
                 "nothing to download; treat the read as failed rather than writing an empty file"
             )
+        # Jira's own `content` URL, not a path built here: it 302s to media storage, which `binary=True`
+        # is what allows this one call to follow.
         _, data = await request("GET", content_url, auth, binary=True)
         if not isinstance(data, bytes):
             raise TrackerError(f"the download of {filename_or_id!r} from {issue} returned no bytes to write")
@@ -462,21 +403,12 @@ class JiraAdapter:
     async def attachment_update(self, issue: str, path: Path) -> dict:
         """Replace every attachment on `issue` named `path.name` with `path`, verifying each step.
 
-        Jira has no attachment replace: an upload of a name that is already there adds a second
-        attachment beside it, and the two are then told apart only by an id nobody above this seam
-        holds. So the namesakes are resolved to their ids, the new file is uploaded, and only then is
-        each old one deleted — each delete verified gone.
-
-        The order is the whole point of this verb's safety. Deleting first left a window in which the
-        upload could fail — a timeout, a 413, a permission change — with the old artifact already gone
-        and no new one in its place: total loss, strictly worse than the stale artifact it started with.
-        Uploading first inverts that: a failed delete leaves both files on the issue, which is visible,
-        recoverable, and reported as a failure rather than silently losing the record.
-
-        Every refusal is still made before the upload, for the same reason: a missing or unnameable
-        source file, or a namesake carrying no id to delete it by, is discovered before anything changes.
+        Jira has no attachment replace: an upload under a name already on the issue adds a second
+        attachment beside it, and the two are then told apart only by an id nobody above this seam holds.
         """
         base, auth = _credentials()
+        # Every refusal made before the upload: a missing or unnameable source, or a namesake with no id
+        # to delete it by, discovered after a delete would leave the issue with nothing at all.
         _checked_source(path)
         existing = [a for a in await _get_attachments(base, auth, issue) if a.get("filename") == path.name]
         superseded = []
@@ -488,6 +420,8 @@ class JiraAdapter:
                     "the upload would sit beside it; refusing rather than leaving two files with one name"
                 )
             superseded.append(attachment_id)
+        # Upload before delete is load-bearing: deleting first loses the artifact outright when the upload
+        # then fails, where a failed delete only leaves two files — visible, recoverable, and reported.
         uploaded = await _upload(base, auth, issue, path)
         for attachment_id in superseded:
             await _delete_attachment(base, auth, issue, attachment_id)
@@ -496,35 +430,22 @@ class JiraAdapter:
     async def _children(self, issue: str, fields: dict) -> tuple[list[str], bool]:
         """`issue`'s children, and whether that list is one page short of all of them.
 
-        Jira's `subtasks` field carries sub-task-level children only: it comes back empty on every Epic,
-        whatever is parented beneath it. This adapter's execution model is flat — one tracking Epic with
-        every executable Task and Bug directly under it, per `skills/tracker/jira/ADAPTER.md` — so an
-        Epic's children are exactly the ones that field cannot report, and reading them from it answered
-        "no children" for a fully decomposed Epic. That is the answer the duplicate-work and
-        decomposition checks above this seam read as work nobody has planned yet.
-
-        An Epic's children therefore come from the same `parent = <key>` search `find-issues` serves,
-        one page like every other search here, and the bound is reported rather than hidden:
-        `children_truncated` is to a clipped child list what `comments_truncated` is to a clipped thread.
-
-        `subtasks` is trusted only for a known leaf type, per `LEAF_TYPES`, and the search is scoped by
-        `parent = <key>` and nothing else. That clause already names one specific issue, so no project
-        clause can narrow it truthfully: a key prefix survives a move between projects, and Advanced
-        Roadmaps parents children across projects outright, so scoping by the prefix answered
-        `children: []` for a decomposed parent — the same silent emptiness an unrecognised type reached.
+        Jira's `subtasks` field is sub-task-level only and comes back empty on every Epic whatever is
+        parented beneath it, so it is trusted only for a `LEAF_TYPES` type. Everything else takes the
+        same `parent = <key>` search `find-issues` serves, one page, with the bound reported.
         """
         if canonical_type(_field(fields.get("issuetype"), "name")) in LEAF_TYPES:
             return _keys(fields.get("subtasks"), "subtasks"), False
+        # Scoped by `parent = <key>` alone: a key prefix survives a move between projects and Advanced
+        # Roadmaps parents across them, so a project clause subtracts real children (Jira 200s no match).
         page = await self._search(parent=issue, limit=RESULT_CEILING)
         return [str(item["id"]) for item in page["issues"]], not page["is_last"]
 
     async def preflight(self) -> dict:
         """Prove the configured account, credential and project are all usable, reporting no secret value.
 
-        Each of the three can be present and still be wrong, so each is read rather than checked for
-        presence: a credential can be revoked, and a project key can name a board this account cannot
-        see. `myself` is the cheapest authenticated read Jira offers; `_project_key` is what makes the
-        project half of `skills/tracker/jira/ADAPTER.md`'s preflight contract true.
+        Each of the three can be present and still be wrong — a credential can be revoked, a project key
+        can name a board this account cannot see — so each is read rather than checked for presence.
         """
         base, auth = _credentials()
         project = _project()
@@ -533,12 +454,9 @@ class JiraAdapter:
         return {"ok": True, "site": base, "account_id": account_id, "project": key}
 
     async def _account(self, base: str, auth: str) -> str:
-        """The authenticated account's id, read from `myself` once per adapter instance.
-
-        The cache is per-instance and not a module global on purpose: `tracker.adapter()` builds a
-        fresh adapter per call, so an instance attribute expires naturally when a credential is
-        rotated, where a module-level cache would keep serving the previous account's id.
-        """
+        """The authenticated account's id, read from `myself` once per adapter instance."""
+        # Per-instance, not a module global: `tracker.adapter()` builds a fresh adapter per call, so a
+        # rotated credential expires this naturally. `myself` is the cheapest authenticated read Jira has.
         if self._account_id is None:
             _, item = await request("GET", f"{base}{API}/myself", auth)
             account_id = _field(item, "accountId")
@@ -563,34 +481,21 @@ async def request(
 ) -> tuple[int, object]:
     """One authenticated REST call, returning `(status, parsed body or None)`.
 
-    The timeout is not optional. Being async no longer wedges the whole server, but an unbounded
-    call still leaves its own caller awaiting forever while holding a connection, and the tool that
-    was asked to attach a transcript never answers. Handing it to the client bounds every phase —
-    connect, write, read and pool — not just the request write.
-
-    The two `except` clauses are ordered, not interchangeable: `TimeoutException` is a subclass of
-    `RequestError`, so catching the family first would rename every stall an unreachable host and
-    lose the one distinction that decides whether retrying is worth anything.
-
-    `data` is sent as a raw body (`content=`), never form-encoded: the multipart payload carries a
-    hand-built boundary that must reach Jira byte-for-byte. `transport` is the seam a test uses to
-    drive this mapping without a network; production callers leave it None.
-
-    `binary` serves the one call that fetches an attachment's bytes, and it changes two things
-    together because that call needs both: the body comes back unparsed, and redirects are followed.
-    Every other endpoint here answers JSON at the URL asked for, while an attachment's `content` URL
-    answers a redirect to media storage — a 302 is not `is_success`, so without this the download
-    fails on the redirect it is supposed to follow. Following it is safe with the credential attached:
-    httpx2 drops the `Authorization` header when a redirect leaves the origin, and the storage URL it
-    lands on carries its own pre-signed query, so the token never reaches a host Jira did not name.
-    Defaulted off so no existing caller changes behaviour.
+    `transport` is the seam a test drives this mapping through without a network; production callers
+    leave it None. `binary` serves the one call that fetches an attachment's bytes and changes two
+    things together because that call needs both: the body comes back unparsed, and redirects are
+    followed — an attachment's `content` URL answers a 302 to media storage, which is not `is_success`.
     """
     sent = {"Authorization": auth, "Accept": "application/json"}
     sent.update(headers or {})
     try:
+        # Timeout on the client bounds every phase — connect, write, read, pool — not just the write; the
+        # redirect is credential-safe because httpx2 drops `Authorization` once it leaves the origin.
         async with httpx2.AsyncClient(
             timeout=TIMEOUT_SECONDS, transport=transport, follow_redirects=binary
         ) as client:
+            # `content=`, never form-encoded: the multipart boundary is hand-built and must reach Jira
+            # byte-for-byte.
             resp = await client.request(method, url, content=data, headers=sent)
             if not resp.is_success:
                 raise JiraStatusError(
@@ -599,6 +504,8 @@ async def request(
             if binary:
                 return resp.status_code, resp.content
             return resp.status_code, json.loads(resp.content) if resp.content else None
+    # Ordered, not interchangeable: `TimeoutException` subclasses `RequestError`, so catching the family
+    # first would rename every stall an unreachable host.
     except httpx2.TimeoutException as exc:
         raise TrackerError(f"{method} {url} timed out after {TIMEOUT_SECONDS}s") from exc
     except httpx2.RequestError as exc:
@@ -617,9 +524,8 @@ async def _send_json(
 ) -> object:
     """One JSON-bodied call whose status is asserted, returning the parsed body (often None).
 
-    Jira answers its writes with either a 204 and an empty body or a 201 and an echo, and a status
-    outside what the endpoint is known to return means the write did not land the way the caller
-    reports it did — so `expect` is per call site rather than "any 2xx".
+    `expect` is per call site rather than "any 2xx": Jira answers a write with either a 204 and no body
+    or a 201 and an echo, and an unexpected status means the write did not land as the caller reports.
     """
     status, body = await request(method, url, auth, json.dumps(payload).encode(), {"Content-Type": "application/json"})
     if status not in expect:
@@ -637,15 +543,11 @@ async def _read_fields(base: str, auth: str, issue: str, names: tuple[str, ...])
 
 
 async def _upload(base: str, auth: str, issue: str, path: Path) -> dict:
-    """One verified multipart upload of `path` to `issue`, and the evidence it landed.
-
-    Shared by `attach-artifact` and the replace path rather than written twice: the hand-built
-    boundary is the part of this module Jira validates byte-for-byte, and a second copy of it is a
-    second place for the filename refusal below to be left out.
-    """
+    """One verified multipart upload of `path` to `issue`, and the evidence it landed."""
     filename = _checked_source(path)
     boundary = "----shipyard-" + secrets.token_hex(16)
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    # One shared copy of the hand-built boundary: a second would be a second place to omit the refusal.
     payload = b"".join([
         f"--{boundary}\r\n".encode(),
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode(),
@@ -683,16 +585,9 @@ async def _upload(base: str, auth: str, issue: str, path: Path) -> dict:
 
 
 def _checked_source(path: Path) -> str:
-    """`path.name`, refusing before any request the two things an upload cannot recover from.
-
-    The filename is checked, not escaped: it goes into a hand-assembled `Content-Disposition` header,
-    where a quote or backslash malforms the quoted string and a CR or LF — both legal in a POSIX
-    filename — appends attacker-chosen headers to the request. Refusing the four characters is one
-    comparison; escaping them correctly is a multipart quoting implementation.
-
-    Both checks live here so the replace path can make them before it deletes anything: a missing or
-    unnameable file discovered after the old attachment is gone leaves the issue with nothing.
-    """
+    """`path.name`, refusing before any request the two things an upload cannot recover from."""
+    # Checked, not escaped: refusing four characters is one comparison, escaping them correctly is a
+    # multipart quoting implementation. CR and LF are both legal in a POSIX filename.
     if any(ch in path.name for ch in FORBIDDEN_IN_FILENAME):
         raise TrackerError(
             "attachment filename may not contain a quote, backslash, carriage return or newline: "
@@ -704,13 +599,10 @@ def _checked_source(path: Path) -> str:
 
 
 async def _get_attachments(base: str, auth: str, issue: str) -> list[dict]:
-    """Every attachment currently on `issue`, or a failure naming the shape that came back.
-
-    An unreadable field is a failure rather than an empty list, because both callers read absence as
-    an answer: the resolver would report "no attachment by that name" for an issue that has one, and
-    the delete verification would read a field it could not parse as proof the file is gone.
-    """
+    """Every attachment currently on `issue`, or a failure naming the shape that came back."""
     found = (await _read_fields(base, auth, issue, ("attachment",))).get("attachment")
+    # A failure, not an empty list: both callers read absence as an answer — "no attachment by that name"
+    # for an issue that has one, or an unparseable field taken as proof a delete landed.
     if not isinstance(found, list) or not all(isinstance(a, dict) for a in found):
         raise TrackerError(
             f"read of {issue}'s attachments returned {_shape(found)}, not a list of attachments; the issue's "
@@ -720,14 +612,9 @@ async def _get_attachments(base: str, auth: str, issue: str) -> list[dict]:
 
 
 def _resolve_attachment(attachments: list[dict], filename_or_id: str, issue: str) -> dict:
-    """The one attachment `filename_or_id` names, by attachment id or by exact filename.
-
-    Jira lets one issue carry several attachments with the same name, so a filename is not a key: two
-    uploads of one transcript are two attachments, and picking either would download or delete an
-    arbitrary one of them. The id is therefore accepted in the same argument and tried first, and
-    anything other than exactly one match fails listing the candidates with their ids and timestamps —
-    which is what a caller needs to name the one it meant.
-    """
+    """The one attachment `filename_or_id` names, by attachment id or by exact filename."""
+    # Jira lets one issue carry several attachments with one name, so a filename is not a key and picking
+    # either of two uploads of one transcript is arbitrary — hence the id in the same argument, tried first.
     by_id = [a for a in attachments if _field(a, "id") == filename_or_id]
     matches = by_id if len(by_id) == 1 else [a for a in attachments if a.get("filename") == filename_or_id]
     if len(matches) == 1:
@@ -743,18 +630,14 @@ def _resolve_attachment(attachments: list[dict], filename_or_id: str, issue: str
 
 
 async def _delete_attachment(base: str, auth: str, issue: str, attachment_id: str) -> None:
-    """Delete one attachment and prove it is gone by re-reading the issue's own attachment field.
-
-    The 204 alone is not the evidence: it says Jira accepted the call, while the read says the file is
-    no longer on the issue — which is the claim both the delete and the replace verbs make to their
-    caller, and the claim a stale transcript left in place would silently falsify.
-    """
+    """Delete one attachment and prove it is gone by re-reading the issue's own attachment field."""
     status, _ = await request("DELETE", _attachment_url(base, attachment_id), auth)
     if status != 204:
         raise TrackerError(
             f"expected HTTP 204 deleting attachment {attachment_id} from {issue}, got {status}; treat the "
             "deletion as failed"
         )
+    # The 204 only says Jira accepted the call; only this read says the file is off the issue.
     if any(_field(a, "id") == attachment_id for a in await _get_attachments(base, auth, issue)):
         raise TrackerError(
             f"attachment {attachment_id} is still on {issue} after the delete reported success; treat the "
@@ -770,16 +653,12 @@ def _attachment_url(base: str, attachment_id: str) -> str:
 def _summary(base: str, key: str, fields: dict) -> dict:
     """The keys `find-issues` reports per item, which `get-issue` also returns verbatim.
 
-    Both verbs build their common half here so the two can never drift into reporting the same issue
-    under different key names or with one side canonicalised and the other native.
-
-    `labels` is refused rather than filtered when it is not a list of strings, exactly as `add_label`
-    refuses to write such a field back. Filtering was worse than either: a string `"needs-spec"` came
-    back as its own characters, an entry that was an object was dropped from an otherwise plausible
-    list, and a number raised a bare `TypeError` past every `TrackerError` this module promises. Absent
-    is `[]`, honestly — Jira omits the field on an issue with no labels.
+    Built once so the two verbs cannot drift into naming the same issue's keys differently, or into
+    canonicalising one side and leaving the other native.
     """
     labels = fields.get("labels")
+    # Refused, not filtered: filtering iterated a bare string into its characters, dropped an object
+    # entry, and let a number raise a bare `TypeError`. Jira omits the field on an unlabelled issue.
     if labels is not None and (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)):
         raise TrackerError(
             f"{key} returned a labels field that is not a list of strings but {_shape(labels)}; refusing "
@@ -797,24 +676,14 @@ def _summary(base: str, key: str, fields: dict) -> dict:
 
 
 def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
-    """One issue's comments plus whether the page left any out, in the order Jira returned them.
-
-    The comment endpoint pages, so a bounded read cannot tell its caller "that is the whole thread"
-    without checking. Completeness is read off Jira's own `startAt`/`total` when both are there; when
-    `total` is absent the only honest signal left is a page that came back full, which is reported as
-    possibly truncated rather than assumed complete.
-
-    An entry that is not an object fails the read rather than being skipped past. Skipping one dropped
-    a comment out of the returned thread while `total` and `startAt` still agreed the page was
-    complete — a comment missing from a read that reports itself whole, which is the same silence the
-    truncation signal exists to prevent, and which the search read a few hundred lines above already
-    refuses for the same drift.
-    """
+    """One issue's comments plus whether the page left any out, in the order Jira returned them."""
     entries = thread.get("comments") if isinstance(thread, dict) else None
     if not isinstance(entries, list):
         raise TrackerError(f"comment read of {issue} returned no comments list; got {_shape(thread)}")
     items: list[dict] = []
     for index, entry in enumerate(entries):
+        # Raised, not skipped: a dropped comment left the thread short while `total` and `startAt` still
+        # agreed the page was complete.
         if not isinstance(entry, dict):
             raise TrackerError(
                 f"comment {index} of {issue} is not a comment object but {_shape(entry)}, so the thread "
@@ -826,6 +695,8 @@ def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
             "created": _field(entry, "created") or "",
             "body": adf.adf_to_markdown(entry.get("body")),
         })
+    # Jira does not always send `total`, so the fallback signal is a page that came back full — reported
+    # as possibly truncated rather than assumed complete.
     total = thread.get("total") if isinstance(thread, dict) else None
     start = thread.get("startAt") if isinstance(thread, dict) else None
     if isinstance(total, int) and not isinstance(total, bool):
@@ -835,20 +706,12 @@ def _comments(issue: str, thread: object) -> tuple[list[dict], bool]:
 
 
 def _author(author: object, issue: str, index: int) -> str:
-    """One comment author's display name, refusing a shape this adapter cannot read.
-
-    The twin of github's `_login`, and here for the same parity reason the field and entry checks either
-    side already answer: `_field` returns None for anything that is not an object, so a string-shaped
-    author — `"author": "alice"` — came back as `""`, reading exactly like the genuinely absent author of a
-    deleted account, while the github adapter raised on that identical drift. One protocol, one behaviour.
-
-    Fixed at this call site rather than by tightening `_field`, whose tolerance is load-bearing: every
-    other caller reaches into an optional nested object where absent legitimately means absent (`parent` on
-    an orphan, `type` on a link). An absent author still stays honestly empty for the same reason github's
-    does: Jira omits it for a deleted account, which is not a drift.
-    """
+    """One comment author's display name, refusing a shape this adapter cannot read."""
+    # Jira omits the author of a deleted account, so absent stays honestly empty — as in github's `_login`.
     if author is None:
         return ""
+    # Refused here rather than by tightening `_field`, whose tolerance every other caller needs for a
+    # legitimately absent nested object: under it a string-shaped author read back as `""`.
     if not isinstance(author, dict):
         raise TrackerError(
             f"comment {index} of {issue} has an author that is not an author object but {_shape(author)}, "
@@ -860,57 +723,14 @@ def _author(author: object, issue: str, index: int) -> str:
 def _linked(links: object, side: str, field: str, *, strict: bool = True) -> list[str]:
     """The `Blocks`-linked issues sitting on one absolute side of a read issue's links.
 
-    A read carries only the *counterpart* of each link, and the field it arrives under names that
-    counterpart's absolute role — the same roles the write posts, not roles relative to the issue
-    being read. So on a read of X, a counterpart under `BLOCKER_SIDE` blocks X, and one under
-    `BLOCKED_SIDE` is blocked by X.
+    A read carries only the *counterpart* of each link, under the field naming that counterpart's
+    absolute role — the same roles the write posts, not roles relative to the issue being read. So on a
+    read of X, a counterpart under `BLOCKER_SIDE` blocks X and one under `BLOCKED_SIDE` is blocked by X.
 
-    A well-formed link naming some other type is skipped — that filter is what this function is for — but
-    an entry that is not a link object at all fails the read, for the same reason a whole field of the
-    wrong shape does. One silent `continue` used to cover both, so malformed and irrelevant were
-    indistinguishable and a link this could not parse reported as no link. A link whose `type` is
-    present but unreadable is the same fault one level in: Jira's own spec marks `type` required on an
-    `IssueLink` without guaranteeing a `name` inside it, and `(_field(...) or "") != BLOCKS` collapsed
-    "no name to compare" into "compared, and it is not Blocks".
-
-    The counterpart itself needs the same two answers kept apart, and one `if key:` collapsed them.
-    A Blocks link arrives under exactly one of the two sides, so the *absent* side is a real "nothing in
-    this direction" and every ordinary read has one — but a side that is *present* and names no issue is
-    the type fault one level over: Jira's own REST v3 spec documents `key` on this object as "Required if
-    `id` isn't provided", the same specification the type check above cites, so an object carrying
-    neither is drift and dropping it reported a real Blocks link as no link at all. `get_issue` has no
-    truncation channel for `dependencies`, so that drop was unsignalled in a field a caller reads to
-    decide whether an issue is blocked — the drift `_keys` and github's `_refs` already raise on. An
-    `id`-only counterpart is spec-legal and still returns no key, so it stays a skip: this raise is about
-    an unaddressable object, not about the shape this function happens to want.
-
-    This was measured, not assumed, because getting it backwards is silent and inverts every
-    dependency: a link posted as "BLOCKER blocks BLOCKED" reads back on BLOCKED with BLOCKER under
-    `outwardIssue`, and on BLOCKER with BLOCKED under `inwardIssue`. Confirmed against real linked
-    issues whose summaries make the intended direction unambiguous.
-
-    An absent field means no links, honestly: Jira omits a relation an issue has none of. A field that
-    is present but not a list is a failure instead, because `dependencies` is what a caller reads to
-    decide whether an issue is blocked, and a shape this cannot parse must not come back as "nothing
-    is blocking it" — that reads identically to a genuinely unblocked issue. The read-back that
-    verifies a freshly written dependency goes through here too, so the same drift would have reported
-    a link as confirmed that was never seen.
-
-    `strict=False` keeps every one of those *field*-level answers and downgrades only the per-entry
-    raises to a skip, for the one caller that is not reading the list but looking for a single entry in
-    it: `add_dependency`'s post-write verification. There, the write has already landed, the question is
-    only whether the entry just created can be seen, and an entry this cannot parse is by definition not
-    that entry — so raising over an unrelated, pre-existing malformed link failed a write that succeeded
-    and invited a retry that would duplicate it. Every other caller reports the whole list to someone who
-    acts on it and keeps the strict answer, because there a skipped entry is a dependency silently
-    missing.
-
-    `_str_field`, not `_field`, for both the type name and the counterpart: neither decision can rest on
-    truthiness. A `{"key": {...}}` lands the string `"{'a': 1}"` in `dependencies` as if it were an issue
-    key, an `id` of any truthy shape reads as "addressable, just not by key" and drops a real link, and a
-    `type.name` of any truthy shape coerces past the unreadable-type refusal below only to fail the
-    `Blocks` comparison — so a real Blocks link whose type name drifted vanished from the result as a
-    filtered non-blocking link instead of raising. Jira's spec makes all three members strings.
+    An absent field means no links; a field present but not a list is a failure, since `dependencies` is
+    what a caller reads to decide whether an issue is blocked and a shape this cannot parse must not come
+    back as "nothing is blocking it". `strict=False` keeps every field-level answer and downgrades only
+    the per-entry raises to a skip, for `add_dependency`'s post-write verification.
     """
     if links is None:
         return []
@@ -928,6 +748,8 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
                 f"entry {index} of the {field} field is not a link object but {_shape(link)}, so the "
                 "relations on this issue are unknown and it must not be reported as having none"
             )
+        # Jira's REST v3 spec marks `type` required on an `IssueLink` without guaranteeing a `name` inside
+        # it, so "no name to compare" is a distinct answer from "compared, and it is not Blocks".
         type_name = _str_field(link.get("type"), "name")
         if type_name is None:
             if not strict:
@@ -938,9 +760,13 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
             )
         if type_name.lower() != BLOCKS.lower():
             continue
+        # Measured, not assumed, since getting it backwards is silent and inverts every dependency: a link
+        # posted as "BLOCKER blocks BLOCKED" reads back on BLOCKED with BLOCKER under `outwardIssue`.
         counterpart = link.get(side)
         if counterpart is None:
             continue  # this direction does not apply to this link, which is not a fault
+        # Spec v3 documents `key` here as "Required if `id` isn't provided", so a counterpart carrying
+        # neither is drift, and `dependencies` has no truncation channel to signal a dropped link.
         key = _str_field(counterpart, "key")
         if key:
             found.append(key)
@@ -960,16 +786,9 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
 def _keys(value: object, field: str) -> list[str]:
     """Every issue key in a list-of-issues field. An entry carrying none fails the read.
 
-    Absent is empty, for the same reason as `_linked`: Jira omits a relation field an issue has none
-    of. Present but not a list raises instead, naming `field` — a child list that cannot be parsed
-    reads as a bare, undecomposed issue, which is precisely the answer a caller acts on.
-
-    An entry that is not an issue object, or is one with no key, raises for that same reason one level
-    down: skipping it returned a *shorter* list while `children_truncated` still reported `False`, so
-    the read claimed to be complete while a real child was missing from it — the drift `_comments`
-    already refuses per entry. `_str_field` reads the key so that refusal is reachable: `_field` coerces
-    a `{"key": {...}}` into a truthy fabricated string, which passed the guard below and put a made-up
-    key in `children`.
+    Absent is empty — Jira omits a relation field an issue has none of — but a field, or an entry, this
+    cannot parse raises: a short or unparseable child list reads as a bare, undecomposed issue, and
+    `children_truncated` has no way to signal that a real child went missing from it.
     """
     if value is None:
         return []
@@ -1005,12 +824,10 @@ def _field(value: object, key: str) -> str | None:
 def _str_field(value: object, key: str) -> str | None:
     """One member of a nested object that must really be a non-empty string, or None.
 
-    `_field`'s coercion is load-bearing where a member is displayed (`str()` on a Jira `id` that arrives
-    as a number is the id), and wrong where the member is *acted on*: `_linked` reads `key` into
-    `dependencies`, which callers use as an issue key, and reads `id` to decide that a counterpart is
-    addressable. Under `_field`, `{"key": {"a": 1}}` put the string `"{'a': 1}"` in `dependencies` and any
-    truthy `id` shape silently dropped a real Blocks link. Jira's REST v3 spec types both as strings, so
-    anything else is drift and reads here as absent — which `_linked` then reports as the drift it is.
+    `_field`'s coercion is right where a member is only displayed (`str()` on a Jira `id` arriving as a
+    number is the id) and wrong where one is *acted on*: under it `{"key": {"a": 1}}` put the string
+    `"{'a': 1}"` into `dependencies` as an issue key, and any truthy `id` shape silently dropped a real
+    `Blocks` link. Jira's REST v3 spec types both as strings, so anything else reads here as absent.
     """
     if not isinstance(value, dict):
         return None
@@ -1048,25 +865,15 @@ def _project() -> str:
 async def _project_key(base: str, auth: str, project: str) -> str:
     """The configured project's own key, read back from Jira, or a failure naming the configured value.
 
-    Nothing else here notices a wrong project key. Jira answers a JQL search naming a project that does
+    Nothing else here notices a wrong project key: Jira answers a JQL search naming a project that does
     not exist, or that this account cannot see, with zero issues rather than an error, so a mistyped key
-    reads as an empty board from `find-issues` — "nothing to pick up" from a board with work on it — and
-    only surfaces much later, as a 400 inside a create. Reading the project 404s loudly instead, which is
-    what makes the preflight contract in `skills/tracker/jira/ADAPTER.md` — one failure naming which
-    configured value is wrong — true of the project as well as of the credential.
-
-    The key that comes back is compared, not merely fetched: this endpoint resolves a project by numeric
-    id as well as by key, so a response arriving under a different key is not the project the
-    configuration names.
-
-    Only a `NOT_FOUND` answer is rewritten into a verdict about the configured key, and it keeps the
-    original failure as its cause. Catching every `TrackerError` here relabelled a timeout, an
-    unreachable host, a revoked credential and a 500 as "check your project key" — a diagnosis nothing
-    measured, which sends a reader to edit a setting that was right and drops the fault that happened.
+    reads as an empty board and only surfaces much later, as a 400 inside a create.
     """
     try:
         _, item = await request("GET", f"{base}{API}/project/{quote(project, safe='')}", auth)
     except JiraStatusError as exc:
+        # Only a 404 is rewritten into a verdict about the key: relabelling every `TrackerError` blamed the
+        # configuration for a timeout, a revoked credential or a 500.
         if exc.status != NOT_FOUND:
             raise
         raise TrackerError(
@@ -1075,6 +882,8 @@ async def _project_key(base: str, auth: str, project: str) -> str:
             "search, which answers zero issues rather than failing"
         ) from exc
     key = _field(item, "key") or ""
+    # Compared, not merely fetched: this endpoint also resolves a project by numeric id, so a response
+    # arriving under a different key is not the project the configuration names.
     if key.strip() != project.strip():
         raise TrackerError(
             f"reading tracker_config.project {project!r} came back as project {key or 'nothing'!r}, so the "
@@ -1086,8 +895,8 @@ async def _project_key(base: str, auth: str, project: str) -> str:
 def _credentials() -> tuple[str, str]:
     """Base URL and the `Authorization` header value: config identifiers plus the env-held secret.
 
-    The site is rejected if it carries userinfo, which is what makes this module's promise that no
-    credential reaches a URL true of the configured value too and not just of the env-held token.
+    A site carrying userinfo is rejected, so this module's promise that no credential reaches a URL holds
+    for the configured value too and not only for the env-held token.
     """
     email = _identifier("tracker_config.email")
     site = _identifier("tracker_config.site")

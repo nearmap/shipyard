@@ -1,52 +1,25 @@
-"""The `sy` MCP server, built on the official `mcp` SDK's `MCPServer`.
+"""The `sy` MCP server: every tool the plugin exposes, built on the `mcp` SDK's `MCPServer`.
 
-The SDK owns the protocol: framing, `initialize`, protocol-version negotiation, `tools/list`
-schema generation from these functions' type hints, `tools/call` dispatch, and the tool-failure
-`isError` result. **No code in this package implements or overrides any of that** — a protocol
-concern that appears here is a bug, and the version string this server speaks is deliberately not
-findable in this repo.
+The SDK owns the protocol — framing, `initialize`, version negotiation, `tools/list` schemas from
+these functions' type hints, `tools/call` dispatch, the `isError` result — and no code here
+implements or overrides any of it, which is why no protocol version string is findable in this repo.
+Tools are `async` wherever they do I/O, so a slow attachment upload cannot block an unrelated call;
+the configuration tools stay synchronous, reading small local files and mostly the resolver's hot
+copy.
 
-Tools are `async` wherever they do I/O, so a slow attachment upload cannot block an unrelated tool
-call. The configuration tools stay synchronous: they read small local files, and mostly serve the
-resolver's hot copy without touching disk at all. `usage_summarize` and `export_transcript` are
-synchronous for a weaker but deliberate reason — the work is local disk reads bounded by the calling
-session's own transcript tree, with no network in it, so a thread offload would buy only the chance to
-interleave another call during a read the caller is waiting on anyway.
-`secrets.sanitize` also stays synchronous inside the async tool — it is local disk work bounded by
-the artifact size, and making it awaitable would buy nothing while adding a way to interleave a
-scrub with the upload it must strictly precede.
+**stdout carries protocol frames and nothing else.** A helper that prints to stdout corrupts the
+stream and desynchronises the client, so failures raise and every diagnostic goes to stderr.
 
-**stdout carries protocol frames and nothing else.** Anything a helper prints to stdout corrupts
-the stream and desynchronises the client, which is why the ported adapter code raises instead of
-printing and why every diagnostic goes to stderr.
-
-Run it with `pixi run sy-server` (which is `python -m sy_tools.server`); `.mcp.json` registers
-exactly that, and passes `--manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml` because it has to —
-`${CLAUDE_PLUGIN_ROOT}` interpolates inside the manifest's JSON strings, which is what makes the
-absolute form work regardless of launch cwd; `"cwd"` is not an option, because Claude Code ignores
-that key silently.
-
-**Measured, not assumed:** `pixi run <declared-task>` does not inherit the caller's working
-directory — it runs the task from the manifest's own directory, where a bare `pixi run <command>`
-does inherit it (confirmed with a discriminating control: the same probe reports the manifest
-directory when registered as a task, the call site when passed as a command). So this process's
-cwd is always the *plugin's* checkout, never the consumer project's — which would break
-`config.repo_root()` if it depended on cwd, since a marketplace install's plugin checkout holds no
-`.shipyard/` at all. It doesn't: `repo_root()` reads `CLAUDE_PROJECT_DIR` first, the pointer Claude
-Code sets for every MCP stdio server it launches (matching hooks), and that env var is immune to
-pixi's cwd reset — only falling back to a cwd-derived `git rev-parse --show-toplevel` for the
-invocations Claude Code doesn't launch (manual `pixi run sy-server`, `docs/smoke_mcp.py`, pytest),
-where cwd is already correct. Switching the launch line to an ad-hoc command instead of the
-declared task was the other candidate fix and was rejected: it does dodge the cwd reset, but
-`python -m sy_tools.server` then can't find the `sy_tools` package at all in a real install, since
-importability here relies on Python's implicit cwd-as-`sys.path[0]` and the consumer project has no
-reason to contain a `sy_tools/` package of its own.
-
-The manifest carries no `env` block, which is deliberate and was settled empirically rather than
-from documentation: a stdio server inherits the launching process's environment, so the one real
-secret (the tracker credential) arrives without ever being named in a committed file. Verified with
-a discriminating control — the same `validate_config` call reports the credential present when it
-is exported and missing when it is not.
+Run it with `pixi run sy-server` (which is `python -m sy_tools.server`). `.mcp.json` registers that
+and passes `--manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml` absolutely, because
+`${CLAUDE_PLUGIN_ROOT}` interpolates inside the manifest's JSON strings while a `"cwd"` key there is
+ignored silently. The manifest carries no `env` block, settled empirically: a stdio server inherits
+the launching process's environment, so the tracker credential arrives without ever being named in a
+committed file. Measured, not assumed: `pixi run <declared-task>` runs the task from the manifest's
+own directory and does not inherit the caller's cwd, where a bare `pixi run <command>` does — so this
+process's cwd is always the plugin's checkout, never the consumer project's. Launching an ad-hoc
+command instead of the declared task was the other candidate and was rejected: it dodges the cwd
+reset, but `python -m sy_tools.server` then cannot import `sy_tools` at all in a real install.
 """
 from __future__ import annotations
 
@@ -82,12 +55,10 @@ IssueId = Annotated[
 
 
 def _required(**fields: str) -> None:
-    """Reject an empty or whitespace-only required string argument before any tracker call happens.
-
-    Whitespace counts as empty: a title of `"\\n"` passes schema validation and would otherwise
-    create a permanently blank issue that no search can find again.
-    """
+    """Reject an empty or whitespace-only required string argument before any tracker call happens."""
     for name, value in fields.items():
+        # Whitespace counts as empty: a title of `"\n"` passes schema validation and would make a
+        # permanently blank issue that no search can find again.
         if not value.strip():
             raise ToolError(f"{name!r} is required and must be a non-empty string")
 
@@ -95,70 +66,37 @@ def _required(**fields: str) -> None:
 def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
     """Caller-supplied fields with every credential value this process holds replaced by a marker.
 
-    Returns the texts to write, in the order given, and one report covering all of them. The report
-    names variables and counts occurrences and nothing else, so a caller can see that something was
-    stripped without the result disclosing what: a redaction the caller cannot see is one nobody
-    notices happened, and a redaction the caller can read is the leak reintroduced in the reply.
-
-    Variadic rather than one body at a time, because a write's *other* caller-supplied strings are the
-    same class of value and a per-field helper got wired to the body alone: `create-issue`'s `title`
-    reached the adapter unscrubbed while the body beside it was scrubbed and the report still said
-    `redactions: 1`, which reads as full coverage of that write. `add-label`'s `label` is the same
-    shape. One call per write, with every field it carries, is what keeps the count honest — a report
-    covering some of a write's fields is worse than no report, since it is read as covering all of them.
-
-    Only `secrets.scrub_text`'s in-memory known-value pass runs here, never the scanner pass that
-    `secrets.sanitize` adds on top of it for attachments. That is a deliberate line: the scanner
-    shells out to an external binary over a *file*, and a body is a string composed in this process
-    that no file exists for. Routing every issue and comment write through a subprocess would make
-    the whole tracker write surface fail whenever that binary is missing, to gain a scan of text this
-    process wrote itself.
-
-    The `secret_env` names the selected adapter declares are forced in on top of auto-discovery,
-    because `discover_secret_vars` selects on a *name* word-heuristic and a value-length floor — so
-    the one credential this repo actually declares can be missed by the heuristic, which is exactly the
-    value that must never reach a tracker body.
-
-    The *name* heuristic is what a declaration overrides; `secrets.DEFAULT_MIN_LENGTH` still applies,
-    because that floor is not a guess about what is credential-shaped but the bound that keeps a scrub
-    from being a corruption. Forcing a sub-floor value in replaced every occurrence of it anywhere in a
-    body or title — a one-character declared value redacted every space, verified — which mangles
-    unrelated prose to protect a value too short to be a credential, and disagreed with
-    `secrets.sanitize`, which treats a sub-floor value as absent and refuses the write outright. A name
-    dropped for that reason is reported under its own key rather than silently: this path cannot refuse
-    (see below), so the alternative is a caller told nothing while a declared credential went unscrubbed.
-
-    A declared name absent from the environment is *reported*, not raised, which is the opposite of
-    `secrets.sanitize`'s `require=` and deliberately so. `sanitize` scrubs a file some other process
-    produced, which may hold a value this process never sees, so a clean zero-redaction run there is
-    a false all-clear worth failing on. A body is composed here, out of strings this process holds; a
-    value this process's environment does not have cannot be in it, so there is nothing missed to
-    warn about. Raising would instead refuse every tracker write for any user whose credential lives
-    outside the environment — a credential-shaped hard block on the entire write surface, in the name
-    of scrubbing a value that could not have been there.
-
-    Callers run this *before* `_validate_machine_log`, on the scrubbed text, because the body that is
-    validated has to be the body that is sent. A machine log is schema-validated JSON, and a scrub
-    rewrites values inside it; validating the original and writing the scrubbed text would ship a
-    body no check ever saw — the unvalidated-machine-log incident that gate exists to prevent, walked
-    back in through the scrubber. Scrubbing first can only turn an accepted body into a refusal,
-    which is the safe direction: a log whose numbers were a credential is not a log worth posting.
+    Returns the texts in the order given, plus one report naming the variables it redacted and counting
+    occurrences, never disclosing a value. Call it once per write, with every field that write carries:
+    a report covering some of a write's fields is read as covering all of them. Call it *before*
+    `_validate_machine_log`, on the scrubbed text — the body that gets validated has to be the body
+    that gets sent, or a scrub rewriting values inside a machine log ships a body no check ever saw.
     """
     known = secrets.discover_secret_vars(extra_words=config.extra_secret_words())
     absent: list[str] = []
     too_short: list[str] = []
+    # Forced in over auto-discovery: `discover_secret_vars`'s name heuristic can miss the credential
+    # this repo declares, which is the one value that must never reach a tracker body.
     for declared in config.adapter_map().get("secret_env", []):
         name = str(declared)
         value = os.environ.get(name, "")
+        # A declaration overrides the name heuristic, never the length floor: forcing a sub-floor value in
+        # redacted every space in a body (measured), and `secrets.sanitize` treats one as absent anyway.
         if len(value) >= secrets.DEFAULT_MIN_LENGTH:
             known[name] = value
         elif value:
             too_short.append(name)
         else:
+            # Reported, never raised as `secrets.sanitize`'s `require=` does: a value this environment
+            # lacks cannot be in a body composed here, and raising would refuse every tracker write.
             absent.append(name)
     scrubbed: list[str] = []
     totals: Counter[str] = Counter()
+    # Variadic because a per-field helper got wired to the body alone: `create-issue`'s title reached the
+    # adapter unscrubbed while the report still said `redactions: 1`, which reads as full coverage.
     for text in texts:
+        # The in-memory known-value pass only, never `sanitize`'s scanner pass: that shells out over a
+        # *file*, and a body is a string composed here that no file exists for.
         clean, counts = secrets.scrub_text(text, known)
         scrubbed.append(clean)
         totals.update(counts)
@@ -182,17 +120,15 @@ async def create_issue(
 ) -> dict[str, Any]:
     """Create an issue in the configured tracker and return its opaque id and URL.
 
-    Canonical verb `create-issue`. Passing `parent` is also the canonical verb `create-child`:
-    there is deliberately no separate tool for a child, because it is this same write.
+    Canonical verb `create-issue`. Passing `parent` is also the canonical verb `create-child`: there
+    is deliberately no separate tool for a child, because it is this same write.
 
-    A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
-    machine log written into a body cannot bypass that gate; every other body passes through unchanged
-    apart from the credential scrub, whose `scrub` key reports the variable names it redacted. The
-    `title` is scrubbed on the same call and counted in the same report: a title is as likely to be
-    pasted out of command output as a body is, it is the field every search result and every failed
-    write echoes back, and it cannot be edited back out of a tracker's own history.
+    A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is. Title and
+    body are credential-scrubbed, and `scrub` reports the variable names it redacted.
     """
     _required(title=title)
+    # The title is scrubbed with the body: every search result echoes it back, and it cannot be edited
+    # back out of a tracker's own history.
     (title, body), scrub = _scrub_texts(title, body)
     _validate_machine_log(body)
     created = await tracker.adapter().create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
@@ -222,11 +158,9 @@ async def update_issue(
     """Replace an issue's body with new Markdown.
 
     Canonical verb `update-issue`. A whole-body replacement, never an append: to keep any of the
-    existing body, read it with `get-issue` first and send it back as part of `body`.
-
-    A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, so a
-    machine log written into a body cannot bypass that gate; every other body passes through unchanged
-    apart from the credential scrub, whose `scrub` key reports the variable names it redacted.
+    existing body, read it with `get-issue` first and send it back as part of `body`. A `body` that
+    claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, and the body is
+    credential-scrubbed, with `scrub` reporting the variable names it redacted.
     """
     _required(issue=issue)
     (body,), scrub = _scrub_texts(body)
@@ -338,15 +272,13 @@ async def add_label(
 ) -> dict[str, Any]:
     """Add one label to an issue, keeping the labels already on it.
 
-    Canonical verb `add-label`. Additive by contract, and the full resulting label set comes back
-    so the caller can confirm nothing was displaced.
-
-    The `label` goes through the same credential scrub every body does, reported under `scrub`. Lower
-    risk than a body, and the same class: it is a caller-supplied string that lands in durable tracker
-    state and in the tracker CLI's own error output, so exempting it would rest on a claim about what a
-    caller pastes rather than on a check.
+    Canonical verb `add-label`. Additive by contract, and the full resulting label set comes back so
+    the caller can confirm nothing was displaced. The `label` goes through the same credential scrub
+    every body does, reported under `scrub`.
     """
     _required(issue=issue, label=label)
+    # Scrubbed like a body: a caller-supplied string that lands in durable tracker state and in the
+    # tracker's own error output, so exempting it would rest on a claim about what a caller pastes.
     (label,), scrub = _scrub_texts(label)
     added = await tracker.adapter().add_label(issue, label)
     return {**added, "scrub": scrub}
@@ -378,6 +310,8 @@ async def post_comment(
     return {**posted, "scrub": scrub}
 
 
+# Loose on purpose — markers are interchangeable and the counts need not match: looseness can only ever
+# *find* a block, and a block found is a block validated, where a block missed reaches the tracker unread.
 _FENCE_OPENER = re.compile(r"[ \t]*(?:`{3,}|~{3,})")
 """A line that opens a fenced block: the marker, then anything at all in the info-string position."""
 
@@ -386,29 +320,14 @@ _FENCE_CLOSER = re.compile(r"[ \t]*(?:`{3,}|~{3,})[ \t]*")
 
 
 def _fenced_contents(body: str) -> list[tuple[int, int]]:
-    """Every properly closed fenced block's *content* span, as offsets into `body`.
-
-    One forward pass over the lines, because the equivalent backtracking pattern was quadratic: a
-    lazy `(.*?)` reaching for the next closing marker re-scans the whole rest of the body once per
-    opener that never closes, which measured 93 seconds on a 320 KB body holding 40,000 unclosed
-    openers. That is not merely slow — `_validate_machine_log` runs synchronously inside the
-    `post_comment` coroutine, so one malformed body stalls the event loop for every other tool call
-    in flight. This scan is linear in the body's length and keeps no state beyond the open fence.
-
-    The matching rules are the pattern's, unchanged, and each is load-bearing:
-
-    * Lines are split on `\\n` alone. `str.splitlines` also splits on `\\r`, `\\f` and more, which
-      would newly *find* the block in a CRLF body — where `` ```\\r `` is not the marker alone, so
-      nothing closes and the whole body stays unfenced text, which is the refusal that body earns.
-    * The info string is anything. `handoff-accounting.md` writes the metrics block as ```` ```json ````,
-      but a caller that omits the language must not thereby skip validation, and what decides whether
-      a block is a machine log is the `schema` key inside it, not the fence it arrived in.
-    * An opener needs a newline after it, so a marker on an unterminated last line opens nothing.
-    * Backticks and tildes are interchangeable within a pair and the counts need not match. Loose on
-      purpose: a looseness here can only ever *find* a block, and a block found is a block validated,
-      where a block missed is one that reaches the tracker unread.
-    """
+    """Every properly closed fenced block's *content* span, as offsets into `body`."""
+    # One forward pass, not the equivalent lazy `(.*?)` reaching for the next closing marker: that
+    # re-scans the rest of the body once per opener that never closes, measured at 93 seconds on a 320 KB
+    # body holding 40,000 of them, and this runs synchronously inside the `post_comment` coroutine, so one
+    # malformed body would stall the event loop for every other tool call in flight.
     spans: list[tuple[int, int]] = []
+    # Split on `\n` alone: `str.splitlines` also splits on `\r` and `\f`, which would newly *find* the
+    # block in a CRLF body, where nothing closes and staying unfenced text is the refusal that body earns.
     lines = body.split("\n")
     last = len(lines) - 1
     content_start: int | None = None
@@ -416,6 +335,8 @@ def _fenced_contents(body: str) -> list[tuple[int, int]]:
     for index, line in enumerate(lines):
         line_start, offset = offset, offset + len(line) + 1
         if content_start is None:
+            # Any info string opens a block — a caller that omits the language must not thereby skip
+            # validation — and an opener needs a newline after it, so an unterminated last line opens none.
             if index < last and _FENCE_OPENER.match(line):
                 content_start = offset
         elif _FENCE_CLOSER.fullmatch(line):
@@ -425,19 +346,12 @@ def _fenced_contents(body: str) -> list[tuple[int, int]]:
 
 
 def _outside_fences(body: str, spans: list[tuple[int, int]]) -> str:
-    """Whatever is left of the body once every properly closed block's *content* is cut out.
-
-    Cut by span rather than by substring replacement: two identical blocks in one body would make
-    `str.replace` remove the wrong copies and leave the count short.
-
-    The cut is the content span, not the whole block, so the fence delimiter lines stay in what comes
-    back. That matters for the opening line: content starts after its newline, so anything sitting in
-    the info-string position — conventionally a bare language tag, but anything is allowed there — is
-    not content and is never parsed or validated. Cutting the whole block swallowed it, which let one
-    fence carry a second machine log there that reached the tracker unread. Leaving it in makes it a
-    stray mention like any other unfenced text.
-    """
+    """Whatever is left of the body once every properly closed block's *content* is cut out."""
     kept, cursor = [], 0
+    # Cut by span, not by `str.replace`: two identical blocks in one body would remove the wrong copies.
+    # The span is the content, so the fence lines stay in — anything in the opening line's info-string
+    # position is never parsed, and cutting the whole block swallowed a second machine log parked there,
+    # which reached the tracker unread. Left in, it is a stray mention like any other unfenced text.
     for start, end in spans:
         kept.append(body[cursor:start])
         cursor = end
@@ -446,17 +360,14 @@ def _outside_fences(body: str, spans: list[tuple[int, int]]) -> str:
 
 
 def _as_json(block: str) -> object:
-    """One fenced block's parsed JSON, or None when it is not JSON at all (a shell sample, prose).
-
-    `json.loads` fails in three ways and only one is a `JSONDecodeError`: an integer literal past
-    `sys.int_info.str_digits_check_threshold` raises a bare `ValueError` from the digit-conversion
-    guard, and nesting deeper than the decoder's recursive descent raises `RecursionError`. All three
-    mean the same thing here — this content does not parse, so fall back to reading its text — and
-    catching only the decode error let a body pick which uncaught exception escaped the tool instead.
-    """
+    """One fenced block's parsed JSON, or None when it is not JSON at all (a shell sample, prose)."""
     try:
         return json.loads(block)
-    except (ValueError, RecursionError):  # JSONDecodeError is a ValueError.
+    # `json.loads` fails three ways and only one is a `JSONDecodeError` (itself a `ValueError`): an integer
+    # literal past `sys.int_info.str_digits_check_threshold` raises a bare `ValueError`, and nesting deeper
+    # than the decoder's recursive descent raises `RecursionError`. Catching only the decode error let a
+    # body pick which uncaught exception escaped the tool.
+    except (ValueError, RecursionError):
         return None
 
 
@@ -465,45 +376,32 @@ _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 
 def _json_unescaped(text: str) -> str:
-    """`text` with every `\\uXXXX` JSON escape decoded to the character it names.
-
-    Not a JSON string decode — a backslash here is only ever itself — just enough that a literal search
-    for `SCHEMA_ID` cannot be evaded by spelling one of its ASCII characters as an escape instead. That
-    is what the parse-based identity in `_record` settles for content that parses; this is the same
-    question answered for the text that no parse can speak to, so both spellings get one answer.
-
-    One replacement per match is exact for this purpose: `SCHEMA_ID` is pure ASCII, so no surrogate
-    pair has to be rejoined (that matters only for a non-BMP character, and it has none). Decoding
-    cannot hide a literal occurrence either — a match starts `\\u` and `SCHEMA_ID` holds neither
-    character, and it is too long and too non-hex to sit inside one match's four digits.
-    """
+    """`text` with every `\\uXXXX` JSON escape decoded to the character it names."""
+    # Not a JSON string decode — just enough that a literal `SCHEMA_ID` search cannot be evaded by
+    # spelling one of its ASCII characters as an escape, which is what `_record`'s parse-based identity
+    # settles for content that parses. One replacement per match is exact for that: the id is pure ASCII
+    # (no surrogate pair to rejoin) and holds no `\u`, so decoding cannot hide a literal occurrence.
     return _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
 
 
 def _record(parsed: object) -> dict[Any, Any] | None:
-    """The `shipyard.ship_metrics.v1` record a parsed block *is*, or None when it is not one.
-
-    Identity is decided on the **parsed** value, never on the raw text, so it holds however the JSON
-    spelled that string: `"shipyard.ship_metrics.v\\u0031"` decodes to this id and is this record.
-    """
+    """The `shipyard.ship_metrics.v1` record a parsed block *is*, or None when it is not one."""
+    # Identity on the **parsed** value, never the raw text, so it holds however the JSON spelled the
+    # string: a JSON `"shipyard.ship_metrics.v\u0031"` decodes to this id and is this record.
     if isinstance(parsed, dict) and parsed.get("schema") == SCHEMA_ID:
         return parsed
     return None
 
 
 def _claims_within(parsed: object) -> bool:
-    """Whether a parsed block carries a `shipyard.ship_metrics.v1` object at any depth inside it.
-
-    A record one level down is not a machine log this can validate — `_record` is what a machine log
-    *is* — but it is unmistakably a claim, and the only alternative to counting it is posting it
-    unread. Escaping is why the depth matters: a literal `[{"schema": "shipyard.ship_metrics.v1"}]`
-    is caught by the raw-text fallback, so leaving the escaped spelling of that same block to pass
-    would be the identity-versus-text gap reopened one level down.
-
-    Iterative rather than recursive: `json.loads` accepts nesting deep enough to blow a recursive
-    walk's stack, and a body should not be able to choose which exception this check raises.
-    """
+    """Whether a parsed block carries a `shipyard.ship_metrics.v1` object at any depth inside it."""
+    # A record below the top level is not a machine log `_record` can validate, but it is unmistakably a
+    # claim, and the only alternative to counting it is posting it unread: the raw-text fallback catches
+    # the literal spelling of a nested block, so letting the escaped spelling pass would reopen the
+    # identity-versus-text gap one level down.
     stack = [parsed]
+    # Iterative, not recursive: `json.loads` accepts nesting deep enough to blow a recursive walk's stack,
+    # and a body must not get to choose which exception this check raises.
     while stack:
         value = stack.pop()
         if isinstance(value, dict):
@@ -518,56 +416,47 @@ def _claims_within(parsed: object) -> bool:
 def _validate_machine_log(body: str) -> None:
     """Reject a malformed `shipyard.ship_metrics.v1` block before the body it sits in is written.
 
-    Every caller that accepts a body runs this — `post-comment`, `create-issue`, `update-issue` — so
-    its refusals name the body, not a comment: an issue body is gated identically to a comment's.
-
-    A body *claims* this schema when it names the id anywhere, in any JSON spelling, or carries a fenced
-    block that parses as this schema however that block spelled the id. A body that claims it must carry
-    exactly one fenced JSON object that validates against the schema and nothing else that claims it: a
-    second block, or a bare mention outside every block, is refused as ambiguous rather than resolved for
-    the caller. So prose quoting earlier metrics has to leave the literal id out — say "the ship metrics
-    log" — and the machine log is posted on its own.
-
-    A body that claims nothing passes through untouched: prose, a code sample, another schema's id.
+    Every caller that accepts a body runs this — `post-comment`, `create-issue`, `update-issue` — so an
+    issue body is gated identically to a comment's. A body *claims* this schema when it names the id in
+    any JSON spelling, or carries a fenced block that parses as this schema however that block spelled
+    the id. A body that claims it must carry exactly one fenced JSON object that validates against the
+    schema and nothing else that claims it; a second block, or a bare mention outside every block, is
+    refused as ambiguous rather than resolved for the caller. A body that claims nothing passes through
+    untouched: prose, a code sample, another schema's id.
     """
-    # A JSON string decodes to this id either by naming it outright or by escaping part of it, and every
-    # JSON escape is a backslash — so a body with neither cannot hold a claim in any spelling, and is
-    # answered without scanning or unescaping it at all. Almost every body is this one.
+    # Every JSON spelling of this id either names it outright or escapes part of it with a backslash, so a
+    # body holding neither cannot hold a claim and is answered unscanned. Almost every body is this one.
     if SCHEMA_ID not in body and "\\" not in body:
         return
-    # Arming on the id rather than only on a valid block: a trailing comma, a CRLF body whose closing
-    # fence the pattern cannot see, a block pasted as prose each produce nothing to validate, and a
-    # missing block read as "nothing to check" is how an unvalidated log reached the tracker. Every text
-    # search here goes through `_json_unescaped` for the same reason `_record` settles identity on the
-    # parsed value: a JSON string can spell the id's last character as an escape and so decode to the id
-    # while holding no literal occurrence of it, which walked past every plain substring search.
+    # Armed by the id, not by finding a valid block: a trailing comma, a CRLF body whose closing fence the
+    # pattern cannot see, or a block pasted as prose each leave nothing to validate, and a missing block
+    # read as "nothing to check" is how an unvalidated log reached the tracker. Text searches go through
+    # `_json_unescaped` because a JSON string can spell the id's last character as an escape, decoding to
+    # the id while holding no literal occurrence of it, which walked past every plain substring search.
     named = SCHEMA_ID in _json_unescaped(body)
     spans = _fenced_contents(body)
     records: list[dict[Any, Any]] = []
     unread = 0
     for start, end in spans:
-        # The content span, never the whole block: a fence's opening line can carry text after the marker
-        # and that text is never parsed or validated, so an info string holding a second complete machine
-        # log posted verbatim beside a valid one. `_outside_fences` cuts this same span, which leaves an
-        # info string to the stray check rather than to nothing.
+        # The content span, never the whole block: text after the opening marker is never parsed, and an
+        # info string holding a second complete machine log posted verbatim beside a valid one.
+        # `_outside_fences` cuts this same span, so an info string falls to the stray check.
         content = body[start:end]
         parsed = _as_json(content)
         record = _record(parsed)
         if record is not None:
             records.append(record)
-        # A block that claims the id but will not parse is a candidate, never a block to skip: tallying
-        # only parsed matches left a malformed block invisible to both this count and the schema check,
-        # so a valid one beside it validated alone. `_claims_within` catches a claim nested below the top
-        # level — counted, never validated, because a machine log *is* the top-level object.
+        # A block that claims the id but will not parse is a candidate, never a skip: tallying only parsed
+        # matches left a malformed block invisible to this count and to the schema check, so a valid one
+        # beside it validated alone. A claim nested below the top level counts too, but is never validated.
         elif SCHEMA_ID in _json_unescaped(content) or _claims_within(parsed):
             unread += 1
     # The other half of arming: a body that never names the id in plain text is still this check's
     # business the moment a block claims this schema, which is the escaped-record case.
     if not named and not records and not unread:
         return
-    # A block is only *found* once its closing marker is a bare fence on its own line, so an unclosed
-    # fence or a closing marker with trailing text yields nothing to tally at all. A claim in what is
-    # left over is therefore a candidate on its own terms. This stays narrow enough to be usable because
+    # An unclosed fence, or a closing marker with trailing text, yields no block to tally at all, so a
+    # claim in what is left over is a candidate on its own terms. Narrow enough to stay usable because
     # unfenced text only counts when it names this id: quoting someone else's broken JSON still posts.
     stray = SCHEMA_ID in _json_unescaped(_outside_fences(body, spans))
     blocks = len(records) + unread
@@ -592,9 +481,8 @@ def _validate_machine_log(body: str) -> None:
                 + ". The field definitions are in skills/ship/references/handoff-accounting.md."
             ) from None
         return
-    # Exactly one claim and it is not a record: an unparseable block, a claim buried inside a block that
-    # parsed as something else, or a mention outside every block. Zero claims cannot arrive here — a
-    # named id sits either in some block's content, which makes that block a claim, or outside them all.
+    # Exactly one claim and it is not a record. Zero claims cannot arrive here: a named id sits either in
+    # some block's content, which makes that block a claim, or outside them all.
     raise ToolError(
         f"this body claims {SCHEMA_ID} but carries no fenced block that parses as one, so it was "
         "refused. A machine log is a fenced JSON object whose `schema` key is that id: check the JSON "
@@ -618,21 +506,21 @@ async def preflight(
 ) -> dict[str, Any]:
     """Check that the configured tracker's credential and account are usable before relying on them.
 
-    Canonical verb `preflight`. Reports what it confirmed and never echoes a secret value. Run it
-    once up front so a credential problem surfaces there instead of as a half-finished workflow.
+    Canonical verb `preflight`. Reports what it confirmed and never echoes a secret value. Run it once
+    up front so a credential problem surfaces there instead of as a half-finished workflow.
 
-    A live read is the only thing that tells a present-but-dead credential from a working one, and it
-    is not free, so a success is cached for `ttl_hours` against the plugin build, the tracker, the
-    resolved config and the values of the secret variables the selected adapter declares — any of
-    those changing invalidates it by itself, and `force` demands the live read regardless. `cached`
-    is how the caller knows which answer it got: `false` means the tracker was just read and the rest
-    of the result is that read's report, `true` means a read inside the window already succeeded and
-    nothing touched the network. Which variables and which tracker are resolved here rather than
-    passed in, so a caller cannot key the cache on a credential the adapter does not read with.
+    A live read is the only thing that tells a present-but-dead credential from a working one and it is
+    not free, so a success is cached for `ttl_hours` against the plugin build, the tracker, the resolved
+    config and the values of the secret variables the selected adapter declares; any of those changing
+    invalidates it by itself, and `force` demands the live read regardless. `cached: false` means the
+    tracker was just read and the rest of the result is that read's report; `true` means a read inside
+    the window already succeeded and nothing touched the network.
     """
     ttl_hours = preflight_cache.DEFAULT_TTL_HOURS
     try:
         name = str(config.get("tracker"))
+        # Resolved here, never passed in, so a caller cannot key the cache on a credential the adapter
+        # does not read with.
         var_names = [str(declared) for declared in config.adapter_map().get("secret_env", [])]
         cached = not force and preflight_cache.check(name, var_names, ttl_hours * 3600)
     except config.ConfigError as exc:
@@ -680,6 +568,8 @@ async def attach_artifact(
         raise ToolError(f"artifact not found: {artifact}")
     backend = tracker.adapter()
     required = tuple(config.adapter_map().get("secret_env", []))
+    # Synchronous inside the async tool on purpose: the scrub must strictly precede the upload, and making
+    # it awaitable would buy nothing while adding a way to interleave the two.
     report = secrets.sanitize(artifact, require=required, extra_words=config.extra_secret_words())
     evidence = await backend.attach_artifact(issue, artifact)
     return {"attached": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
@@ -688,9 +578,7 @@ async def attach_artifact(
 def _gate_skip_reason(kind: str, caller: str, tier: object) -> str | None:
     """Why this attachment must not happen, or None to proceed.
 
-    Mirrors the adapter attachments reference under `skills/tracker/`: `transcript.attach` gates
-    transcript attachment everywhere, and a `ship` caller additionally requires the `full`
-    process tier on top of it.
+    The rules mirror the adapter attachments reference under `skills/tracker/`.
     """
     if kind != "transcript":
         return None
@@ -730,10 +618,9 @@ async def attachment_download(
 ) -> dict[str, Any]:
     """Download one artifact already attached to an issue, to a local path.
 
-    Canonical verb `attachment-download`. Resolution is by filename with an exactly-one-match rule;
-    pass the tracker-native id instead when an issue carries several attachments of the same name. An
-    ambiguous or absent match fails rather than picking one, because the wrong artifact downloaded
-    under the right name is indistinguishable from the right one afterwards.
+    Canonical verb `attachment-download`. Resolution is by filename with an exactly-one-match rule; pass
+    the tracker-native id instead when an issue carries several attachments of the same name. An
+    ambiguous or absent match fails rather than picking one.
     """
     _required(issue=issue, filename_or_id=filename_or_id, output_path=output_path)
     return await tracker.adapter().attachment_download(issue, filename_or_id, Path(output_path))
@@ -757,15 +644,13 @@ async def attachment_update(
     """Replace an issue's attachment of the same filename, sanitising the replacement first.
 
     Canonical verb `attachment-update`. Replace-by-filename, taking no id: calling it where nothing
-    already matches `path`'s filename is a plain upload. Where more than one existing attachment
-    shares that filename, what happens is adapter-specific (see the tracker's own `ADAPTER.md`) — the
-    two trackers offer no common primitive for "replace all of these". It runs the same gate and the
-    same two sanitisation passes, in the same order, as `attach-artifact` — a second upload path that
-    skipped them would be exactly the hole that keeping both passes inside one tool exists to close.
+    already matches `path`'s filename is a plain upload, and where more than one existing attachment
+    shares that filename what happens is adapter-specific (see the tracker's own `ADAPTER.md`), since the
+    trackers offer no common primitive for "replace all of these". It runs
+    the same gate and the same two sanitisation passes, in the same order, as `attach-artifact`.
 
-    Destructive: the artifact it replaces is irrecoverable once the replacement lands, and there is
-    no undo — how each tracker performs the replacement is in its own `ADAPTER.md`. Confirm the
-    target first.
+    Destructive: the artifact it replaces is irrecoverable once the replacement lands and there is no
+    undo, so confirm the target first.
     """
     _required(issue=issue)
 
@@ -779,6 +664,7 @@ async def attachment_update(
         raise ToolError(f"artifact not found: {artifact}")
     backend = tracker.adapter()
     required = tuple(config.adapter_map().get("secret_env", []))
+    # Synchronous before the await for the same reason as `attach-artifact`: scrub, then upload.
     report = secrets.sanitize(artifact, require=required, extra_words=config.extra_secret_words())
     evidence = await backend.attachment_update(issue, artifact)
     return {"updated": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
@@ -805,13 +691,11 @@ def check_env(
 ) -> dict[str, Any]:
     """Report whether an environment variable is set, without ever returning or logging its value.
 
-    For diagnosing a missing credential without printing one. Dumping the environment or echoing a
-    variable prints the value into that command's own tool-call result, which is permanent transcript
-    history from that point on; the `PreToolUse` guard in `sy_tools/guards/secret_guard.py` denies
-    those commands and names this tool as the safe alternative, and this is it. Neither the result nor any
-    error it raises can carry the value: `config.env_present` reads it only to test truthiness, never
-    returns it, and never logs it — only whether the variable is set and non-empty. A variable exported
-    empty reports as unset.
+    For diagnosing a missing credential without printing one: dumping the environment or echoing a
+    variable writes the value into permanent transcript history, so the `PreToolUse` guard in
+    `sy_tools/guards/secret_guard.py` denies those commands and names this tool as the safe alternative.
+    Neither the result nor any error it raises can carry the value, and a variable exported empty reports
+    as unset.
     """
     _required(name=name)
     return {"name": name, "present": config.env_present(name)}
@@ -827,18 +711,13 @@ def validate_config() -> dict[str, Any]:
     columns configured under one name. Side-effect-free, and never prints a secret value.
     """
     errors = config.validate()
-    # The canonical status vocabulary refuses to resolve on a column-name collision, and nothing here
-    # asked it: a config with two statuses under one column name validated clean and then broke on the
-    # first `canonical_status`/`native_status` call instead, which is the one fault this tool exists to
-    # name. `column_collisions()` reports that instead of raising, and reports only that: asking
-    # `column_names()` for the same answer added its own "missing required column name(s)" line for
-    # every key `config.validate()` had already reported unset, naming one fault twice on the state of
-    # any unconfigured repo. A `ConfigError` raised while reading those keys is a reason no tracker verb
-    # can use this config — a credential-shaped key, a `config-map.json` that will not parse — and
-    # `config.validate()` does not reach it, so it is reported here; dropping it answered `valid: true`
-    # for a config that cannot resolve at all. It is reported only when it is not already in the list,
-    # because a config that will not resolve raises the *same* message out of both calls, and naming one
-    # fault twice is the other half of what this wiring got wrong.
+    # A config with two statuses under one column name validated clean here and then broke on the first
+    # `canonical_status` call, which is the one fault this tool exists to name. `column_collisions()`
+    # reports that and only that: `column_names()` answers the same question but adds a "missing required
+    # column name(s)" line for every key `config.validate()` already reported unset, naming one fault
+    # twice on any unconfigured repo. A `ConfigError` from reading those keys is itself a reason no
+    # tracker verb can use this config and `config.validate()` never reaches it, so it is reported here —
+    # but both calls raise the *same* message, so it is appended only when it is not already there.
     try:
         errors.extend(tracker.column_collisions())
     except config.ConfigError as exc:
@@ -849,8 +728,7 @@ def validate_config() -> dict[str, Any]:
         report["tracker"] = config.get("tracker")
         report["fingerprint"] = config.fingerprint()
     except config.ConfigError:
-        pass  # unresolvable config: the errors list already carries the reason, and this
-        # tool's whole contract is to report a broken config rather than crash on one
+        pass  # the errors list carries the reason, and reporting a broken config is this tool's contract
     return report
 
 
@@ -990,6 +868,8 @@ def _transcript_source(session_id: str, transcript: str) -> Path:
         raise ToolError(str(exc)) from None
 
 
+# This and `export_transcript` stay synchronous: local disk reads bounded by the calling session's own
+# transcript tree, with no network in them, so a thread offload would buy only interleaving.
 @mcp.tool(name="usage_summarize")
 def usage_summarize(
     session_id: SessionId = "",
@@ -1017,10 +897,10 @@ def usage_summarize(
     """Roll up token usage across one session's main transcript and every subagent transcript under it.
 
     Reads the on-disk transcript tree, so it also works on a resumed session and counts subagent turns
-    the caller never saw. Counts are de-duplicated by message id, grouped by agent type and model, and
-    the result is small enough to post as a standalone machine-log comment — which is what it is for.
-    An agent named in `require_agent` but absent from the tree is an error, because a roll-up missing a
-    dispatched agent's transcript under-reports rather than fails.
+    the caller never saw. Counts are de-duplicated by message id and grouped by agent type and model,
+    small enough to post as a standalone machine-log comment. An agent named in `require_agent` but
+    absent from the tree is an error, since a roll-up missing a dispatched agent's transcript
+    under-reports rather than fails.
     """
     main = _transcript_source(session_id, transcript)
     result = usage.summarize(main, phase=phase, task=task)
@@ -1054,13 +934,11 @@ def export_transcript(
     Replaces the manual `/export` step for the attachment flow: bulky tool output is truncated per
     `transcript.truncation_limits`, raw JSONL noise is dropped, and subagent sections are ordered by
     first timestamp, so the result is audit-readable rather than a machine dump. Run it as late as
-    possible so the captured tail is maximal; because it reads on-disk transcripts it also works on a
+    possible so the captured tail is maximal; it reads on-disk transcripts, so it also works on a
     resumed session.
 
-    `output` is mandatory and the rendered text is never part of the result. The point of rendering to a
-    file is that the transcript can be scanned, redacted and attached by path without being read back
-    into the caller's context, which returning it here would defeat in the one call that exists to
-    avoid it.
+    `output` is mandatory and the rendered text is never part of the result: the transcript is meant to
+    be scanned, redacted and attached by path without ever being read back into the caller's context.
     """
     _required(output=output)
     main = _transcript_source(session_id, transcript)

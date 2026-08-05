@@ -29,7 +29,10 @@ def check(tracker: str, var_names: list[str], ttl_seconds: float) -> bool:
     cache = _load_cache()
     if cache.get("tracker") != tracker or cache.get("fingerprint") != fingerprint(tracker, var_names):
         return False
-    age = time.time() - cache.get("verified_at", 0)
+    verified_at = cache.get("verified_at", 0)
+    if not isinstance(verified_at, (int, float)):
+        return False  # a hand-edited or corrupted cache is a miss, not a crash
+    age = time.time() - verified_at
     return 0 <= age < ttl_seconds
 
 
@@ -69,9 +72,10 @@ def _load_cache() -> dict:
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+    return data if isinstance(data, dict) else {}  # valid JSON but the wrong shape is still a miss
 
 
 def _save_cache(cache: dict) -> None:

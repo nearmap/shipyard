@@ -6,6 +6,7 @@ only as an opaque cache-key string.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,19 @@ def test_var_order_does_not_affect_the_fingerprint(cache):
     assert preflight.fingerprint("trackerA", VARS) == preflight.fingerprint("trackerA", list(reversed(VARS))), (
         "var order must not affect the fingerprint"
     )
+
+
+def test_a_cache_holding_valid_json_of_the_wrong_shape_misses_instead_of_crashing(cache):
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("[]", encoding="utf-8")
+    assert not preflight.check("trackerA", VARS, 3600), "valid JSON that isn't an object must be a miss"
+
+
+def test_a_non_numeric_verified_at_misses_instead_of_crashing(cache):
+    preflight.record("trackerA", VARS)
+    corrupted = {**json.loads(cache.read_text(encoding="utf-8")), "verified_at": "not-a-number"}
+    cache.write_text(json.dumps(corrupted), encoding="utf-8")
+    assert not preflight.check("trackerA", VARS, 3600), "a non-numeric verified_at must be a miss, not a crash"
 
 
 def test_a_changed_resolved_config_misses(cache, monkeypatch):

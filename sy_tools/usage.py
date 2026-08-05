@@ -129,6 +129,8 @@ def resolve_main_transcript(session_id: str | None, transcript: str | None) -> P
 
     Takes one of the two. No match, or more than one, is an error naming what was found.
     """
+    if session_id and transcript:
+        raise ValueError("provide --session-id or --transcript, not both")
     if transcript:
         path = Path(transcript).expanduser().resolve()
         if not path.is_file():

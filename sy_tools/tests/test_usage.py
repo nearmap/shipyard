@@ -141,6 +141,14 @@ def session_tree(tmp_path, monkeypatch) -> Path:
     return main
 
 
+def test_resolve_main_transcript_refuses_both_a_session_id_and_a_path(tmp_path):
+    """The docstring promises one of the two; silently preferring one over the other misreports a session."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="not both"):
+        usage.resolve_main_transcript("s1", str(transcript))
+
+
 def test_summarize_rolls_up_the_whole_tree_and_only_this_session(session_tree):
     """Totals cover main plus both same-session subagents, and the other session's file is excluded."""
     result = usage.summarize(session_tree, phase="ship", task="PROJ-1")

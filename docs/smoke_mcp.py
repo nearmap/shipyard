@@ -189,7 +189,9 @@ class Smoke:
         """Create an Epic and three child Tasks, then exercise every canonical verb against them."""
         config = await self.call("validate_config", {})
         print(f"==> tracker: {(config or {}).get('tracker', 'unresolved')} valid={(config or {}).get('valid')}")
-        await self.call("preflight", {})
+        # `force`, because a cached success from an earlier run proves nothing about this one: a live
+        # run's whole claim is that the credential works now.
+        await self.call("preflight", {"force": True})
 
         epic = _issue_id(await self.call("create-issue", {
             "issue_type": "epic",

@@ -61,6 +61,7 @@ from mcp.server import MCPServer
 from pydantic import Field, ValidationError
 
 from . import SERVER_NAME, SERVER_VERSION, config, secrets, tracker, usage
+from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 
 mcp = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
@@ -649,13 +650,43 @@ def _validate_machine_log(body: str) -> None:
 
 
 @mcp.tool(name="preflight")
-async def preflight() -> dict[str, Any]:
+async def preflight(
+    force: Annotated[
+        bool,
+        Field(
+            description="Do the live read even when a recent success is still cached. For a caller "
+            "that must see the tracker answer right now, such as a smoke run."
+        ),
+    ] = False,
+) -> dict[str, Any]:
     """Check that the configured tracker's credential and account are usable before relying on them.
 
     Canonical verb `preflight`. Reports what it confirmed and never echoes a secret value. Run it
     once up front so a credential problem surfaces there instead of as a half-finished workflow.
+
+    A live read is the only thing that tells a present-but-dead credential from a working one, and it
+    is not free, so a success is cached for `ttl_hours` against the plugin build, the tracker, the
+    resolved config and the values of the secret variables the selected adapter declares — any of
+    those changing invalidates it by itself, and `force` demands the live read regardless. `cached`
+    is how the caller knows which answer it got: `false` means the tracker was just read and the rest
+    of the result is that read's report, `true` means a read inside the window already succeeded and
+    nothing touched the network. Which variables and which tracker are resolved here rather than
+    passed in, so a caller cannot key the cache on a credential the adapter does not read with.
     """
-    return await tracker.adapter().preflight()
+    ttl_hours = preflight_cache.DEFAULT_TTL_HOURS
+    try:
+        name = str(config.get("tracker"))
+        var_names = [str(declared) for declared in config.adapter_map().get("secret_env", [])]
+        cached = not force and preflight_cache.check(name, var_names, ttl_hours * 3600)
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
+    if cached:
+        return {"tracker": name, "cached": True, "ttl_hours": ttl_hours}
+    # Recorded after the read and never before it: an adapter reports a dead credential by raising,
+    # so this line is unreachable on failure and a broken credential is never cached as verified.
+    confirmed = await tracker.adapter().preflight()
+    preflight_cache.record(name, var_names)
+    return {**confirmed, "tracker": name, "cached": False, "ttl_hours": ttl_hours}
 
 
 @mcp.tool(name="attach-artifact")

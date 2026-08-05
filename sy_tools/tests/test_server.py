@@ -108,6 +108,17 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def throwaway_preflight_cache(tmp_path, monkeypatch) -> None:
+    """Keep the `preflight` tool off the operator's real cache, for every test in this file.
+
+    The tool short-circuits on a fresh cache entry, so without this the wiring assertion below would
+    pass or fail according to whether the machine running the suite had run a preflight in the last
+    day — and on a miss the suite would write its own verdict into the real cache.
+    """
+    monkeypatch.setattr(server.preflight_cache, "cache_path", lambda: tmp_path / "preflight-cache.json")
+
+
 def _payload(result: Any) -> dict:
     """The tool's own JSON result, parsed out of the text content block the SDK wraps it in."""
     return json.loads(result.content[0].text)

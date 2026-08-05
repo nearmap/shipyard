@@ -16,9 +16,15 @@
 # 1 = checks terminal with failures; 2 = timed out while still pending.
 set -euo pipefail
 
-# Single reader for every setting; never re-derive a default here.
+# Single reader for every setting; never re-derive a default here. Every other read of the resolver is
+# an MCP tool call, which a bash script cannot make, so this reaches the same `sy_tools.config.get` the
+# tool does, in-process. Deliberately not via a `python -m` entry point on that module: adding one would
+# put a second, argv-shaped resolution path beside the tool surface, which is the duplication retiring
+# the old config CLI removed. PYTHONPATH is set the way `hooks/hooks.json` sets it, for the same reason —
+# the plugin root has to reach `sys.path`, and neither a hook nor this poller may depend on `pixi run`.
 _config() {
-    python "${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/sy_config.py" get "$1"
+    local root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    PYTHONPATH="$root" python -c 'import sys; from sy_tools.config import get; print(get(sys.argv[1]))' "$1"
 }
 
 main() {

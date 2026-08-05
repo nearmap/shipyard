@@ -82,15 +82,14 @@ REQUIRED = {
     "skills/config/SKILL.md",
     "skills/tracker/jira/config-map.json",
     "skills/tracker/github/config-map.json",
-    "scripts/session_usage.py",
-    "scripts/review_guard.py",
-    "scripts/eval_events.py",
     "scripts/ci_poll.sh",
-    "scripts/sy_memory.py",
-    "scripts/sy_preflight.py",
-    "scripts/scrub_known_secrets.py",
-    "scripts/secret_guard.py",
-    "scripts/secret_words.py",
+    "sy_tools/usage.py",
+    "sy_tools/eval_events.py",
+    "sy_tools/memory.py",
+    "sy_tools/preflight.py",
+    "sy_tools/secrets.py",
+    "sy_tools/guards/secret_guard.py",
+    "sy_tools/guards/review_guard.py",
     "skills/tracker/SKILL.md",
     "skills/tracker/CONTRACT.md",
     "skills/tracker/jira/ADAPTER.md",
@@ -219,10 +218,10 @@ def check_no_home_paths(errors: list[str]) -> None:
 
 
 def check_seam(errors: list[str]) -> None:
-    scan = _component_md(seam_only=True) + [
-        ROOT / "scripts/session_usage.py", ROOT / "scripts/review_guard.py", ROOT / "scripts/ci_poll.sh",
-        ROOT / "scripts/sy_memory.py", ROOT / "scripts/sy_preflight.py", ROOT / "scripts/eval_events.py",
-    ]
+    # `scripts/ci_poll.sh` is the only executable left to name here: every other script this list once
+    # carried now lives under `sy_tools/`, where `sy_tools/tests/test_tracker_seam.py` scans the whole
+    # package rather than an enumerated list, so naming them again would be a second, weaker check.
+    scan = _component_md(seam_only=True) + [ROOT / "scripts/ci_poll.sh"]
     for p in scan:
         text = p.read_text(encoding="utf-8", errors="replace")
         for pattern in TRACKER_TOKENS:
@@ -408,18 +407,39 @@ def check_contract_completeness(errors: list[str]) -> None:
 def check_hooks(errors: list[str]) -> None:
     text = (ROOT / "hooks/hooks.json").read_text(encoding="utf-8")
     try:
-        json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         fail(f"hooks/hooks.json invalid JSON: {exc}", errors)
         return
-    if "review_guard.py" not in text:
-        fail("hooks/hooks.json must wire scripts/review_guard.py (PreToolUse)", errors)
-    if "secret_guard.py" not in text:
-        fail("hooks/hooks.json must wire scripts/secret_guard.py (PreToolUse)", errors)
-    if "session_usage.py" not in text:
-        fail("hooks/hooks.json must wire scripts/session_usage.py (Stop/SubagentStop)", errors)
-    if "eval_events.py" not in text:
-        fail("hooks/hooks.json must wire scripts/eval_events.py (PreToolUse/SubagentStop/Stop)", errors)
+    # Checked against the decoded command strings, not the raw file: every command embeds a quoted
+    # `${CLAUDE_PLUGIN_ROOT}`, so on disk the quotes are backslash-escaped and a substring test against
+    # the file text silently never matches.
+    commands = [
+        hook.get("command", "")
+        for matchers in parsed.get("hooks", {}).values()
+        for matcher in matchers
+        for hook in matcher.get("hooks", [])
+    ]
+    joined = "\n".join(commands)
+    # Matched as `python -m <module>` rather than as a filename: the hook modules now live inside a
+    # package, so a bare `review_guard` substring would also match a stale `scripts/review_guard.py`
+    # path and pass on a registration that cannot run.
+    for module, where in (
+        ("sy_tools.guards.review_guard", "PreToolUse"),
+        ("sy_tools.guards.secret_guard", "PreToolUse"),
+        ("sy_tools.usage", "Stop/SubagentStop"),
+        ("sy_tools.eval_events", "PreToolUse/SubagentStop/Stop"),
+    ):
+        if f"python -m {module}" not in joined:
+            fail(f"hooks/hooks.json must wire `python -m {module}` ({where})", errors)
+    # The plugin root has to reach `sys.path` for `python -m sy_tools.…` to resolve at all, and a hook
+    # runs on bare `python` with no environment of its own — never through `pixi run`, which would make
+    # every hook depend on a resolved pixi environment in the consuming repo.
+    for command in commands:
+        if 'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}"' not in command:
+            fail(f"hooks/hooks.json: {command!r} must put the plugin root on PYTHONPATH", errors)
+        if "pixi run" in command:
+            fail(f"hooks/hooks.json: {command!r} must not route a hook through `pixi run`", errors)
 
 
 def check_invariants(errors: list[str]) -> None:
@@ -766,15 +786,12 @@ def main() -> int:
     check_hooks(errors)
     check_invariants(errors)
 
-    run_self_test("scripts/review_guard.py", errors)
-    run_self_test("scripts/secret_guard.py", errors)
-    run_self_test("scripts/session_usage.py", errors)
-    run_self_test("scripts/eval_events.py", errors)
-    run_self_test("scripts/sy_memory.py", errors)
-    run_self_test("scripts/sy_preflight.py", errors)
-    run_self_test("scripts/sy_config.py", errors)
-    run_self_test("scripts/scrub_known_secrets.py", errors)
-    run_self_test("scripts/secret_words.py", errors)
+    # Nine calls left with the scripts they tested. Everything they covered is now `sy_tools/` code,
+    # where the convention is pytest under `sy_tools/tests/` mirroring the source path and
+    # `test_layout.py` enforces the mirroring — so re-running those assertions here would be a second
+    # runner for one body of tests. `scripts/sy_config.py` is the odd one out: it survives, thinned to
+    # `migrate`, but its `self-test` subcommand went with the resolution it no longer exposes, and
+    # `migrate` is covered by the CLI-driving tests in `sy_tools/tests/test_config.py`.
     run_self_test("scripts/ci_poll.sh", errors)
     run_self_test("docs/smoke_mcp.py", errors)
 

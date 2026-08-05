@@ -87,7 +87,7 @@ claude plugin marketplace add nearmap/shipyard   # a GitHub owner/repo (cloned f
 claude plugin install sy@shipyard --scope project   # shared with this repo via .claude/settings.json (recommended)
 ```
 
-`--scope project` writes that choice into this repo's own `.claude/settings.json` instead of only your personal, global config. That's the right default for a team repo, but it declares intent, not the marketplace itself: a fresh clone still needs `shipyard` registered as a known marketplace and a one-time install confirmation from each collaborator; see [`docs/installation.md`](docs/installation.md#choose-an-install-scope) for the full team-rollout story. Drop the flag and Claude Code installs to **user** scope instead: every project on your machine, not just this one. `--scope local` is the middle ground: just you, this repo only, gitignored.
+`--scope project` (recommended) declares intent in this repo's own `.claude/settings.json`, shared with collaborators via git. `--scope local` is the same idea but just for you, gitignored. Drop the flag and Claude Code installs to **user** scope instead: every project on your machine, not just this one. See [`docs/installation.md`](docs/installation.md#choose-an-install-scope) for the full scope table and the team-rollout story (a fresh clone still needs the marketplace itself known, and each collaborator confirms their own install).
 
 `./install.sh` validates the plugin and prints these instructions with a tracker-aware preflight. The details live in the docs:
 

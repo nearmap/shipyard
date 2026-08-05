@@ -29,7 +29,7 @@ claude plugin install sy@shipyard --scope local       # just this checkout, giti
 claude plugin install sy@shipyard                     # global (default): every project on this machine
 ```
 
-`--scope project`/`local` only writes intent (`enabledPlugins`) into the repo's own settings file — a fresh clone still needs the `shipyard` marketplace itself known and a one-time install confirmation from each collaborator (see the team-marketplace snippet under "Configuring a repo" below). There is no zero-touch team rollout, only a guided one.
+`--scope project`/`local` only writes intent (`enabledPlugins`) into the repo's own settings file — a fresh clone still needs the `shipyard` marketplace itself known and a one-time install confirmation from each collaborator (see `docs/installation.md`'s "Choose an install scope" for the exact snippet). There is no zero-touch team rollout, only a guided one.
 
 `./install.sh` (run from a local checkout) validates the plugin's structure and runs a tracker-aware preflight against the current environment — do this after cloning:
 
@@ -59,19 +59,7 @@ Optional settings worth knowing: `models.tiers.frontier` (default `fable`) is wh
 
 Verify any setup with the `sy` server's config tools (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — `show_config {}` for every value plus the layer it came from, `validate_config {}` for every problem, each naming its key and layer. If the plugin is not loaded in this session yet, `./install.sh` from the checkout does both on the way through.
 
-If the user chose `project` scope above and wants every collaborator to get Shipyard on clone without each person running `marketplace add` themselves, add `extraKnownMarketplaces` alongside `enabledPlugins` in the same `.claude/settings.json`:
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "shipyard": { "source": { "source": "github", "repo": "nearmap/shipyard" } }
-  },
-  "enabledPlugins": { "sy@shipyard": true },
-  "enabledPlugins": { "sy@shipyard": true }
-}
-```
-
-Each collaborator still confirms the install themselves — Claude Code shows them the exact command rather than running it silently, since a plugin can execute arbitrary code.
+If the user chose `project` scope above and wants every collaborator to get Shipyard on clone without each person running `marketplace add` themselves, add `extraKnownMarketplaces` alongside `enabledPlugins` — see `docs/installation.md`'s "Choose an install scope" for the exact JSON and its caveats (each collaborator still confirms the install themselves; there is no zero-touch path).
 
 ### Ad-hoc setup questions: delegate the lookup, don't answer from memory
 

@@ -40,7 +40,7 @@ Report the actionable error and stop; never fall through to a default that silen
 
 ### Liveness: cached, not just presence
 
-The presence checks above do not prove the config is *live* — a credential can be set and still be dead. Once presence passes, call the canonical `preflight` verb **once**. It gates itself on the shared cache so the network read does not repeat on every invocation: a still-fresh entry for this exact tracker, resolved config and named secrets returns with no network call and says it was cached, and a miss runs the adapter's declared live check (its own `ADAPTER.md` documents what "a real read" means for that tracker) and records success itself, so the next invocation gets the hit. There is no separate check-then-record step to sequence. Pass `force` only when a hit would be stale by construction — the config just changed. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`.
+The presence checks above do not prove the config is *live* — a credential can be set and still be dead. Once presence passes, call the canonical `preflight` verb **once**; it gates itself on the shared cache, its declared live check is adapter knowledge (each `ADAPTER.md` documents what "a real read" means for that tracker), and the caching and `force` mechanics are `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`'s to state.
 
 A failure at any step — presence or liveness — stops here with the single named `## Action needed` block `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md` defines; never a fall-through and never a crash discovered later inside a write.
 

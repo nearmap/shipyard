@@ -1,6 +1,7 @@
 .scratch/
 __pycache__/
 *.pyc
+.DS_Store
 # pixi's materialised environment: reproduced from the committed pixi.lock, never committed itself.
 .pixi/
 dev-notes/

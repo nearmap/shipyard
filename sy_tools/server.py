@@ -7,7 +7,8 @@ concern that appears here is a bug, and the version string this server speaks is
 findable in this repo.
 
 Tools are `async` wherever they do I/O, so a slow attachment upload cannot block an unrelated tool
-call. `reload_config` and `validate_config` stay synchronous: they read small local files.
+call. The configuration tools stay synchronous: they read small local files, and mostly serve the
+resolver's hot copy without touching disk at all.
 `secrets.sanitize` also stays synchronous inside the async tool — it is local disk work bounded by
 the artifact size, and making it awaitable would buy nothing while adding a way to interleave a
 scrub with the upload it must strictly precede.
@@ -830,9 +831,9 @@ def validate_config() -> dict[str, Any]:
     """Report every reason the resolved configuration would be rejected.
 
     Covers schema violations, missing required keys, an unknown tracker, a required credential absent
-    from the environment, an environment variable that outranks the resolved per-agent models,
-    model-floor breaches, and two board columns configured under one name. Side-effect-free, and
-    never prints a secret value.
+    from the environment, an environment variable that outranks the resolved per-agent models, a
+    retired `SY_*` setting variable still set in the environment, model-floor breaches, and two board
+    columns configured under one name. Side-effect-free, and never prints a secret value.
     """
     errors = config.validate()
     # The canonical status vocabulary refuses to resolve on a column-name collision, and nothing here
@@ -860,6 +861,117 @@ def validate_config() -> dict[str, Any]:
         pass  # unresolvable config: the errors list already carries the reason, and this
         # tool's whole contract is to report a broken config rather than crash on one
     return report
+
+
+@mcp.tool(name="get_config")
+def get_config(
+    key: Annotated[
+        str,
+        Field(description="Dotted config key to read, e.g. `columns.ready`, `worktree.root`, `ci.poll_timeout`."),
+    ],
+    default: Annotated[
+        str | None,
+        Field(
+            description="Value to return when the key is not configured. Omit it to make an unknown "
+            "key an error, which is what a caller that believes the key exists wants."
+        ),
+    ] = None,
+) -> dict[str, Any]:
+    """Read one resolved configuration value by dotted key.
+
+    Resolution is the merged layer chain, so this is the only correct way to learn a setting: reading a
+    layer file directly misses whatever a higher layer overrode. An unknown key is an error unless
+    `default` is given — a key an adapter documents as optional has no entry to resolve, and a caller
+    that knows it is optional says so by supplying one. A credential-shaped key is refused outright:
+    secrets are never read from a config file, and `check_env` is how to ask about one.
+    """
+    _required(key=key)
+    try:
+        value = config.get(key) if default is None else config.get(key, default=default)
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
+    return {"key": key, "value": value}
+
+
+@mcp.tool(name="show_config")
+def show_config() -> dict[str, Any]:
+    """Report every resolved configuration value together with the layer each one came from.
+
+    For seeing the whole resolved config at once — which setting a layer overrode and where it came
+    from — rather than one key at a time. Also reports the digest of the resolved values and the layer
+    chain on disk with whether each file is present. Refuses to report anything at all when the
+    resolved configuration carries a credential-shaped key, naming only the key.
+    """
+    try:
+        return config.show()
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="agent_model")
+def agent_model(
+    name: Annotated[
+        str,
+        Field(description="Agent to resolve, as named under `models.agents`, e.g. `gate`, `ship-build`."),
+    ],
+) -> dict[str, Any]:
+    """The model and effort one agent must be dispatched with, after floor clamping.
+
+    Dispatch with what this returns, never with the configured value read raw: a per-agent floor is a
+    quality floor rather than a cost dial, so cost-scaling may raise one and never lower it, and the
+    report says whether either value was clamped and which layer the request came from. An agent the
+    configuration does not name is an error listing the ones it does.
+    """
+    _required(name=name)
+    try:
+        return config.agent_binding(name)
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="scratch_dir")
+def scratch_dir(
+    identifier: Annotated[
+        str,
+        Field(description="The one identifier to resolve a scratch directory for, e.g. a ticket key."),
+    ] = "",
+    repo: Annotated[
+        bool,
+        Field(
+            description="Resolve this repository's own scratch directory instead — the same path from "
+            "every worktree of it. Mutually exclusive with `identifier`."
+        ),
+    ] = False,
+) -> dict[str, Any]:
+    """Resolve the ephemeral working directory for one identifier, or for this repository, creating it.
+
+    Everything a workflow writes that is not part of the repository belongs under here, so nothing
+    lands in the consuming checkout. Takes either one identifier or `repo`, not both and not neither.
+    An identifier must be a relative name that stays strictly inside the resolved scratch root;
+    anything resolving to the root itself or outside it is refused, because two identifiers would then
+    collide there and the first caller to clean up what it was handed would delete the other's data.
+    """
+    if bool(identifier.strip()) == repo:
+        raise ToolError("'scratch_dir' takes either one identifier or repo, not both and not neither")
+    try:
+        directory = config.repo_scratch_dir() if repo else config.scratch_dir(identifier)
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
+    return {"path": str(directory)}
+
+
+@mcp.tool(name="fingerprint_config")
+def fingerprint_config() -> dict[str, Any]:
+    """A stable digest of every resolved configuration value, disclosing none of them.
+
+    Equal digests mean the resolved configuration has not changed, so a caller holding one can tell
+    whether an edit landed without re-reading anything. It changes with any resolved value, including
+    one derived rather than written, and is not a hash of any single file.
+    """
+    try:
+        return {"fingerprint": config.fingerprint()}
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
 
 
 if __name__ == "__main__":

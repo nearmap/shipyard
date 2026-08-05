@@ -36,22 +36,23 @@ COLUMN_KEYS = {
     "columns.backlog", "columns.ready", "columns.in_progress", "columns.in_review", "columns.done",
 }
 
-# Settings that used to be environment variables. `scripts/sy_config.py` is now the only reader;
-# any other file naming one is either a missed cut-over or a second resolution path for one key.
+# Settings that used to be environment variables. The two resolvers are now the only readers; any
+# other file naming one is either a missed cut-over or a second resolution path for one key.
 LEGACY_CONFIG_ENV = {
     "SY_TRACKER", "SY_WORKTREE_ROOT", "SY_MEMORY_DIR", "SY_DEBUG_EVALS", "SY_CI_POLL_TIMEOUT",
     "SY_BACKLOG_COLNAME", "SY_READY_COLNAME", "SY_IN_PROGRESS_COLNAME", "SY_IN_REVIEW_COLNAME",
     "SY_DONE_COLNAME", "SY_FRONTIER_MODEL", "SY_FRONTIER_FALLBACK", "SY_IMAGE_MODEL",
     "SY_DEBATE_MODEL", "SY_GH_PROJECT", "SY_GH_REPO",
 }
-# The resolver owns the legacy map; the adapters own their own names; the docs explain the
-# migration. Everything else must go through `sy_config.py get`.
+# The resolvers own the legacy map; the adapters own their own names; the docs explain the
+# migration. Everything else must go through a resolver.
 _SCRATCH_HINT = '`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <identifier>`'
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
 
 CONFIG_ENV_ALLOWED = {
     "scripts/sy_config.py",
+    "sy_tools/config.py",
     "scripts/validate.py",
     "docs/configuration.md",
     "skills/tracker/jira/config-map.json",

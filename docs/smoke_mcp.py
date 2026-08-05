@@ -82,15 +82,20 @@ VERB_TOOLS: dict[str, str] = {
 
 REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
 
-UNEXERCISED_TOOLS = frozenset({"reload_config", "check_env"})
+UNEXERCISED_TOOLS = frozenset({
+    "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
+    "fingerprint_config",
+})
 """Tools the server registers that this scenario deliberately does not call.
 
 Named rather than implied, so the self-test can compare the two sets exactly: a tool added to the
 server and smoked by nobody has to be an explicit decision, not an omission that passes.
 
-Neither is a canonical contract verb: `reload_config` mutates the server's hot config out from under a
-live scenario, and `check_env` reports environment presence rather than reaching the tracker at all, so
-a live run has nothing to learn from it that `preflight` does not already prove."""
+None is a canonical contract verb, and none reaches the tracker: `reload_config` mutates the server's
+hot config out from under a live scenario, `check_env` reports environment presence, and the remaining
+five read the resolved configuration — so a live run has nothing to learn from any of them that
+`preflight` does not already prove, and `sy_tools/tests/test_config.py` covers what they resolve
+against a fixture layer chain rather than whatever the running machine happens to be configured to."""
 
 SERVER_SOURCE = PLUGIN_ROOT / "sy_tools" / "server.py"
 TOOL_REGISTRATION = re.compile(r"""@mcp\.tool\(name=["']([^"']+)["']\)""")

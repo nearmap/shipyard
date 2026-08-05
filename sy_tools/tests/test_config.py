@@ -1,8 +1,9 @@
-"""`sy_tools.config` must resolve byte-identically to the shipped CLI resolver.
+"""`sy_tools.config`, the resolver every `sy` tool call reads the Shipyard configuration through.
 
-The MCP deployment reimplements resolution rather than importing it, so parity is a claim that
-has to be tested, not asserted. Both resolvers run over the same fixture layer chain and their
-resolved values and provenance are compared key for key.
+Almost everything here runs against a throwaway git checkout carrying its own layer chain, so what
+is asserted is the resolver's own behaviour rather than whatever the developer's `.shipyard/` happens
+to say. `scripts/sy_config.py` resolves the same chain for callers with no server to ask — a hook, a
+shell script — and the tests that subprocess it are pinning that CLI's own behaviour, not parity.
 """
 from __future__ import annotations
 
@@ -29,16 +30,6 @@ FIXTURE_LAYER = {
     "transcript": {"attach": True},
     "redaction": {"extra_words": ["bearer"]},
 }
-
-
-def _cli(root: Path, *args: str) -> dict:
-    proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), *args],
-        cwd=root, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-    )
-    assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout)
 
 
 def _agreed_repo_root() -> Path | None:
@@ -123,31 +114,59 @@ def test_repo_root_falls_back_to_git_toplevel_without_the_env_var(fixture_repo):
     assert _agreed_repo_root() == fixture_repo.resolve()
 
 
-def test_resolution_matches_the_cli_resolver(fixture_repo):
-    expected = _cli(fixture_repo, "show", "--json")
+def test_the_whole_layer_chain_merges_in_precedence_order_and_reports_each_key_s_layer(fixture_repo):
+    """Four layers, lowest precedence first: shipped defaults, user-global, repo-committed, repo-local.
+
+    Each must win over the ones below it and each resolved key must name the layer it came from, or a
+    caller has no way to know which file to edit. The two outer layers are the ones only this test
+    reaches: the user-global layer must not outrank a repo's own committed settings, and the repo-local
+    layer is the highest-precedence file and the only uncommitted one, so a resolver that never read it
+    would still look correct against a fixture carrying a committed layer alone.
+    """
+    home_layer = Path.home() / ".shipyard"
+    home_layer.mkdir(parents=True)
+    (home_layer / "config.json").write_text(
+        json.dumps({"columns": {"backlog": "Home Backlog"}, "limits": {"max_depth_agents": 7}}), encoding="utf-8"
+    )
+    (fixture_repo / ".shipyard" / "config.local.json").write_text(
+        json.dumps({"columns": {"done": "Local Done"}}), encoding="utf-8"
+    )
+    config.reload()
+
     values, provenance = config.resolve()
-    assert values == expected["values"], "resolved values must match sy_config.py show --json exactly"
-    assert provenance == expected["provenance"], "each key must be attributed to the same layer"
+    assert "$schema" not in values, "a layer's own schema pointer is not a setting"
+    assert values["columns"] == {**FIXTURE_COLUMNS, "done": "Local Done"}, (
+        "the committed layer must outrank the user-global one, and the local layer must outrank both"
+    )
+    assert provenance["columns.backlog"] == "repo-committed"
+    assert provenance["columns.done"] == "repo-local"
+    assert provenance["limits.max_depth_agents"] == "user-global", "a user-global key must reach the merge"
+    assert provenance["transcript.attach"] == "repo-committed"
+    assert provenance["ci.poll_timeout"] == "shipped-default"
+    assert provenance["worktree.root"] == "derived-default"
+    assert set(config._flatten(values)) <= set(provenance), "every resolved key must name a layer"
 
 
-def test_resolution_matches_the_cli_resolver_through_the_project_pointer(fixture_repo, tmp_path, monkeypatch):
-    """Parity with the env pointer set, from a cwd that is a *different* checkout.
+def test_resolution_reads_the_layers_of_the_repo_the_project_pointer_names(fixture_repo, monkeypatch):
+    """With cwd inside a *different* checkout, only `CLAUDE_PROJECT_DIR` names the fixture.
 
     The deleted-var case cannot reveal a resolver that never learned the pointer: with cwd already
-    inside the fixture both agree by accident. Here cwd is the plugin's own checkout and only the
-    pointer names the fixture, so a resolver ignoring it reads the wrong repo's layers — which is
-    exactly what a worktree-local `.shipyard/config.local.json` invisible to one side looks like.
+    inside the fixture it reads the right layers by accident. Here cwd is the plugin's own checkout and
+    only the pointer names the fixture, so a resolver ignoring it reads the wrong repo's layers —
+    exactly what a worktree-local `.shipyard/config.local.json` invisible to the server looks like.
     """
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture_repo))
     monkeypatch.chdir(PLUGIN_ROOT)
     config.reload()
 
-    assert _agreed_repo_root() == fixture_repo.resolve()
-    expected = _cli(PLUGIN_ROOT, "show", "--json")
+    assert config.repo_root() == fixture_repo.resolve()
+    assert config.resolved_root() == fixture_repo.resolve(), "the hot values must have resolved against it too"
     values, provenance = config.resolve()
     assert values["columns"]["ready"] == FIXTURE_COLUMNS["ready"], "the pointer's repo layer must be read"
-    assert values == expected["values"], "resolved values must match sy_config.py show --json exactly"
-    assert provenance == expected["provenance"], "each key must be attributed to the same layer"
+    assert provenance["columns.ready"] == "repo-committed"
+    assert config.get("worktree.root") == str(fixture_repo.parent / f"{fixture_repo.name}-worktrees"), (
+        "a derived default must derive from the pointer's repo, not from cwd's"
+    )
 
 
 def test_layer_precedence_and_derived_defaults(fixture_repo):
@@ -182,27 +201,14 @@ def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixtu
     assert not any(outside.iterdir()), "a symlink inside the scratch root must not be followed out of it"
 
 
-def test_scratch_dir_refuses_the_same_identifiers_as_the_cli_resolver(fixture_repo):
-    """The guard is duplicated across the two deployments, so its rejections are compared, not trusted."""
-    for identifier in (".", "..", "a/../../b"):
-        proc = subprocess.run(
-            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", identifier],
-            cwd=fixture_repo, capture_output=True, text=True, check=False,
-            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-        )
-        assert proc.returncode != 0, f"the CLI accepted {identifier!r}: {proc.stdout}"
-        assert "stays inside the resolved scratch root" in proc.stderr, proc.stderr
-        with pytest.raises(config.ConfigError, match="stays inside the resolved scratch root"):
-            config.scratch_dir(identifier)
-
-
-def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree_and_both_resolvers(fixture_repo):
+def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree(fixture_repo):
     """The divergence this keys around is only reproducible from a linked worktree, so it is tested there.
 
     Claude Code exports `CLAUDE_PROJECT_DIR` to hook subprocesses but not to a subagent's own Bash
     tool, so a root keyed on `repo_root().name` resolves the main checkout from the guard's side and
     the worktree from the guarded agent's, and the hunt sandbox then denies writes the agent believes
-    are permitted. Keyed on the shared git dir, all four combinations below must land on one path.
+    are permitted. Keyed on the shared git dir, the main checkout and a linked worktree of it — asked
+    for either explicitly or as the resolved default — must all land on one path.
     """
     root = Path(str(config.get("scratch.dir")))
     expected = root / fixture_repo.name
@@ -223,15 +229,6 @@ def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree_and_both
         "every per-repository derived default keys on this: `worktree.root` derived from a worktree "
         "would nest a second worktrees directory inside the first"
     )
-
-    for cwd, extra in ((fixture_repo, {}), (linked, {}), (linked, {"CLAUDE_PROJECT_DIR": str(fixture_repo)})):
-        proc = subprocess.run(
-            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-            cwd=cwd, capture_output=True, text=True, check=False,
-            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), **extra},
-        )
-        assert proc.returncode == 0, proc.stderr
-        assert Path(proc.stdout.strip()) == expected, f"the CLI resolver disagrees from {cwd}: {proc.stdout!r}"
 
     outside = fixture_repo.parent / "not-a-checkout"
     outside.mkdir()
@@ -800,9 +797,40 @@ def test_all_worktrees_accepts_the_bare_directory_form_but_refuses_a_blank_recor
         config._all_worktrees(common, fixture_repo)
 
 
-def test_agent_binding_matches_the_cli_resolver(fixture_repo):
-    for agent in ("sweep", "gate", "ship-build", "img-inspector"):
-        assert config.agent_binding(agent) == _cli(fixture_repo, "agent", agent, "--json"), agent
+def test_agent_binding_reports_the_clamped_dispatch_values_and_where_they_came_from(fixture_repo):
+    """Every field a dispatcher reads off a binding, on a request that clamps and one that does not.
+
+    `sweep` is bound to `opus` by the fixture's own layer, well above its floor, so the request
+    survives verbatim and nothing is reported as clamped. `img-inspector` is bound to a *tier* alias
+    rather than a model name, the indirection a dispatcher must never be handed raw. The clamped case
+    is constructed rather than looked for, because an agent already at its floor cannot tell a working
+    clamp from a report that never sets the flag: `gate`'s floor is the one cost-scaling may never
+    touch, so a layer asking for the cheapest model and the cheapest effort must come back as the
+    floor's own values with both flags raised and the request still legible beside them.
+    """
+    assert config.agent_binding("sweep") == {
+        "agent": "sweep", "model": "opus", "effort": "high", "model_requested": "opus",
+        "effort_requested": "high", "model_clamped": False, "effort_clamped": False,
+        "source": "repo-committed",
+    }
+    inspector = config.agent_binding("img-inspector")
+    assert inspector["model"] in config.MODEL_ORDER, "a tier alias must be resolved to a model, never passed on"
+    assert inspector["source"] == "shipped-default"
+
+    (fixture_repo / ".shipyard" / "config.local.json").write_text(
+        json.dumps({"models": {"agents": {"gate": {"model": "haiku", "effort": "low"}}}}), encoding="utf-8"
+    )
+    config.reload()
+    floor = json.loads((PLUGIN_ROOT / "config" / "floors.json").read_text(encoding="utf-8"))["gate"]
+    tiers = config.resolve()[0]["models"]["tiers"]
+    assert config.agent_binding("gate") == {
+        "agent": "gate", "model": tiers[floor["min_model"]], "effort": floor["min_effort"],
+        "model_requested": "haiku", "effort_requested": "low", "model_clamped": True,
+        "effort_clamped": True, "source": "repo-local",
+    }
+
+    with pytest.raises(config.ConfigError, match="unknown agent"):
+        config.agent_binding("no-such-agent")
 
 
 def test_no_agent_resolves_below_its_shipped_floor(fixture_repo):
@@ -835,33 +863,102 @@ def test_validate_reports_a_missing_required_key(fixture_repo, monkeypatch):
     assert any("columns.ready is required" in e for e in config.validate())
 
 
-def test_validate_reports_an_outranking_subagent_model_exactly_as_the_cli_does(fixture_repo, monkeypatch):
+def test_validate_reports_an_outranking_subagent_model_even_with_nothing_resolvable(fixture_repo, monkeypatch):
     """`CLAUDE_CODE_SUBAGENT_MODEL` outranks every per-agent model the resolver computes, silently.
 
-    The CLI validator has refused it since the model floors existed; this one omitted the check, and the
-    MCP server is now the only path a session takes — so the deployment that reported it was the one
-    nothing runs, and a floor-defeating variable validated clean. Compared against the CLI's own emitted
-    line rather than a copy of it, like every other parity assertion in this file, and the check must
-    survive a configuration that cannot be resolved at all: it reads only the environment.
+    So it is an error rather than an override, and it must reach the `validate_config` tool's own report
+    — the MCP server is the only path a session takes, so a fault nothing surfaces there is a fault
+    nobody sees. It must also survive a configuration that cannot be resolved at all: the check reads
+    only the environment, and a root that will not resolve is no reason to hide a live problem that has
+    nothing to do with it.
     """
     monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
-    proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "validate"],
-        cwd=fixture_repo, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    expected = (
+        "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
+        "would silently reroute every agent off the model this config resolved. Unset it."
     )
-    assert proc.returncode == 1, f"the CLI must refuse an outranking model variable: {proc.stdout!r}"
-    cli_line = next(
-        line.strip().removeprefix("- ") for line in proc.stderr.splitlines()
-        if "CLAUDE_CODE_SUBAGENT_MODEL" in line
-    )
-    assert cli_line in config.validate(), f"the MCP validator must report the CLI's line: {config.validate()}"
-    assert cli_line in server.validate_config()["errors"], "and it must reach the tool's own report"
+    assert expected in config.validate()
+    assert expected in server.validate_config()["errors"], "it must reach the tool's own report"
 
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture_repo / "definitely-not-a-repo"))
+    config.reset_cache()
+    errors = config.validate()
+    assert "CLAUDE_PROJECT_DIR" in errors[0], f"the unresolvable root must be the first line: {errors}"
+    assert expected in errors, f"a root failure must not swallow the checks that need no root: {errors}"
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR")
     monkeypatch.delenv("CLAUDE_CODE_SUBAGENT_MODEL")
+    config.reset_cache()
     assert not any("CLAUDE_CODE_SUBAGENT_MODEL" in e for e in config.validate()), (
         "the check must read the live environment, not report unconditionally"
     )
+
+
+def test_validate_reports_a_retired_setting_variable_still_set_in_the_environment(fixture_repo, monkeypatch):
+    """A setting that used to be an environment variable now has exactly one home: a config layer.
+
+    Left set, a retired name is a second resolution path for one key that nothing reads — so it is
+    reported rather than honoured, whether or not it happens to agree with what the key now resolves to,
+    and an unrecognised `SY_*` name is reported too because a typo'd setting is indistinguishable from a
+    retired one to whoever exported it. The names are read out of the resolver's own map: spelling one
+    here would trip the config seam `scripts/validate.py` enforces over every file but the resolvers.
+    """
+    disagreeing = next(name for name, path in config.LEGACY_ENV.items() if path == "columns.ready")
+    agreeing = next(name for name, path in config.LEGACY_ENV.items() if path == "ci.poll_timeout")
+    monkeypatch.setenv(disagreeing, "Env Ready")
+    monkeypatch.setenv(agreeing, str(config.get("ci.poll_timeout")))
+    monkeypatch.setenv("SY_NOT_A_REAL_SETTING", "1")
+
+    errors = config.validate()
+    assert any(
+        f"{disagreeing} is set in the environment (to 'Env Ready') and disagrees with columns.ready, which "
+        f"resolves to {FIXTURE_COLUMNS['ready']!r}" in e for e in errors
+    ), errors
+    assert any(f"{agreeing} is set in the environment and agrees with ci.poll_timeout" in e for e in errors), errors
+    assert any("SY_NOT_A_REAL_SETTING is set but is not a Shipyard setting" in e for e in errors), errors
+    report = server.validate_config()
+    assert report["valid"] is False and any(disagreeing in e for e in report["errors"]), (
+        f"it must reach the tool's own report: {report}"
+    )
+
+    for name in (disagreeing, agreeing, "SY_NOT_A_REAL_SETTING"):
+        monkeypatch.delenv(name)
+    assert not any("SY_" in e for e in config.validate()), "the report must read the live environment"
+
+
+def test_the_config_read_tools_serve_the_resolved_values_and_hold_their_argument_contracts(fixture_repo):
+    """The tools are the only way a session reads the configuration, so each one's contract is pinned.
+
+    A refusal is a `ToolError`, which the SDK returns to the caller as a tool result rather than a
+    protocol error, so a caller asking for something it may not have gets an answer it can act on.
+    `scratch_dir` is the one with a contract of its own beyond the resolver's: either one identifier or
+    the repository, and a call giving both or neither would otherwise silently pick one.
+    """
+    assert server.get_config("columns.ready") == {"key": "columns.ready", "value": "Fixture Ready"}
+    assert server.get_config("columns.nonexistent", default="fallback")["value"] == "fallback"
+    with pytest.raises(server.ToolError, match="unknown config key"):
+        server.get_config("columns.nonexistent")
+    with pytest.raises(server.ToolError, match="credential-shaped"):
+        server.get_config("tracker_config.token")
+
+    shown = server.show_config()
+    assert shown["values"] == config.resolve()[0] and shown["provenance"] == config.resolve()[1]
+    assert shown["fingerprint"] == server.fingerprint_config()["fingerprint"] == config.fingerprint()
+    assert {layer["label"] for layer in shown["layers"]} == {"user-global", "repo-committed", "repo-local"}
+    assert [layer["present"] for layer in shown["layers"]] == [False, True, False]
+
+    assert server.agent_model("sweep") == config.agent_binding("sweep")
+    with pytest.raises(server.ToolError, match="unknown agent"):
+        server.agent_model("no-such-agent")
+
+    root = Path(str(config.get("scratch.dir")))
+    assert server.scratch_dir(identifier="AM-1") == {"path": str(root / "AM-1")}
+    assert server.scratch_dir(repo=True) == {"path": str(root / fixture_repo.name)}
+    for identifier, repo in (("", False), ("AM-1", True), ("  ", False)):
+        with pytest.raises(server.ToolError, match="not both and not neither"):
+            server.scratch_dir(identifier=identifier, repo=repo)
+    with pytest.raises(server.ToolError, match="stays inside the resolved scratch root"):
+        server.scratch_dir(identifier="..")
 
 
 def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(tmp_path):

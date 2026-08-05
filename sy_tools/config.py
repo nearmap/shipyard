@@ -1,18 +1,17 @@
 """Resolved Shipyard configuration, held hot in memory for the life of the server process.
 
-`scripts/sy_config.py` is a CLI: every read is a fresh process that re-reads up to four JSON
-files and shells out to git. A long-lived MCP server resolves the same layer chain once and
-serves every tool call from memory; `reload()` (the `reload_config` tool) is the only way to
-re-read, so a config edit is picked up deliberately rather than racing mid-call.
+`scripts/sy_config.py` is a CLI: every read is a fresh process that re-reads up to four JSON files
+and shells out to git. A long-lived MCP server resolves the same layer chain once — the shipped
+defaults, then the user-global, repo-committed and repo-local `.shipyard/config.json` layers,
+deep-merged in that order — and serves every tool call from memory; `reload()` (the `reload_config`
+tool) is the only way to re-read, so a config edit is picked up deliberately rather than racing
+mid-call.
 
-Values resolve identically to `sy_config.py` — same layer chain, same deep merge, same derived
-defaults, same floor clamping — and `sy_tools/tests/test_config.py` asserts that parity against
-`sy_config.py show --json` rather than trusting the reimplementation.
+Served alongside the values: the layer each key came from, the per-agent model and effort bindings
+after floor clamping, the scratch directories, a digest of the whole resolved config, and
+`validate()`'s report of every reason that config must be rejected.
 
-Two pieces of `sy_config.py` are deliberately absent. The retired-environment-variable conflict
-report is one: it can only be written by naming those variables, and `scripts/validate.py`'s
-config-seam check treats any file but the resolver naming one as a second resolution path for a
-key. `migrate` is the other — it is a one-time CLI affordance with no meaning in a server.
+`migrate` is deliberately absent — it is a one-time CLI affordance with no meaning in a server.
 """
 from __future__ import annotations
 
@@ -36,6 +35,25 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 REQUIRED_PATHS = (*(f"columns.{name}" for name in CANONICAL_COLUMNS), "tracker")
+# Retired env var -> the config path that replaced it, for the conflict report. Tracker-specific names
+# are not here: the selected adapter declares its own in skills/tracker/<name>/config-map.json, so this
+# module never needs to know one tracker's vocabulary from another's.
+LEGACY_ENV = {
+    "SY_TRACKER": "tracker",
+    "SY_WORKTREE_ROOT": "worktree.root",
+    "SY_MEMORY_DIR": "memory.dir",
+    "SY_DEBUG_EVALS": "debug.evals",
+    "SY_CI_POLL_TIMEOUT": "ci.poll_timeout",
+    "SY_BACKLOG_COLNAME": "columns.backlog",
+    "SY_READY_COLNAME": "columns.ready",
+    "SY_IN_PROGRESS_COLNAME": "columns.in_progress",
+    "SY_IN_REVIEW_COLNAME": "columns.in_review",
+    "SY_DONE_COLNAME": "columns.done",
+    "SY_FRONTIER_MODEL": "models.tiers.frontier",
+    "SY_FRONTIER_FALLBACK": "models.tiers.frontier_fallback",
+    "SY_IMAGE_MODEL": "models.agents.img-inspector.model",
+    "SY_DEBATE_MODEL": "models.agents.debate.model",
+}
 # Every subprocess this module runs is a git query, and all four call sites are bounded by this:
 # `rev-parse --show-toplevel` (`_git_toplevel`), `rev-parse --git-common-dir` (`_git_common_dir`),
 # `config --get core.worktree` (`_configured_worktree`) and `rev-parse --is-inside-work-tree`
@@ -443,6 +461,36 @@ def get(path: str, *, default: object = _UNSET) -> object:
     return flat[path]
 
 
+def show() -> dict:
+    """Every resolved value, the layer each key came from, the digest, and the layer chain on disk.
+
+    Refuses outright, disclosing no value at all, when the resolved configuration carries a
+    credential-shaped key: a secret returned even once is a permanent part of whatever transcript
+    asked for it, and users should never put one in a config layer in the first place. `get()` refuses
+    that shape one key at a time; this is the same refusal for all of them, before a single value is
+    read. Only the offending key names are reported.
+
+    Same shape as `scripts/sy_config.py show --json`.
+    """
+    values, provenance = resolve()
+    credential_keys = sorted(key for key in _flatten(values) if _looks_like_secret(key.replace(".", "_")))
+    if credential_keys:
+        raise ConfigError(
+            "refusing to show any value — the resolved configuration declares credential-shaped "
+            f"key(s): {', '.join(credential_keys)}. Secrets are never read from a config file: keep "
+            "them in the environment."
+        )
+    return {
+        "values": values,
+        "provenance": provenance,
+        "fingerprint": fingerprint(),
+        "layers": [
+            {"label": label, "path": str(path), "present": path.is_file()}
+            for label, path in layers(resolved_root())
+        ],
+    }
+
+
 def agent_binding(name: str) -> dict:
     """The dispatch-time model and effort policy for one agent, after floor clamping."""
     values, provenance = resolve()
@@ -718,7 +766,11 @@ def validate() -> list[str]:
 
     The one check that needs nothing resolved — an environment variable Claude Code lets outrank this
     resolver — runs first and survives a resolution failure, exactly as in the CLI: a root that will
-    not resolve is no reason to hide a live problem that has nothing to do with it.
+    not resolve is no reason to hide a live problem that has nothing to do with it. The retired-`SY_*`
+    checks are the other half of that ordering: they absorb a resolution failure into an empty config
+    and would then report every retired name as disagreeing with a key that "resolves to None" — a
+    derived, factually wrong line burying the one real cause — so they are asked only once resolution
+    has succeeded.
     """
     errors: list[str] = list(_outranking_env_conflicts())
     try:
@@ -727,6 +779,7 @@ def validate() -> list[str]:
         return [str(exc), *errors]
 
     try:
+        errors.extend(_legacy_env_conflicts())
         errors.extend(_post_resolution_violations(values, provenance))
     except ConfigError as exc:
         errors.append(str(exc))
@@ -738,10 +791,10 @@ def _outranking_env_conflicts() -> list[str]:
 
     Mirrors `scripts/sy_config.py::_outranking_env_conflicts`, message included, because the CLI's
     `validate` and the `validate_config` tool are one contract read two ways — and this is now the
-    only path a session takes, so a fault reported by the CLI alone is a fault nobody sees. Unlike the
-    retired-`SY_*` half of the CLI's report (see the module docstring), this names no config key, so it
-    opens no second resolution path for one. It reads only the environment: the value is never read,
-    only its presence.
+    only path a session takes, so a fault reported by the CLI alone is a fault nobody sees. Split from
+    the retired-name checks because it depends on the environment alone, so `validate()` can keep
+    reporting it when the configuration cannot be resolved at all. It reads only the environment: the
+    value is never read, only its presence.
     """
     if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
         return [
@@ -749,6 +802,50 @@ def _outranking_env_conflicts() -> list[str]:
             "would silently reroute every agent off the model this config resolved. Unset it."
         ]
     return []
+
+
+def _legacy_env_conflicts() -> list[str]:
+    """Retired `SY_*` names still set in the environment, compared against what they now resolve to.
+
+    Needs a resolved configuration on both sides — the value to compare against, and the adapter's own
+    legacy names — so `validate()` only asks once resolution has succeeded, and a `ConfigError` raised
+    reading the adapter's map is reported by `validate()`'s own guard rather than swallowed here into
+    a report that silently covers fewer names than exist.
+
+    Mirrors `scripts/sy_config.py::_legacy_env_conflicts`, messages included, because the CLI's
+    `validate` and the `validate_config` tool are one contract read two ways.
+    """
+    errors: list[str] = []
+    flat = _flatten(resolve()[0])
+    legacy = _legacy_env_map()
+    for name, path in sorted(legacy.items()):
+        raw = os.environ.get(name)
+        if raw in (None, ""):
+            continue
+        resolved = flat.get(path)
+        if resolved in (None, "") or str(resolved) != raw:
+            errors.append(
+                f"{name} is set in the environment (to {raw!r}) and disagrees with {path}, which resolves to "
+                f"{resolved!r}. Environment variables are reserved for secrets, so this is an error rather than an "
+                f"override: put {raw!r} in {CONFIG_DIRNAME}/{CONFIG_FILENAME} as {path} and unset {name}."
+            )
+        else:
+            errors.append(
+                f"{name} is set in the environment and agrees with {path}, but is now redundant and must be unset: "
+                f"leaving it set keeps two resolution paths alive for one key."
+            )
+    for name in sorted(os.environ):
+        if re.fullmatch(r"SY_[A-Z0-9_]+", name) and name not in legacy and not name.startswith("SY_TEST_"):
+            errors.append(
+                f"{name} is set but is not a Shipyard setting. Every setting now lives in "
+                f"{CONFIG_DIRNAME}/{CONFIG_FILENAME}; unset it or correct the name."
+            )
+    return errors
+
+
+def _legacy_env_map() -> dict[str, str]:
+    """Tracker-neutral legacy names plus whatever the selected adapter declares as its own."""
+    return dict(LEGACY_ENV) | adapter_map().get("legacy_env", {})
 
 
 def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> list[str]:

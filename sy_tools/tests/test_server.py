@@ -538,7 +538,7 @@ async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
         ("the block pasted as prose with no fence", _metrics_comment().replace("```json\n", "").replace("\n```", "")),
         (
             "two fenced blocks and neither is the log",
-            "# Claude Code ship metrics\n\n```bash\nsy_config.py get tracker\n```\n\n"
+            "# Claude Code ship metrics\n\n```bash\ngit status --short\n```\n\n"
             + '```json\n{"schema": "shipyard.claude_usage.v1"}\n```\n'
             + f"The {SCHEMA_ID} block was meant to be here.\n",
         ),
@@ -959,7 +959,7 @@ def test_fence_detection_stays_linear_on_a_body_of_unclosed_openers():
         ("plain prose", "TL;DR: the gate passed."),
         ("a different machine log", "# Claude Code usage\n\n```json\n{\"schema\": \"shipyard.claude_usage.v1\"}\n```"),
         ("prose about metrics that names no schema", "TL;DR: the ship metrics log is on the task."),
-        ("a fenced block that is not JSON", "```bash\nsy_config.py get tracker\n```"),
+        ("a fenced block that is not JSON", "```bash\ngit status --short\n```"),
         ("a valid log beside an unrelated fenced block", _metrics_comment() + "\n```bash\ngit log -1\n```\n"),
     ],
 )

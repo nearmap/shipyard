@@ -2,8 +2,9 @@
 
 Almost everything here runs against a throwaway git checkout carrying its own layer chain, so what
 is asserted is the resolver's own behaviour rather than whatever the developer's `.shipyard/` happens
-to say. `scripts/sy_config.py` resolves the same chain for callers with no server to ask — a hook, a
-shell script — and the tests that subprocess it are pinning that CLI's own behaviour, not parity.
+to say. `scripts/sy_config.py` resolves the same chain for one reason only — `migrate`, the bootstrap
+conversion that runs before there is a server to ask — so the tests that subprocess it all drive
+`migrate`, and every other subcommand's coverage now belongs to this module's own resolver.
 """
 from __future__ import annotations
 
@@ -275,19 +276,6 @@ def test_repo_scratch_dir_does_not_collapse_every_submodule_onto_one_directory(f
     )
     assert root / "modules" not in {config.repo_scratch_dir(s) for s in subs}
 
-    resolved = []
-    for sub in subs:
-        proc = subprocess.run(
-            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-            cwd=sub, capture_output=True, text=True, check=False,
-            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-        )
-        assert proc.returncode == 0, proc.stderr
-        resolved.append(Path(proc.stdout.strip()))
-    assert resolved == [config.repo_scratch_dir(s) for s in subs], (
-        f"the CLI resolver disagrees with the server resolver on submodules: {resolved}"
-    )
-
     linked = fixture_repo.parent / "linked-submodule-worktree"
     subprocess.run([*git, "-C", str(subs[0]), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
     assert not subprocess.run(
@@ -302,15 +290,6 @@ def test_repo_scratch_dir_does_not_collapse_every_submodule_onto_one_directory(f
         f".git/modules nor the worktree's own path: {config._logical_repo(linked)}"
     )
     assert config.repo_scratch_dir(linked) == config.repo_scratch_dir(subs[0]) == root / subs[0].name
-    proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-        cwd=linked, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert Path(proc.stdout.strip()) == config.repo_scratch_dir(subs[0]), (
-        f"the CLI resolver disagrees from a submodule's linked worktree: {proc.stdout!r}"
-    )
 
 
 def test_repo_scratch_dir_keys_a_sparse_checkout_submodule_correctly(fixture_repo):
@@ -389,15 +368,6 @@ def test_repo_scratch_dir_keys_a_deinited_submodule_on_common_rather_than_module
     root = Path(str(config.get("scratch.dir")))
     assert config._logical_repo(linked) == common
     assert config.repo_scratch_dir(linked) == root / "dep-deinit"
-    proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-        cwd=linked, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-    )
-    assert proc.returncode == 0 and Path(proc.stdout.strip()) == root / "dep-deinit", (
-        f"the CLI resolver must resolve the same way: rc={proc.returncode}, stdout={proc.stdout!r}, "
-        f"stderr={proc.stderr!r}"
-    )
 
 
 def test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctly(fixture_repo):
@@ -628,20 +598,6 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_o
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(linked)
 
-    # review_guard.py imports scripts/sy_config.py, not sy_tools.config -- confirm that copy refuses
-    # identically from both cwds, not just the in-process resolver exercised above. The committed
-    # .shipyard/config.json is tracked, so it is present at the same relative path in both checkouts.
-    for cwd in (fixture_repo, linked):
-        proc = subprocess.run(
-            [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-            cwd=cwd, capture_output=True, text=True, check=False,
-            env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-        )
-        assert proc.returncode != 0 and "contains a worktree of this repository" in proc.stderr, (
-            f"the CLI resolver must refuse the same way from {cwd}: rc={proc.returncode}, "
-            f"stderr={proc.stderr!r}"
-        )
-
 
 def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkout(fixture_repo, monkeypatch):
     """A `--separate-git-dir` (or bare-plus-`worktree-add`) main checkout has no `core.worktree` and
@@ -697,17 +653,6 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(detached_work)
 
-    # scripts/sy_config.py is the copy review_guard.py actually enforces with -- confirm it refuses
-    # the same way, not just the sy_tools.config resolver exercised above.
-    proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-        cwd=detached_work, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-    )
-    assert proc.returncode != 0 and "contains a worktree of this repository" in proc.stderr, (
-        f"the CLI resolver must refuse the same way: rc={proc.returncode}, stderr={proc.stderr!r}"
-    )
-
 
 def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     """`git worktree add --relative-paths` (or `worktree.useRelativePaths`) writes the linked
@@ -749,17 +694,6 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     # can catch this. It must, because the linked worktree lives inside the resolved scratch directory.
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(fixture_repo)
-
-    # scripts/sy_config.py is the copy review_guard.py actually enforces with -- confirm it refuses
-    # the same way, not just the sy_tools.config resolver exercised above.
-    proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "scratch-dir", "--repo"],
-        cwd=fixture_repo, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
-    )
-    assert proc.returncode != 0 and "contains a worktree of this repository" in proc.stderr, (
-        f"the CLI resolver must refuse the same way: rc={proc.returncode}, stderr={proc.stderr!r}"
-    )
 
 
 def test_all_worktrees_accepts_the_bare_directory_form_but_refuses_a_blank_record(fixture_repo):
@@ -871,6 +805,12 @@ def test_validate_reports_an_outranking_subagent_model_even_with_nothing_resolva
     nobody sees. It must also survive a configuration that cannot be resolved at all: the check reads
     only the environment, and a root that will not resolve is no reason to hide a live problem that has
     nothing to do with it.
+
+    The other half of that ordering is what a resolution failure must *not* produce. The retired-name
+    comparison absorbs the same failure into an empty flat config and would then lead with "disagrees
+    with <key>, which resolves to None" — wrong on its face, since the shipped defaults give that key a
+    value — burying the one real cause, so a retired name is set here too and that derived line must be
+    absent.
     """
     monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
     expected = (
@@ -880,12 +820,18 @@ def test_validate_reports_an_outranking_subagent_model_even_with_nothing_resolva
     assert expected in config.validate()
     assert expected in server.validate_config()["errors"], "it must reach the tool's own report"
 
+    # Set through the resolver's own map: spelling a retired variable's name in this file would trip
+    # the config seam that `scripts/validate.py` enforces over every file but the resolvers.
+    retired = next(name for name, path in config.LEGACY_ENV.items() if path == "ci.poll_timeout")
+    monkeypatch.setenv(retired, "60")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture_repo / "definitely-not-a-repo"))
     config.reset_cache()
     errors = config.validate()
     assert "CLAUDE_PROJECT_DIR" in errors[0], f"the unresolvable root must be the first line: {errors}"
     assert expected in errors, f"a root failure must not swallow the checks that need no root: {errors}"
+    assert not any("resolves to None" in e for e in errors), f"no derived follow-on error: {errors}"
 
+    monkeypatch.delenv(retired)
     monkeypatch.delenv("CLAUDE_PROJECT_DIR")
     monkeypatch.delenv("CLAUDE_CODE_SUBAGENT_MODEL")
     config.reset_cache()
@@ -959,75 +905,6 @@ def test_the_config_read_tools_serve_the_resolved_values_and_hold_their_argument
             server.scratch_dir(identifier=identifier, repo=repo)
     with pytest.raises(server.ToolError, match="stays inside the resolved scratch root"):
         server.scratch_dir(identifier="..")
-
-
-def test_the_cli_validator_collects_a_bogus_project_pointer_rather_than_exiting(tmp_path):
-    """`sy_config.validate()` reaches `repo_root()` through `layers()`, before it calls `resolve()`.
-
-    Only the `resolve()` call was guarded, so a `CLAUDE_PROJECT_DIR` naming no checkout exited the
-    process from inside the one function whose contract is to *return* every problem it found as a
-    string. Any in-process caller — a hook, another script — got a `SystemExit` where it expected a
-    list, and the pointer's error surfaced as a crash rather than as one collected line. Asserted
-    through a subprocess because the escape is a process exit, which an in-process call cannot
-    distinguish from the collected result once it has already happened.
-
-    Also pinned here: what a resolution failure may and may not suppress. The pointer's own error comes
-    *first*, because the legacy-variable comparison absorbs the same failure into an empty flat config
-    and would lead with "disagrees with <key>, which resolves to None" — wrong on its face, since the
-    shipped defaults give that key a value. That derived line must be gone, but a check that needs
-    nothing resolved must survive: `CLAUDE_CODE_SUBAGENT_MODEL` reads only the environment, and an
-    unusable root is no reason to stop reporting it. Both variables are set here, so the assertions
-    cannot pass on a `validate()` that returns the root failure alone.
-    """
-    proc = _validate_probe(
-        tmp_path,
-        # Set through the resolver's own map: spelling a retired variable's name in this file would
-        # trip the config seam that `scripts/validate.py` enforces over every file but the resolver.
-        preamble="os.environ[next(n for n, p in sy_config.LEGACY_ENV.items() if p == 'ci.poll_timeout')] = '60'\n",
-        CLAUDE_PROJECT_DIR=str(tmp_path / "definitely-not-a-repo"),
-        CLAUDE_CODE_SUBAGENT_MODEL="sonnet",
-    )
-    assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
-    lines = proc.stdout.strip().splitlines()
-    assert "CLAUDE_PROJECT_DIR" in lines[0], f"the real cause must be the first line: {proc.stdout!r}"
-    assert any("CLAUDE_CODE_SUBAGENT_MODEL" in line for line in lines[1:]), (
-        f"a root failure must not swallow the checks that need no root: {proc.stdout!r}"
-    )
-    assert "resolves to None" not in proc.stdout, f"no derived follow-on error: {proc.stdout!r}"
-
-
-def test_the_cli_validator_reports_a_git_it_cannot_run_rather_than_crashing(tmp_path):
-    """`repo_root()` shells out to `git`, so a `git` missing from `PATH` raises a plain `OSError`.
-
-    The guard caught only `SystemExit`, so that escaped as an uncaught `FileNotFoundError` from the
-    one function contracted to return its problems as strings — the same fail-open that took the
-    secret-scanning hook down with it.
-    """
-    proc = _validate_probe(tmp_path, PATH=str(_empty_bin(tmp_path)))
-    assert proc.returncode == 0, f"validate() crashed instead of collecting the failure: {proc.stderr}"
-    assert "git could not be run" in proc.stdout, f"the failure must name its cause: {proc.stdout!r}"
-
-
-def test_the_cli_validator_collects_an_unreadable_layer_rather_than_exiting(tmp_path):
-    """The per-layer schema pass re-reads every present layer, outside the guard around `resolve()`.
-
-    A layer the process cannot read — a bad mode, a dead symlink target — arrives from `_load_json` as
-    the module's own `SystemExit`: the right shape for the CLI, the wrong one inside the function
-    contracted to *return* its problems as strings, where it exited the process from the schema pass
-    instead. Resolution is now asked first, so the schema pass only ever reads files the resolver has
-    already read successfully.
-    """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".shipyard").mkdir()
-    layer = tmp_path / ".shipyard" / "config.json"
-    layer.write_text(json.dumps(FIXTURE_LAYER), encoding="utf-8")
-    layer.chmod(0o000)
-    try:
-        proc = _validate_probe(tmp_path, HOME=str(tmp_path / "home"))
-    finally:
-        layer.chmod(0o644)
-    assert proc.returncode == 0, f"validate() exited instead of returning its errors: {proc.stderr}"
-    assert "could not be read" in proc.stdout, f"the failure must name its cause: {proc.stdout!r}"
 
 
 def test_migrate_refuses_rather_than_writing_a_config_missing_the_adapter_variables(tmp_path):
@@ -1184,33 +1061,31 @@ def _size_limited_migrate_probe(cwd: Path, out: Path, *, limit: int) -> subproce
     )
 
 
-def test_both_validators_report_two_columns_configured_under_one_name(fixture_repo):
-    """The collision the canonical vocabulary refuses on, which only the MCP validator used to name.
+def test_the_validator_reports_two_columns_configured_under_one_name(fixture_repo):
+    """The collision the canonical vocabulary refuses on, which the validator has to name up front.
 
-    The CLI's `validate` and the `validate_config` tool are one contract read two ways, so the CLI
-    reporting a config the tool refuses would send a repo into a session that breaks on its first
-    status read. Compared line for line against `column_collisions()` rather than against a copy of the
-    wording, like every other parity assertion in this file: two hand-maintained mirrors of one message
-    are exactly what drifts.
+    The canonical vocabulary matches a column name ignoring case and returns its first hit, so two
+    statuses under one name leave an issue in that column reporting as only one of them for every
+    reader — a config that validates clean and breaks on the first status read. One collision must be
+    one line, and it must be `column_collisions()`'s own sentence rather than a copy of the wording:
+    two hand-maintained mirrors of one message are exactly what drifts.
     """
     colliding = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "fixture in progress"}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(colliding), encoding="utf-8")
     config.reload()
 
-    proc = _validate_probe(fixture_repo)
+    reported = [e for e in server.validate_config()["errors"] if "shared by more than one" in e]
 
-    assert proc.returncode == 0, f"validate() must return its errors, not exit: {proc.stderr}"
-    reported = [line for line in proc.stdout.splitlines() if "shared by more than one" in line]
-    assert len(reported) == 1, f"one collision must be one line: {proc.stdout!r}"
-    assert reported == tracker.column_collisions(), "both validators must report the same sentence"
+    assert len(reported) == 1, f"one collision must be one line: {reported}"
+    assert reported == tracker.column_collisions(), "the report must be that function's own sentence"
     assert "columns.ready" in reported[0] and "columns.in_progress" in reported[0], reported[0]
 
 
-def test_both_validators_report_a_whitespace_only_column_as_unset(fixture_repo):
+def test_the_validator_reports_a_whitespace_only_column_as_unset(fixture_repo):
     """`"   "` is schema-valid and reads as absent everywhere else, so calling it configured is the fault.
 
     `columns.*` is `["string", "null"]` with no `minLength`, and `tracker.column_names()` treats a value
-    as unset via `str(value or "").strip()`. Both validators tested emptiness as `in (None, "")`, so a
+    as unset via `str(value or "").strip()`. The validator tested emptiness as `in (None, "")`, so a
     whitespace-only column passed as present and the session then failed its very first status read with
     "missing required column name(s): columns.ready" — the same "validates clean, breaks on first use"
     fault `column_collisions()` exists to prevent, reached through the other predicate.
@@ -1224,11 +1099,6 @@ def test_both_validators_report_a_whitespace_only_column_as_unset(fixture_repo):
 
     errors = server.validate_config()["errors"]
     assert [e for e in errors if e.startswith("columns.ready is required and unset")], errors
-
-    proc = _validate_probe(fixture_repo)
-    assert proc.returncode == 0, f"validate() must return its errors, not exit: {proc.stderr}"
-    reported = [line for line in proc.stdout.splitlines() if line.startswith("columns.ready is required")]
-    assert len(reported) == 1, f"the CLI must name it too, once: {proc.stdout!r}"
 
 
 def test_an_unset_column_is_reported_once_by_the_tool_not_twice(fixture_repo):
@@ -1251,7 +1121,7 @@ def test_an_unset_column_is_reported_once_by_the_tool_not_twice(fixture_repo):
     assert not any("missing required column name(s)" in error for error in errors), errors
 
 
-def test_both_validators_refuse_a_tracker_that_only_resolves_as_a_path(fixture_repo):
+def test_the_validator_refuses_a_tracker_that_only_resolves_as_a_path(fixture_repo):
     """`tracker` must be checked against the enumerated adapter names, not by joining it onto a path.
 
     `"."` and `".."` name existing directories — `skills/tracker/` itself and its parent — so the
@@ -1260,8 +1130,10 @@ def test_both_validators_refuse_a_tracker_that_only_resolves_as_a_path(fixture_r
     the class of fault config validation exists to catch. A traversal like `../tracker/<adapter>` went
     further and loaded a real adapter's map under a name no adapter answers to. `sy_tools/tracker`
     refuses all three at tool-call time, so nothing is broken end to end — but catching them *before*
-    runtime is the whole purpose of this check, and the guard is duplicated across both deployments, so
-    both are asked rather than one trusted to stand in for the other.
+    runtime is the whole purpose of this check.
+
+    `scripts/sy_config.py::_migrating_tracker` carries the same enumerated check for the same reason,
+    covered by `test_migrate_refuses_a_tracker_no_shipped_adapter_implements`.
     """
     adapter, _ = _a_tracker_the_shipped_defaults_do_not_select()
     layer = fixture_repo / ".shipyard" / "config.json"
@@ -1270,14 +1142,8 @@ def test_both_validators_refuse_a_tracker_that_only_resolves_as_a_path(fixture_r
             layer.write_text(json.dumps({**FIXTURE_LAYER, "tracker": bogus}), encoding="utf-8")
             config.reload()
             assert any("has no adapter" in e for e in config.validate()), (
-                f"the server validator passed tracker {bogus!r} clean"
+                f"the validator passed tracker {bogus!r} clean"
             )
-            proc = subprocess.run(
-                [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "validate"],
-                cwd=fixture_repo, capture_output=True, text=True, check=False, env={**os.environ},
-            )
-            assert proc.returncode != 0, f"the CLI validator passed tracker {bogus!r} clean: {proc.stdout!r}"
-            assert "has no adapter" in proc.stderr, proc.stderr
         layer.write_text(json.dumps({**FIXTURE_LAYER, "tracker": adapter}), encoding="utf-8")
         config.reload()
         assert not any("has no adapter" in e for e in config.validate()), "a shipped adapter must pass"
@@ -1406,49 +1272,15 @@ def test_a_working_directory_that_cannot_be_read_is_refused_by_name(tmp_path, mo
     )
 
 
-@pytest.mark.parametrize("command", [["show"], ["get", "tracker"], ["fingerprint"], ["validate"]])
-def test_a_deleted_working_directory_is_refused_by_every_cli_subcommand(tmp_path, command):
-    """The cwd guard was pushed into `sy_tools/config.py` but never mirrored into the CLI's own resolver.
-
-    `validate` has a guard of its own, so it was the only subcommand that reported a deleted working
-    directory cleanly; `show`, `get` and `fingerprint` reach `repo_root()` with nothing between them and
-    `Path.cwd()`, and each tracebacked raw — the same shape as the missing-`git` fail-open, on the same
-    call paths, and the same asymmetry (one guarded caller standing in for every unguarded one).
-    """
-    gone = tmp_path / "deleted-under-us"
-    gone.mkdir()
-    proc = _deleted_cwd_probe(gone, *command)
-    assert proc.returncode == 1, f"the CLI must refuse, not crash or resolve: {proc.stdout!r} {proc.stderr!r}"
-    assert "Traceback" not in proc.stderr, f"raw traceback from the CLI: {proc.stderr!r}"
-    assert "working directory could not be read" in proc.stderr, proc.stderr
-
-
-def _deleted_cwd_probe(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    """One `sy_config.py` subcommand, from a working directory the child process deletes under itself.
-
-    Deleted from inside rather than before the spawn: `subprocess` needs the directory to exist to start
-    the child at all, and the fault is a directory that disappears under a process already sitting in it.
-    """
-    probe = f"import os, sy_config\nos.rmdir(os.getcwd())\nraise SystemExit(sy_config.main({list(args)!r}))\n"
-    return subprocess.run(
-        [sys.executable, "-c", probe], cwd=cwd, capture_output=True, text=True, check=False,
-        env={
-            **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
-            "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
-            "HOME": str(cwd.parent / "home"),
-        },
-    )
-
-
 @pytest.mark.parametrize("pointer", [None, "self"])
 def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, monkeypatch, pointer):
     """A missing `git` binary must not traceback out of *any* caller, under either resolution path.
 
     `validate()` guards its own `repo_root()` call, but it was the only thing standing between an
-    absent binary and a crash: `resolve()`, `fingerprint()` and the `show`/`get` subcommands reach
-    `repo_root()` too and used to raise `FileNotFoundError` straight through. For the server that is
-    the worse half — its resolver runs on every tool call — so the guard now lives in `_git_toplevel`
-    and both resolvers are asked here through a non-`validate()` path.
+    absent binary and a crash: `resolve()` and `fingerprint()` reach `repo_root()` too and used to
+    raise `FileNotFoundError` straight through, on the path every tool call takes to a resolved value.
+    So the guard lives in `_git_toplevel`, and it is asked here through a non-`validate()` path as well
+    as through `validate()`, which must collect the failure rather than re-raise it.
 
     Refused rather than degraded, and refused *distinguishably*: a bogus pointer and an absent binary
     are separate causes, so the pointer's "not a directory inside a git checkout" must not be what a
@@ -1464,15 +1296,9 @@ def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, mon
     with pytest.raises(config.ConfigError, match="git could not be run") as raised:
         config.reload()
     assert "CLAUDE_PROJECT_DIR" not in str(raised.value), "a missing binary is not the pointer's fault"
-
-    probe = subprocess.run(  # the CLI's `get` path: a caller `validate()`'s own guard never covers
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "sy_config.py"), "get", "tracker"],
-        cwd=tmp_path, capture_output=True, text=True, check=False,
-        env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT)},
+    assert any("git could not be run" in e for e in config.validate()), (
+        "validate() must collect the failure rather than raise it"
     )
-    assert probe.returncode == 1, f"the CLI must refuse, not crash or resolve: {probe.stderr!r}"
-    assert "Traceback" not in probe.stderr, f"raw traceback from the CLI: {probe.stderr!r}"
-    assert "git could not be run" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
 
 
 GIT_CALL_SITES = ("--show-toplevel", "--git-common-dir", "core.worktree", "--is-inside-work-tree")
@@ -1535,25 +1361,6 @@ def _empty_bin(tmp_path: Path) -> Path:
     empty = tmp_path / "no-git-here"
     empty.mkdir(exist_ok=True)
     return empty
-
-
-def _validate_probe(cwd: Path, preamble: str = "", **env: str) -> subprocess.CompletedProcess:
-    """`sy_config.validate()` in a subprocess: the escape under test is a process exit or a crash."""
-    probe = (
-        "import os, sy_config\n"
-        f"{preamble}"
-        "errors = sy_config.validate()\n"
-        "assert all(isinstance(e, str) for e in errors), errors\n"
-        "print('\\n'.join(errors))\n"
-    )
-    base = {
-        **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
-        "PYTHONPATH": str(PLUGIN_ROOT / "scripts"), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
-    }
-    return subprocess.run(
-        [sys.executable, "-c", probe], cwd=cwd, capture_output=True, text=True, check=False,
-        env={**base, **env},
-    )
 
 
 def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):

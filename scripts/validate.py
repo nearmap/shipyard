@@ -46,7 +46,7 @@ LEGACY_CONFIG_ENV = {
 }
 # The resolvers own the legacy map; the adapters own their own names; the docs explain the
 # migration. Everything else must go through a resolver.
-_SCRATCH_HINT = '`python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" scratch-dir <identifier>`'
+_SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
 
@@ -252,7 +252,7 @@ def check_config_seam(errors: list[str]) -> None:
                 line = text[: text.index(var)].count("\n") + 1
                 fail(
                     f"CONFIG SEAM: {rel}:{line}: names retired env var {var}; read it with "
-                    f"`python \"${{CLAUDE_PLUGIN_ROOT}}/scripts/sy_config.py\" get <key>` instead",
+                    "the `sy` server's `get_config` tool instead",
                     errors,
                 )
                 break

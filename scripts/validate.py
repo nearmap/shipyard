@@ -370,7 +370,7 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
         # Horizontal whitespace only, then strip: `\s*(.+)` would cross the newline after a valueless
         # `tools:` and capture the next frontmatter line, validating an empty allowlist as if it named that
-        # line's tool (and, with `tools:` last in the block, match nothing and read as absent instead).
+        # line's tool.
         declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
         value = declared.group(1).strip() if declared else ""
         if not value:

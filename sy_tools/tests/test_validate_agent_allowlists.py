@@ -21,11 +21,14 @@ validate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validate)
 
 
-def _check(tmp_path: Path, tools_line: str, monkeypatch: pytest.MonkeyPatch, name: str = "probe") -> list[str]:
+def _check(
+    tmp_path: Path, tools_line: str | None, monkeypatch: pytest.MonkeyPatch, name: str = "probe"
+) -> list[str]:
     agents = tmp_path / "agents"
     agents.mkdir()
+    tools = f"tools: {tools_line}\n" if tools_line is not None else ""
     (agents / f"{name}.md").write_text(
-        f"---\nname: {name}\ndescription: test\ntools: {tools_line}\n---\nbody\n", encoding="utf-8",
+        f"---\nname: {name}\ndescription: test\n{tools}---\nbody\n", encoding="utf-8",
     )
     monkeypatch.setattr(validate, "ROOT", tmp_path)
     errors: list[str] = []
@@ -64,6 +67,18 @@ def test_a_ship_worker_granted_a_memory_write_is_refused(tmp_path, monkeypatch, 
     tools = f"mcp__sy__{tool}, mcp__plugin_sy_sy__{tool}"
     errors = _check(tmp_path, tools, monkeypatch, name=agent)
     assert any(tool in error for error in errors), f"{agent} must not be able to grant itself {tool}: {errors}"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+def test_a_ship_worker_declaring_no_tools_at_all_is_refused(tmp_path, monkeypatch, agent):
+    """An absent tools field inherits every tool, memory writes included, so it cannot pass silently."""
+    errors = _check(tmp_path, None, monkeypatch, name=agent)
+    assert errors, f"{agent} with no tools: line inherits the memory writes and must be refused"
+
+
+def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):
+    """The pin is scoped to the ship workers; other agents legitimately inherit the default tool set."""
+    assert not _check(tmp_path, None, monkeypatch, name="sweep"), "the guard must not widen past ship workers"
 
 
 def test_a_ship_worker_keeps_the_memory_read_tools(tmp_path, monkeypatch):

@@ -75,10 +75,15 @@ def test_an_empty_field_is_refused(store, title, scope, body):
 @pytest.mark.parametrize(
     ("title", "scope", "tags"),
     [("Resume\ndrops it", "agent dispatch", "resume"), ("Resume drops it", "agent\ndispatch", "resume"),
-     ("Resume drops it", "agent dispatch", "resume\nmodels")],
+     ("Resume drops it", "agent dispatch", "resume\nmodels"),
+     ("Resume\rdrops it", "agent dispatch", "resume"), ("Resume drops it", "agent\rdispatch", "resume"),
+     ("Resume drops it", "agent dispatch", "resume\rmodels")],
 )
 def test_a_newline_in_a_frontmatter_field_is_refused(store, title, scope, tags):
-    """Written verbatim onto one frontmatter line, a newline would end the block early and gut the entry."""
+    """Written verbatim onto one frontmatter line, either break would end the block early and gut the entry.
+
+    A bare `\\r` corrupts identically: it survives the write, then reads back as `\\n`.
+    """
     with pytest.raises(ValueError, match="no newline"):
         memory.add(title, scope, tags, "Pass it explicitly.")
     assert _lessons(store) == [], "a refused add must write nothing"

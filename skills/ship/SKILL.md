@@ -58,7 +58,11 @@ On any return — `done`, `needs-decision`, `needs-trace`, `bail-to-spec`, or `b
 
 ## State router
 
-Preflight (above) runs once, first, ahead of this classification — including on resume, since a checkpoint can route straight to BUILD or GATE without ever passing through START. Classify first, then load only the needed procedure:
+Preflight (above) runs once, first, ahead of this classification — including on resume, since a checkpoint can route straight to BUILD or GATE without ever passing through START.
+
+On resume the parent also loads `ship-state.yaml` here and drains it before dispatching whichever phase the classification lands on: any `memory_refutations` still listed are pending, not history, so the parent applies each via `memory_refute` and clears the list from state — the same drain rule as an in-flight worker return (§ Worker contract). It belongs in this pre-dispatch step because a resume routing straight to BUILD or GATE passes through no phase procedure that could own it, and the HANDOFF retro deliberately does not backstop it; an undrained list means the refuted anchor is still read back as if it held.
+
+Classify first, then load only the needed procedure:
 
 ```text
 START     initialize/resume ownership        → ship-start worker · references/start-resume.md

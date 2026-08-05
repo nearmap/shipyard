@@ -370,6 +370,13 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
         declared = re.search(r"^tools:\s*(.+)$", block, re.M)
         if not declared:
+            if p.stem in SHIP_WORKER_AGENTS:
+                fail(
+                    f"{p.relative_to(ROOT)}: a /sy:ship worker must declare an explicit tools: list; an absent "
+                    f"tools field inherits every tool including {'/'.join(sorted(MEMORY_WRITE_TOOLS))}, which is "
+                    "the violation this pin exists to block",
+                    errors,
+                )
             continue
         named = [entry.strip() for entry in declared.group(1).split(",")]
         if p.stem in SHIP_WORKER_AGENTS:
@@ -691,6 +698,11 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must relay a contradicted anchor as a MEMORY_REFUTE candidate in memory_refutations", errors)
     if "memory_refutations" not in ship or "memory_refute" not in ship:
         fail("ship SKILL must carry memory_refutations in the done payload and the parent-applies-it rule", errors)
+    # Section-scoped on purpose: § Worker contract's drain covers an in-flight return only, and a resume can
+    # route straight to BUILD or GATE, so the router the parent always loads must carry its own drain.
+    ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
+    if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
+        fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
     for agent in ("ship-start", "ship-build", "ship-gate"):
         if "MEMORY_REFUTE" not in read(f"agents/{agent}.md"):
             fail(f"agent {agent} must carry MEMORY_REFUTE in its return-contract status block", errors)

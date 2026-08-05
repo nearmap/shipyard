@@ -36,13 +36,13 @@ def root() -> Path:
 def add(title: str, scope: str, tags: str, body: str) -> Path:
     """Store one lesson and regenerate the index; same-title re-adds replace the entry.
 
-    Raises `ValueError` for an empty `title`/`scope`/`body`, and for a newline in `title`/`scope`/`tags`,
-    which are one frontmatter line each: an embedded newline would end the block early and spill the rest
-    into the body.
+    Raises `ValueError` for an empty `title`/`scope`/`body`, and for a line break in `title`/`scope`/`tags`.
     """
     if not title.strip() or not scope.strip() or not body.strip():
         raise ValueError("title, scope, and body must all be non-empty")
-    if any("\n" in field for field in (title, scope, tags)):
+    # Either break ends the frontmatter line early and spills the rest into the body; `\r` alone survives the
+    # write verbatim and is then translated to `\n` on read, so it corrupts exactly as `\n` does.
+    if any(c in field for field in (title, scope, tags) for c in ("\n", "\r")):
         raise ValueError("title, scope, and tags are single-line frontmatter fields and must contain no newline")
     slug = _slug(title)
     directory = root()

@@ -4,7 +4,7 @@
 Disabled by default — zero cost unless `debug.evals` is true. When enabled, appends one
 compact JSON line per hook firing to ~/.claude/shipyard/eval-events/<session_id>.jsonl: which
 skill or subagent triggered (Trigger), and the tool-call sequence around it (Trace). Keyed by
-session_id under the home directory, like session_usage.py's usage-agent-map ledger, rather
+session_id under the home directory, like `sy_tools/usage.py`'s usage-agent-map ledger, rather
 than a task- or repository-keyed scratch directory — such a directory accumulates every run
 against that key, while an eval must read exactly one run, so any key coarser than the session
 would interleave concurrent sessions' traces in a single file. Wired into
@@ -12,17 +12,24 @@ every PreToolUse call, not just the mutating ones review_guard.py cares about, b
 Trigger/Trace evals need to see Skill and Agent invocations too.
 
 Commands:
-  hook        Read Claude Code hook JSON from stdin; append an event line if enabled.
-  self-test
+  PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.eval_events hook
+      Read Claude Code hook JSON from stdin; append an event line if enabled.
+
+That hook runs on bare `python` with no environment of its own, so **this module's import graph must
+stay standard library only** — `sy_tools.config` is admissible because it is stdlib-only too, and
+nothing here may reach the MCP server or anything the server needs. `sy_tools/usage.py` and
+`sy_tools/guards/secret_guard.py` are the siblings under the same constraint.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
 import sys
-from sy_config import get as config_get
+
+from .config import ConfigError
+from .config import get as config_get
 
 SCHEMA = "shipyard.eval_events.v1"
 AGENT_TOOL_NAMES = {"Agent", "Task"}
@@ -34,10 +41,16 @@ def enabled() -> bool:
 
     This runs on every hook firing, so a misconfigured repo must not turn every tool call into a
     hard failure: an unresolvable config leaves the log off, exactly as an unset var used to.
+
+    `ConfigError` is the shape every `sy_tools.config` refusal takes, where `scripts/sy_config.py`
+    raised `SystemExit` — catching the old one here would turn this documented degradation into a
+    crashed `PreToolUse` hook, which is worse than a lost trace. `OSError` degrades for the same
+    reason `sy_tools/guards/secret_guard.py` catches it: the resolver shells out to `git` and reads
+    layer files, and an environment fault it does not manage to name must still leave the log off.
     """
     try:
         return bool(config_get("debug.evals"))
-    except SystemExit:
+    except (ConfigError, OSError):
         return False
 
 
@@ -65,7 +78,7 @@ def build_event(payload: dict) -> dict | None:
         return None
     event: dict = {
         "schema": SCHEMA,
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "session_id": session_id,
         "hook_event": payload.get("hook_event_name"),
         "agent_type": normalize_agent_type(payload.get("agent_type") or payload.get("agentType")),
@@ -102,54 +115,16 @@ def record(payload: dict) -> None:
         os.close(fd)
 
 
-def _self_test() -> None:
-    import tempfile
-
-    assert normalize_agent_type("sy:gate") == "gate"
-    assert normalize_agent_type(None) == "main"
-    assert detail("Skill", {"skill": "ship"}) == {"skill": "ship"}
-    assert detail("Agent", {"subagent_type": "gate", "description": "review"}) == {
-        "subagent_type": "gate",
-        "description": "review",
-    }
-    assert detail("Read", {"file_path": "a.py"}) == {}
-    assert build_event({"session_id": ""}) is None
-
-    global EVENTS_ROOT
-    original = EVENTS_ROOT
-    with tempfile.TemporaryDirectory() as tmp:
-        EVENTS_ROOT = Path(tmp) / "eval-events"
-        try:
-            # Deliberately different cwd per call — a build/gate subagent runs in a worktree,
-            # so the ledger must key on session_id alone, never on the caller's cwd.
-            record({
-                "session_id": "s1", "cwd": "/repo", "hook_event_name": "PreToolUse",
-                "agent_type": "sy:gate", "tool_name": "Skill", "tool_input": {"skill": "ship"},
-            })
-            record({
-                "session_id": "s1", "cwd": "/repo-worktrees/branch", "hook_event_name": "Stop",
-            })
-            lines = events_path("s1").read_text(encoding="utf-8").splitlines()
-            assert len(lines) == 2
-            first = json.loads(lines[0])
-            assert first["tool"] == "Skill"
-            assert first["detail"] == {"skill": "ship"}
-            assert first["agent_type"] == "gate"
-            second = json.loads(lines[1])
-            assert second["hook_event"] == "Stop"
-            assert "tool" not in second
-        finally:
-            EVENTS_ROOT = original
-
-
 def main() -> int:
+    """Run the `hook` command: append one event line for this hook firing, if the log is enabled.
+
+    The only command, and `self-test` is gone: the assertions it carried are pytest tests under
+    `sy_tools/tests/test_eval_events.py` now. Malformed stdin is a success, because a hook that exits
+    non-zero on a payload it merely could not parse would interrupt the session it exists to observe.
+    """
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    if arg == "self-test":
-        _self_test()
-        print("eval_events self-test passed")
-        return 0
     if arg != "hook":
-        print("usage: eval_events.py hook|self-test", file=sys.stderr)
+        print("usage: python -m sy_tools.eval_events hook", file=sys.stderr)
         return 2
     if not enabled():
         return 0

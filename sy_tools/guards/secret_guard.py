@@ -380,7 +380,7 @@ def _extra_words() -> frozenset[str]:
     Resolved in-process (not via subprocess — this hook already pays full interpreter startup on
     every `Bash` call, so importing `sy_tools.config` costs nothing beyond that). A misconfigured repo
     must not turn every command into a hard failure: fall back to the built-in word list alone,
-    exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
+    exactly as an unresolvable `debug.evals` does in `sy_tools/eval_events.py`.
 
     Every resolution failure degrades, including an `OSError` and the `ConfigError` that is the shape
     every `sy_tools.config` refusal takes. `SystemExit` alone was not enough: the

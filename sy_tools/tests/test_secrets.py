@@ -130,6 +130,110 @@ def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
     )
 
 
+def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
+    """The same call site as the test above, failing the one way an `except` clause cannot catch.
+
+    `secret_guard.py` resolves `redaction.extra_words` through `sy_config.repo_root()`, which shells out
+    to `git rev-parse`. That call had no `timeout=`, so a git that blocks rather than fails — a wrapper
+    or credential helper waiting on something, a binary that does not return — left the `PreToolUse` hook
+    with no output for as long as the platform allowed, and no output is no decision, i.e. every built-in
+    denial silently skipped. The hook's own fail-closed backstop is an `except Exception`, which a hang
+    never reaches, so only the bound closes this path. Once bounded, it degrades exactly as the missing
+    binary above does: a `SystemExit` the hook's word-list fallback already catches.
+
+    The call count is part of the claim, because the bound the constant documents is per resolution and
+    one failed `get()` asks for the root twice: without a memoized refusal the hook waited
+    twice `GIT_TIMEOUT_SECONDS`, twice the number anyone reading that constant would expect.
+
+    Two phases, because a fake that wedges the *first* git call proves the bound on that call alone: the
+    resolver reaches git in four places (`--show-toplevel`, `--git-common-dir`, `config --get
+    core.worktree`, `--is-inside-work-tree`) and execution never reached the last three, so they carried
+    no `timeout=` at all while this test stayed green. The first phase keeps the refusal-memoization
+    claim, which needs the root itself to refuse; the second answers every earlier call and wedges the
+    last one, so the per-call bound check runs against all four sites and the four are asserted reached.
+
+    In a child process with `scripts/` on `PYTHONPATH`, as `test_config.py` runs that resolver: those
+    modules are the shipped CLI, not part of this package, so they are not importable from here. Every
+    check inside that child raises explicitly rather than asserting: the child inherits this
+    environment, and a `PYTHONOPTIMIZE`/`-O` in it would strip an `assert` and leave the negative
+    control — removing `timeout=` from the real code — passing when it must fail.
+    """
+    bound_check = (
+        "import subprocess\n"
+        "import sy_config, secret_guard\n"
+        "calls = []\n"
+        "def check(cmd, kwargs):\n"
+        "    calls.append(list(cmd))\n"
+        "    if kwargs.get('timeout') != sy_config.GIT_TIMEOUT_SECONDS:\n"
+        "        raise AssertionError(f'the git call must be bounded: {cmd} {kwargs}')\n"
+        "    if kwargs.get('stdin') is not subprocess.DEVNULL:\n"
+        "        raise AssertionError(f'the git call must not read the hook event on stdin: {cmd} {kwargs}')\n"
+    )
+    wedge_first = bound_check + (
+        "def wedge(cmd, **kwargs):\n"
+        "    check(cmd, kwargs)\n"
+        "    raise subprocess.TimeoutExpired(cmd=cmd, timeout=sy_config.GIT_TIMEOUT_SECONDS)\n"
+        "subprocess.run = wedge\n"
+        "try:\n"
+        "    sy_config.repo_root()\n"
+        "except SystemExit as exc:\n"
+        "    if 'did not resolve the repository root' not in str(exc):\n"
+        "        raise AssertionError(f'the refusal must name its cause: {exc}')\n"
+        "    if f'within {sy_config.GIT_TIMEOUT_SECONDS}s' not in str(exc):\n"
+        "        raise AssertionError(f'and the bound it hit: {exc}')\n"
+        "else:\n"
+        "    raise AssertionError('a wedged git must be refused, not waited on')\n"
+        "if secret_guard._extra_words() != frozenset():\n"
+        "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
+        "if 'extra_words' not in (secret_guard._CONFIG_WARNING or ''):\n"
+        "    raise AssertionError(f'the drop must be reported: {secret_guard._CONFIG_WARNING}')\n"
+        "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
+        "    raise AssertionError('built-ins must still deny')\n"
+        "if len(calls) != 1:\n"
+        "    raise AssertionError(f'one failed resolution waits len(calls) x the bound: {len(calls)}')\n"
+    )
+    wedge_last = bound_check + (
+        "import os\n"
+        "root = os.environ['CLAUDE_PROJECT_DIR']\n"
+        "def answered(cmd, **kwargs):\n"
+        "    check(cmd, kwargs)\n"
+        "    if '--is-inside-work-tree' in cmd:\n"  # the last site a cold resolution reaches
+        "        raise subprocess.TimeoutExpired(cmd=cmd, timeout=sy_config.GIT_TIMEOUT_SECONDS)\n"
+        "    if '--show-toplevel' in cmd:\n"
+        "        return subprocess.CompletedProcess(cmd, 0, stdout=root + '\\n', stderr='')\n"
+        "    if '--git-common-dir' in cmd:\n"
+        "        return subprocess.CompletedProcess(cmd, 0, stdout=os.path.join(root, '.git') + '\\n', stderr='')\n"
+        "    return subprocess.CompletedProcess(cmd, 1, stdout='', stderr='')\n"
+        "subprocess.run = answered\n"
+        "try:\n"
+        "    sy_config.resolve()\n"
+        "except SystemExit as exc:\n"
+        "    if f'within {sy_config.GIT_TIMEOUT_SECONDS}s and was killed' not in str(exc):\n"
+        "        raise AssertionError(f'the refusal must name the bound it hit: {exc}')\n"
+        "else:\n"
+        "    raise AssertionError('a wedged git must be refused, not waited on')\n"
+        "if len(calls) < 2:\n"
+        "    raise AssertionError(f'the earlier sites must be reached, not skipped: {calls}')\n"
+        "for site in ('--show-toplevel', '--git-common-dir', 'core.worktree', '--is-inside-work-tree'):\n"
+        "    if not any(site in ' '.join(cmd) for cmd in calls):\n"
+        "        raise AssertionError(f'{site} was never reached, so its bound is unproven: {calls}')\n"
+        "if secret_guard._extra_words() != frozenset():\n"
+        "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
+        "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
+        "    raise AssertionError('built-ins must still deny')\n"
+    )
+    for label, child in (("the first git call", wedge_first), ("a later git call", wedge_last)):
+        proc = subprocess.run(
+            [sys.executable, "-c", child], cwd=tmp_path, capture_output=True, text=True, check=False,
+            env={
+                **os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts"),
+                "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "CLAUDE_PROJECT_DIR": str(tmp_path),
+                "HOME": str(tmp_path / "home"),  # so worktree.root stays derived, as it is by default
+            },
+        )
+        assert proc.returncode == 0, f"a git wedged on {label} was not bounded and degraded: {proc.stderr}"
+
+
 def test_the_scanner_does_not_inherit_the_servers_stdin(planted, monkeypatch):
     """The scanner is spawned from inside the MCP server, whose stdin is the JSON-RPC transport.
 

@@ -54,6 +54,24 @@ CONFIG_FILENAME = "config.json"
 LOCAL_FILENAME = "config.local.json"
 CONFIG_DIRNAME = ".shipyard"
 SCHEMA_URL = "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json"
+# Every subprocess this module runs is a git query, and all four call sites are bounded by this:
+# `rev-parse --show-toplevel` (`_git_toplevel`), `rev-parse --git-common-dir` (`_git_common_dir`),
+# `config --get core.worktree` (`_configured_worktree`) and `rev-parse --is-inside-work-tree`
+# (`_is_resolved_working_tree`). `secret_guard.py`'s `PreToolUse` hook reaches them on the Bash hot path
+# and a hook that blocks emits no decision, which is an allow. Generous for a local rev-parse under
+# load, short of anything a caller would sit through on a single tool call — but a bound per subprocess,
+# not per call: only root resolution is memoized (`repo_root()` remembers its refusal as well as its
+# answer, so one failed `get()`, which reaches root resolution twice — once through the credential-shape
+# gate's own `resolve()`, once for the value — runs git once), while the other three sites are resolved
+# fresh every time, and a cold `repo_scratch_dir()` reaches 13 git subprocesses in an ordinary checkout
+# (measured, not estimated — one root resolution, one `_git_common_dir`, five for `_logical_repo`, five
+# more for the `worktree.root` derived default's own `_logical_repo`, one closing `_git_toplevel`). So a
+# git slow enough to answer just under the bound every time costs 13x this number, where a *wedged* one
+# refuses at the first site it reaches. What is bounded is the git subprocess and nothing else —
+# `layers()` and `_load_json` read `~/.shipyard/config.json` and the repo's own layers with no bound at
+# all, so a home directory that has stopped answering hangs there whatever this says. Same shape as
+# `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS` and `sy_tools/config.py::GIT_TIMEOUT_SECONDS`.
+GIT_TIMEOUT_SECONDS = 5
 
 # Weakest to strongest. Clamping a floor needs a total order, so an alias absent here is an error
 # rather than an unranked value that silently skips the floor check.
@@ -66,6 +84,7 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 
 _RESOLVED: tuple[dict, dict[str, str]] | None = None
 _REPO_ROOT: Path | None = None
+_REPO_ROOT_REFUSAL: SystemExit | None = None
 
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 # Config keys whose absence is fatal rather than defaulted.
@@ -394,9 +413,10 @@ def resolve() -> tuple[dict, dict[str, str]]:
 
 def reset_cache() -> None:
     """Drop the memoized resolution, so the next read sees the files as they are on disk now."""
-    global _RESOLVED, _REPO_ROOT
+    global _RESOLVED, _REPO_ROOT, _REPO_ROOT_REFUSAL
     _RESOLVED = None
     _REPO_ROOT = None
+    _REPO_ROOT_REFUSAL = None
 
 
 def _resolve_uncached() -> tuple[dict, dict[str, str]]:
@@ -466,10 +486,15 @@ def validate() -> list[str]:
         )
     required = list(REQUIRED_PATHS) + list(_adapter_map().get("required", []))
     for path in required:
-        if flat.get(path) in (None, ""):
+        # Whitespace-only counts as unset, matching `sy_tools/config.py` and, more to the point, the way
+        # `tracker.column_names()` reads the same value (`str(value or "").strip()`). `in (None, "")`
+        # passed `columns.ready: "   "` as configured — schema-valid, no `minLength` on `columns.*` —
+        # and the first status read then failed on a column this had just called present.
+        if not str(flat.get(path) or "").strip():
             errors.append(
                 f"{path} is required and unset. Set it in {root / CONFIG_DIRNAME / CONFIG_FILENAME}."
             )
+    errors.extend(_column_collisions(flat))
     # A presence check only: the env var's name is reported, its value never read into a variable
     # or a message. `os.environ.get(name)` here is used solely for its truthiness.
     for name in _adapter_map().get("secret_env", []):
@@ -480,6 +505,36 @@ def validate() -> list[str]:
             )
     errors.extend(_validate_models(values, provenance))
     return errors
+
+
+def _column_collisions(flat: dict) -> list[str]:
+    """Every column name more than one canonical status is configured under, as one error line.
+
+    Mirrors `sy_tools/tracker/__init__.py::column_collisions()` — including its message wording, minus
+    that module's `TrackerError` framing — because the CLI's `validate` and the `validate_config` tool
+    are one contract read two ways, and this script deliberately imports nothing from `sy_tools`. The
+    fault it names is silent otherwise: the canonical vocabulary matches a column name ignoring case
+    and returns its first hit, so two statuses under one name leave an issue in that column reporting
+    as only one of them for every reader.
+
+    A column that is missing or blank is skipped rather than reported here, so this never restates the
+    `REQUIRED_PATHS` loop above: one fault, one line.
+    """
+    sharing: dict[str, tuple[str, list[str]]] = {}
+    for column in CANONICAL_COLUMNS:
+        key = f"columns.{column}"
+        name = str(flat.get(key) or "").strip()
+        if name:
+            sharing.setdefault(name.lower(), (name, []))[1].append(key)
+    collisions = sorted((name, keys) for name, keys in sharing.values() if len(keys) > 1)
+    if not collisions:
+        return []
+    return [
+        "column name(s) shared by more than one canonical status: "
+        + "; ".join(f"{', '.join(sorted(keys))} all name {name!r}" for name, keys in collisions)
+        + ". Each status needs its own column, or an issue in that column reports as only one of "
+        "them and the others become unreachable. Names are compared ignoring case."
+    ]
 
 
 def env_conflicts() -> list[str]:
@@ -591,28 +646,42 @@ def repo_root() -> Path:
     deleted or made inaccessible under a hook that inherited it — is a third named refusal, mirroring
     `sy_tools/config.py::repo_root`: `validate()` had its own guard, but `show`, `get`, `agent` and
     `fingerprint` reach here without one and used to traceback raw out of `Path.cwd()`.
+
+    A refusal is memoized alongside an answer, so root resolution runs git at most once per process.
+    One failed `get()` asks for the root twice — the credential-shape gate resolves first through
+    `_extra_secret_words()`, which swallows the refusal, and the value's own `resolve()` asks again — so
+    without this the wait a caller actually sits through on a wedged git was twice
+    `GIT_TIMEOUT_SECONDS`, not the one root resolution that constant's own accounting counts (the other
+    three bounded call sites are counted where the constant is defined). `reset_cache()` clears both, the
+    same contract `_RESOLVED` already has: nothing re-reads until something asks it to.
     """
-    global _REPO_ROOT
+    global _REPO_ROOT, _REPO_ROOT_REFUSAL
+    if _REPO_ROOT_REFUSAL is not None:
+        raise _REPO_ROOT_REFUSAL
     if _REPO_ROOT is None:
-        project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-        if project_dir:
-            root = _git_toplevel(Path(project_dir))
-            if root is None:
-                raise SystemExit(
-                    f"sy_config: CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a "
-                    "git checkout, so no repository configuration can be resolved from it. Point it at the "
-                    "consuming repository, or unset it to resolve from the working directory."
-                )
-            _REPO_ROOT = root
-        else:
-            try:
-                _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
-            except OSError as exc:
-                raise SystemExit(
-                    f"sy_config: the working directory could not be read to derive the repository root: "
-                    f"{exc}. Set CLAUDE_PROJECT_DIR to the consuming repository, or run from a directory "
-                    "that still exists."
-                ) from None
+        try:
+            project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+            if project_dir:
+                root = _git_toplevel(Path(project_dir))
+                if root is None:
+                    raise SystemExit(
+                        f"sy_config: CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a "
+                        "git checkout, so no repository configuration can be resolved from it. Point it at the "
+                        "consuming repository, or unset it to resolve from the working directory."
+                    )
+                _REPO_ROOT = root
+            else:
+                try:
+                    _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+                except OSError as exc:
+                    raise SystemExit(
+                        f"sy_config: the working directory could not be read to derive the repository root: "
+                        f"{exc}. Set CLAUDE_PROJECT_DIR to the consuming repository, or run from a directory "
+                        "that still exists."
+                    ) from None
+        except SystemExit as refusal:
+            _REPO_ROOT_REFUSAL = refusal
+            raise
     return _REPO_ROOT
 
 
@@ -629,6 +698,21 @@ def _git_toplevel(start: Path) -> Path | None:
     subprocess in another script. As this module's own `SystemExit`, the refusal arrives as one line
     for the CLI and is caught by the callers that already degrade on one — `_adapter_map()`,
     `validate()`, and `secret_guard.py`'s word-list fallback.
+
+    A git that *hangs* is refused the same way, which needs `timeout=` and nothing else can substitute
+    for it: `secret_guard.py` reaches here on every Bash command naming a candidate variable, and that
+    hook's fail-closed backstop is an `except Exception`, which a hang never raises. Blocking there
+    writes no decision at all and Claude Code reads that as an allow, so an unbounded wait here is a
+    fail-open path on the secret gate's own hot path. What the bound closes is this one subprocess — a
+    `git` binary that does not return, a git wrapper or credential helper that waits on something.
+    Reading the configuration layers themselves is not bounded by it or by anything else (`layers()`,
+    `_load_json`), so a home directory that has stopped answering hangs there instead; bounding an
+    arbitrary local file read needs a watchdog thread and a design of its own, and there is no evidence
+    of that happening to warrant one.
+
+    `stdin` is closed for the reason `sy_tools/config.py::_git_toplevel` closes its own: a child that
+    inherits the caller's stdin can consume input the caller was going to read, and here the caller is a
+    `PreToolUse` hook whose stdin carries the very event it is deciding on.
     """
     if not start.is_dir():
         return None
@@ -636,7 +720,14 @@ def _git_toplevel(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"sy_config: git did not resolve the repository root from {start} within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, so "
+            "resolution refuses instead."
+        ) from None
     except OSError as exc:
         raise SystemExit(
             f"sy_config: git could not be run to resolve the repository root from {start}: {exc}. "
@@ -656,8 +747,12 @@ def _git_common_dir(start: Path) -> Path | None:
     against *this process's* cwd instead of `start` — fail-soft on the one boundary these callers
     exist to keep. A relative answer is None, the same as no checkout.
 
-    A `git` that cannot be run is refused by name here for the reasons `_git_toplevel` gives; None
-    means only "git ran and reported no checkout", which the callers act on themselves.
+    A `git` that cannot be run is refused by name here for the reasons `_git_toplevel` gives, and one
+    that *hangs* is bounded and refused for those same reasons: the secret gate's fail-closed backstop is
+    an `except Exception`, which a hang never raises, so only `timeout=` closes that fail-open path. None
+    means only "git ran and reported no checkout", which the callers act on themselves. `stdin` is closed
+    as `_git_toplevel` closes its own: the caller can be a `PreToolUse` hook whose stdin carries the very
+    event it is deciding on.
     """
     if not start.is_dir():
         return None
@@ -665,7 +760,14 @@ def _git_common_dir(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"sy_config: git did not resolve the repository's shared git directory from {start} within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, so "
+            "resolution refuses instead."
+        ) from None
     except OSError as exc:
         raise SystemExit(
             f"sy_config: git could not be run to resolve the repository's scratch directory from {start}: "
@@ -695,12 +797,24 @@ def _configured_worktree(common: Path) -> Path | None:
     git-dirs are deliberately colocated under one shared parent directory, the same class of
     collision as two ordinary same-named repos elsewhere on the machine, and out of scope for the
     same reason.
+
+    Each read is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and close
+    their own: a `PreToolUse` hook reaches here, its stdin carries the event it is deciding on, and a git
+    that never returns leaves it with no decision at all, which reads as an allow.
     """
     for filename in ("config.worktree", "config"):
-        proc = subprocess.run(
-            ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise SystemExit(
+                f"sy_config: git did not read core.worktree from {common / filename} within "
+                f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, "
+                "so resolution refuses instead."
+            ) from None
         out = proc.stdout.strip()
         if proc.returncode == 0 and out:
             resolved = (common / out).resolve()
@@ -721,13 +835,25 @@ def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
     Settled by asking git directly rather than pattern-matching directory names: a real working tree
     answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with `common`; a storage
     directory answers neither.
+
+    The question is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and
+    close their own: a `PreToolUse` hook reaches here, its stdin carries the event it is deciding on, and
+    a git that never returns leaves it with no decision at all, which reads as an allow.
     """
     if not candidate.is_dir():
         return False
-    proc = subprocess.run(
-        ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"sy_config: git did not answer whether {candidate} is a working tree within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, so "
+            "resolution refuses instead."
+        ) from None
     if proc.returncode != 0 or proc.stdout.strip() != "true":
         return False
     return _git_common_dir(candidate) == common

@@ -851,11 +851,177 @@ async def test_a_relation_of_the_wrong_shape_is_never_reported_as_no_dependencie
     with pytest.raises(TrackerError, match="not a list of issues"):
         await adapter.GithubAdapter().get_issue("7")
 
+    unaddressable_wrapper = {**_issue_view(), "blockedBy": {"edges": [{"node": {"url": BLOCKER_URL}}]}}
+    _install(monkeypatch, _json(unaddressable_wrapper), _json(_items()))
+    with pytest.raises(TrackerError, match="no nodes list"):
+        await adapter.GithubAdapter().get_issue("7")
+
     absent = {key: value for key, value in _issue_view().items() if key != "blockedBy"}
     _install(monkeypatch, _json(absent), _json(_items()))
     assert (await adapter.GithubAdapter().get_issue("7"))["dependencies"] == [], (
         "an issue gh reports no blockedBy for really has no dependencies"
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("total", [2, 1], ids=["count-sees-the-shortfall", "count-agrees-with-the-short-list"])
+async def test_a_relation_node_that_names_no_issue_is_reported_truncated_not_raised(monkeypatch, board, total):
+    """Found by review: raising per entry here failed `get_issue` whole over one unreadable relation node.
+
+    `_item_index` already settled this trade for the board — a card the credential may not view is skipped,
+    because raising broke every read of every issue over one invisible card — and `_refs` sits inside
+    `get_issue` on two *optional* relations, so a raise there costs the whole issue read as well. What the
+    relation has that the board page did not is `totalCount`, so the node can be skipped and the shortfall
+    reported instead of traded away: the invariant is that no dropped node is claimed complete, not that
+    reading one must fail.
+
+    Both counts are parametrised because the drop is reported from `_refs`'s own tally, not inferred from
+    the lengths: a `totalCount` that drifts down to agree with the shortened list is precisely the silent
+    completeness this guards, and length arithmetic alone would call it complete.
+    """
+    nodes = [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}]
+    _install(
+        monkeypatch,
+        _json({**_issue_view(), "blockedBy": {"nodes": nodes, "totalCount": total}}),
+        _json(_items()),
+    )
+
+    issue = await adapter.GithubAdapter().get_issue("7")
+
+    assert issue["dependencies"] == [BLOCKER_URL], f"the blocker gh did name must still come back: {issue}"
+    assert issue["dependencies_truncated"] is True, f"a dropped node must not read as a whole relation: {issue}"
+    assert issue["title"] == TITLE, "and one unreadable relation node must not fail the whole issue read"
+    assert issue["children_truncated"] is False, "the untouched relation on the same read must not be tainted"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "relation",
+    [
+        {"nodes": [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}]},
+        [{"number": 4, "url": BLOCKER_URL}, {"title": "a blocker gh named no other way"}],
+    ],
+    ids=["wrapper-without-a-count", "bare-list"],
+)
+async def test_an_unreadable_relation_node_with_no_count_to_report_it_from_fails_the_read(
+    monkeypatch, board, relation
+):
+    """The tolerance above is bought with `totalCount`; without one there is nothing to signal the drop.
+
+    `dependencies_truncated` is how a skipped node stays honest, and `_relation` derives it from the count
+    the relation carries — so a shape that carries no count has no channel to report the shortfall through,
+    and skipping there would answer with a shorter `dependencies` list marked complete: a real blocker
+    silently gone from the one field a caller reads to decide whether an issue is blocked. Both countless
+    shapes are checked, the bare list and the wrapper that omits the key, because the tolerant branch keys
+    off the count's presence rather than the payload's nesting.
+    """
+    _install(monkeypatch, _json({**_issue_view(), "blockedBy": relation}), _json(_items()))
+
+    with pytest.raises(TrackerError, match="no totalCount") as failure:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert "entry 1" in str(failure.value), failure.value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "entry", ["shipyard", {"color": "ededed"}, {"name": ""}, None],
+    ids=["bare-string", "no-name", "empty-name", "null"],
+)
+async def test_a_label_entry_with_no_readable_name_fails_the_read_rather_than_dropping_out(
+    monkeypatch, board, entry
+):
+    """Parity with jira's `_summary`, which refuses this same shape drift on its own `labels` field.
+
+    Both adapters answer one protocol, so an entry one of them refuses cannot be the other's silent
+    shortening: a filtered list reads as the issue's real labels, which is what a caller checks to decide
+    whether an issue is already decomposed or already shipped.
+    """
+    drifted = {**_issue_view(), "labels": [{"name": "shipyard"}, entry]}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match="labels field") as failure:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert "entry 1" in str(failure.value), failure.value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field", ["labels", "comments"])
+async def test_a_field_gh_did_not_return_as_a_list_is_never_read_as_an_empty_one(monkeypatch, board, field):
+    """The per-entry refusals above are reached through `_as_list`, which never raises.
+
+    So the entries were checked and the field holding them was not: `labels: "shipyard"` and
+    `comments: "a note"` both became `[]`, an issue reporting no labels and no comments at all —
+    indistinguishable from one that genuinely has neither, which is the same silence the per-entry
+    refusals exist to prevent, one level out. Jira's `_summary` has always refused its whole `labels`
+    field; this is the half of that parity github was missing.
+
+    The nesting `gh` really uses is checked in the same test, because the field-level check sits ahead of
+    the one parser that unwraps it: refusing everything but a bare list would have broken the `{field:
+    [...]}` wrapper `_as_list` exists for, and that regression is silent in the other direction.
+    """
+    drifted = {**_issue_view(), field: "shipyard"}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match=f"{field} field read back as str"):
+        await adapter.GithubAdapter().get_issue("7")
+
+    nested = {**_issue_view(), field: {field: _issue_view()[field]}}
+    _install(monkeypatch, _json(nested), _json(_items()))
+    issue = await adapter.GithubAdapter().get_issue("7")
+    assert len(issue[field]) == len(_issue_view()[field]), (
+        f"gh's own {{{field!r}: [...]}} nesting is what _as_list exists to unwrap and must stay readable"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", ["a note", 7, None], ids=["bare-string", "number", "null"])
+async def test_a_malformed_comment_entry_fails_the_read_rather_than_leaving_the_thread_short(
+    monkeypatch, board, entry
+):
+    """Parity with jira's `_comments`, which refuses this same drift on its own thread.
+
+    Dropping the entry returned a thread one comment short of what `gh` sent while the read still
+    reported itself whole — and on this tracker those comments are also the only index of which gist
+    holds which artifact, so the dropped one read as an artifact that was never attached.
+    """
+    drifted = {**_issue_view(), "comments": [*_issue_view()["comments"], entry]}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match="comments field") as failure:
+        await adapter.GithubAdapter().get_issue("7")
+
+    assert "entry 1" in str(failure.value), failure.value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("author", ["octocat", 7, []], ids=["bare-string", "number", "list"])
+async def test_a_comment_author_of_the_wrong_shape_raises_a_tracker_error_not_an_attribute_error(
+    monkeypatch, board, author
+):
+    """`(author or {}).get("login")` was a raw `AttributeError` for any non-dict author.
+
+    Every caller of this adapter guards `TrackerError`, so a bare `AttributeError` escapes as an
+    unhandled crash rather than the refusal this module promises — the same failure the entry and
+    field checks around it close, in the one field they left open.
+    """
+    first, *rest = _issue_view()["comments"]
+    drifted = {**_issue_view(), "comments": [{**first, "author": author}, *rest]}
+    _install(monkeypatch, _json(drifted), _json(_items()))
+
+    with pytest.raises(TrackerError, match="author that read back as"):
+        await adapter.GithubAdapter().get_issue("7")
+
+
+@pytest.mark.anyio
+async def test_a_comment_with_no_author_reads_as_an_empty_author_rather_than_failing(monkeypatch, board):
+    """`gh` omits the author for a deleted account, which is absence, not shape drift."""
+    first, *rest = _issue_view()["comments"]
+    _install(monkeypatch, _json({**_issue_view(), "comments": [{**first, "author": None}, *rest]}), _json(_items()))
+
+    issue = await adapter.GithubAdapter().get_issue("7")
+    assert issue["comments"][0]["author"] == "", issue["comments"][0]
 
 
 @pytest.mark.anyio
@@ -918,6 +1084,25 @@ async def test_find_issues_filters_on_board_values_and_reports_is_last_honestly(
     assert full_page["is_last"] is False, "a full page must not claim to be the last one"
     assert unfiltered.calls[0][unfiltered.calls[0].index("--limit") + 1] == "2", (
         "with no board-value filter the list call is the page, so it may still page at `limit`"
+    )
+
+
+@pytest.mark.anyio
+async def test_find_issues_accepts_a_page_token_and_still_reports_no_cursor(monkeypatch, board):
+    """The canonical signature carries a cursor, and this adapter has none to resume.
+
+    `gh` exposes no cursor, so the parameter is accepted for protocol parity and ignored rather than
+    faked: reporting `next_page_token: None` means there is never a token of this adapter's own to send
+    back, and a caller looping on the two paging keys behaves correctly without asking which tracker
+    it has. What must not happen is a rejected call for passing a parameter every adapter accepts.
+    """
+    fake = _install(monkeypatch, _json([_list_row()]), _json(_items()))
+
+    found = await adapter.GithubAdapter().find_issues(page_token="eyJzdGFydEF0Ijo1MH0")
+
+    assert found["next_page_token"] is None, f"a cursor this adapter cannot resume must not be invented: {found}"
+    assert not any("eyJzdGFydEF0Ijo1MH0" in str(arg) for call in fake.calls for arg in call), (
+        f"an ignored token must not reach gh's argv: {fake.calls}"
     )
 
 

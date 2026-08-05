@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from sy_tools import config, server
+from sy_tools import config, server, tracker
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,7 +47,14 @@ def _agreed_repo_root() -> Path | None:
     Asked of the two together because the failure this guards is a *disagreement*: the CLI runs in the
     same cwd and the same environment as this process, so the only thing that can separate them is
     their own resolution logic. One resolving while the other refuses is a disagreement too, and fails.
+
+    The memoized root is dropped first, because the callers below change `CLAUDE_PROJECT_DIR` and then ask
+    — the CLI side is a fresh process and reads the new pointer, this side would answer from the previous
+    test's root and the comparison would fail on a cache rather than on a disagreement. `reset_cache()`
+    and not `reload()`: `reload()` resolves eagerly, so it would raise `ConfigError` out of this helper
+    before the refusal branch below could assert that both sides refuse the same bogus pointer.
     """
+    config.reset_cache()
     proc = subprocess.run(
         [sys.executable, "-c", "import sy_config; print(sy_config.repo_root())"],
         capture_output=True, text=True, check=False,
@@ -1080,6 +1087,73 @@ def _size_limited_migrate_probe(cwd: Path, out: Path, *, limit: int) -> subproce
     )
 
 
+def test_both_validators_report_two_columns_configured_under_one_name(fixture_repo):
+    """The collision the canonical vocabulary refuses on, which only the MCP validator used to name.
+
+    The CLI's `validate` and the `validate_config` tool are one contract read two ways, so the CLI
+    reporting a config the tool refuses would send a repo into a session that breaks on its first
+    status read. Compared line for line against `column_collisions()` rather than against a copy of the
+    wording, like every other parity assertion in this file: two hand-maintained mirrors of one message
+    are exactly what drifts.
+    """
+    colliding = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "fixture in progress"}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(colliding), encoding="utf-8")
+    config.reload()
+
+    proc = _validate_probe(fixture_repo)
+
+    assert proc.returncode == 0, f"validate() must return its errors, not exit: {proc.stderr}"
+    reported = [line for line in proc.stdout.splitlines() if "shared by more than one" in line]
+    assert len(reported) == 1, f"one collision must be one line: {proc.stdout!r}"
+    assert reported == tracker.column_collisions(), "both validators must report the same sentence"
+    assert "columns.ready" in reported[0] and "columns.in_progress" in reported[0], reported[0]
+
+
+def test_both_validators_report_a_whitespace_only_column_as_unset(fixture_repo):
+    """`"   "` is schema-valid and reads as absent everywhere else, so calling it configured is the fault.
+
+    `columns.*` is `["string", "null"]` with no `minLength`, and `tracker.column_names()` treats a value
+    as unset via `str(value or "").strip()`. Both validators tested emptiness as `in (None, "")`, so a
+    whitespace-only column passed as present and the session then failed its very first status read with
+    "missing required column name(s): columns.ready" — the same "validates clean, breaks on first use"
+    fault `column_collisions()` exists to prevent, reached through the other predicate.
+    """
+    blank = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "   "}}
+    (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(blank), encoding="utf-8")
+    config.reload()
+
+    with pytest.raises(tracker.TrackerError, match=r"columns\.ready"):
+        tracker.column_names()  # the first real use, which is what makes a clean report a lie
+
+    errors = server.validate_config()["errors"]
+    assert [e for e in errors if e.startswith("columns.ready is required and unset")], errors
+
+    proc = _validate_probe(fixture_repo)
+    assert proc.returncode == 0, f"validate() must return its errors, not exit: {proc.stderr}"
+    reported = [line for line in proc.stdout.splitlines() if line.startswith("columns.ready is required")]
+    assert len(reported) == 1, f"the CLI must name it too, once: {proc.stdout!r}"
+
+
+def test_an_unset_column_is_reported_once_by_the_tool_not_twice(fixture_repo):
+    """An unconfigured repo is the commonest input there is, and it named each fault twice.
+
+    Asking `column_names()` for the collision check made it so: the required-key loop already reports
+    every unset `columns.*` key, and that call added its own "missing required column name(s)" line
+    naming the same five. `column_collisions()` answers the collision question alone, so a column that
+    is merely unset is reported by the one check whose business it is.
+    """
+    (fixture_repo / ".shipyard" / "config.json").write_text(
+        json.dumps({**FIXTURE_LAYER, "columns": {}}), encoding="utf-8",
+    )
+    config.reload()
+
+    errors = server.validate_config()["errors"]
+
+    for key in (f"columns.{name}" for name in ("backlog", "ready", "in_progress", "in_review", "done")):
+        assert sum(key in error for error in errors) == 1, f"{key} is named twice: {errors}"
+    assert not any("missing required column name(s)" in error for error in errors), errors
+
+
 def test_both_validators_refuse_a_tracker_that_only_resolves_as_a_path(fixture_repo):
     """`tracker` must be checked against the enumerated adapter names, not by joining it onto a path.
 
@@ -1304,6 +1378,61 @@ def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, mon
     assert "git could not be run" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
 
 
+GIT_CALL_SITES = ("--show-toplevel", "--git-common-dir", "core.worktree", "--is-inside-work-tree")
+"""One marker per git call site config resolution reaches, in the order a cold resolution reaches them."""
+
+
+def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, monkeypatch):
+    """The same call site as the test above, failing the one way no `except` clause can catch.
+
+    A `git` that blocks rather than fails — a wrapper or credential helper waiting on something, a binary
+    that does not return — is not an exception this resolver could have handled: it is the server never
+    answering. And this resolver is the hotter of the two twins, because every tool call reaches a
+    resolved value through it, where the CLI's own `_git_toplevel` runs once per process; the CLI's was
+    bounded first only because the secret gate's fail-open reaches that one. So the bound is asserted on
+    the call's own kwargs, not just on the refusal: `TimeoutExpired` is raised here by the fake either
+    way, so removing `timeout=` from the real code would still produce a `ConfigError` and pass a test
+    that only checked that. What proves the hang is actually bounded is that the real call asks for it.
+
+    Every call site is covered, not just the first. Resolution shells out to git in four places
+    (`GIT_CALL_SITES`) and the fake wedges on the *last* of them, so `seen` accumulates the real kwargs
+    of every earlier one before the refusal: wedging on the first call meant `seen` held a single entry,
+    and an `all(...)` over one element stayed green while the other three sites carried no `timeout=` at
+    all — which is exactly how three unbounded calls arrived here unnoticed. Each site is asserted to
+    have been reached as well, so removing a call rather than its bound also fails.
+    """
+    seen: list[dict] = []
+    commands: list[list[str]] = []
+
+    def wedge(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        commands.append(list(cmd))
+        seen.append(kwargs)
+        if "--is-inside-work-tree" in cmd:  # the last site a cold resolution reaches
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=config.GIT_TIMEOUT_SECONDS)
+        if "--show-toplevel" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{tmp_path}\n", stderr="")
+        if "--git-common-dir" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{tmp_path / '.git'}\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")  # no core.worktree
+
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # so worktree.root stays derived, as it is by default
+    monkeypatch.setattr(config.subprocess, "run", wedge)
+    with pytest.raises(config.ConfigError, match="is a working tree") as raised:
+        config.reload()
+    assert f"within {config.GIT_TIMEOUT_SECONDS}s" in str(raised.value), raised.value
+    assert "CLAUDE_PROJECT_DIR" not in str(raised.value), "a wedged binary is not the pointer's fault"
+    assert len(seen) > 1, f"the refusal must come from a later site, with earlier ones recorded: {commands}"
+    for site in GIT_CALL_SITES:
+        assert any(site in cmd for cmd in commands), f"{site} was never reached, so its bound is unproven"
+    assert all(kwargs.get("timeout") == config.GIT_TIMEOUT_SECONDS for kwargs in seen), (
+        f"only `timeout=` can refuse a hang, and every real call must pass it: {list(zip(commands, seen, strict=True))}"
+    )
+    assert all(kwargs.get("stdin") is subprocess.DEVNULL for kwargs in seen), (
+        f"no git call may inherit the server's JSON-RPC stdin: {list(zip(commands, seen, strict=True))}"
+    )
+
+
 def _empty_bin(tmp_path: Path) -> Path:
     """A directory holding no `git`, for use as the whole of `PATH`."""
     empty = tmp_path / "no-git-here"
@@ -1359,3 +1488,173 @@ def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_
     assert seen and all(kwargs.get("stdin") == subprocess.DEVNULL for kwargs in seen), (
         f"a git call was handed the server's own stdin: {seen}"
     )
+
+
+def test_the_repo_root_resolves_once_per_process_refusal_included(fixture_repo, tmp_path, monkeypatch):
+    """The bound `GIT_TIMEOUT_SECONDS` documents is per resolution, so resolution must happen once.
+
+    This resolver is on the path every tool call takes to a resolved value and it shelled out to `git
+    rev-parse` on each of them. Worse for the failing case, which is what the bound is for: one failed
+    `get()` asks for the root twice — the credential-shape gate resolves first and the value's own
+    `resolve()` asks again — so an unmemoized refusal made the real wait on a wedged git twice the
+    number anyone reading that constant would expect. The refusal is therefore memoized alongside the
+    answer, exactly as `scripts/sy_config.py::repo_root` memoizes its own `SystemExit`.
+
+    Spawn counts are the assertion because a returned value cannot tell a fresh resolution from a cached
+    one, and `reset_cache()` clearing *both* is the other half: a root that outlived the cache it is
+    stored beside would leave `reload()` re-reading the previous repository's layers.
+    """
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def record(cmd, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(config.subprocess, "run", record)
+    config.reset_cache()
+    resolved = config.repo_root()
+    assert config.repo_root() == resolved and len(calls) == 1, f"the root must be resolved once: {calls}"
+
+    bogus = tmp_path.parent / "not-a-checkout"  # exists, so git really runs and reports no checkout
+    bogus.mkdir(exist_ok=True)
+    config.reset_cache()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(bogus))
+    with pytest.raises(config.ConfigError, match="CLAUDE_PROJECT_DIR"):
+        config.repo_root()
+    refused_after = len(calls)
+    with pytest.raises(config.ConfigError, match="CLAUDE_PROJECT_DIR"):
+        config.repo_root()
+    assert len(calls) == refused_after, f"a memoized refusal must not shell out again: {calls}"
+
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR")
+    config.reset_cache()
+    assert config.repo_root() == resolved, "reset_cache() must clear the refusal, not only the answer"
+    assert len(calls) == refused_after + 1, f"and the call after it must really re-resolve: {calls}"
+
+    calls.clear()
+    config.reload()
+    assert calls, "reload() must clear the root too, or it re-reads the layers of the previous repo"
+
+
+def test_a_git_timeout_is_retried_on_the_next_call_rather_than_refusing_the_session(fixture_repo, monkeypatch):
+    """This module backs a long-lived server, so a transient refusal must not outlive the transient fault.
+
+    A timeout says nothing about the repository — only that git did not answer inside five seconds, which a
+    momentary index lock or a slow filesystem produces — and memoizing that verdict turned one hiccup into a
+    server that refused every later tool call for the rest of its uptime. `reset_cache()` *is* reachable
+    without a restart — the `reload_config` tool reaches it through `config.reload()`, and that is the
+    recovery path for the settled refusal which is memoized — but nothing tells a client that a five-second
+    git hiccup is what it is now stuck on, so clearing it would depend on someone guessing to reload the
+    configuration, where the retry needs no client to know anything. The CLI twin in `scripts/sy_config.py`
+    keeps memoizing its own, correctly: its process ends with the command. A settled refusal is still
+    memoized here — the case above covers that — so this pins the distinction, not a blanket un-memoizing.
+    """
+    real_run = subprocess.run
+    wedged = [True]
+
+    def hang(cmd, **kwargs):
+        if wedged[0]:
+            raise subprocess.TimeoutExpired(cmd, config.GIT_TIMEOUT_SECONDS)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(config.subprocess, "run", hang)
+    config.reset_cache()
+    with pytest.raises(config.ConfigError, match="did not resolve the repository root"):
+        config.repo_root()
+    wedged[0] = False
+    assert config.repo_root() == fixture_repo, "a timeout must not be remembered: the next call must retry"
+
+
+def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, monkeypatch):
+    """Memoization is decided by exception class, so all three settled refusals must behave alike.
+
+    The case above pins only the `CLAUDE_PROJECT_DIR`-is-not-a-checkout branch, and the other two are
+    environment faults reached by different code paths: a git that cannot be run at all, and a working
+    directory that can no longer be read under a long-lived server. Neither can come out differently on
+    the next call, so both belong on the remembered side with it, and only the timeout on the retried
+    side. The property asserted is repeat-call consistency: the next call refuses with the same class and
+    the same message, and without resolving again — which, unlike a spawn count alone, also holds for the
+    branch that never reaches git, since each side counts its own attempts here.
+
+    Deliberately *not* object identity, which this used to assert. `raise` extends an exception's own
+    `__traceback__` in place, so re-raising one cached instance grew that chain by two frames per call —
+    ~400 frames and ~53KB of rendered traceback after 200 calls in a server that stays up refusing. The
+    frame count of the raised exception is therefore asserted constant across repeats, because the
+    cheapest way to be repeat-consistent is exactly the one that leaks.
+
+    Each break is scoped to its own `monkeypatch.context()` because `fixture_repo`'s teardown resolves
+    the configuration again, and a still-broken git or cwd fails that teardown rather than this test.
+    """
+    def frames(exc: BaseException) -> int:
+        traceback, depth = exc.__traceback__, 0
+        while traceback is not None:
+            traceback, depth = traceback.tb_next, depth + 1
+        return depth
+
+    def repeats(first: config.ConfigError, attempts: list) -> None:
+        attempted = len(attempts)
+        counts = []
+        for _ in range(20):
+            with pytest.raises(config.ConfigError) as again:
+                config.repo_root()
+            counts.append(frames(again.value))
+        assert (type(again.value), str(again.value)) == (type(first), str(first)), (
+            f"a memoized refusal must repeat itself: {again.value!r} after {first!r}"
+        )
+        assert len(attempts) == attempted, f"and must not resolve again: {attempts}"
+        assert len(set(counts)) == 1, (
+            f"each refusal must be a fresh exception, or its traceback grows per call: {counts}"
+        )
+
+    attempts: list = []
+
+    def unrunnable(cmd, **kwargs):
+        attempts.append(list(cmd))
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(config.subprocess, "run", unrunnable)
+        config.reset_cache()
+        with pytest.raises(config.ConfigError, match="git could not be run") as first:
+            config.repo_root()
+        repeats(first.value, attempts)
+
+    reads: list = []
+
+    def dead_cwd():
+        reads.append(1)
+        raise FileNotFoundError(2, "the working directory no longer exists")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(config.Path, "cwd", staticmethod(dead_cwd))
+        config.reset_cache()
+        with pytest.raises(config.ConfigError, match="working directory could not be read") as first_cwd:
+            config.repo_root()
+        repeats(first_cwd.value, reads)
+    config.reset_cache()
+
+
+def test_env_present_reports_presence_and_reads_an_empty_variable_as_absent(monkeypatch):
+    """The presence-only primitive `check_env` serves, pinned where it lives rather than only at the tool.
+
+    Empty-counts-as-absent is the load-bearing half: it matches `_post_resolution_violations`' own
+    `secret_env` loop exactly, so a credential exported empty is a missing credential to both, and the
+    return type is `bool` so there is nothing for a caller to accidentally render.
+    """
+    monkeypatch.setenv("SY_ENV_PRESENT_PROBE", "anything at all")
+    assert config.env_present("SY_ENV_PRESENT_PROBE") is True
+    monkeypatch.setenv("SY_ENV_PRESENT_PROBE", "")
+    assert config.env_present("SY_ENV_PRESENT_PROBE") is False, "an empty variable holds no credential"
+    monkeypatch.delenv("SY_ENV_PRESENT_PROBE")
+    assert config.env_present("SY_ENV_PRESENT_PROBE") is False
+
+
+def test_a_name_the_environment_cannot_encode_is_absent_rather_than_a_crash():
+    """`os.environ.get("\\ud800")` raises `UnicodeEncodeError`, which reached `check_env` as a crash.
+
+    A refusal is fine and a `False` is fine; an internal error out of a tool whose whole job is a
+    presence answer is not. Nothing can export an unpaired surrogate, so absent is also the true answer.
+    """
+    assert config.env_present("\ud800") is False
+    assert config.env_present("ACLI_\udfff_TOKEN") is False

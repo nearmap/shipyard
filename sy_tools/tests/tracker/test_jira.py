@@ -337,7 +337,7 @@ async def test_a_site_carrying_userinfo_is_refused_without_echoing_it(monkeypatc
 ADF_BODY = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
     {"type": "text", "text": "Body line."}]}]}
 
-ISSUE = {
+ISSUE: dict[str, Any] = {
     "id": "10001",
     "key": "PROJ-7",
     "fields": {
@@ -362,7 +362,7 @@ ISSUE = {
 }
 """One issue as `GET /issue/{id}?fields=...` returns it: `PROJ-5` blocks it, it blocks `PROJ-6`."""
 
-THREAD = {
+THREAD: dict[str, Any] = {
     "comments": [{
         "id": "20001", "author": {"displayName": "Ship Bot"},
         "created": "2026-07-30T00:00:00.000+0000", "body": ADF_BODY,
@@ -608,6 +608,28 @@ async def test_get_issue_says_whether_the_comment_page_left_anything_out(
     assert len(full["comments"]) == len(thread["comments"]), "every comment on the page must still be returned"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("malformed", ["a bare string", ["nested"], None], ids=["string", "list", "null"])
+async def test_a_comment_entry_of_the_wrong_shape_fails_rather_than_vanishing(credentials, monkeypatch, malformed):
+    """Skipping the entry returned a short thread that `total` and `startAt` still called complete.
+
+    A comment silently missing from a read is exactly what the truncation signal exists to prevent, and
+    the search read in the same module already refuses this drift.
+    """
+    thread = {"comments": [THREAD["comments"][0], malformed], "startAt": 0, "total": 2}
+    _transport(monkeypatch, ISSUE, thread)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "comment 1 of PROJ-7" in message, f"the failure must say which entry it could not read: {message}"
+    assert "nested" not in message and "a bare string" not in message, (
+        f"a shape failure names shapes, never the payload it could not parse: {message}"
+    )
+    assert FAKE_TOKEN not in message, "and never the credential"
+
+
 EPIC: dict[str, Any] = {
     "id": "10000",
     "key": "PROJ-1",
@@ -774,6 +796,229 @@ async def test_a_read_whose_shape_is_wrong_fails_without_quoting_the_credential(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("issuelinks", {"0": {"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}}),
+        ("issuelinks", "PROJ-5"),
+        ("subtasks", {"0": {"key": "PROJ-8"}}),
+        ("subtasks", "PROJ-8"),
+    ],
+    ids=["links-as-object", "links-as-string", "subtasks-as-object", "subtasks-as-string"],
+)
+async def test_a_relational_field_that_is_not_a_list_fails_instead_of_reading_as_empty(
+    credentials, monkeypatch, field, value
+):
+    """`dependencies: []` is what a caller reads as "not blocked", and `children: []` as "not decomposed".
+
+    Both used to be what a field of the wrong shape produced, indistinguishable from an issue that
+    really has no relations. The message names the field so the drift can be found, and names shapes
+    only — never the payload, never the credential.
+    """
+    drifted = {**ISSUE, "fields": {**ISSUE["fields"], field: value}}
+    _transport(monkeypatch, drifted, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert field in message and "not a list" in message, f"the failure must name the field: {message}"
+    assert "PROJ-5" not in message and "PROJ-8" not in message, f"and not the payload: {message}"
+    assert FAKE_TOKEN not in message, "and never the credential"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", [None, "absent"], ids=["null", "absent"])
+async def test_a_relational_field_jira_omits_still_reads_as_no_relations(credentials, monkeypatch, value):
+    """The distinction the refusal above exists for: absent honestly means none, and must not raise."""
+    fields = {k: v for k, v in ISSUE["fields"].items() if k not in ("issuelinks", "subtasks")}
+    if value is None:
+        fields |= {"issuelinks": None, "subtasks": None}
+    _transport(monkeypatch, {**ISSUE, "fields": fields}, THREAD)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    assert (full["dependencies"], full["children"]) == ([], []), full
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "labels",
+    ["needs-spec", [{"name": "needs-spec"}, "ok"], 5],
+    ids=["string-not-a-list", "object-entry", "number"],
+)
+async def test_a_labels_field_that_is_not_a_list_of_strings_fails_the_read(credentials, monkeypatch, labels):
+    """Filtering the field to the strings in it invented labels, dropped labels, or crashed outright.
+
+    A bare string was iterated into its own characters, an entry that was an object vanished from a
+    list that still looked plausible, and a number raised a `TypeError` past every `TrackerError` this
+    module promises. `add_label` already refuses this exact shape rather than writing it back, so the
+    read that feeds it has to refuse it too — otherwise the two disagree about the same field.
+    """
+    drifted = {**ISSUE, "fields": {**ISSUE["fields"], "labels": labels}}
+    _transport(monkeypatch, drifted, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "labels" in message and "not a list of strings" in message, message
+    assert "needs-spec" not in message and FAKE_TOKEN not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "entry",
+    [{"id": "10099"}, "PROJ-9", None, {"key": {"nested": 1}}],
+    ids=["object-with-no-key", "bare-string", "null", "nested-key"],
+)
+async def test_a_child_entry_carrying_no_key_fails_instead_of_being_dropped(credentials, monkeypatch, entry):
+    """A skipped entry returned a shorter list while `children_truncated` still reported `False`.
+
+    That is a read claiming to be complete with a real child missing from it — the drift the per-comment
+    refusal already exists for, one field over. `nested-key` is the case the refusal could not see while
+    `_field` read the key: a non-string `key` coerced into a truthy `"{'nested': 1}"`, so the guard passed
+    and a fabricated key landed in `children` — worse than the drop, because it names an issue nobody has.
+    """
+    drifted = {**ISSUE, "fields": {**ISSUE["fields"], "subtasks": [{"key": "PROJ-8"}, entry]}}
+    _transport(monkeypatch, drifted, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "subtasks" in message and "entry 1" in message, message
+    assert "PROJ-8" not in message and "PROJ-9" not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_malformed_link_entry_fails_while_another_link_type_is_still_filtered(credentials, monkeypatch):
+    """One silent `continue` covered two different things, and only one of them is correct.
+
+    Skipping a well-formed link of some other type is what this parse is for; skipping an entry it
+    cannot read at all reported "nothing is blocking this issue", which is what a caller acts on.
+    """
+    for entry in ("PROJ-5", None):
+        drifted = {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}
+        _transport(monkeypatch, drifted, THREAD)
+        with pytest.raises(TrackerError) as failure:
+            await adapter.JiraAdapter().get_issue("PROJ-7")
+        assert "issuelinks" in str(failure.value) and "entry 0" in str(failure.value), failure.value
+
+    other_type = {"type": {"name": "Relates"}, "outwardIssue": {"key": "PROJ-4"}}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [other_type]}}, THREAD)
+
+    full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    assert full["dependencies"] == [], f"a non-blocking link is filtered, not a failure: {full}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "link_type",
+    ["notanobject", {}, {"name": None}, {"name": {"nested": 1}}, None],
+    ids=["string", "empty", "null-name", "nested-name", "absent"],
+)
+async def test_a_link_whose_type_cannot_be_read_is_not_reported_as_a_non_blocking_link(
+    credentials, monkeypatch, link_type
+):
+    """ "No type name to compare" and "compared, and it is not Blocks" are different answers.
+
+    `(_field(link.get("type"), "name") or "").lower() != BLOCKS` collapsed them into one: Jira's own spec
+    marks `type` required on an `IssueLink` without guaranteeing a `name` inside it, so a drifted type
+    shape filtered out as if the link had been read and found irrelevant, and the issue came back with
+    `dependencies: []` — indistinguishable from a genuinely unblocked one, which is exactly what this
+    function's docstring refuses.
+
+    `nested-name` is the truthiness half of that same collapse, and it survived the first fix: `_field`
+    coerced a non-string `name` into a truthy `"{'nested': 1}"`, which walked straight past the gate and
+    lost the comparison instead, so a Blocks link whose type name drifted still read as unrelated.
+    `_str_field` is what reads the name now.
+    """
+    entry = {"type": link_type, "outwardIssue": {"key": "PROJ-5"}}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "issuelinks" in message and "entry 0" in message and "link type" in message, message
+    assert FAKE_TOKEN not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(credentials, monkeypatch):
+    """A read carries one side of each link, so the other direction being empty is honest, not drift.
+
+    "This direction does not apply" is what is guarded here, and it is the ordinary case: a Blocks link
+    arrives under exactly one of the two sides `_linked` is asked for, so raising on an absent side would
+    fail every real read. An `id`-only counterpart is legitimate too — Jira's spec documents `key` as
+    required only when `id` is not given, so that object is addressable, just not by the key this
+    returns. The distinct case, an object that is *present* and names no issue at all, is drift and the
+    test below refuses it; those two used to share one silent `continue`.
+    """
+    for entry, expected in (
+        ({"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}, ["PROJ-5"]),
+        ({"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-6"}}, []),
+        ({"type": {"name": "Blocks"}, "outwardIssue": {"id": "10099"}}, []),
+    ):
+        _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
+
+        full = await adapter.JiraAdapter().get_issue("PROJ-7")
+
+        assert full["dependencies"] == expected, f"{entry} read as {full['dependencies']}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "counterpart",
+    [{}, {"summary": "Ship the thing"}, "PROJ-5", 5, [], {"key": {"nested": 1}}, {"id": {"nested": 1}}],
+    ids=["empty", "no-addressable-field", "string", "number", "list", "nested-key", "nested-id"],
+)
+async def test_a_blocks_link_whose_counterpart_names_no_issue_is_not_reported_as_unrelated(
+    credentials, monkeypatch, counterpart
+):
+    """A counterpart that is present and unaddressable is drift, not the absent side above.
+
+    `if key:` collapsed those two answers into one silent `continue`, so a Blocks link whose
+    `outwardIssue` carries neither `key` nor `id` came back as `dependencies: []` — indistinguishable
+    from a genuinely unblocked issue, in the one field a caller reads to decide whether it is blocked,
+    and with no truncation channel on `get_issue` to signal the drop. Jira's REST v3 spec documents
+    `key` on this object as required when `id` is not provided, the same specification the link-type
+    check cites, and `_keys` here plus github's `_refs` already raise on the equivalent per-entry drift.
+
+    The nested shapes are the truthiness half of the same answer: `str(member) if member else None` made
+    `{"key": {...}}` read as the issue key `"{'nested': 1}"` and any truthy `id` read as "addressable, so
+    skip", so an addressability decision rested on a value being non-empty rather than on it being the
+    string the spec types it as. `_str_field` is what reads both members now.
+    """
+    entry = {"type": {"name": "Blocks"}, "outwardIssue": counterpart}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
+
+    with pytest.raises(TrackerError) as failure:
+        await adapter.JiraAdapter().get_issue("PROJ-7")
+
+    message = str(failure.value)
+    assert "issuelinks" in message and "entry 0" in message and "outwardIssue" in message, message
+    assert FAKE_TOKEN not in message, f"shapes only: {message}"
+
+
+@pytest.mark.anyio
+async def test_a_dependency_read_back_through_a_drifted_field_is_not_reported_as_verified(
+    credentials, monkeypatch
+):
+    """The read-back that proves a link's direction goes through the same parse, so it fails too.
+
+    Reading the links as empty here reported a dependency as verified that was never seen, which is
+    worse than the unverified link the check exists to catch.
+    """
+    _transport(monkeypatch, (204, None), {"fields": {"issuelinks": {"0": {"key": "PROJ-7"}}}})
+
+    with pytest.raises(TrackerError, match="issuelinks"):
+        await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
+
+
+@pytest.mark.anyio
 async def test_update_issue_writes_a_converted_description(credentials, monkeypatch):
     calls = _transport(monkeypatch, (204, None))
 
@@ -831,6 +1076,26 @@ async def test_find_issues_reads_exhaustion_from_the_token_not_from_isLast(crede
 
 
 @pytest.mark.anyio
+async def test_find_issues_sends_a_returned_cursor_back_and_omits_it_on_a_first_page(credentials, monkeypatch):
+    """The token was advertised but could not be sent back, so the cursor this verb reports was unusable.
+
+    A first-page request must carry no `nextPageToken` key at all: the endpoint reads the field's
+    presence, so an empty token is a different request from no token.
+    """
+    calls = _transport(monkeypatch, SEARCH_PAGE)
+    first = await adapter.JiraAdapter().find_issues()
+    assert "nextPageToken" not in _sent(calls[0]), (
+        f"a first page must not claim to resume a cursor: {_sent(calls[0])}"
+    )
+
+    resumed = _transport(monkeypatch, SEARCH_PAGE)
+    await adapter.JiraAdapter().find_issues(page_token=first["next_page_token"])
+    assert _sent(resumed[0])["nextPageToken"] == SEARCH_PAGE["nextPageToken"], (
+        f"the token the previous page returned must go back untouched: {_sent(resumed[0])}"
+    )
+
+
+@pytest.mark.anyio
 async def test_find_issues_fails_on_a_result_with_no_key(credentials, monkeypatch):
     """Found by review: a search result missing `key` was passed through as an id-less, unaddressable row.
 
@@ -847,6 +1112,27 @@ async def test_find_issues_fails_on_a_result_with_no_key(credentials, monkeypatc
         "labels": ["decomposed", "shipyard"],
     }
     _transport(monkeypatch, {"isLast": True, "issues": [{"id": "10001", "fields": fields}]})
+
+    with pytest.raises(TrackerError, match="no issue key"):
+        await adapter.JiraAdapter().find_issues()
+
+
+@pytest.mark.anyio
+async def test_find_issues_fails_on_a_result_whose_key_is_not_really_a_string(credentials, monkeypatch):
+    """Same coercion hole `_linked`/`_keys` closed with `_str_field`, one call site over.
+
+    `_field(entry, "key")` would `str()`-coerce a nested/malformed `key` shape into a fabricated,
+    truthy key instead of the missing one this file already refuses — a search result would read as
+    a found, addressable issue under a key nobody can look up.
+    """
+    fields = {
+        "summary": "Ship the thing",
+        "status": {"name": "In Review"},
+        "issuetype": {"name": "Task"},
+        "parent": {"key": "PROJ-1", "fields": {"summary": "The epic"}},
+        "labels": ["decomposed", "shipyard"],
+    }
+    _transport(monkeypatch, {"isLast": True, "issues": [{"id": "10001", "key": {"nested": 1}, "fields": fields}]})
 
     with pytest.raises(TrackerError, match="no issue key"):
         await adapter.JiraAdapter().find_issues()
@@ -1015,6 +1301,48 @@ async def test_add_dependency_fails_when_the_direction_is_not_confirmed(credenti
     _transport(monkeypatch, (201, None), verification)
     with pytest.raises(TrackerError, match="direction not confirmed"):
         await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "unrelated",
+    [
+        {"type": {"name": "Blocks"}, "inwardIssue": {}},
+        {"type": {"name": "Blocks"}, "inwardIssue": {"key": {"nested": 1}}},
+        {"type": {}},
+        {"type": {"name": "Relates"}},
+        "not a link object",
+    ],
+    ids=["unaddressable", "nested-key", "unreadable-type", "other-type", "not-an-object"],
+)
+async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(credentials, monkeypatch, unrelated):
+    """The POST has already landed by the verification read, so drift in another link must not fail it.
+
+    Raising over the whole list reported failure for a link that really was created — with no indication
+    it existed — which invites a retry that creates a second one. The verification only needs the entry it
+    just wrote, so an entry it cannot parse is simply not that entry. `get_issue`'s strict read of the
+    same list is the test below, unchanged: there a skipped entry is a dependency silently missing.
+
+    `unreadable-type` and `other-type` are separate cases because they leave `_linked` by different
+    routes: a `type` object with no `name` in it reaches the strict unreadable-type gate, while a
+    well-formed `Relates` link exits through the ordinary Blocks filter and never gets there.
+    """
+    confirming = {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}
+    _transport(monkeypatch, (201, None), {"fields": {"issuelinks": [unrelated, confirming]}})
+
+    result = await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
+
+    assert result == {"id": "PROJ-7", "blocked_by": "PROJ-5", "verified": True}
+
+
+@pytest.mark.anyio
+async def test_get_issue_still_refuses_the_malformed_link_add_dependency_tolerates(credentials, monkeypatch):
+    """The tolerance above is scoped to the write's own verification, not granted to the general read."""
+    unrelated = {"type": {"name": "Blocks"}, "outwardIssue": {"key": {"nested": 1}}}
+    _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [unrelated]}}, THREAD)
+
+    with pytest.raises(TrackerError, match="issuelinks"):
+        await adapter.JiraAdapter().get_issue("PROJ-7")
 
 
 @pytest.mark.anyio

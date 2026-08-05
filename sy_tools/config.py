@@ -36,6 +36,21 @@ EFFORT_CAPABLE = frozenset({"sonnet", "opus", "fable"})
 
 CANONICAL_COLUMNS = ("backlog", "ready", "in_progress", "in_review", "done")
 REQUIRED_PATHS = (*(f"columns.{name}" for name in CANONICAL_COLUMNS), "tracker")
+# Every subprocess this module runs is a git query, and all four call sites are bounded by this:
+# `rev-parse --show-toplevel` (`_git_toplevel`), `rev-parse --git-common-dir` (`_git_common_dir`),
+# `config --get core.worktree` (`_configured_worktree`) and `rev-parse --is-inside-work-tree`
+# (`_is_resolved_working_tree`). They run inside the MCP server on the path *every* tool call takes to a
+# resolved value, and a hung resolution is a hung server: no response for the call that triggered it and
+# none for any call queued behind it. Generous for a local rev-parse under load, short of anything a
+# caller would sit through on a single tool call. What it bounds is one subprocess, not one call: a cold
+# `repo_scratch_dir()` reaches 13 of them in an ordinary checkout (measured, not estimated — one root
+# resolution, one `_git_common_dir`, five for `_logical_repo`, five more for the `worktree.root` derived
+# default's own `_logical_repo`, one closing `_git_toplevel`), so a git slow enough to answer just under
+# the bound every time costs 13x this number, where a *wedged* one refuses at the first site it reaches.
+# Same shape and number as `scripts/sy_config.py::GIT_TIMEOUT_SECONDS`, whose own hot path is the
+# `PreToolUse` secret gate, and as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS`.
+GIT_TIMEOUT_SECONDS = 5
+
 
 @dataclasses.dataclass(frozen=True)
 class _Resolved:
@@ -51,6 +66,20 @@ _STATE: _Resolved | None = None
 
 class ConfigError(RuntimeError):
     """The configuration could not be resolved, or a caller asked for something it may not have."""
+
+
+class _TransientConfigError(ConfigError):
+    """A resolution failure a later attempt can still succeed at, so it is never memoized.
+
+    A `ConfigError` to every caller — nothing above this module needs to tell the two apart — and
+    subclassed only so `repo_root` can decline to remember one. See its docstring for why that
+    distinction exists here and not in the CLI-side twin.
+    """
+
+
+_REPO_ROOT: Path | None = None
+_REPO_ROOT_REFUSAL: str | None = None
+"""A settled root refusal's *message*, not the exception that carried it — see `repo_root`."""
 
 
 def plugin_root() -> Path:
@@ -79,25 +108,78 @@ def repo_root() -> Path:
     directory that can no longer be read at all — deleted or made inaccessible under a long-lived
     server process — is a fourth named `ConfigError`, so it reaches `validate()` as a reportable fault
     rather than a raw `FileNotFoundError` out of whichever tool call resolved first.
+
+    A *settled* refusal is memoized alongside an answer, so root resolution runs git at most once per
+    process, the same contract `_STATE` already has: nothing re-reads until `reset_cache()` says to. Without
+    it this resolver — the hotter of the two twins, reached by every tool call — re-shelled out per call, so
+    the wait a caller actually sat through under a wedged git was a multiple of `GIT_TIMEOUT_SECONDS` rather
+    than the single root resolution that constant's own accounting counts. The sibling
+    `scripts/sy_config.py::repo_root` memoizes its own `SystemExit` refusal for the same reason.
+
+    What is remembered is the refusal's *message*, and each call raises a freshly built `ConfigError` from
+    it. Re-raising the one cached instance appended two traceback frames to that instance every time it was
+    raised, because `raise` extends the exception's own `__traceback__` chain in place: measured at ~400
+    frames and ~53KB of rendered traceback after 200 calls, growing without bound for as long as a refused
+    server stays up — and every renderer of that exception (a client's error display, a log) pays for the
+    whole chain. Repeat-call consistency is what memoizing is for here, and an equal message on an equal
+    class is that; object identity was never the property anything needed, only the cheapest way to spell it.
+
+    A `_TransientConfigError` is the exception, and it is where this parts company with that sibling: a git
+    that timed out has said nothing about the repository, only that it did not answer in five seconds — a
+    momentary index lock or a slow network filesystem — and this module backs a long-lived MCP server, not a
+    one-shot CLI process. Memoizing that verdict turned one hiccup into a server that refused every
+    subsequent tool call for the rest of its uptime. `reset_cache()` *is* reachable without a restart —
+    the `reload_config` tool calls `reload()`, which clears all three caches, and that is the documented
+    recovery from the non-transient refusal this function does memoize — but nothing tells a client that a
+    five-second git hiccup is what it is now stuck on, so recovery would depend on someone guessing to
+    reload the configuration. Retrying instead needs no client to know anything: a timeout costs the one
+    call it happened on. That is the right trade for this side, a bounded, self-clearing slowness against a
+    refusal that clears only on request. The CLI twin keeps memoizing, correctly, because its process ends
+    with the command.
+
+    The bill for that retry is unmemoized repetition *within* one tool call, and it is larger than one
+    extra wait: each attempt pays a fresh `GIT_TIMEOUT_SECONDS`, and a single call can resolve the root
+    several times. Counted against a `_git_toplevel` stubbed to time out: `get()` attempts it twice (the
+    credential-shape gate consults `extra_secret_words()`, which resolves, before the value's own
+    `resolve()` does), and the `validate_config` tool five times — one in `config.validate()`, two in the
+    first `config.get` inside `tracker.column_collisions()`, two in its own `config.get("tracker")` — so
+    that tool's worst case is 5x `GIT_TIMEOUT_SECONDS` in root resolution alone, not the 2x this docstring
+    used to claim (the other three bounded call sites are counted where the constant is defined). A
+    request-scoped cache would collapse it and is deliberately not added: it would be a second cache with
+    a lifetime this module has nowhere else, needing every tool entry point to bracket its own call before
+    it bought anything, against one module-level memo cleared in exactly one place. The number is recorded
+    rather than designed around, so a call path that reaches the root more times than this moves it again.
     """
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project_dir:
-        root = _git_toplevel(Path(project_dir))
-        if root is None:
-            raise ConfigError(
-                f"CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a git checkout, "
-                "so no repository configuration can be resolved from it. Point it at the consuming "
-                "repository, or unset it to resolve from the working directory."
-            )
-        return root
-    try:
-        return _git_toplevel(Path.cwd()) or Path.cwd()
-    except OSError as exc:
-        raise ConfigError(
-            f"the working directory could not be read to derive the repository root: {exc}. Set "
-            "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a directory "
-            "that still exists."
-        ) from None
+    global _REPO_ROOT, _REPO_ROOT_REFUSAL
+    if _REPO_ROOT_REFUSAL is not None:
+        raise ConfigError(_REPO_ROOT_REFUSAL)
+    if _REPO_ROOT is None:
+        try:
+            project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+            if project_dir:
+                root = _git_toplevel(Path(project_dir))
+                if root is None:
+                    raise ConfigError(
+                        f"CLAUDE_PROJECT_DIR is {project_dir!r}, which is not a directory inside a git "
+                        "checkout, so no repository configuration can be resolved from it. Point it at the "
+                        "consuming repository, or unset it to resolve from the working directory."
+                    )
+                _REPO_ROOT = root
+            else:
+                try:
+                    _REPO_ROOT = _git_toplevel(Path.cwd()) or Path.cwd()
+                except OSError as exc:
+                    raise ConfigError(
+                        f"the working directory could not be read to derive the repository root: {exc}. Set "
+                        "CLAUDE_PROJECT_DIR to the consuming repository, or restart the server from a "
+                        "directory that still exists."
+                    ) from None
+        except _TransientConfigError:
+            raise  # said nothing about the repository, so it is not an answer to remember
+        except ConfigError as refusal:
+            _REPO_ROOT_REFUSAL = str(refusal)
+            raise
+    return _REPO_ROOT
 
 
 def _git_toplevel(start: Path) -> Path | None:
@@ -113,6 +195,15 @@ def _git_toplevel(start: Path) -> Path | None:
     being a checkout, which is false when the pointer is fine and the binary is absent. A missing
     binary is an environment fault like the missing scanner in `secrets.py`, so it is refused by name.
 
+    A `git` that *hangs* is refused the same way, and only `timeout=` can refuse it: an unbounded wait
+    is not an exception any `except` clause here catches, it is the server never answering. This resolver
+    is the twin of `scripts/sy_config.py::_git_toplevel`, which was bounded first because the secret
+    gate's fail-open reaches it, but this is the hotter of the two — it runs on every tool call, not once
+    per CLI process — so the same bound belongs here, degrading to this module's own `ConfigError`
+    exactly as the unrunnable-binary case does. The timeout raises the `_TransientConfigError` subclass and
+    the missing binary does not, because only one of the two can come out differently on the next call and
+    `repo_root` memoizes accordingly.
+
     `stdin` is closed for the same reason the tracker adapters close it on their own subprocesses: this
     runs inside the MCP server, whose stdin is the JSON-RPC transport, and a child that inherits it can
     consume a frame the server was going to read.
@@ -123,8 +214,15 @@ def _git_toplevel(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise _TransientConfigError(
+            f"git did not resolve the repository root from {start} within {GIT_TIMEOUT_SECONDS}s and "
+            "was killed. A wedged git binary cannot be waited out on the path every tool call takes to "
+            "a resolved value, so resolution refuses instead. This refusal is not remembered: the next "
+            "call tries again, so a momentary index lock costs one failed call rather than the session."
+        ) from None
     except OSError as exc:
         raise ConfigError(
             f"git could not be run to resolve the repository root from {start}: {exc}. Every "
@@ -144,9 +242,12 @@ def _git_common_dir(start: Path) -> Path | None:
     against *this process's* cwd instead of `start` — fail-soft on the one boundary these callers
     exist to keep. A relative answer is None, the same as no checkout.
 
-    A `git` that cannot be run is a named `ConfigError` for the reasons `_git_toplevel` gives, and
-    `stdin` is closed for the same reason: this can run inside the MCP server, whose stdin is the
-    JSON-RPC transport. None means only "git ran and reported no checkout".
+    A `git` that cannot be run is a named `ConfigError` for the reasons `_git_toplevel` gives, and one
+    that *hangs* is bounded and refused for those same reasons — an unbounded wait is not an exception
+    any `except` clause here catches, it is the server never answering — as the `_TransientConfigError`
+    subclass, because a timeout settles nothing about the repository. `stdin` is closed for the same
+    reason: this can run inside the MCP server, whose stdin is the JSON-RPC transport. None means only
+    "git ran and reported no checkout".
     """
     if not start.is_dir():
         return None
@@ -154,8 +255,14 @@ def _git_common_dir(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise _TransientConfigError(
+            f"git did not resolve the repository's shared git directory from {start} within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out on the "
+            "path every tool call takes to a resolved value, so resolution refuses instead."
+        ) from None
     except OSError as exc:
         raise ConfigError(
             f"git could not be run to resolve the repository's scratch directory from {start}: {exc}. "
@@ -186,15 +293,23 @@ def _configured_worktree(common: Path) -> Path | None:
     collision as two ordinary same-named repos elsewhere on the machine, and out of scope for the
     same reason.
 
-    `stdin` is closed for the same reason the sibling resolvers close it: this can run inside the MCP
-    server, whose stdin is the JSON-RPC transport.
+    Each read is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and
+    close their own: this can run inside the MCP server, whose stdin is the JSON-RPC transport and whose
+    only defence against a git that never returns is `timeout=`.
     """
     for filename in ("config.worktree", "config"):
-        proc = subprocess.run(
-            ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-            stdin=subprocess.DEVNULL,
-        )
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise _TransientConfigError(
+                f"git did not read core.worktree from {common / filename} within {GIT_TIMEOUT_SECONDS}s "
+                "and was killed. A wedged git binary cannot be waited out on the path every tool call "
+                "takes to a resolved value, so resolution refuses instead."
+            ) from None
         out = proc.stdout.strip()
         if proc.returncode == 0 and out:
             resolved = (common / out).resolve()
@@ -216,16 +331,24 @@ def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
     answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with `common`; a storage
     directory answers neither.
 
-    `stdin` is closed for the same reason the sibling resolvers close it: this can run inside the MCP
-    server, whose stdin is the JSON-RPC transport.
+    The question is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and
+    close their own: this can run inside the MCP server, whose stdin is the JSON-RPC transport and whose
+    only defence against a git that never returns is `timeout=`.
     """
     if not candidate.is_dir():
         return False
-    proc = subprocess.run(
-        ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-        stdin=subprocess.DEVNULL,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise _TransientConfigError(
+            f"git did not answer whether {candidate} is a working tree within {GIT_TIMEOUT_SECONDS}s and "
+            "was killed. A wedged git binary cannot be waited out on the path every tool call takes to a "
+            "resolved value, so resolution refuses instead."
+        ) from None
     if proc.returncode != 0 or proc.stdout.strip() != "true":
         return False
     return _git_common_dir(candidate) == common
@@ -265,11 +388,25 @@ def resolve() -> tuple[dict, dict[str, str]]:
     return _STATE.values, _STATE.provenance
 
 
+def reset_cache() -> None:
+    """Drop everything memoized, so the next read sees the environment and the files as they are now.
+
+    One function rather than a bare `_STATE = None`, because the repository root is memoized too and a
+    second, un-cleared cache would leave `reload()` re-reading the layers of whichever repo the *first*
+    resolution found: the pointer that names the repo is read once, and clearing only half of it makes a
+    reload after a `CLAUDE_PROJECT_DIR` change silently a no-op. Mirrors `scripts/sy_config.py`'s own
+    `reset_cache()`, which clears the same three.
+    """
+    global _STATE, _REPO_ROOT, _REPO_ROOT_REFUSAL
+    _STATE = None
+    _REPO_ROOT = None
+    _REPO_ROOT_REFUSAL = None
+
+
 def reload() -> dict:
     """Drop the hot state and re-resolve from disk. Returns a summary, never a value."""
-    global _STATE
     before = fingerprint() if _STATE is not None else None
-    _STATE = None
+    reset_cache()
     values, provenance = resolve()
     after = fingerprint()
     return {
@@ -629,7 +766,12 @@ def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> lis
             f"Known trackers: {', '.join(_known_trackers()) or 'none'}."
         )
     for path_key in (*REQUIRED_PATHS, *adapter_map().get("required", [])):
-        if flat.get(path_key) in (None, ""):
+        # Whitespace-only counts as unset, because that is how the resolved value's own consumers read
+        # it: `tracker.column_names()` treats `str(value or "").strip()` as absent. Testing `in (None,
+        # "")` here reported `columns.ready: "   "` as configured — schema-valid, since `columns.*` is
+        # `["string", "null"]` with no `minLength` — and the session then failed its first status read
+        # with "missing required column name(s)". Validation clean, broken on first use.
+        if not str(flat.get(path_key) or "").strip():
             errors.append(f"{path_key} is required and unset.")
     # Presence only: the name is reported, the value is never read into a variable or a message.
     for name in adapter_map().get("secret_env", []):
@@ -672,6 +814,27 @@ def extra_secret_words() -> frozenset[str]:
     """
     words = _flatten(resolve()[0]).get("redaction.extra_words", [])
     return frozenset(str(w).upper() for w in words) if isinstance(words, list) else frozenset()
+
+
+def env_present(name: str) -> bool:
+    """Whether an environment variable is set and non-empty. The value itself is never returned or logged.
+
+    The presence-only idiom `_post_resolution_violations` already applies to each declared
+    `secret_env` name, lifted out so a caller diagnosing a missing credential has something to ask
+    that has no value to leak: `os.environ.get` reads it only to test truthiness — it is never
+    returned or logged — only whether the variable is set at all. An empty string counts as absent,
+    exactly as that loop reads it, since a variable exported empty is indistinguishable in effect
+    from one never exported.
+
+    A name the environment cannot even encode — an unpaired surrogate such as `"\\ud800"` — is absent,
+    not a crash: `os.environ.get` raises `UnicodeEncodeError` on one, which reached `check_env`'s caller
+    as an internal server error instead of an answer. Nothing can export such a name, so "not present"
+    is both the safe answer and the true one.
+    """
+    try:
+        return bool(os.environ.get(name))
+    except UnicodeEncodeError:
+        return False
 
 
 def resolved_root() -> Path:

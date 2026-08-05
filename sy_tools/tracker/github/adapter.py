@@ -136,11 +136,18 @@ class GithubAdapter:
         parent: str | None = None,
         text: str | None = None,
         limit: int = 50,
+        page_token: str | None = None,
     ) -> dict:
         """Search issues, optionally by canonical status, canonical type, parent or free text.
 
         `gh` has no cursor, so `next_page_token` is always None rather than a cursor that cannot be
-        resumed. With no status or type filter, this fetches up to `limit` issues from `gh issue list`
+        resumed. `page_token` is accepted for that reason and then ignored: this verb never hands out a
+        token, so there is never one of its own to resume, and inventing a cursor `gh` cannot honour
+        would page a caller through a set nothing is holding still. Accepting the parameter keeps the
+        canonical signature identical on both adapters, so a caller loops on `is_last` and
+        `next_page_token` without asking which tracker it is talking to.
+
+        With no status or type filter, this fetches up to `limit` issues from `gh issue list`
         and reports `is_last` from what came back. A status or type filter names a board value, so the
         board becomes the candidate set: every matching issue card in the scoped repository is
         enumerated, `limit` bounds the page rather than the fetch, `is_last` says whether a further
@@ -213,7 +220,7 @@ class GithubAdapter:
         option = native_type(issue_type)
         url = _gh(["issue", "create", *_repo_args(), "--title", title, "--body", body])
         if not url.startswith("https://"):
-            raise TrackerError(f"gh issue create returned no issue URL for {title!r}; nothing was created.")
+            raise TrackerError(f"gh issue create returned no issue URL for {_safe(title)!r}; nothing was created.")
         self._set_field(url, TYPE_FIELD, option)
         if parent:
             _edit(url, "--parent", parent)
@@ -376,7 +383,7 @@ class GithubAdapter:
     def _sync_add_dependency(self, issue: str, blocked_by: str) -> dict:
         """Add the `blocked by` relation and prove it took by reading the relation back."""
         url = _edit(issue, "--add-blocked-by", blocked_by)
-        found = _refs(_view(url, "blockedBy").get("blockedBy"))
+        found, _ = _refs(_view(url, "blockedBy").get("blockedBy"))
         if not any(_same_ref(ref, blocked_by) for ref in found):
             raise TrackerError(
                 f"{issue} does not read back as blocked by {blocked_by}; the relation was not recorded "
@@ -390,7 +397,7 @@ class GithubAdapter:
         labels = _labels(_view(url, "labels"))
         if not any(name.strip().lower() == label.strip().lower() for name in labels):
             raise TrackerError(
-                f"{label!r} is not on {issue} after the write; labels read back as {labels or 'none'}. "
+                f"{_safe(label)!r} is not on {issue} after the write; labels read back as {labels or 'none'}. "
                 "A label that does not exist on the repository is rejected rather than created."
             )
         return {"id": url, "labels": labels}
@@ -1096,23 +1103,131 @@ def _summary(data: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _comments(data: dict[str, Any]) -> list[dict[str, str]]:
-    """`gh`'s comment list, reduced to the four fields the canonical shape carries."""
-    return [
-        {
+    """`gh`'s comment list, reduced to the four fields the canonical shape carries.
+
+    An entry that is not a comment object fails the read rather than being skipped past, the refusal
+    jira's `_comments` already makes: skipping one dropped a comment out of the returned thread while the
+    read still reported itself whole, so a caller reading the thread — or `_artifact_gists`, which reads
+    these same comments as the only index of which gist holds which artifact — was one comment short of
+    what `gh` returned with nothing saying so.
+
+    A `comments` field that is present but not a list is that same failure one level out, and `_as_list`
+    never raises, so it used to come back as `[]`: an issue reporting no comments, indistinguishable from
+    one that really has none, and an artifact lookup reporting no artifacts while the gists sit where
+    nothing can find them again. `_read_list` makes that refusal, and an absent field is honestly no
+    comments.
+    """
+    thread: list[dict[str, str]] = []
+    for index, comment in enumerate(_read_list(data, "comments", "this issue's thread")):
+        if not isinstance(comment, dict):
+            raise TrackerError(
+                f"entry {index} of the comments field read back as {type(comment).__name__}, not a comment "
+                "object, so this thread cannot be read whole; it must not come back one comment short of "
+                "what gh returned. Check the installed gh version against the fields this adapter requests."
+            )
+        thread.append({
             "id": str(comment.get("id") or ""),
-            "author": str((comment.get("author") or {}).get("login") or ""),
+            "author": _login(comment.get("author"), index),
             "created": str(comment.get("createdAt") or ""),
             "body": str(comment.get("body") or ""),
-        }
-        for comment in _as_list(data.get("comments"), "comments")
-        if isinstance(comment, dict)
-    ]
+        })
+    return thread
 
 
 def _labels(data: dict[str, Any]) -> list[str]:
-    """Label names only: the ids and colours `gh` also returns are noise to every caller."""
-    labels = _as_list(data.get("labels"), "labels")
-    return [str(label["name"]) for label in labels if isinstance(label, dict) and label.get("name")]
+    """Label names only: the ids and colours `gh` also returns are noise to every caller.
+
+    An entry no name can be read out of fails the read instead of dropping out of the list, the same
+    refusal jira's `_summary` makes for its own `labels` field — the two adapters answer one protocol,
+    so a shape drift one of them refuses cannot be the other's silent shortening. A filtered list reads
+    as the issue's real labels, and `labels` is what a caller reads to decide whether an issue is
+    already decomposed or already shipped.
+
+    The whole field is checked first, because jira refuses a `labels` that is not a list of strings and
+    this side only refused the entries inside one: `_as_list` never raises, so a `labels` of `"shipyard"`
+    or of `3` came back as `[]` — an issue reporting no labels at all, which reads exactly like one that
+    genuinely has none and is the same silence the per-entry refusal exists to prevent, one level out.
+    `_read_list` makes that refusal, and an absent field is honestly no labels.
+
+    A name that is not a string is refused rather than coerced, which is the direction jira already takes
+    for its own `labels` — it refuses a non-string entry outright. `str(name)` turned a `{"name": 3}` into
+    the label `"3"`, so the same drift produced a plausible-looking label here and a loud failure there,
+    on one protocol whose caller cannot see which tracker replied.
+    """
+    names: list[str] = []
+    for index, label in enumerate(_read_list(data, "labels", "the labels on this issue")):
+        name = label.get("name") if isinstance(label, dict) else None
+        if not isinstance(name, str) or not name:
+            raise TrackerError(
+                f"entry {index} of the labels field read back as {_shape(label)} with no readable string "
+                "name, so the labels on this issue cannot be reported whole and a filtered list would read "
+                "as its real ones. Check the installed gh version against the fields this adapter requests."
+            )
+        names.append(name)
+    return names
+
+
+def _read_list(data: dict[str, Any], key: str, subject: str) -> list[Any]:
+    """One `gh` field that must be a list of objects, refusing every other shape rather than emptying it.
+
+    `_as_list`'s tolerance is load-bearing for the optional relations it also parses, so the strictness
+    lives here: it is these fields' protocol obligation, not the parser's. Shared by `labels` and
+    `comments` because the pair were fixed one at a time twice already, in both directions.
+
+    The nested `{key: [...]}` wrapper is accepted, since that is the `gh` nesting `_as_list` exists to
+    unwrap — but only that one, checked rather than assumed. Admitting *any* dict and handing it to
+    `_as_list` looked equivalent and was not: `_as_list` returns `[]` for a dict it cannot address, and
+    `{"nodes": [...]}` is precisely the shape this file's own `_refs` treats as gh's native relation-list
+    wrapper elsewhere, so the most plausible drift of all reported "no labels"/"no comments" through a
+    guard written to make exactly that impossible.
+    """
+    field = data.get(key)
+    if field is None:
+        return []
+    if isinstance(field, list):
+        return field
+    nested = field.get(key) if isinstance(field, dict) else None
+    if isinstance(nested, list):
+        return nested
+    raise TrackerError(
+        f"the {key} field read back as {_shape(field)}, not a list of {key}, so {subject} is unknown and it "
+        "must not be reported as having none. Check the installed gh version against the fields this "
+        "adapter requests."
+    )
+
+
+def _shape(value: object) -> str:
+    """A payload's shape for a failure message: its keys or its type, never its content.
+
+    Keys for an object, because the drift that matters is a list arriving under a wrapper this adapter
+    does not know — `{"nodes": [...]}` — and `dict` alone names nothing a reader can act on. The twin of
+    jira's `_shape`, so a refusal reads the same whichever adapter made it.
+    """
+    if isinstance(value, dict):
+        return f"an object with keys {sorted(str(k) for k in value)}"
+    return type(value).__name__
+
+
+def _login(author: object, index: int) -> str:
+    """One comment author's login, refusing a shape this adapter cannot read.
+
+    `(author or {}).get("login")` raised a bare `AttributeError` the moment `author` came back as
+    anything dict-shaped it isn't — a plain login string, say — which escapes every caller's
+    `except TrackerError`. That is the same "read whose failure is not the failure this module
+    promises" that the entry and field checks above close, in the one field they left open, so it is
+    answered the same way instead of being the last raw traceback in a function that now raises
+    properly for everything else. An absent author stays honestly empty: `gh` omits it for a deleted
+    account, which is not a drift.
+    """
+    if author is None:
+        return ""
+    if not isinstance(author, dict):
+        raise TrackerError(
+            f"entry {index} of the comments field has an author that read back as "
+            f"{type(author).__name__}, not an author object, so this thread cannot be read. Check the "
+            "installed gh version against the fields this adapter requests."
+        )
+    return str(author.get("login") or "")
 
 
 def _ref(node: object) -> str | None:
@@ -1122,26 +1237,80 @@ def _ref(node: object) -> str | None:
     return str(node.get("url") or node.get("number") or "") or None
 
 
-def _refs(payload: object) -> list[str]:
-    """Every related issue in a `{nodes: [...]}` relation, tolerating a bare list.
+def _refs(payload: object) -> tuple[list[str], int]:
+    """Every related issue in a `{nodes: [...]}` relation, plus how many entries it could not name.
 
     Tolerant of both wrappers because `subIssues` and `blockedBy` are recent `gh` fields whose shape
     has changed once already, and of an absent relation, which honestly means no related issues.
 
     A relation that is present but not a list is a failure, not an empty one: `dependencies` is what a
     caller reads to decide whether an issue is blocked, and a shape this cannot parse must not come
-    back as "nothing is blocking it" — that reads identically to a genuinely unblocked issue.
+    back as "nothing is blocking it" — that reads identically to a genuinely unblocked issue. A dict
+    carrying no `nodes` key at all is that same failure, not an empty relation: `nodes` is read with no
+    default, because `.get("nodes", [])` admitted any object and answered "no related issues" for the
+    one drift most worth catching — an unrecognised wrapper — which is exactly the "admit any dict, get
+    `[]` back" hole `_read_list` was written to refuse for `labels` and `comments`.
+
+    An entry inside the list that names no issue is where this reconciles two rules that pull opposite
+    ways, both of them load-bearing here:
+
+    - jira's `_keys` raises on its own equivalent entry, and one protocol must not have two behaviours:
+      a caller cannot see which tracker replied, so a drift one adapter refuses must not be the other's
+      quiet shortening.
+    - `_item_index` deliberately *skips* a board card the credential may not view instead of raising,
+      because raising failed every read of the whole board over one card nobody can see. `_refs` runs
+      inside `get_issue` on two optional relations, so a raise here has the same blast radius: one
+      unaddressable node would fail the entire issue read, relations a caller did not even ask about
+      included.
+
+    Both are satisfiable at once, because the actual invariant is narrower than "raise": no dropped node
+    may be silently claimed complete. So an entry that names no issue is skipped and counted whenever the
+    relation carries a `totalCount` for `_relation` to report the shortfall from, and raises only when
+    there is no count to report it with — the bare-list shape, or a wrapper that omits the count. That
+    keeps the invariant where it can be signalled and keeps the refusal where it cannot, rather than
+    trading one for the other. `_ref` itself stays tolerant, because its other caller reads an optional
+    `parent`, where "no node" really does mean unparented.
+
+    The count is returned rather than inferred from the lengths, so `_relation` reports a drop even when
+    a drifting `totalCount` happens to agree with the shortened list. `_sync_add_dependency` ignores it,
+    correctly: it searches the relation for the one reference it just wrote rather than reporting the set.
     """
     if payload is None:
-        return []
-    nodes = payload.get("nodes", []) if isinstance(payload, dict) else payload
+        return [], 0
+    if isinstance(payload, dict):
+        if "nodes" not in payload:
+            raise TrackerError(
+                f"a related-issue relation read back as {_shape(payload)}, with no nodes list to read the "
+                "related issues out of, so the relations on this issue are unknown; it must not be reported "
+                "as having none. Check the installed gh version against the fields this adapter requests."
+            )
+        nodes = payload.get("nodes")  # only after the membership check above: absent is a refusal, not []
+        countable = payload.get("totalCount") is not None
+    else:
+        nodes, countable = payload, False
     if not isinstance(nodes, list):
         raise TrackerError(
-            f"a related-issue relation read back as {type(nodes).__name__}, not a list of issues, so the "
+            f"a related-issue relation read back as {_shape(nodes)}, not a list of issues, so the "
             "relations on this issue are unknown; it must not be reported as having none. Check the "
             "installed gh version against the fields this adapter requests."
         )
-    return [ref for ref in (_ref(node) for node in nodes) if ref]
+    refs: list[str] = []
+    dropped = 0
+    for index, node in enumerate(nodes):
+        ref = _ref(node)
+        if ref is None:
+            if not countable:
+                raise TrackerError(
+                    f"entry {index} of a related-issue relation read back as {_shape(node)}, with no url or "
+                    "number to name the issue by, and the relation carries no totalCount to report the "
+                    "shortfall from, so it cannot be read whole and must not come back one issue short of "
+                    "what gh returned. Check the installed gh version against the fields this adapter "
+                    "requests."
+                )
+            dropped += 1
+            continue
+        refs.append(ref)
+    return refs, dropped
 
 
 def _relation(payload: object) -> tuple[list[str], bool]:
@@ -1159,14 +1328,19 @@ def _relation(payload: object) -> tuple[list[str], bool]:
     truncated instead — a `totalCount` of `"60"` must not skip the check the way a clean `int` comparison
     silently would, which is how false completeness has been reintroduced one type away before.
 
-    The comparison is against the refs, not the nodes, so a node `_refs` could not address — no URL and no
-    number — reports truncated too: a related issue that cannot be named is one this read did not return.
+    A node `_refs` could not name is reported here too, and that is what lets `_refs` skip one instead of
+    failing the whole `get_issue` read over it (see its docstring for why raising there has the blast
+    radius `_item_index` already refuses to accept). It is taken from `_refs`'s own count rather than
+    inferred from `len(found)`, because a shortfall the count cannot see — a `totalCount` that drifts down
+    to agree with the shortened list — is exactly the silent completeness this pair exists to prevent. A
+    drop can only reach here with a count present, since `_refs` raises otherwise, so the early return
+    above cannot hide one.
     """
-    found = _refs(payload)
+    found, dropped = _refs(payload)
     total = payload.get("totalCount") if isinstance(payload, dict) else None
     if total is None:
         return found, False
-    return found, not isinstance(total, int) or isinstance(total, bool) or total > len(found)
+    return found, bool(dropped) or not isinstance(total, int) or isinstance(total, bool) or total > len(found)
 
 
 def _same_ref(ref: str | None, other: str | None) -> bool:
@@ -1668,10 +1842,17 @@ def _safe(text: str) -> str:
     through here, and the strip is part of it rather than something each site remembers to do: `gh`'s own
     stderr echoes a credentialed repository value back for a GraphQL resolution error, an HTTP error
     naming the URL, and a malformed-URL argument error, so the site-by-site version of this leaked from
-    whichever verb was fixed second. A handful of messages interpolate caller-authored or `gh`-returned
-    content that is never credential-shaped by construction — an issue title, an assignee login, a label,
-    a configured `columns.*` display name, a board field's own option titles — and are not routed through
-    here; those values are never a token's home, only a repository or project reference is.
+    whichever verb was fixed second. The two messages that echo a *caller-supplied* free-text string —
+    `_sync_create_issue`'s title and `_sync_add_label`'s label — go through here too. The earlier reasoning
+    that a title is "never credential-shaped by construction" was a claim about what a caller pastes, not a
+    property of the value: a title assembled from command output can carry a token exactly as a body can,
+    and `gh`'s own failure output echoes both back. The server scrubs those two fields on the way in as
+    well; this is the second half, for a value that reached a message without passing through it.
+
+    The remaining interpolations are of `gh`-returned or configured identifiers — an assignee login, a
+    configured `columns.*` display name, a board field's own option titles, the label names a re-read
+    reports — which are not caller free text and are never a token's home; only a repository or project
+    reference is.
     """
     secrets = dict(discover_secret_vars(extra_words=config.extra_secret_words()))
     configured_paths = (

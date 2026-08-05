@@ -31,6 +31,7 @@ TOOL_NAMES = {
     "attach-artifact",
     "attachment-download",
     "attachment-update",
+    "check_env",
     "create-issue",
     "find-issues",
     "get-issue",
@@ -49,10 +50,12 @@ WIRING = [
      "create_issue", (), {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"}),
     ("get-issue", {"issue": "PROJ-2"}, "get_issue", ("PROJ-2",), {}),
     ("update-issue", {"issue": "PROJ-3", "body": "replacement"}, "update_issue", ("PROJ-3", "replacement"), {}),
-    ("find-issues", {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5},
-     "find_issues", (), {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5}),
+    ("find-issues",
+     {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"},
+     "find_issues", (),
+     {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"}),
     ("find-issues", {}, "find_issues", (),
-     {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50}),
+     {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50, "page_token": None}),
     ("set-status", {"issue": "PROJ-5", "status": "in-review"}, "set_status", ("PROJ-5", "in-review"), {}),
     ("assign", {"issue": "PROJ-6"}, "assign", ("PROJ-6", "@me"), {}),
     ("link-parent", {"issue": "PROJ-7", "parent": "PROJ-8"}, "link_parent", ("PROJ-7", "PROJ-8"), {}),
@@ -132,7 +135,9 @@ async def test_initialize_list_and_call_roundtrip():
         assert "required" not in schemas["find-issues"] or not schemas["find-issues"]["required"], (
             "every find-issues filter is optional; a required one makes the tool uncallable as a plain list"
         )
-        assert set(schemas["find-issues"]["properties"]) == {"status", "issue_type", "parent", "text", "limit"}
+        assert set(schemas["find-issues"]["properties"]) == {
+            "status", "issue_type", "parent", "text", "limit", "page_token"
+        }, "the cursor a page returns has to be sendable back, or the paging it advertises is unusable"
 
         result = await client.call_tool("validate_config", {})
         assert result.is_error is False
@@ -221,6 +226,45 @@ def test_validate_config_reports_an_unresolvable_config_rather_than_crashing(mon
     assert report["valid"] is False
     assert report["errors"] == ["repo layer is not valid JSON"]
     assert "tracker" not in report, "an unresolvable config has no resolved values to report"
+
+
+def test_validate_config_reports_two_columns_configured_under_one_name(monkeypatch):
+    """The collision refusal lives in `column_names()`, which nothing asked during validation.
+
+    A config mapping two lifecycle statuses to one column passed `validate_config` clean and then broke
+    on the first `canonical_status`/`native_status` call — the diagnosis tool silently disagreeing with
+    the vocabulary. The tool has to ask.
+    """
+    colliding = {
+        "columns.backlog": "Created",
+        "columns.ready": "In Progress",
+        "columns.in_progress": "in progress",
+        "columns.in_review": "In Review",
+        "columns.done": "Closed",
+    }
+    monkeypatch.setattr(
+        server.tracker.config, "get", lambda key, *, default=None: colliding.get(key, default)
+    )
+    report = server.validate_config()
+    assert report["valid"] is False, report
+    assert any("columns.ready" in e and "columns.in_progress" in e for e in report["errors"]), report
+
+
+def test_validate_config_reports_a_column_read_that_refuses_rather_than_answering_valid(monkeypatch):
+    """A `ConfigError` raised while reading the column keys is a reason no tracker verb can run.
+
+    `config.validate()` does not reach every one of them — a credential-shaped key, an adapter map that
+    parses for the selected tracker and not for another — and swallowing this one answered
+    `valid: true, errors: []` for a config the very next tool call would refuse. The tool's contract is
+    every reason, so the refusal is a reason like any other.
+    """
+    def refuses(key: str, *, default: Any = None) -> None:
+        raise server.config.ConfigError(f"config key {key!r} is credential-shaped and is never read")
+
+    monkeypatch.setattr(server.tracker.config, "get", refuses)
+    report = server.validate_config()
+    assert report["valid"] is False, report
+    assert any("credential-shaped" in e for e in report["errors"]), report
 
 
 @pytest.mark.anyio
@@ -910,3 +954,295 @@ async def test_a_body_that_is_not_a_ship_metrics_log_passes_through_unvalidated(
         result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"{case} must post unchanged: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), f"{case} must reach the adapter byte-for-byte"
+
+
+BODY_WRITES = [
+    ("update-issue", lambda body: {"issue": "PROJ-1", "body": body}),
+    ("create-issue", lambda body: {"issue_type": "task", "title": "T", "body": body}),
+]
+"""Every tool that writes a caller-supplied body, and the arguments that carry one.
+
+The machine-log gate is the body's, not the comment's: a log written into an issue body is the same
+unvalidated-metrics incident, so each of these writes has to refuse what `post-comment` refuses.
+"""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), BODY_WRITES, ids=[t for t, _ in BODY_WRITES])
+@pytest.mark.parametrize(
+    ("case", "body"),
+    [
+        ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
+        ("json the fence holds but nothing parses", _metrics_comment().replace('"PROJ-1"\n', '"PROJ-1",\n')),
+        ("two candidate blocks and no way to choose", _metrics_comment() + "\n" + _metrics_comment(ci_fix_rounds=1)),
+    ],
+)
+async def test_a_malformed_ship_metrics_body_is_refused_by_every_write_not_only_comments(
+    monkeypatch, tool, arguments, case, body
+):
+    """The gate belongs to the body, so a body write must refuse a log a comment would have refused.
+
+    `pytest.fail` as the adapter factory is again the assertion that matters: validation reached only
+    from `post-comment` left an issue body as an unguarded second route for exactly the malformed log
+    that gate exists to stop, and one that reports an error after writing is the same incident.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is True, f"{tool} accepted {case}: {result.content}"
+    assert SCHEMA_ID in _text(result), f"the refusal for {case} must name the schema it checked"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), BODY_WRITES, ids=[t for t, _ in BODY_WRITES])
+async def test_an_ordinary_body_still_reaches_the_adapter_unchanged(monkeypatch, tool, arguments):
+    """The gate is a no-op for a body that claims nothing, which is nearly every body these writes take."""
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = "TL;DR: prose about the ship metrics log, claiming no schema.\n\n```bash\ngit log -1\n```\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is False, f"{tool} refused an ordinary body: {result.content}"
+    _verb, args, kwargs = recorder.calls[0]
+    assert body in (*args, *kwargs.values()), f"{tool} must pass the body through byte-for-byte: {recorder.calls}"
+
+
+@pytest.mark.anyio
+async def test_create_issue_still_accepts_no_body_at_all(monkeypatch):
+    """`create-issue`'s body defaults to `""`, and the gate must not turn an omitted body into a refusal."""
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("create-issue", {"issue_type": "task", "title": "T"})
+    assert result.is_error is False, result.content
+    assert recorder.calls[0][2]["body"] == "", recorder.calls
+
+
+SENTINEL = "sy-check-env-sentinel-9f3a1c"
+"""A value distinctive enough that grepping a whole tool result for it is a sufficient leak test."""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("present", [True, False], ids=["set", "unset"])
+async def test_check_env_reports_presence_and_never_the_value(monkeypatch, present):
+    """Presence has to be reported correctly, and the value must appear nowhere in the result.
+
+    Serialising the entire result and searching it for the sentinel is the assertion, rather than
+    checking one field: the whole point of the tool is that no field, no error string and no log line
+    can carry the value, so what gets pinned is the absence of the value from all of it.
+    """
+    if present:
+        monkeypatch.setenv("SY_CHECK_ENV_PROBE", SENTINEL)
+    else:
+        monkeypatch.delenv("SY_CHECK_ENV_PROBE", raising=False)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
+    assert result.is_error is False, result.content
+    assert _payload(result) == {"name": "SY_CHECK_ENV_PROBE", "present": present}, _payload(result)
+    assert SENTINEL not in str(result), f"the variable's value reached the tool result: {result}"
+
+
+@pytest.mark.anyio
+async def test_check_env_refuses_a_blank_name_without_naming_a_value(monkeypatch):
+    """A whitespace-only name is refused like every other required argument, and the error leaks nothing."""
+    monkeypatch.setenv("SY_CHECK_ENV_PROBE", SENTINEL)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("check_env", {"name": " \n"})
+    assert result.is_error is True, result.content
+    assert SENTINEL not in _text(result), f"the refusal carried a value: {_text(result)}"
+
+
+@pytest.mark.anyio
+async def test_check_env_reads_an_empty_variable_as_unset(monkeypatch):
+    """A variable exported empty holds no credential, so reporting it as set would be a false all-clear."""
+    monkeypatch.setenv("SY_CHECK_ENV_PROBE", "")
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("check_env", {"name": "SY_CHECK_ENV_PROBE"})
+    assert _payload(result)["present"] is False, _payload(result)
+
+
+SCRUB_WRITES = [("post-comment", lambda body: {"issue": "PROJ-1", "body": body}), *BODY_WRITES]
+"""Every tool that takes a caller-supplied body, the comment write included.
+
+`BODY_WRITES` leaves `post-comment` out because the machine-log gate drives it separately, but the
+scrub is one shared helper serving all three writes — and a helper wired into two of the three sites
+is precisely the half-fixed duplicate this closes, so every write that takes a body is asserted.
+"""
+
+FAKE_SECRET_VAR = "SY_TEST_FAKE_TOKEN"
+"""A test-only variable name, credential-shaped by the same word heuristic discovery uses.
+
+Never the real declared credential: reading an actual token here would put it one failure message
+away from a permanent transcript, which is the leak the code under test exists to prevent.
+"""
+
+FAKE_SECRET = "sy-fake-token-3d91f7-not-a-credential"
+"""Past the 6-character discovery floor, and distinctive enough that grepping a whole result is sound."""
+
+
+def _body_sent(recorder: _Recorder) -> str:
+    """The body the adapter was actually handed, whether the tool passed it positionally or by name."""
+    _verb, args, kwargs = recorder.calls[0]
+    return str(kwargs["body"] if "body" in kwargs else args[-1])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), SCRUB_WRITES, ids=[t for t, _ in SCRUB_WRITES])
+async def test_a_known_credential_value_never_reaches_the_adapter_through_a_body(monkeypatch, tool, arguments):
+    """The gap this closes: three writes handed a caller's body to the tracker with no scrub at all.
+
+    Bodies are assembled out of command output and transcript text, so a credential landing in one is a
+    routine accident rather than an exotic one — and a posted comment is durable, visible to everyone
+    with issue access, and not made safe again by deleting it. The load-bearing assertion is the
+    value's *absence* from what the adapter received; the marker only proves the scrub ran.
+    """
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = f"TL;DR: the run exported {FAKE_SECRET} and then logged {FAKE_SECRET} again.\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is False, result.content
+    sent = _body_sent(recorder)
+    assert FAKE_SECRET not in sent, f"{tool} handed the credential straight to the tracker"
+    assert sent.count(f"<REDACTED:{FAKE_SECRET_VAR}>") == 2, f"{tool} redacted only part of the body: {sent}"
+    report = _payload(result)["scrub"]
+    assert report["scrubbed_vars"] == [FAKE_SECRET_VAR], report
+    assert report["redactions"] == 2, report
+    assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments"), SCRUB_WRITES, ids=[t for t, _ in SCRUB_WRITES])
+async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypatch, tool, arguments):
+    """Nearly every body is this one, so a scrub that finds nothing has to be invisible."""
+    monkeypatch.delenv(FAKE_SECRET_VAR, raising=False)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = "TL;DR: ordinary prose.\n\n```bash\ngit log -1\n```\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(body))
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == body, f"{tool} rewrote a body holding nothing to redact"
+    assert _payload(result)["scrub"] == {
+        "scrubbed_vars": [], "redactions": 0,
+        "declared_absent_from_env": [], "declared_below_length_floor": [],
+    }, _payload(result)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments", "field"),
+    [
+        ("create-issue", lambda v: {"issue_type": "task", "title": f"TL;DR: {v} leaked", "body": "b"}, "title"),
+        ("add-label", lambda v: {"issue": "PROJ-1", "label": v}, "label"),
+    ],
+    ids=["create-issue-title", "add-label-label"],
+)
+async def test_every_caller_supplied_field_is_scrubbed_not_only_the_body(monkeypatch, tool, arguments, field):
+    """A write's other caller-supplied strings are the same class of value as its body.
+
+    The scrub was wired to `body` alone, so a credential pasted into `create-issue`'s `title` reached the
+    adapter verbatim — while the report beside it said `redactions: 1` for the body, which reads as full
+    coverage of the write. A title is durable, echoed by every search result and every failed write, and
+    not made safe again by editing it. `add-label`'s `label` is the same shape at lower volume.
+    """
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(FAKE_SECRET))
+    assert result.is_error is False, result.content
+    _verb, args, kwargs = recorder.calls[0]
+    sent = str(kwargs.get(field) or args[0 if tool == "create-issue" else 1])
+    assert FAKE_SECRET not in sent, f"{tool} handed the credential to the tracker through {field}"
+    assert f"<REDACTED:{FAKE_SECRET_VAR}>" in sent, f"{tool} did not scrub {field}: {sent}"
+    assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
+
+
+@pytest.mark.anyio
+async def test_one_scrub_report_counts_every_field_of_a_write_not_just_the_body(monkeypatch):
+    """A count covering some of a write's fields is worse than none: it is read as covering all of them."""
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("create-issue", {
+            "issue_type": "task",
+            "title": f"TL;DR: {FAKE_SECRET}",
+            "body": f"it printed {FAKE_SECRET} twice: {FAKE_SECRET}\n",
+        })
+    assert result.is_error is False, result.content
+    report = _payload(result)["scrub"]
+    assert report == {
+        "scrubbed_vars": [FAKE_SECRET_VAR], "redactions": 3,
+        "declared_absent_from_env": [], "declared_below_length_floor": [],
+    }, f"the report must total the title's redaction with the body's two: {report}"
+
+
+@pytest.mark.anyio
+async def test_a_declared_credential_absent_from_the_environment_is_reported_not_refused(monkeypatch):
+    """`secrets.sanitize` raises on this and a body write must not, because the two cases differ.
+
+    `sanitize` scrubs a file another process produced, which can hold a value this process never sees,
+    so a clean zero-redaction run there is a false all-clear worth failing on. A body is composed here,
+    out of strings this process holds, so a value absent from this environment cannot be in it. Raising
+    would hard-block every tracker write for anyone whose credential is not exported — the default
+    configuration under CI among them, which exports none.
+    """
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_UNSET_TOKEN"]})
+    monkeypatch.delenv("SY_TEST_UNSET_TOKEN", raising=False)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: nothing secret.\n"})
+    assert result.is_error is False, result.content
+    assert _payload(result)["scrub"]["declared_absent_from_env"] == ["SY_TEST_UNSET_TOKEN"], _payload(result)
+
+
+@pytest.mark.anyio
+async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip_it(monkeypatch):
+    """A declared name outranks discovery's *name* heuristic, which is the half a declaration replaces.
+
+    This name holds no credential word, so auto-discovery alone would post the value verbatim — while
+    the configuration says in as many words that it is the credential.
+    """
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
+    monkeypatch.setenv("SY_TEST_DECLARED", "q7zx4m")
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: it said q7zx4m.\n"})
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == "TL;DR: it said <REDACTED:SY_TEST_DECLARED>.\n", _body_sent(recorder)
+    assert _payload(result)["scrub"] == {
+        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 1,
+        "declared_absent_from_env": [], "declared_below_length_floor": [],
+    }, _payload(result)
+
+
+@pytest.mark.anyio
+async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_redacted(monkeypatch):
+    """The length floor is not part of the heuristic a declaration overrides: it stops a corruption.
+
+    Forcing a sub-floor value in replaced every occurrence of it anywhere in the write, so a
+    one-character declared credential redacted every space in the prose — mangling the body to protect a
+    value too short to be one, and disagreeing with `secrets.sanitize`, which treats a sub-floor value as
+    absent and refuses. Dropping it silently is the other half of the fault: this path cannot refuse, so
+    a caller who has exported a credential that will not be scrubbed has to be told which one.
+    """
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
+    monkeypatch.setenv("SY_TEST_DECLARED", " ")
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    body = "TL;DR: ordinary prose with spaces in it.\n"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == body, f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
+    assert _payload(result)["scrub"] == {
+        "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": [],
+        "declared_below_length_floor": ["SY_TEST_DECLARED"],
+    }, _payload(result)

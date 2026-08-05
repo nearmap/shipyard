@@ -26,6 +26,6 @@ MEMORY_REFUTE: none|<per candidate: title + evidence + correction (empty = tombs
 STATE: scratch_dir($TASK_KEY)/ship-state.yaml; AGENTS_USED: <names>
 ```
 
-or `NEEDS-DECISION: <question>; OPTIONS: …; CHECKPOINT: <slice manifest anchor>; BEARING: <spans>`, `NEEDS-TRACE: <open question>; ANCHORS: <spans>; CHECKPOINT: <slice manifest anchor>`, `BAIL-TO-SPEC: <load-bearing fork / invalidated contract>; ANCHORS: <paths>`, or `BLOCKED: <external>; NEEDS: <unblock>`.
+or `NEEDS-DECISION: <question>; OPTIONS: …; CHECKPOINT: <slice manifest anchor>; BEARING: <spans>; MEMORY_REFUTE: none|<candidate>`, `NEEDS-TRACE: <open question>; ANCHORS: <spans>; CHECKPOINT: <slice manifest anchor>; MEMORY_REFUTE: none|<candidate>`, `BAIL-TO-SPEC: <load-bearing fork / invalidated contract>; ANCHORS: <paths>; MEMORY_REFUTE: none|<candidate>`, or `BLOCKED: <external>; NEEDS: <unblock>; MEMORY_REFUTE: none|<candidate>` — the parent drains candidates on every one of these, so no form may omit the field.
 
 If the plan scope cannot be built or reported within budget, return `SPLIT_REQUIRED` with coherent slice partitions rather than truncating or partial-committing.

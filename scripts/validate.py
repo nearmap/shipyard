@@ -46,6 +46,8 @@ LEGACY_CONFIG_ENV = {
 # Every spelling of "give this agent the whole `sy` server": the bare server name under either
 # deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
 SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
+MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
+SHIP_WORKER_AGENTS = {"ship-start", "ship-build", "ship-gate"}
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -361,7 +363,8 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
 
 
 def check_agent_mcp_allowlists(errors: list[str]) -> None:
-    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, and never by wildcard."""
+    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, never by wildcard, and
+    never gives a `/sy:ship` worker a durable-memory write."""
     for p in sorted((ROOT / "agents").glob("*.md")):
         text = p.read_text(encoding="utf-8")
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
@@ -369,6 +372,14 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         if not declared:
             continue
         named = [entry.strip() for entry in declared.group(1).split(",")]
+        if p.stem in SHIP_WORKER_AGENTS:
+            for entry in named:
+                if entry.rpartition("__")[2] in MEMORY_WRITE_TOOLS:
+                    fail(
+                        f"{p.relative_to(ROOT)}: tools names {entry!r}, but only the /sy:ship parent writes the "
+                        "user-global memory store; a worker relays a MEMORY_REFUTE candidate instead",
+                        errors,
+                    )
         for entry in named:
             # Both spellings, because Claude Code documents `mcp__<server>__*` as granting every tool
             # from that server exactly as the bare server name does — and the pair
@@ -664,12 +675,14 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
     if "memory_add" not in handoff or "memory.md" not in handoff:
         fail("ship handoff retro must distill durable lessons into cross-session memory (memory_add, per memory.md)", errors)
-    # A refutation path only closes the loop if the reference defines it, every read site can reach it, and
-    # the worker-to-parent relay is spelled out on both ends — a worker holds no memory write of its own.
     if "memory_refute" not in memory_ref or "never left standing" not in memory_ref:
         fail("memory.md must document memory_refute and that a refuted anchor is never left standing", errors)
     if "delete-by-hand is deliberate friction" in memory_ref.lower():
-        fail("memory.md must not bless hand-deletion while also stating the store is never hand-edited", errors)
+        fail(
+            "memory.md must not restore its old 'delete-by-hand is deliberate friction' line: refuting, "
+            "not hand-deleting, is how a wrong lesson is retired",
+            errors,
+        )
     for name, text in (("plan", plan), ("spec", spec)):
         if "memory_refute" not in text:
             fail(f"{name} runs as the parent session and must refute a contradicted lesson directly", errors)

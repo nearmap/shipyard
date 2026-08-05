@@ -34,9 +34,16 @@ def root() -> Path:
 
 
 def add(title: str, scope: str, tags: str, body: str) -> Path:
-    """Store one lesson and regenerate the index; same-title re-adds replace the entry."""
+    """Store one lesson and regenerate the index; same-title re-adds replace the entry.
+
+    Raises `ValueError` for an empty `title`/`scope`/`body`, and for a newline in `title`/`scope`/`tags`,
+    which are one frontmatter line each: an embedded newline would end the block early and spill the rest
+    into the body.
+    """
     if not title.strip() or not scope.strip() or not body.strip():
         raise ValueError("title, scope, and body must all be non-empty")
+    if any("\n" in field for field in (title, scope, tags)):
+        raise ValueError("title, scope, and tags are single-line frontmatter fields and must contain no newline")
     slug = _slug(title)
     directory = root()
     directory.mkdir(parents=True, exist_ok=True)
@@ -78,7 +85,11 @@ def refute(title: str, evidence: str, correction: str = "") -> Path:
 
 
 def search(term: str) -> list[str]:
-    """Case-insensitive substring search over all lessons; returns `path: title` lines."""
+    """Case-insensitive substring search over all lessons; returns `path: title` lines.
+
+    A refuted lesson's line also carries ` (status: corrected|tombstoned)`, so a hit on a claim that no
+    longer holds is never mistaken for a live one without opening the file.
+    """
     if not term.strip():
         raise ValueError("search term must be non-empty")
     _ensure_index()
@@ -87,7 +98,8 @@ def search(term: str) -> list[str]:
     for path in _lesson_paths(root()):
         text = path.read_text(encoding="utf-8")
         if needle in text.lower() or needle in path.stem.lower():
-            matches.append(f"{path}: {_title_of(text, path)}")
+            status = _frontmatter_value(text, "status")
+            matches.append(f"{path}: {_title_of(text, path)}" + (f" (status: {status})" if status else ""))
     return matches
 
 
@@ -122,9 +134,14 @@ def _body(text: str) -> str:
 
 
 def _refuted_claim(text: str) -> str:
-    # A repeat refute must preserve the original claim, not wrap the previous refutation around it again.
-    _, _, kept = _body(text).partition(f"{REFUTED_HEADING}\n")
-    return kept.strip() or _body(text)
+    body = _body(text)
+    # `status`, not the heading, decides whether this entry was already refuted: in an unrefuted body that
+    # exact line is prose, and partitioning on it would drop everything above. On a repeat refute the first
+    # occurrence is always the one refute() wrote, so a claim containing the heading comes back whole.
+    if not _frontmatter_value(text, "status"):
+        return body
+    _, _, kept = body.partition(f"{REFUTED_HEADING}\n")
+    return kept.strip() or body
 
 
 def _title_of(text: str, path: Path) -> str:
@@ -164,7 +181,8 @@ def _ensure_index() -> None:
     if not lessons and not index.is_file():
         return
     entries = len(re.findall(r"^- \[", index.read_text(encoding="utf-8"), re.M)) if index.is_file() else -1
-    # Lessons get deleted by hand, and a stale index would keep reading them back as ghost entries.
+    # Hand-deleting a lesson is unsupported, but tolerating a vanished file beats serving it back as a
+    # ghost entry out of a stale index.
     if entries != len(lessons):
         _rebuild_index(directory)
 

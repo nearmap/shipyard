@@ -54,7 +54,7 @@ def test_the_index_rebuilds_on_read_when_it_is_missing(store):
 
 
 def test_a_hand_emptied_store_serves_no_entries_rather_than_ghosts(store):
-    """The stale-index case: lessons can be deleted with a file manager, and often are."""
+    """The stale-index case: hand-deleting is unsupported, so a vanished file is corruption to absorb."""
     memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it explicitly.")
     for lesson in _lessons(store):
         lesson.unlink()
@@ -70,6 +70,18 @@ def test_a_hand_emptied_store_serves_no_entries_rather_than_ghosts(store):
 def test_an_empty_field_is_refused(store, title, scope, body):
     with pytest.raises(ValueError, match="non-empty"):
         memory.add(title, scope, "", body)
+
+
+@pytest.mark.parametrize(
+    ("title", "scope", "tags"),
+    [("Resume\ndrops it", "agent dispatch", "resume"), ("Resume drops it", "agent\ndispatch", "resume"),
+     ("Resume drops it", "agent dispatch", "resume\nmodels")],
+)
+def test_a_newline_in_a_frontmatter_field_is_refused(store, title, scope, tags):
+    """Written verbatim onto one frontmatter line, a newline would end the block early and gut the entry."""
+    with pytest.raises(ValueError, match="no newline"):
+        memory.add(title, scope, tags, "Pass it explicitly.")
+    assert _lessons(store) == [], "a refused add must write nothing"
 
 
 def test_a_title_with_no_slug_is_refused(store):
@@ -121,6 +133,18 @@ def test_refuting_the_same_title_twice_neither_forks_the_file_nor_renests_the_cl
     assert "Nested calls only." not in text, "a superseded correction is replaced, not accumulated"
 
 
+def test_a_body_that_already_contains_the_refuted_heading_survives_a_refute_intact(store):
+    """The heading is only refute()'s own marker on an already-refuted entry; in a fresh body it is prose."""
+    body = f"Always pass it explicitly.\n\n{memory.REFUTED_HEADING}\n\nAn earlier note quoted verbatim."
+    memory.add("Resume drops the model override", "agent dispatch", "resume,models", body)
+    first = memory.refute("Resume drops the model override", "First look.", correction="Nested calls only.")
+    text = first.read_text(encoding="utf-8")
+    assert body in text, f"a pre-existing heading must not partition the claim away: {text!r}"
+
+    memory.refute("Resume drops the model override", "First look.", correction="Nested calls only.")
+    assert first.read_text(encoding="utf-8") == text, "refuting an already-refuted entry again must be a no-op"
+
+
 def test_a_refuted_lesson_stays_visible_in_the_index_and_in_search(store):
     """The whole point of rewriting rather than deleting: the wrong conclusion cannot be silently redone."""
     memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Always pass it explicitly.")
@@ -128,7 +152,20 @@ def test_a_refuted_lesson_stays_visible_in_the_index_and_in_search(store):
     listing = memory.index_text()
     assert "Resume drops the model override" in listing, listing
     assert "status: tombstoned" in listing, f"the index must carry a refuted entry's status: {listing!r}"
-    assert len(memory.search("model override")) == 1, "a refuted lesson must remain a search hit"
+    hits = memory.search("model override")
+    assert len(hits) == 1, "a refuted lesson must remain a search hit"
+    assert "status: tombstoned" in hits[0], f"a hit on a refuted lesson must not read as a live one: {hits[0]}"
+
+
+def test_a_search_hit_carries_a_correction_status_and_an_unrefuted_one_carries_none(store):
+    """A hit line is all a caller sees before deciding to open the file, so the status has to travel with it."""
+    memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Always pass it explicitly.")
+    memory.add("Review bot login differs per API surface", "code review", "bots", "Match by author type.")
+    memory.refute("Resume drops the model override", "Seen surviving a resume.", correction="Nested calls only.")
+    hits = {hit.split(": ", 1)[1] for hit in memory.search("e")}
+    assert hits == {
+        "Resume drops the model override (status: corrected)", "Review bot login differs per API surface",
+    }, f"only the refuted hit carries a status: {hits}"
 
 
 def test_an_unrefuted_lesson_carries_no_status_in_the_index(store):

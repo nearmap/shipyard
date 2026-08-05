@@ -21,11 +21,11 @@ validate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validate)
 
 
-def _check(tmp_path: Path, tools_line: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _check(tmp_path: Path, tools_line: str, monkeypatch: pytest.MonkeyPatch, name: str = "probe") -> list[str]:
     agents = tmp_path / "agents"
     agents.mkdir()
-    (agents / "probe.md").write_text(
-        f"---\nname: probe\ndescription: test\ntools: {tools_line}\n---\nbody\n", encoding="utf-8",
+    (agents / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: test\ntools: {tools_line}\n---\nbody\n", encoding="utf-8",
     )
     monkeypatch.setattr(validate, "ROOT", tmp_path)
     errors: list[str] = []
@@ -55,3 +55,20 @@ def test_named_tools_with_both_deployment_twins_pass_clean(tmp_path, monkeypatch
 def test_a_missing_twin_is_refused(tmp_path, monkeypatch):
     errors = _check(tmp_path, "mcp__sy__set_status", monkeypatch)
     assert errors, "an entry with no other-deployment twin listed must be refused"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+@pytest.mark.parametrize("tool", ["memory_add", "memory_refute"])
+def test_a_ship_worker_granted_a_memory_write_is_refused(tmp_path, monkeypatch, agent, tool):
+    """Only the /sy:ship parent writes the user-global store; a worker relays a MEMORY_REFUTE candidate."""
+    tools = f"mcp__sy__{tool}, mcp__plugin_sy_sy__{tool}"
+    errors = _check(tmp_path, tools, monkeypatch, name=agent)
+    assert any(tool in error for error in errors), f"{agent} must not be able to grant itself {tool}: {errors}"
+
+
+def test_a_ship_worker_keeps_the_memory_read_tools(tmp_path, monkeypatch):
+    """START reads memory back, so the guard must pin the write verbs alone, not the whole tool family."""
+    tools = ", ".join(
+        f"mcp__{prefix}__{tool}" for tool in ("memory_list", "memory_search") for prefix in ("sy", "plugin_sy_sy")
+    )
+    assert not _check(tmp_path, tools, monkeypatch, name="ship-start"), "the read side must stay allowed"

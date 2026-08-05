@@ -992,7 +992,8 @@ def memory_add(
     another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add
     under an existing title, because the write is idempotent by title rather than append-only. An
     empty title, scope, or body is refused, and so is a title with no letters or digits in it, since
-    it would leave the lesson under a nameless file.
+    it would leave the lesson under a nameless file, and a newline in title, scope, or tags, since each is
+    one frontmatter line and would otherwise cut the block short.
     """
     try:
         return {"path": str(memory.add(title, scope, tags, body))}
@@ -1055,8 +1056,9 @@ def memory_search(
 ) -> dict[str, Any]:
     """Find stored lessons whose text or filename contains a substring.
 
-    Each match is one `path: title` line, so a caller can read the interesting ones by path without
-    pulling the whole store into context. `root` is the store the search actually ran against, which
+    Each match is one `path: title` line — plus `(status: corrected|tombstoned)` once the lesson has been
+    refuted — so a caller can read the interesting ones by path without pulling the whole store into
+    context, and never mistakes a refuted hit for a live one. `root` is the store the search ran against, which
     is what makes an empty `matches` diagnosable: no lesson matched a populated store, rather than the
     resolver having pointed at a root the lessons are not in. An empty query is refused, because it
     matches everything and `memory_list` is the way to ask for that.
@@ -1069,13 +1071,13 @@ def memory_search(
 
 @mcp.tool(name="memory_list")
 def memory_list() -> dict[str, Any]:
-    """Report the whole memory index: every stored lesson with its scope, tags, and date.
+    """Report the whole memory index: every stored lesson with its scope, tags, date, and refutation status.
 
     The cheap way to see what memory holds before a search, and what `/sy:plan`, `/sy:spec`, and
     `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, which
-    is rebuilt first whenever it disagrees with the lessons on disk, so a lesson deleted by hand is
-    absent here rather than a dead link; an empty store reports `(no entries)`. `root` is the store it
-    was read from.
+    is rebuilt first whenever it disagrees with the lessons on disk, so a lesson that vanished from the
+    store is absent here rather than a dead link — tolerance for corruption, not a licence to hand-delete,
+    which is unsupported; an empty store reports `(no entries)`. `root` is the store it was read from.
     """
     try:
         return {"root": str(memory.root()), "index": memory.index_text()}

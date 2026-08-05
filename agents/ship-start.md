@@ -22,6 +22,6 @@ MEMORY_REFUTE: none|<per candidate: title + evidence + correction (empty = tombs
 AGENTS_USED: <names>
 ```
 
-or `NEEDS-DECISION: <question>; OPTIONS: …; CHECKPOINT: <anchor>; BEARING: <plan/standards spans>`, `BAIL-TO-SPEC: <invalidated contract>; ANCHORS: <paths>`, or `BLOCKED: <external>; NEEDS: <unblock>`.
+or `NEEDS-DECISION: <question>; OPTIONS: …; CHECKPOINT: <anchor>; BEARING: <plan/standards spans>; MEMORY_REFUTE: none|<candidate>`, `BAIL-TO-SPEC: <invalidated contract>; ANCHORS: <paths>; MEMORY_REFUTE: none|<candidate>`, or `BLOCKED: <external>; NEEDS: <unblock>; MEMORY_REFUTE: none|<candidate>` — the parent drains candidates on every one of these, so no form may omit the field.
 
 If the START scope cannot be completed or reported within budget, return `SPLIT_REQUIRED` with coherent sub-scopes rather than truncating.

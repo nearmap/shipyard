@@ -992,8 +992,9 @@ def memory_add(
     another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add
     under an existing title, because the write is idempotent by title rather than append-only. An
     empty title, scope, or body is refused, and so is a title with no letters or digits in it, since
-    it would leave the lesson under a nameless file, and a newline in title, scope, or tags, since each is
-    one frontmatter line and would otherwise cut the block short.
+    it would leave the lesson under a nameless file, and an interior newline in title, scope, or tags, since
+    each is written as one frontmatter line: a break truncates the value there and leaves its remainder as an
+    orphan line inside the frontmatter block.
     """
     try:
         return {"path": str(memory.add(title, scope, tags, body))}
@@ -1036,7 +1037,9 @@ def memory_refute(
     being re-derived and re-added under the same title later. Idempotent by title like `memory_add`:
     refuting twice rewrites the one file rather than forking a second, and does not re-nest the
     preserved pre-refutation claim. An empty title or evidence is refused, and so is a title no lesson is
-    stored under, since there is nothing to refute and adding one would record the correction as fact.
+    stored under, since there is nothing to refute and adding one would record the correction as fact. An
+    interior newline in the title is refused too, since refute() writes that title back as one frontmatter
+    line whenever the stored file carries none, where a break would truncate it and orphan its remainder.
     """
     try:
         return {"path": str(memory.refute(title, evidence, correction))}

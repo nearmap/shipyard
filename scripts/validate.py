@@ -368,17 +368,17 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
     for p in sorted((ROOT / "agents").glob("*.md")):
         text = p.read_text(encoding="utf-8")
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
-        # Horizontal whitespace only, then strip: `\s*` would cross the newline after a valueless `tools:`
-        # and capture the next frontmatter line, so an empty allowlist (which grants everything, exactly as
-        # an absent field does) would be validated as if it named that line's tool.
+        # Horizontal whitespace only, then strip: `\s*(.+)` would cross the newline after a valueless
+        # `tools:` and capture the next frontmatter line, validating an empty allowlist as if it named that
+        # line's tool (and, with `tools:` last in the block, match nothing and read as absent instead).
         declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
         value = declared.group(1).strip() if declared else ""
         if not value:
             if p.stem in SHIP_WORKER_AGENTS:
                 fail(
-                    f"{p.relative_to(ROOT)}: a /sy:ship worker must declare an explicit tools: list; an absent or "
-                    f"empty tools field inherits every tool including {'/'.join(sorted(MEMORY_WRITE_TOOLS))}, which "
-                    "is the violation this pin exists to block",
+                    f"{p.relative_to(ROOT)}: a /sy:ship worker's tools: must be an explicit, non-empty allowlist; "
+                    f"an absent tools field inherits every tool including {'/'.join(sorted(MEMORY_WRITE_TOOLS))}, "
+                    "and an empty value launches the worker with no tools at all",
                     errors,
                 )
             continue

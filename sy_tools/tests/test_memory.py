@@ -89,11 +89,26 @@ def test_a_newline_in_a_frontmatter_field_is_refused(store, title, scope, tags):
     assert _lessons(store) == [], "a refused add must write nothing"
 
 
+@pytest.mark.parametrize(
+    ("title", "scope", "tags"),
+    [("Resume drops it\n", "agent dispatch", "resume"), ("Resume drops it", "\nagent dispatch", "resume"),
+     ("Resume drops it", "agent dispatch", "resume\r\n")],
+)
+def test_a_leading_or_trailing_newline_is_stripped_rather_than_refused(store, title, scope, tags):
+    """Only the stripped value is ever written, so an edge break is not the corruption the guard is for."""
+    path = memory.add(title, scope, tags, "Pass it explicitly.")
+    assert "title: Resume drops it\nscope: agent dispatch\ntags: resume\n" in path.read_text(encoding="utf-8")
+
+
 def test_a_newline_in_a_refuted_title_is_refused(store):
-    """refute() writes the title to frontmatter too when the stored file carries none, so it guards it too."""
+    """refute() writes the title to frontmatter too when the stored file carries none, so it guards it too.
+
+    It guards `title` alone, so the refusal must not name the `scope`/`tags` a refute caller cannot pass.
+    """
     memory.add("Resume drops it", "agent dispatch", "resume", "Pass it explicitly.")
-    with pytest.raises(ValueError, match="no newline"):
+    with pytest.raises(ValueError, match=r"no newline: title$"):
         memory.refute("Resume\ndrops it", "The 2.1 release fixed it.")
+    assert memory.refute("Resume drops it\n", "The 2.1 release fixed it.").is_file(), "an edge break strips"
 
 
 def test_a_title_with_no_slug_is_refused(store):

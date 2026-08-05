@@ -22,15 +22,21 @@ _spec.loader.exec_module(validate)
 
 
 def _check(
-    tmp_path: Path, tools_line: str | None, monkeypatch: pytest.MonkeyPatch, name: str = "probe"
+    tmp_path: Path,
+    tools_line: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str = "probe",
+    tools_last: bool = False,
 ) -> list[str]:
     agents = tmp_path / "agents"
     agents.mkdir()
     tools = f"tools: {tools_line}\n" if tools_line is not None else ""
-    # `model:` trails tools: on purpose -- a valueless `tools:` line is only mis-read as an allowlist when
-    # there is a following frontmatter line for the pattern to run onto.
+    # `model:` trails tools: by default because that is the layout a valueless `tools:` is mis-read as an
+    # allowlist in: the pattern runs onto the following frontmatter line. `tools_last=True` is the other
+    # position -- no following line -- where the same valueless line instead reads as no `tools:` at all.
+    fields = f"model: sonnet\n{tools}" if tools_last else f"{tools}model: sonnet\n"
     (agents / f"{name}.md").write_text(
-        f"---\nname: {name}\ndescription: test\n{tools}model: sonnet\n---\nbody\n", encoding="utf-8",
+        f"---\nname: {name}\ndescription: test\n{fields}---\nbody\n", encoding="utf-8",
     )
     monkeypatch.setattr(validate, "ROOT", tmp_path)
     errors: list[str] = []
@@ -79,15 +85,19 @@ def test_a_ship_worker_declaring_no_tools_at_all_is_refused(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
-@pytest.mark.parametrize("tools_line", ["", "   "])
-def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(tmp_path, monkeypatch, agent, tools_line):
-    """An empty allowlist grants every tool exactly as an absent field does, so it must be refused the same.
+@pytest.mark.parametrize(("tools_line", "tools_last"), [("", False), ("   ", False), ("", True)])
+def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(
+    tmp_path, monkeypatch, agent, tools_line, tools_last
+):
+    """An empty `tools:` value launches the worker with no tools at all rather than inheriting every tool, but
+    either way it is not the explicit allowlist a ship worker must declare, so it is refused the same.
 
     It is the sharper case: the valueless `tools:` line reads as present, and a pattern whose whitespace
-    class crosses the newline validates the *next* frontmatter line in its place.
+    class crosses the newline validates the *next* frontmatter line in its place. `tools_last` covers the
+    position with no following line, where that same line reads as no `tools:` field at all.
     """
-    errors = _check(tmp_path, tools_line, monkeypatch, name=agent)
-    assert errors, f"{agent} with an empty tools: value inherits the memory writes and must be refused"
+    errors = _check(tmp_path, tools_line, monkeypatch, name=agent, tools_last=tools_last)
+    assert errors, f"{agent} with an empty tools: value declares no usable allowlist and must be refused"
 
 
 def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):

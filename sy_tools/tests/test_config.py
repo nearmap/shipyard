@@ -804,6 +804,39 @@ def test_validate_reports_a_retired_setting_variable_still_set_in_the_environmen
     assert not any("SY_" in e for e in config.validate()), "the report must read the live environment"
 
 
+def test_validate_maps_every_adapters_legacy_names_not_only_the_resolved_ones(fixture_repo, monkeypatch):
+    """A migration's starting state still resolves to the tracker being migrated *away* from.
+
+    This report is the whole migration worklist now that no `migrate` command exists, so it has to be
+    adapter-agnostic. Mapped from the resolved adapter alone, the incoming adapter's legacy names — the
+    ones an operator mid-migration actually has set — fell through to the unknown-`SY_*` branch and were
+    reported as "not a Shipyard setting", i.e. "delete these", for the values being migrated.
+    """
+    # Read off the resolver rather than spelled here, for the same reason the test above does it: naming
+    # one adapter's variables in this file would trip the config seam.
+    resolved = str(config.get("tracker"))
+    incoming = next(name for name in config._known_trackers() if name != resolved)
+    mine = config.adapter_map().get("legacy_env", {})
+    theirs = {
+        name: path for name, path in config._all_adapters_legacy_env().items()
+        if name not in mine and name.startswith("SY_")
+    }
+    assert theirs, "another shipped adapter must declare a prefixed legacy name for this to test anything"
+    tracker_var = next(name for name, path in config.LEGACY_ENV.items() if path == "tracker")
+    monkeypatch.setenv(tracker_var, incoming)
+    for name in theirs:
+        monkeypatch.setenv(name, "carried over")
+
+    errors = config.validate()
+    assert resolved != incoming, "the resolved tracker must not be the one being migrated to"
+    for name, path in theirs.items():
+        assert any(
+            f"{name} is set in the environment (to 'carried over') and disagrees with {path}" in e
+            for e in errors
+        ), f"{name} must resolve to {path} rather than be reported as unknown: {errors}"
+        assert not any(f"{name} is set but is not a Shipyard setting" in e for e in errors), errors
+
+
 def test_the_config_read_tools_serve_the_resolved_values_and_hold_their_argument_contracts(fixture_repo):
     """The tools are the only way a session reads the configuration, so each one's contract is pinned.
 

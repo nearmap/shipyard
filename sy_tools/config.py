@@ -617,9 +617,10 @@ def _outranking_env_conflicts() -> list[str]:
 def _legacy_env_conflicts() -> list[str]:
     """Retired `SY_*` names still set in the environment, compared against what they now resolve to.
 
-    Needs a resolved configuration on both sides — the values to compare against, and the adapter's own
-    legacy names — and lets a `ConfigError` reach `validate()`'s guard rather than reporting fewer names
-    than exist.
+    Needs a resolved configuration for the values to compare against, and lets a `ConfigError` reach
+    `validate()`'s guard rather than reporting fewer names than exist. The names themselves come from
+    every shipped adapter rather than the resolved one, because this report is the whole migration
+    worklist and a migration is read before the incoming tracker is selected.
     """
     errors: list[str] = []
     flat = _flatten(resolve()[0])
@@ -650,8 +651,27 @@ def _legacy_env_conflicts() -> list[str]:
 
 
 def _legacy_env_map() -> dict[str, str]:
-    """Tracker-neutral legacy names plus whatever the selected adapter declares as its own."""
-    return dict(LEGACY_ENV) | adapter_map().get("legacy_env", {})
+    """Tracker-neutral legacy names plus every legacy name any shipped adapter declares.
+
+    Every adapter's, not only the selected one's, because this map is what `validate()` reports a
+    migration worklist from and a migration's *starting* state is the tracker being migrated away
+    from. Resolved against the shipped default, a repo exporting the incoming adapter's legacy names
+    had them fall through to the unknown-`SY_*` branch and be reported as "not a Shipyard setting" —
+    telling the operator to delete the two values they were migrating.
+    """
+    return dict(LEGACY_ENV) | _all_adapters_legacy_env()
+
+
+def _all_adapters_legacy_env() -> dict[str, str]:
+    """The union of every shipped adapter's `legacy_env`, so the report is adapter-agnostic."""
+    # Unioned the same way `_known_secret_env_names()` unions `secret_env`, and uncached for the same
+    # reason `adapter_map()` is: `validate()` runs once per report, not per read.
+    merged: dict[str, str] = {}
+    tracker_dir = plugin_root() / "skills" / "tracker"
+    if tracker_dir.is_dir():
+        for config_map in sorted(tracker_dir.glob("*/config-map.json")):
+            merged.update(_load_json(config_map).get("legacy_env", {}))
+    return merged
 
 
 def _post_resolution_violations(values: dict, provenance: dict[str, str]) -> list[str]:

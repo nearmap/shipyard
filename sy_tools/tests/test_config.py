@@ -1120,8 +1120,9 @@ def test_the_fingerprint_moves_with_the_plugin_build_and_not_only_with_the_value
 
     `config/floors.json`'s model and effort floors and `agents/*.md`'s `effort:` frontmatter are
     config-relevant without being resolved values: a digest over the values alone reported no drift when
-    either changed under a running session, which is the one thing that comparison exists to catch. The
-    build identifier covers them all, because they ship together.
+    either changed under a running session, which is the one thing that comparison exists to catch.
+    Coverage is build-granular: a plugin upgrade or a checkout's own commit moves the build identifier;
+    an in-place edit under one build does not.
     """
     values = config.resolve()[0]
     first = config.fingerprint()

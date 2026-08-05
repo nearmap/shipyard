@@ -379,12 +379,14 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                     "every tool including the tracker's mutation verbs; name individual tools instead",
                     errors,
                 )
-            elif entry.startswith(("mcp__sy__", "mcp__plugin_sy_sy__")) and "*" in entry:
-                # Claude Code also accepts a glob after the literal prefix (`mcp__sy__set_*`), granting
-                # every matching tool exactly as the bare server-level forms above do.
+            elif entry.startswith("mcp__") and "*" in entry:
+                # Not one of the two documented `tools:` forms above (an exact name or a server-level
+                # `mcp__<server>`/`mcp__<server>__*` pattern) -- refuse rather than let an unrecognised
+                # glob shape reach the server unnoticed, whether it would over-grant or silently strip
+                # the tool it looks like it names.
                 fail(
-                    f"{p.relative_to(ROOT)}: tools names a tool-name glob {entry!r}, which can grant more "
-                    "than the one tool it appears to name; name individual tools instead",
+                    f"{p.relative_to(ROOT)}: tools names {entry!r}, neither an exact tool name nor a "
+                    "documented server-level pattern; name individual tools instead",
                     errors,
                 )
         # `mcp__plugin_sy_sy__` is a marketplace install's prefix, `mcp__sy__` a project `.mcp.json`'s, and an

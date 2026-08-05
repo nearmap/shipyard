@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """Aggregate Claude Code token usage across a session and all subagent transcripts.
 
-The parser is deliberately tolerant of transcript schema additions. It counts API usage
-blocks attached to assistant messages, de-duplicates by message/request id, and scans the
-main transcript plus the documented nested subagent transcript tree.
+The parser is deliberately tolerant of transcript schema additions. It counts API usage blocks
+attached to assistant messages, de-duplicates by message/request id, and scans the main transcript
+plus the documented nested subagent transcript tree.
 
-Two surfaces over one implementation. `summarize()` and `render()` are the portable subset the `sy`
-MCP server exposes as the `usage_summarize` and `export_transcript` tools, which is how a workflow
-reaches them; `summarize`'s output is compact JSON suitable for a small standalone tracker comment.
-The one command is the hook:
+`summarize()` and `render()` are the surfaces the `sy` MCP server exposes as the `usage_summarize` and
+`export_transcript` tools; `summarize`'s output is compact JSON suitable for a standalone tracker
+comment. The one command is the hook:
 
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.usage hook
       Read Claude Code hook JSON from stdin and record agent-id/type/transcript mapping.
-
-That hook runs on bare `python` with no environment of its own, so **this module's import graph must
-stay standard library only** — `sy_tools.config` is admissible because it is stdlib-only too, and
-nothing here may reach the MCP server or anything the server needs. The dependency runs one way:
-`server.py` imports this module, never the reverse. `sy_tools/guards/secret_guard.py` is the sibling
-under the same constraint.
 """
 from __future__ import annotations
 
+# A hook runs this on bare `python`, so the import graph stays stdlib-only and reaches nothing the MCP
+# server needs; the dependency runs one way, `server.py` imports this and never the reverse.
+# `sy_tools/guards/secret_guard.py` is the sibling under the same constraint.
 import argparse
 from collections import defaultdict
 from collections.abc import Iterable
@@ -49,8 +45,7 @@ class Usage:
     cache_creation_input_tokens: int = 0
 
     def add_mapping(self, usage: dict[str, Any]) -> None:
-        # Claude/Anthropic usage fields have used both cache_*_input_tokens and
-        # cache_*_tokens spellings across surfaces. Accept either without double-counting.
+        # Both cache_*_input_tokens and cache_*_tokens spellings occur across surfaces; accept either.
         self.input_tokens += _nonnegative_int(usage.get("input_tokens", 0))
         self.output_tokens += _nonnegative_int(usage.get("output_tokens", 0))
         self.cache_read_input_tokens += _nonnegative_int(
@@ -132,7 +127,7 @@ def _iter_jsonl(path: Path, warnings: list[str]) -> Iterable[dict[str, Any]]:
 def resolve_main_transcript(session_id: str | None, transcript: str | None) -> Path:
     """The one on-disk main transcript a session id or an explicit path names.
 
-    Takes exactly one of the two. No match, or more than one, is an error naming what was found.
+    Takes one of the two. No match, or more than one, is an error naming what was found.
     """
     if transcript:
         path = Path(transcript).expanduser().resolve()
@@ -166,8 +161,8 @@ def _discover_transcripts(main: Path) -> list[Path]:
     session_dir = main.with_suffix("")
     if session_dir.is_dir():
         paths.extend(p.resolve() for p in session_dir.rglob("*.jsonl"))
-    # Be tolerant of older/local layouts that place subagents beside the main file. That
-    # directory is project-level, so admit only files whose records claim this session.
+    # Older layouts put subagents beside the main file; that directory is project-level, so admit only
+    # files whose records claim this session.
     sibling_subagents = main.parent / "subagents"
     if sibling_subagents.is_dir():
         paths.extend(
@@ -208,8 +203,8 @@ def _load_agent_map(session_id: str) -> tuple[dict[Path, str], dict[str, str]]:
     by_id: dict[str, str] = {}
     primary = _ledger_path(session_id)
     paths: list[Path] = [primary] if primary.is_file() else []
-    # Some Claude Code surfaces expose a subagent-local session_id to an agent Stop hook, so the whole
-    # (tiny) ledger directory is a fallback — safe because the mapping is keyed on exact paths.
+    # Some surfaces give an agent Stop hook a subagent-local session_id, so the whole (tiny) ledger
+    # directory is a fallback — safe because the mapping is keyed on exact paths.
     if LEDGER_ROOT.is_dir():
         paths.extend(p for p in LEDGER_ROOT.glob("*.jsonl") if p != primary)
     warnings: list[str] = []
@@ -302,8 +297,8 @@ def _first_string(record: dict[str, Any], *keys: str) -> str | None:
 def _normalize_agent_type(agent_type: str | None) -> str | None:
     if not agent_type:
         return agent_type
-    # Plugin-namespaced agent types arrive as "<plugin>:<name>" (e.g. sy:gate). Accounting and
-    # --require-agent refer to agents by bare name, so strip the namespace before grouping.
+    # Plugin-namespaced agent types arrive as "<plugin>:<name>" (e.g. sy:gate), but accounting and
+    # `require_agent` name agents bare, so strip the namespace before grouping.
     return agent_type.split(":")[-1]
 
 
@@ -313,6 +308,11 @@ def summarize(
     phase: str,
     task: str | None,
 ) -> dict[str, Any]:
+    """The `shipyard.claude_usage.v1` roll-up for one session: totals plus a row per agent and model.
+
+    `main` is the main transcript; the whole subagent tree beneath it is counted with it. A transcript
+    that cannot be read, or a line that will not parse, becomes a `warnings` entry, never a failure.
+    """
     session_id = _session_id_from_path(main)
     transcripts = _discover_transcripts(main)
     by_path, by_id = _load_agent_map(session_id)
@@ -382,8 +382,7 @@ _RENDER_LIMITS: dict[str, int] | None = None
 def render_limits() -> dict[str, int]:
     """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
 
-    Resolved once per process and cached. An unresolvable config, or a resolved value that is not
-    numeric, falls back to the shipped defaults.
+    Resolved once per process. An unresolvable config, or a non-numeric value, falls back to defaults.
     """
     global _RENDER_LIMITS
     if _RENDER_LIMITS is None:
@@ -392,8 +391,8 @@ def render_limits() -> dict[str, int]:
             from .config import ConfigError
             from .config import get as config_get
             _RENDER_LIMITS = {
-                # `config._flatten()` stores leaf keys only: the whole path never resolves, each field does.
-                # int() on `get()`'s unchecked `object` is the point: a non-numeric value hits the fallback.
+                # Leaf keys only (`config._flatten()`), so the whole path never resolves; `int()` on
+                # `get()`'s unchecked `object` is the point — a non-numeric value hits the fallback.
                 key: int(config_get(f"transcript.truncation_limits.{key}"))  # ty: ignore[invalid-argument-type]
                 for key in _DEFAULT_RENDER_LIMITS
             }
@@ -514,6 +513,10 @@ def _agent_header(path: Path, by_path: dict[Path, str]) -> str:
 
 
 def render(main: Path, *, task: str | None) -> str:
+    """One readable transcript for the session: the main session, then each subagent in start order.
+
+    Tool inputs, tool results and thinking blocks are truncated to `render_limits()`.
+    """
     session_id = _session_id_from_path(main)
     transcripts = _discover_transcripts(main)
     by_path, _ = _load_agent_map(session_id)
@@ -545,7 +548,7 @@ def render(main: Path, *, task: str | None) -> str:
 def main(argv: list[str] | None = None) -> int:
     """Run the `hook` command: append one agent/transcript mapping line from hook JSON on stdin.
 
-    The only command. Malformed stdin is a success: exit 0, nothing recorded.
+    Malformed stdin is a success: exit 0, nothing recorded.
     """
     parser = argparse.ArgumentParser(prog="python -m sy_tools.usage")
     sub = parser.add_subparsers(dest="command", required=True)

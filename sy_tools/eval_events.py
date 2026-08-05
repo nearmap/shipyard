@@ -9,15 +9,12 @@ not only the mutating ones, so a Trigger/Trace eval sees Skill and Agent invocat
 Commands:
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.eval_events hook
       Read Claude Code hook JSON from stdin; append an event line if enabled.
-
-That hook runs on bare `python` with no environment of its own, so **this module's import graph must
-stay standard library only** — `sy_tools.config` is admissible because it is stdlib-only too, and
-nothing here may reach the MCP server or anything the server needs. "Bare `python`" is also whatever
-interpreter the operator has on `PATH`, so the graph must import on 3.9. `sy_tools/usage.py` and
-`sy_tools/guards/secret_guard.py` are the siblings under the same constraint.
 """
 from __future__ import annotations
 
+# A hook runs this on whatever bare `python` is on `PATH` (3.9 on some machines), so the import graph
+# stays stdlib-only, must import on 3.9, and reaches nothing the MCP server needs. `sy_tools/usage.py`
+# and `sy_tools/guards/secret_guard.py` are the siblings under the same constraint.
 from datetime import datetime, timezone
 import json
 import os
@@ -29,8 +26,7 @@ from .config import get as config_get
 
 SCHEMA = "shipyard.eval_events.v1"
 AGENT_TOOL_NAMES = {"Agent", "Task"}
-# Keyed by session id, never by task or repository: an eval must read exactly one run, and any
-# coarser key accumulates runs and interleaves concurrent sessions' traces in a single file.
+# Keyed by session id: an eval must read exactly one run, and a coarser key interleaves concurrent ones.
 EVENTS_ROOT = Path.home() / ".claude" / "shipyard" / "eval-events"
 
 
@@ -38,8 +34,7 @@ def enabled() -> bool:
     """Whether the event log is on, per `debug.evals`; an unresolvable config leaves it off."""
     try:
         return bool(config_get("debug.evals"))
-    # This runs on every hook firing, so a misconfigured repo must cost a trace, not the tool call.
-    # `OSError` too: the resolver shells out to `git` and reads layer files.
+    # A misconfigured repo must cost a trace, not the tool call; `OSError` too — the resolver runs `git`.
     except (ConfigError, OSError):
         return False
 
@@ -68,8 +63,8 @@ def build_event(payload: dict) -> dict | None:
         return None
     event: dict = {
         "schema": SCHEMA,
-        # `datetime.UTC` is 3.11+ and this runs on whatever bare `python` is on `PATH` — 3.9 on some
-        # machines, where a crash is the one failure mode a disabled-by-default log must not have.
+        # `datetime.UTC` is 3.11+ and a hook runs this on bare `python` — 3.9 on some machines, where
+        # a crash is the one failure mode a disabled-by-default log must not have.
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),  # noqa: UP017
         "session_id": session_id,
         "hook_event": payload.get("hook_event_name"),
@@ -108,10 +103,7 @@ def record(payload: dict) -> None:
 
 
 def main() -> int:
-    """Run the `hook` command: append one event line for this hook firing, if the log is enabled.
-
-    The only command. Malformed stdin is a success: exit 0, nothing recorded.
-    """
+    """Run the `hook` command: append one event line if the log is enabled; malformed stdin exits 0."""
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     if arg != "hook":
         print("usage: python -m sy_tools.eval_events hook", file=sys.stderr)

@@ -2,13 +2,11 @@
 recently succeeded for the same plugin build, tracker, and resolved config.
 
 A live network read (a real read, not just a local-credential-status command) is the only way to tell
-a present-but-dead credential from a working one. This module owns the fingerprint, cache, and TTL
+a present-but-dead credential from a working one. This module owns the fingerprint, cache and TTL
 mechanics so every adapter shares one cheap short-circuit; what "a real read" means for a given
 tracker stays adapter-side, declared in that adapter's own configuration doc.
 
-`var_names` carries only secret env var names: the fingerprint folds in the resolved Shipyard config
-whole. `check` and `record` have one caller, the `preflight` MCP tool, which resolves both the tracker
-and those var names from configuration itself.
+`var_names` carries only secret env var names — the fingerprint folds in the resolved config whole.
 """
 from __future__ import annotations
 
@@ -47,10 +45,9 @@ def record(tracker: str, var_names: list[str]) -> None:
 def fingerprint(tracker: str, var_names: list[str]) -> str:
     """Hash the plugin build, the tracker, the resolved config, and the values of `var_names`.
 
-    A rotated var value, a changed setting, or a new plugin build therefore invalidates the cache
-    automatically; the raw values never leave this process. An empty `var_names` is legitimate — an
-    adapter may hold no credential in the environment at all, and the config fingerprint still covers
-    its settings.
+    A rotated var value, a changed setting or a new plugin build invalidates the cache; the raw values
+    never leave this process. An empty `var_names` is legitimate: an adapter may hold no credential in
+    the environment at all, and the config fingerprint still covers its settings.
     """
     values = "|".join(f"{name}={os.environ.get(name, '')}" for name in sorted(var_names))
     digest = hashlib.sha256(f"{plugin_build()}|{tracker}|{config_fingerprint()}|{values}".encode()).hexdigest()
@@ -80,12 +77,10 @@ def plugin_build() -> str:
 def cache_path() -> Path:
     """Where the cache lives: this repository's own resolved scratch directory.
 
-    Scoped by the repository's own directory name rather than machine-global, so differently named
-    repos never share one liveness verdict — two repos that happen to share a name still do, which is
-    the same name-keying limitation `repo_scratch_dir` itself carries.
+    Two repos sharing a directory name share one liveness verdict, as `repo_scratch_dir` itself does.
     """
-    # Outside the checkout, not beside it, so the verdict outlives a `/sy:ship` worktree.
-    # A function, not a constant: resolution shells out to git and reads the config layers.
+    # Outside the checkout, not beside it, so the verdict outlives a `/sy:ship` worktree; resolved per
+    # call rather than a module constant, since resolution shells out to git and reads config layers.
     return repo_scratch_dir() / "sy" / "preflight-cache.json"
 
 

@@ -478,7 +478,7 @@ def check_invariants(errors: list[str]) -> None:
         fail("merge path missing atomic head guard (--match-head-commit)", errors)
     if "decomposed/superseded closure is not delivery" not in ship.lower():
         fail("ship missing decomposed-closure-is-not-delivery rule", errors)
-    if "main_plus_subagents" not in handoff or "--require-agent" not in handoff:
+    if "main_plus_subagents" not in handoff or "require_agent" not in handoff:
         fail("ship accounting must aggregate and validate subagent usage", errors)
     if "standalone" not in contract.lower():
         fail("contract must require standalone machine-log comments", errors)
@@ -492,8 +492,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("handoff must scale records by process tier", errors)
     if "design contract" not in gate or "verification obligation" not in gate:
         fail("gate must verify the design contract and verification obligations", errors)
-    if "agent img-inspector" not in img_ref or "img-inspector" not in img_ref:
-        fail("image-inspection reference must resolve the inspector model via sy_config.py agent img-inspector", errors)
+    if 'agent_model {"name": "img-inspector"}' not in img_ref:
+        fail("image-inspection reference must resolve the inspector model via the agent_model tool", errors)
     if "img-inspector" not in gate:
         fail("gate must protect the image-inspection invariant (no image Reads; delegate to sy:img-inspector)", errors)
     if "img-inspector" not in impl:
@@ -526,13 +526,16 @@ def check_invariants(errors: list[str]) -> None:
 
     if "## Action needed" not in preflight_ref or "docs/configuration.md" not in preflight_ref:
         fail("preflight reference must define the Action-needed failure shape and link docs/configuration.md", errors)
-    if "sy_preflight.py" not in preflight_ref or "cache" not in preflight_ref.lower():
-        fail("preflight reference must describe the cached liveness check (sy_preflight.py)", errors)
-    if "sy_preflight.py" not in tracker_skill:
-        fail("tracker skill must wire the cached liveness check (sy_preflight.py) into its fail-fast section", errors)
+    # The cache moved inside the `preflight` tool, so what these three assert moved with it: not that a
+    # doc names a helper script, but that it says the one call caches itself. A doc that describes a
+    # separate check-then-record pair is the specific regression here, and none of these strings survive it.
+    if "`preflight` tool" not in preflight_ref or "cache" not in preflight_ref.lower():
+        fail("preflight reference must describe the `preflight` tool's own cached liveness check", errors)
+    if "shared cache" not in tracker_skill:
+        fail("tracker skill must wire the cached liveness check into its fail-fast section", errors)
     for name, text in (("jira", jira_adapter), ("github", github_adapter)):
-        if "sy_preflight.py" not in text:
-            fail(f"{name} adapter must declare its preflight hook, cached through sy_preflight.py", errors)
+        if "shared cache" not in text:
+            fail(f"{name} adapter must declare its preflight hook, cached inside the preflight tool", errors)
     for name, text in (("plan", plan), ("spec", spec), ("ship", ship), ("spike", spike)):
         if "preflight.md" not in text:
             fail(f"{name} must run the tracker preflight (preflight.md) before other work", errors)
@@ -542,7 +545,7 @@ def check_invariants(errors: list[str]) -> None:
         fail("init-repo must offer the legacy env-block migration step (sy_config.py migrate)", errors)
     if "Secrets never go in either file" not in init_repo:
         fail("init-repo must state that a secret never lands in a config file", errors)
-    if "preflight.md" not in init_repo or "sy_preflight.py" not in init_repo:
+    if "preflight.md" not in init_repo or 'preflight {"force": true}' not in init_repo:
         fail("init-repo must prove config live via the same preflight mechanism other commands use", errors)
 
     if "scope extension" not in scope or "justify itself" not in scope:
@@ -630,8 +633,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("model-dispatch must state that a nested Agent call does not inherit a model override", errors)
     if "no effort parameter on the `Agent` tool" not in dispatch_ref:
         fail("model-dispatch must state plainly that effort cannot be set at dispatch time", errors)
-    if "sy_config.py" not in dispatch_ref or "agent <agent-name>" not in dispatch_ref:
-        fail("model-dispatch must resolve the model through sy_config.py agent <name>", errors)
+    if 'agent_model {"name": "<agent-name>"}' not in dispatch_ref:
+        fail("model-dispatch must resolve the model through the agent_model tool", errors)
     for name, text in (
         ("gate", read("agents/gate.md")), ("debate", read("agents/debate.md")),
         ("ship-build", read("agents/ship-build.md")), ("ship-gate", read("agents/ship-gate.md")),
@@ -644,11 +647,13 @@ def check_invariants(errors: list[str]) -> None:
     if "config/floors.json" not in read("skills/spec/SKILL.md"):
         fail("spec SKILL must point the quality-floor invariant at config/floors.json, not prose alone", errors)
 
+    # Read side and write side check different tools on purpose: a doc that names only `memory_add` is
+    # not reading memory back, and one that names only `memory_list` is not writing the lesson.
     for name, text in (("plan", plan), ("spec", spec), ("ship start", start)):
-        if "sy_memory.py" not in text or "memory.md" not in text:
-            fail(f"{name} must read durable cross-session memory back (sy_memory.py, per memory.md)", errors)
-    if "sy_memory.py" not in handoff or "memory.md" not in handoff:
-        fail("ship handoff retro must distill durable lessons into cross-session memory (sy_memory.py, per memory.md)", errors)
+        if "memory_list" not in text or "memory.md" not in text:
+            fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
+    if "memory_add" not in handoff or "memory.md" not in handoff:
+        fail("ship handoff retro must distill durable lessons into cross-session memory (memory_add, per memory.md)", errors)
     if "close with evidence" not in spec.lower() or "shelve" not in spec.lower():
         fail("spec must bless the shelve terminal state (close with evidence, no plan)", errors)
     for name, text in (
@@ -663,8 +668,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("gate agent must allow the Skill tool", errors)
     if re.search(r"^skills:\s*$", gate_fm, re.M):
         fail("gate must not preload standards; conformance review is invoked lazily", errors)
-    if "agent gate" not in gate_ref:
-        fail("immutable-gate must resolve the reviewer via sy_config.py agent gate", errors)
+    if 'agent_model {"name": "gate"}' not in gate_ref:
+        fail("immutable-gate must resolve the reviewer via the agent_model tool", errors)
     if "models.tiers.frontier_fallback" not in gate_ref:
         fail("immutable-gate must resolve the one-shot reviewer fallback from models.tiers.frontier_fallback", errors)
     if "START <model> / BUILD <model> / GATE <model>" not in spec:

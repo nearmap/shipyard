@@ -2,10 +2,12 @@
 
 The store is a directory of Markdown files under the user-global root the resolver reports for
 `memory.dir` — one file per lesson, its name the lesson title as a kebab-slug, holding a short
-frontmatter block (title, scope, tags, date) and the body. Beside them sits a greppable `index.md`,
-regenerated on every write and rebuilt on read whenever it disagrees with the lessons on disk. Writes
-are idempotent by title: re-adding a lesson under a title already stored replaces that one file
-rather than adding a second copy of it.
+frontmatter block (title, scope, tags, date, plus status once the lesson has been refuted) and the
+body. Beside them sits a greppable `index.md`, regenerated on every write and rebuilt on read
+whenever it disagrees with the lessons on disk. Writes are idempotent by title: re-adding or
+refuting a lesson under a title already stored replaces that one file rather than adding a second
+copy of it. A lesson later contradicted is corrected or tombstoned in place, never deleted, so the
+refuted claim stays readable rather than being silently re-derived under the same title.
 
 The write/read discipline (when a lesson is worth storing, who reads it back) lives in
 skills/shared/references/memory.md.
@@ -20,6 +22,10 @@ import re
 from .config import get as config_get
 
 INDEX_NAME = "index.md"
+REFUTED_HEADING = "## Refuted claim"
+TOMBSTONE_BODY = "Refuted: nothing in this lesson still holds. Do not act on it and do not re-derive it."
+
+_FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
 
 def root() -> Path:
@@ -41,6 +47,34 @@ def add(title: str, scope: str, tags: str, body: str) -> Path:
     _atomic_write(directory / f"{slug}.md", text)
     _rebuild_index(directory)
     return directory / f"{slug}.md"
+
+
+def refute(title: str, evidence: str, correction: str = "") -> Path:
+    """Correct or tombstone the stored lesson under `title`, in place; returns its unchanged path.
+
+    A non-empty `correction` narrows the lesson to what still holds (`status: corrected`); an empty one
+    tombstones it (`status: tombstoned`). The file is only ever rewritten, never removed, and repeat
+    refutes converge on it without re-nesting the preserved pre-refutation claim. Raises `ValueError`
+    for an empty `title`/`evidence` or a title no lesson is stored under.
+    """
+    if not title.strip() or not evidence.strip():
+        raise ValueError("title and evidence must both be non-empty")
+    directory = root()
+    path = directory / f"{_slug(title)}.md"
+    if not path.is_file():
+        raise ValueError(f"no lesson is stored under title {title.strip()!r}, so there is nothing to refute")
+    text = path.read_text(encoding="utf-8")
+    status = "corrected" if correction.strip() else "tombstoned"
+    _atomic_write(
+        path,
+        f"---\ntitle: {_frontmatter_value(text, 'title') or title.strip()}\n"
+        f"scope: {_frontmatter_value(text, 'scope')}\ntags: {_frontmatter_value(text, 'tags')}\n"
+        f"date: {date.today().isoformat()}\nstatus: {status}\n---\n\n"
+        f"{correction.strip() if status == 'corrected' else TOMBSTONE_BODY}\n\n"
+        f"Evidence: {evidence.strip()}\n\n{REFUTED_HEADING}\n\n{_refuted_claim(text)}\n",
+    )
+    _rebuild_index(directory)
+    return path
 
 
 def search(term: str) -> list[str]:
@@ -77,13 +111,30 @@ def _lesson_paths(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.md") if p.name != INDEX_NAME)
 
 
+def _frontmatter(text: str) -> str:
+    match = _FRONTMATTER.match(text)
+    return match.group(1) if match else ""
+
+
+def _body(text: str) -> str:
+    match = _FRONTMATTER.match(text)
+    return text[match.end():].strip() if match else text.strip()
+
+
+def _refuted_claim(text: str) -> str:
+    # A repeat refute must preserve the original claim, not wrap the previous refutation around it again.
+    _, _, kept = _body(text).partition(f"{REFUTED_HEADING}\n")
+    return kept.strip() or _body(text)
+
+
 def _title_of(text: str, path: Path) -> str:
-    match = re.search(r"^title:\s*(.+)$", text, re.M)
+    match = re.search(r"^title:[ \t]*(.+)$", _frontmatter(text), re.M)
     return match.group(1).strip() if match else path.stem
 
 
 def _frontmatter_value(text: str, key: str) -> str:
-    match = re.search(rf"^{key}:\s*(.*)$", text, re.M)
+    # Horizontal whitespace only: `\s*` would cross the newline after an empty `key:` and return the next key's line.
+    match = re.search(rf"^{key}:[ \t]*(.*)$", _frontmatter(text), re.M)
     return match.group(1).strip() if match else ""
 
 
@@ -94,7 +145,12 @@ def _rebuild_index(directory: Path) -> None:
         scope = _frontmatter_value(text, "scope")
         tags = _frontmatter_value(text, "tags")
         dated = _frontmatter_value(text, "date")
-        detail = "; ".join(x for x in (f"scope: {scope}", f"tags: {tags}" if tags else "", dated) if x)
+        status = _frontmatter_value(text, "status")
+        detail = "; ".join(
+            x
+            for x in (f"scope: {scope}", f"tags: {tags}" if tags else "", dated, f"status: {status}" if status else "")
+            if x
+        )
         lines.append(f"- [{path.stem}]({path.name}) — {_title_of(text, path)} ({detail})")
     if len(lines) == 2:
         lines.append("(no entries)")

@@ -40,6 +40,7 @@ TOOL_NAMES = {
     "link-parent",
     "memory_add",
     "memory_list",
+    "memory_refute",
     "memory_search",
     "post-comment",
     "preflight",

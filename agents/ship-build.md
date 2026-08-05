@@ -22,6 +22,7 @@ CHECKS:
 CLAIMS:
 - <load-bearing claim> — <command run + where its output lives>
 DECISIVE: path:line, path:line
+MEMORY_REFUTE: none|<per candidate: title + evidence + correction (empty = tombstone)>
 STATE: scratch_dir($TASK_KEY)/ship-state.yaml; AGENTS_USED: <names>
 ```
 

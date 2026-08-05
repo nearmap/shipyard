@@ -13,7 +13,7 @@ Distinct from BUILD's leaked-token content-QA grep (`${CLAUDE_PLUGIN_ROOT}/skill
 Post `# Ship retrospective` as clear prose:
 
 - shipped vs plan;
-- divergences and mid-ship decisions — accepted deviations and any parent-resolved `needs-decision` — and why;
+- divergences and mid-ship decisions — accepted deviations, any parent-resolved `needs-decision`, and any memory refutation this run already applied — and why;
 - what the plan missed;
 - lessons for next `/sy:plan`;
 - a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — when this run surfaced a new team-process decision, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
@@ -22,7 +22,7 @@ Post `# Ship retrospective` as clear prose:
 
 Do **not** embed token or metrics JSON in this comment.
 
-While writing the retro, distill any durable, cross-cutting, tool/skill-level lesson (not repo trivia) into cross-session memory — `memory_add` per the write bar in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`. The retro records what happened here; the memory write is what `/sy:plan`, `/sy:spec`, and `/sy:ship` START read back in unrelated future sessions.
+While writing the retro, distill any durable, cross-cutting, tool/skill-level lesson (not repo trivia) into cross-session memory — `memory_add` per the write bar in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`. The retro records what happened here; the memory write is what `/sy:plan`, `/sy:spec`, and `/sy:ship` START read back in unrelated future sessions. A refutation this run already applied — drained as each phase returned, per the worker contract — is not redone here; this step is for a lesson the retro itself newly surfaces, or a genuinely new one.
 
 ## 2. Standalone token-usage JSON comment
 

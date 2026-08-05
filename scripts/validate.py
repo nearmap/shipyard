@@ -470,6 +470,7 @@ def check_invariants(errors: list[str]) -> None:
     contract = read("skills/tracker/CONTRACT.md")
     impl = read("skills/ship/references/implementation.md")
     img_ref = read("skills/shared/references/image-inspection.md")
+    memory_ref = read("skills/shared/references/memory.md")
     plan = read("skills/plan/SKILL.md")
     spike = read("skills/spike/SKILL.md")
     pr = read("skills/pr/SKILL.md")
@@ -663,6 +664,23 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
     if "memory_add" not in handoff or "memory.md" not in handoff:
         fail("ship handoff retro must distill durable lessons into cross-session memory (memory_add, per memory.md)", errors)
+    # A refutation path only closes the loop if the reference defines it, every read site can reach it, and
+    # the worker-to-parent relay is spelled out on both ends — a worker holds no memory write of its own.
+    if "memory_refute" not in memory_ref or "never left standing" not in memory_ref:
+        fail("memory.md must document memory_refute and that a refuted anchor is never left standing", errors)
+    if "delete-by-hand is deliberate friction" in memory_ref.lower():
+        fail("memory.md must not bless hand-deletion while also stating the store is never hand-edited", errors)
+    for name, text in (("plan", plan), ("spec", spec)):
+        if "memory_refute" not in text:
+            fail(f"{name} runs as the parent session and must refute a contradicted lesson directly", errors)
+    for name, text in (("start-resume", start), ("implementation", impl), ("immutable-gate", gate_ref)):
+        if "memory_refutations" not in text or "MEMORY_REFUTE" not in text:
+            fail(f"{name} must relay a contradicted anchor as a MEMORY_REFUTE candidate in memory_refutations", errors)
+    if "memory_refutations" not in ship or "memory_refute" not in ship:
+        fail("ship SKILL must carry memory_refutations in the done payload and the parent-applies-it rule", errors)
+    for agent in ("ship-start", "ship-build", "ship-gate"):
+        if "MEMORY_REFUTE" not in read(f"agents/{agent}.md"):
+            fail(f"agent {agent} must carry MEMORY_REFUTE in its return-contract status block", errors)
     if "close with evidence" not in spec.lower() or "shelve" not in spec.lower():
         fail("spec must bless the shelve terminal state (close with evidence, no plan)", errors)
     for name, text in (

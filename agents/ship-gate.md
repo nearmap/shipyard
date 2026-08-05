@@ -19,6 +19,7 @@ DONE: promoted to `in-review`
 CI_GREEN_SHA: <sha>; REVIEWED_SHA: <sha>; REVIEW_BASE_SHA: <sha>; TARGET_SHA: <sha>
 REVIEW_MODEL_REQUESTED: <model>; PR: <url>
 FINDINGS: accepted <n>, rejected <n>; REVIEW_THREADS: addressed <n>
+MEMORY_REFUTE: none|<per candidate: title + evidence + correction (empty = tombstone)>
 STATE: scratch_dir($TASK_KEY)/ship-state.yaml; AGENTS_USED: <names>
 ```
 

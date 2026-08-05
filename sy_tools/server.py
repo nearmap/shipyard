@@ -956,7 +956,7 @@ def export_transcript(
 
 
 MEMORY_REFUSALS = (ValueError, config.ConfigError)
-"""What the memory store raises for the caller's own mistake, described once for all three tools.
+"""What the memory store raises for the caller's own mistake, described once for all four tools.
 
 A rejected field and a `memory.dir` that will not resolve are both answers the caller has to see as a
 tool result, so they are surfaced as `ToolError`; anything else (an unwritable root, say) is a real
@@ -996,6 +996,49 @@ def memory_add(
     """
     try:
         return {"path": str(memory.add(title, scope, tags, body))}
+    except MEMORY_REFUSALS as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="memory_refute")
+def memory_refute(
+    title: Annotated[
+        str,
+        Field(
+            description="The stored lesson's title. Resolves to the same kebab-slug file `memory_add` "
+            "wrote, so a title no lesson is stored under is refused rather than created."
+        ),
+    ],
+    evidence: Annotated[
+        str,
+        Field(
+            description="What was directly observed to contradict the lesson: a path, command, or result "
+            "a later reader can re-check, not an impression."
+        ),
+    ],
+    correction: Annotated[
+        str,
+        Field(
+            description="The narrower claim that does still hold, when part of the lesson survives. Leave "
+            "empty to tombstone the lesson, meaning nothing in it is worth carrying forward."
+        ),
+    ] = "",
+) -> dict[str, Any]:
+    """Correct or tombstone one stored lesson that direct observation contradicts.
+
+    Prefer a `correction` to a tombstone: a lesson that was wrong only under some condition is more use
+    narrowed than erased, and that condition is the part a future reader needs. `evidence` is mandatory
+    either way, because a refutation overrules what an earlier session concluded and the next reader has
+    to be able to re-check the overrule instead of trusting it. The lesson file is never deleted, only
+    rewritten in place, so a refuted entry stays visible in `memory_list` and `memory_search` carrying a
+    `status` of `corrected` or `tombstoned` — that visibility is what stops the same wrong conclusion
+    being re-derived and re-added under the same title later. Idempotent by title like `memory_add`:
+    refuting twice rewrites the one file rather than forking a second, and does not re-nest the
+    preserved pre-refutation claim. An empty title or evidence is refused, and so is a title no lesson is
+    stored under, since there is nothing to refute and adding one would record the correction as fact.
+    """
+    try:
+        return {"path": str(memory.refute(title, evidence, correction))}
     except MEMORY_REFUSALS as exc:
         raise ToolError(str(exc)) from None
 

@@ -18,6 +18,7 @@ No preamble, narration, praise, pasted bodies, or tool recap. End with exactly o
 DONE: fresh|resumed at <state>; BRANCH <name>; WORKTREE <path>; PLAN <vN digest>
 STATE: scratch_dir($TASK_KEY)/ship-state.yaml
 STANDARDS: <authority/primitives/risk-lens digest>
+MEMORY_REFUTE: none|<per candidate: title + evidence + correction (empty = tombstone)>
 AGENTS_USED: <names>
 ```
 

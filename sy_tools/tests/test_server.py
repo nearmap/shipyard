@@ -34,6 +34,7 @@ TOOL_NAMES = {
     "attachment-update",
     "check_env",
     "create-issue",
+    "export_transcript",
     "find-issues",
     "fingerprint_config",
     "get-issue",
@@ -47,6 +48,7 @@ TOOL_NAMES = {
     "show_config",
     "type-convert",
     "update-issue",
+    "usage_summarize",
     "validate_config",
 }
 
@@ -1251,3 +1253,98 @@ async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_r
         "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": [],
         "declared_below_length_floor": ["SY_TEST_DECLARED"],
     }, _payload(result)
+
+
+def _synthetic_session(root: Path) -> Path:
+    """One two-turn main transcript for session `t1`, with no subagents. Returns its path."""
+    main = root / "t1.jsonl"
+    main.write_text(
+        "".join(
+            json.dumps(record) + "\n"
+            for record in (
+                {
+                    "type": "assistant", "timestamp": "2026-07-09T10:00:00Z",
+                    "message": {
+                        "id": "m1", "model": "probe-model",
+                        "content": [{"type": "text", "text": "rendered body"}],
+                        "usage": {"input_tokens": 11, "output_tokens": 3},
+                    },
+                },
+                {
+                    "type": "user", "timestamp": "2026-07-09T10:00:01Z",
+                    "message": {"content": [{"type": "text", "text": "thanks"}]},
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    return main
+
+
+@pytest.mark.anyio
+async def test_usage_summarize_returns_the_roll_up_the_retired_subcommand_printed(tmp_path, monkeypatch):
+    """The tool's result is the summary object itself, and `output` also writes it as JSON."""
+    monkeypatch.setattr(server.usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = _synthetic_session(tmp_path)
+    destination = tmp_path / "usage.json"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("usage_summarize", {
+            "transcript": str(main), "phase": "ship", "task": "PROJ-1", "output": str(destination),
+        })
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert payload["schema"] == "shipyard.claude_usage.v1", payload
+    assert payload["session_id"] == "t1", payload
+    assert payload["task"] == "PROJ-1", payload
+    assert payload["totals"]["input_tokens"] == 11, payload
+    assert json.loads(destination.read_text(encoding="utf-8")) == payload, "the written file must match the result"
+
+
+@pytest.mark.anyio
+async def test_usage_summarize_refuses_when_a_required_agent_is_absent(tmp_path, monkeypatch):
+    """A roll-up missing a dispatched agent's transcript under-reports, so it must fail rather than pass."""
+    monkeypatch.setattr(server.usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = _synthetic_session(tmp_path)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("usage_summarize", {"transcript": str(main), "require_agent": ["slice"]})
+    assert result.is_error is True, result.content
+    assert "slice" in _text(result), _text(result)
+
+
+@pytest.mark.anyio
+async def test_export_transcript_writes_the_render_and_never_returns_its_text(tmp_path, monkeypatch):
+    """The isolation the attachment flow depends on: the rendered text reaches disk and not the caller."""
+    monkeypatch.setattr(server.usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = _synthetic_session(tmp_path)
+    destination = tmp_path / "transcript.txt"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("export_transcript", {
+            "transcript": str(main), "output": str(destination), "task": "PROJ-1",
+        })
+    assert result.is_error is False, result.content
+    written = destination.read_text(encoding="utf-8")
+    assert "MAIN SESSION t1" in written, written
+    assert "rendered body" in written, written
+    assert _payload(result) == {
+        "path": str(destination), "bytes": len(written.encode("utf-8")), "lines": written.count("\n"),
+    }, _payload(result)
+    assert "rendered body" not in str(result), f"the rendered transcript reached the tool result: {result}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("usage_summarize", {}),
+        ("usage_summarize", {"session_id": "t1", "transcript": "/tmp/t1.jsonl"}),
+        ("export_transcript", {"output": "/tmp/out.txt"}),
+        ("export_transcript", {"session_id": "t1", "transcript": "/tmp/t1.jsonl", "output": "/tmp/out.txt"}),
+    ],
+    ids=["summarize-neither", "summarize-both", "export-neither", "export-both"],
+)
+async def test_the_transcript_tools_take_exactly_one_source(tool, arguments):
+    """Neither source means nothing to read; both means the tool would silently pick one."""
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments)
+    assert result.is_error is True, result.content
+    assert "not both and not neither" in _text(result), _text(result)

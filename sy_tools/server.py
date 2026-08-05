@@ -8,7 +8,10 @@ findable in this repo.
 
 Tools are `async` wherever they do I/O, so a slow attachment upload cannot block an unrelated tool
 call. The configuration tools stay synchronous: they read small local files, and mostly serve the
-resolver's hot copy without touching disk at all.
+resolver's hot copy without touching disk at all. `usage_summarize` and `export_transcript` are
+synchronous for a weaker but deliberate reason — the work is local disk reads bounded by the calling
+session's own transcript tree, with no network in it, so a thread offload would buy only the chance to
+interleave another call during a read the caller is waiting on anyway.
 `secrets.sanitize` also stays synchronous inside the async tool — it is local disk work bounded by
 the artifact size, and making it awaitable would buy nothing while adding a way to interleave a
 scrub with the upload it must strictly precede.
@@ -57,7 +60,7 @@ from typing import Annotated, Any, Literal
 from mcp.server import MCPServer
 from pydantic import Field, ValidationError
 
-from . import SERVER_NAME, SERVER_VERSION, config, secrets, tracker
+from . import SERVER_NAME, SERVER_VERSION, config, secrets, tracker, usage
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 
 mcp = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
@@ -972,6 +975,114 @@ def fingerprint_config() -> dict[str, Any]:
         return {"fingerprint": config.fingerprint()}
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
+
+
+SessionId = Annotated[
+    str,
+    Field(
+        description="Claude Code session id whose transcript tree to read. Give this or `transcript`, "
+        "not both and not neither."
+    ),
+]
+"""Both transcript tools take the same source pair, described once so they describe it the same way."""
+
+TranscriptPath = Annotated[
+    str,
+    Field(description="Absolute path to a main session `.jsonl` transcript, instead of `session_id`."),
+]
+
+
+def _transcript_source(session_id: str, transcript: str) -> Path:
+    """The main transcript the caller named, refusing both-or-neither before any file is read."""
+    if bool(session_id.strip()) == bool(transcript.strip()):
+        raise ToolError("give either session_id or transcript, not both and not neither")
+    try:
+        return usage.resolve_main_transcript(session_id.strip() or None, transcript.strip() or None)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="usage_summarize")
+def usage_summarize(
+    session_id: SessionId = "",
+    transcript: TranscriptPath = "",
+    phase: Annotated[
+        str,
+        Field(description="Workflow phase the roll-up is attributed to, as it appears in the output."),
+    ] = "ship",
+    task: Annotated[
+        str | None,
+        Field(description="Issue id to record in the output, when the roll-up belongs to one."),
+    ] = None,
+    require_agent: Annotated[
+        list[str] | None,
+        Field(
+            description="Agent types that must appear in the roll-up. Naming an agent that dispatched "
+            "turns an absent transcript into an error instead of a quietly-low total."
+        ),
+    ] = None,
+    output: Annotated[
+        str | None,
+        Field(description="Path to also write the summary JSON to. The summary is returned either way."),
+    ] = None,
+) -> dict[str, Any]:
+    """Roll up token usage across one session's main transcript and every subagent transcript under it.
+
+    Reads the on-disk transcript tree, so it also works on a resumed session and counts subagent turns
+    the caller never saw. Counts are de-duplicated by message id, grouped by agent type and model, and
+    the result is small enough to post as a standalone machine-log comment — which is what it is for.
+    An agent named in `require_agent` but absent from the tree is an error, because a roll-up missing a
+    dispatched agent's transcript under-reports rather than fails.
+    """
+    main = _transcript_source(session_id, transcript)
+    result = usage.summarize(main, phase=phase, task=task)
+    present = {row["agent_type"] for row in result["by_agent"]}
+    missing = sorted(set(require_agent or []) - present)
+    if missing:
+        raise ToolError("usage roll-up missing expected agent transcript(s): " + ", ".join(missing))
+    if output:
+        try:
+            Path(output).write_text(json.dumps(result, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise ToolError(f"summary could not be written to {output}: {exc}") from None
+    return result
+
+
+@mcp.tool(name="export_transcript")
+def export_transcript(
+    output: Annotated[
+        str,
+        Field(description="Path to write the rendered transcript to. Required; the text is never returned."),
+    ],
+    session_id: SessionId = "",
+    transcript: TranscriptPath = "",
+    task: Annotated[
+        str | None,
+        Field(description="Issue id to record in the rendered header, when the export belongs to one."),
+    ] = None,
+) -> dict[str, Any]:
+    """Render one session's whole transcript tree as readable text on disk, and report where it landed.
+
+    Replaces the manual `/export` step for the attachment flow: bulky tool output is truncated per
+    `transcript.truncation_limits`, raw JSONL noise is dropped, and subagent sections are ordered by
+    first timestamp, so the result is audit-readable rather than a machine dump. Run it as late as
+    possible so the captured tail is maximal; because it reads on-disk transcripts it also works on a
+    resumed session.
+
+    `output` is mandatory and the rendered text is never part of the result. The point of rendering to a
+    file is that the transcript can be scanned, redacted and attached by path without being read back
+    into the caller's context, which returning it here would defeat in the one call that exists to
+    avoid it.
+    """
+    _required(output=output)
+    main = _transcript_source(session_id, transcript)
+    text = usage.render(main, task=task)
+    destination = Path(output)
+    try:
+        destination.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(f"transcript could not be written to {output}: {exc}") from None
+    return {"path": str(destination), "bytes": len(text.encode("utf-8")), "lines": text.count("\n")}
 
 
 if __name__ == "__main__":

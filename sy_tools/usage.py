@@ -5,24 +5,32 @@ The parser is deliberately tolerant of transcript schema additions. It counts AP
 blocks attached to assistant messages, de-duplicates by message/request id, and scans the
 main transcript plus the documented nested subagent transcript tree.
 
-Commands:
-  hook
-      Read Claude Code hook JSON from stdin and record agent-id/type/transcript mapping.
-  summarize --session-id ID [--phase ship] [--task PROJ-123]
-  summarize --transcript /path/to/session.jsonl ...
+Two surfaces over one implementation. `summarize()` and `render()` are the portable subset the `sy`
+MCP server exposes as the `usage_summarize` and `export_transcript` tools, which is how a workflow
+reaches them; `summarize`'s output is compact JSON suitable for a small standalone tracker comment.
+The one command left is the hook:
 
-Output is compact JSON suitable for a small standalone tracker comment.
+  PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.usage hook
+      Read Claude Code hook JSON from stdin and record agent-id/type/transcript mapping.
+
+That hook runs on bare `python` with no environment of its own, so **this module's import graph must
+stay standard library only** — `sy_tools.config` is admissible because it is stdlib-only too, and
+nothing here may reach the MCP server or anything the server needs. The dependency runs one way:
+`server.py` imports this module, never the reverse. `sy_tools/guards/secret_guard.py` is the sibling
+under the same constraint.
 """
 from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from collections.abc import Iterable
+import contextlib
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Iterable
+from typing import Any
 
 LEDGER_ROOT = Path.home() / ".claude" / "shipyard" / "usage-agent-map"
 TOKEN_KEYS = (
@@ -52,7 +60,7 @@ class Usage:
             usage.get("cache_creation_input_tokens", usage.get("cache_creation_tokens", 0))
         )
 
-    def add(self, other: "Usage") -> None:
+    def add(self, other: Usage) -> None:
         for key in TOKEN_KEYS:
             setattr(self, key, getattr(self, key) + getattr(other, key))
 
@@ -121,7 +129,13 @@ def _iter_jsonl(path: Path, warnings: list[str]) -> Iterable[dict[str, Any]]:
         warnings.append(f"read_error:{path.name}:{exc.__class__.__name__}")
 
 
-def _resolve_main_transcript(session_id: str | None, transcript: str | None) -> Path:
+def resolve_main_transcript(session_id: str | None, transcript: str | None) -> Path:
+    """The one on-disk main transcript a session id or an explicit path names.
+
+    Takes exactly one of the two. A session id that matches no transcript, or more than one, is an
+    error naming what was found rather than a silently-picked file: both tools' whole output is
+    derived from this path, so guessing here would misreport somebody else's session.
+    """
     if transcript:
         path = Path(transcript).expanduser().resolve()
         if not path.is_file():
@@ -210,10 +224,8 @@ def _load_agent_map(session_id: str) -> tuple[dict[Path, str], dict[str, str]]:
             for key in ("agent_transcript_path", "transcript_path"):
                 raw = record.get(key)
                 if raw and agent_type:
-                    try:
+                    with contextlib.suppress(OSError):
                         by_path[Path(str(raw)).expanduser().resolve()] = agent_type
-                    except OSError:
-                        pass
     return by_path, by_id
 
 
@@ -372,22 +384,32 @@ _RENDER_LIMITS: dict[str, int] | None = None
 def render_limits() -> dict[str, int]:
     """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
 
-    Resolved once per process and cached. `sy_config._flatten()` only ever stores leaf keys, so
+    Resolved once per process and cached. `sy_tools.config._flatten()` only ever stores leaf keys, so
     `transcript.truncation_limits` as a whole path is never resolvable — each of its three fields
     must be fetched individually. A repo whose config can't be resolved at all (run outside a
     checkout, a corrupted layer), or whose resolved value isn't actually numeric (a hand-edited
     layer bypassing `validate`), falls back to the shipped defaults rather than crashing a render
     that's usually happening late in a session.
+
+    The import stays inside the function so the `hook` command — the hot path, one process per Stop
+    and SubagentStop firing — never pays for `sy_tools.config` at all: it records a ledger line and
+    resolves nothing. `ConfigError` is the shape every `sy_tools.config` refusal takes, including the
+    environment faults (an unrunnable `git`, an unreadable layer) that `scripts/sy_config.py` used to
+    raise `SystemExit` for, so it is what this degradation catches.
     """
     global _RENDER_LIMITS
     if _RENDER_LIMITS is None:
         try:
-            from sy_config import get as config_get
+            from .config import ConfigError
+            from .config import get as config_get
             _RENDER_LIMITS = {
-                key: int(config_get(f"transcript.truncation_limits.{key}"))
+                # `get()` is typed as returning `object` because a layer can hold anything, and calling
+                # int() on that unchecked is the point rather than a gap: a non-numeric value raises
+                # straight into the fallback below instead of rendering with a nonsense limit.
+                key: int(config_get(f"transcript.truncation_limits.{key}"))  # ty: ignore[invalid-argument-type]
                 for key in _DEFAULT_RENDER_LIMITS
             }
-        except (SystemExit, ValueError, TypeError):
+        except (ConfigError, ValueError, TypeError):
             _RENDER_LIMITS = dict(_DEFAULT_RENDER_LIMITS)
     return _RENDER_LIMITS
 
@@ -532,281 +554,24 @@ def render(main: Path, *, task: str | None) -> str:
     return "\n".join(out) + "\n"
 
 
-def _self_test() -> None:
-    import tempfile
-
-    global LEDGER_ROOT
-    old_ledger_root = LEDGER_ROOT
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        LEDGER_ROOT = root / "ledger"
-        try:
-            main = root / "s1.jsonl"
-            subdir = root / "s1" / "subagents"
-            subdir.mkdir(parents=True)
-            sub = subdir / "agent-a.jsonl"
-            main_records = [
-                {
-                    "type": "assistant",
-                    "timestamp": "2026-07-09T10:00:00Z",
-                    "message": {
-                        "id": "m1",
-                        "model": "main-model",
-                        "content": [{"type": "text", "text": "hello world"}],
-                        "usage": {"input_tokens": 10, "output_tokens": 2},
-                    },
-                },
-                {
-                    "type": "queue-operation",
-                    "operation": "enqueue",
-                    "timestamp": "2026-07-09T10:00:01Z",
-                    "sessionId": "s1",
-                    "content": "please also check the logs",
-                },
-                {
-                    "type": "user",
-                    "timestamp": "2026-07-09T10:00:02Z",
-                    "message": {"content": [{"type": "text", "text": "please also check the logs"}]},
-                },
-                {
-                    "type": "queue-operation",
-                    "operation": "remove",
-                    "timestamp": "2026-07-09T10:00:03Z",
-                    "sessionId": "s1",
-                    "content": "cancelled interjection",
-                },
-                {
-                    "type": "queue-operation",
-                    "operation": "enqueue",
-                    "timestamp": "2026-07-09T10:00:04Z",
-                    "sessionId": "s1",
-                    "content": "please continue",
-                },
-                {
-                    "type": "queue-operation",
-                    "operation": "remove",
-                    "timestamp": "2026-07-09T10:00:05Z",
-                    "sessionId": "s1",
-                    "content": "please continue",
-                },
-                {
-                    "type": "user",
-                    "timestamp": "2026-07-09T10:00:06Z",
-                    "message": {"content": [{"type": "text", "text": "please continue"}]},
-                },
-            ]
-            main.write_text("".join(json.dumps(r) + "\n" for r in main_records), encoding="utf-8")
-            # Deliberately omit agent_type from the transcript: attribution comes from
-            # the same hook ledger used by real Shipyard agents.
-            sub.write_text(
-                json.dumps(
-                    {
-                        "agent_id": "agent-a",
-                        "type": "assistant",
-                        "message": {
-                            "id": "m2",
-                            "model": "sub-model",
-                            "usage": {
-                                "input_tokens": 20,
-                                "output_tokens": 4,
-                                "cache_read_input_tokens": 7,
-                            },
-                        },
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            record_hook_event(
-                {
-                    "session_id": "s1",
-                    "hook_event_name": "Stop",
-                    "agent_id": "agent-a",
-                    "agent_type": "sy:slice",  # plugin-namespaced; normalization strips to "slice"
-                    "transcript_path": str(sub),
-                }
-            )
-            # Legacy project-level subagents dir: same-session file counts, other-session
-            # file must be excluded rather than contaminating this session's totals.
-            legacy = root / "subagents"
-            legacy.mkdir()
-            (legacy / "agent-b.jsonl").write_text(
-                json.dumps(
-                    {
-                        "sessionId": "s1",
-                        "type": "assistant",
-                        "message": {
-                            "id": "m3",
-                            "model": "sub-model",
-                            "usage": {"input_tokens": 5, "output_tokens": 1},
-                        },
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            (legacy / "agent-c.jsonl").write_text(
-                json.dumps(
-                    {
-                        "sessionId": "s2",
-                        "type": "assistant",
-                        "message": {
-                            "id": "m4",
-                            "model": "sub-model",
-                            "usage": {"input_tokens": 999, "output_tokens": 999},
-                        },
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            result = summarize(main, phase="ship", task="PROJ-1")
-            assert result["totals"]["input_tokens"] == 35
-            assert result["totals"]["output_tokens"] == 7
-            assert result["totals"]["cache_read_input_tokens"] == 7
-            assert result["transcripts"]["subagents"] == 2
-            assert any(row["agent_type"] == "slice" for row in result["by_agent"])
-            rendered = render(main, task="PROJ-1")
-            assert "MAIN SESSION s1" in rendered
-            assert "hello world" in rendered
-            assert "SUBAGENT slice" in rendered
-            assert rendered.count("(queued interjection)") == 2
-            assert rendered.count("please also check the logs") == 1
-            assert "cancelled interjection" not in rendered
-            assert rendered.count("cancelled before delivery") == 1
-            assert rendered.count("please continue") == 2, "cancelled queue must not eat the later genuine user turn"
-            assert "[2026-07-09 10:00:06] USER" in rendered, "genuine user turn after enqueue+remove must render"
-        finally:
-            LEDGER_ROOT = old_ledger_root
-
-    _test_render_limits_override()
-
-
-def _test_render_limits_override() -> None:
-    """A `transcript.truncation_limits` config override must actually reach `render_limits()`.
-
-    `sy_config._flatten()` only stores leaf keys, so a naive whole-object `get()` on
-    `transcript.truncation_limits` silently raises and gets swallowed — this exercises the real
-    per-leaf resolution path against a live (faked) config layer, not just "it doesn't crash".
-    """
-    import json
-    import tempfile
-
-    import sy_config
-
-    global _RENDER_LIMITS
-    saved_limits = _RENDER_LIMITS
-    original_home, original_repo_root = Path.home, sy_config.repo_root
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp) / "home"
-        repo = Path(tmp) / "repo"
-        (home / ".shipyard").mkdir(parents=True)
-        (repo / ".shipyard").mkdir(parents=True)
-        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
-        sy_config.repo_root = lambda: repo
-        sy_config.reset_cache()
-        _RENDER_LIMITS = None
-        try:
-            assert render_limits() == _DEFAULT_RENDER_LIMITS, "no override must fall back to shipped defaults"
-
-            (repo / ".shipyard" / "config.json").write_text(
-                json.dumps({"transcript": {"truncation_limits": {"tool_result": 99}}}), encoding="utf-8",
-            )
-            sy_config.reset_cache()
-            _RENDER_LIMITS = None
-            overridden = render_limits()
-            assert overridden["tool_result"] == 99, "a config override must actually change render_limits()"
-            assert overridden["tool_input"] == _DEFAULT_RENDER_LIMITS["tool_input"], "an unset sibling keeps its default"
-
-            # get() doesn't itself enforce the schema (only `validate` does) -- a hand-edited layer
-            # bypassing validate can still reach here with a non-numeric value; int(...) must not
-            # crash the render, same as an unresolvable config.
-            (repo / ".shipyard" / "config.json").write_text(
-                json.dumps({"transcript": {"truncation_limits": {"tool_result": "not-a-number"}}}), encoding="utf-8",
-            )
-            sy_config.reset_cache()
-            _RENDER_LIMITS = None
-            assert render_limits() == _DEFAULT_RENDER_LIMITS, (
-                "a non-numeric resolved value must fall back to shipped defaults, not crash the render"
-            )
-        finally:
-            Path.home = original_home  # type: ignore[method-assign]
-            sy_config.repo_root = original_repo_root
-            sy_config.reset_cache()
-            _RENDER_LIMITS = saved_limits
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    """Run the `hook` command: append one agent/transcript mapping line from hook JSON on stdin.
+
+    The only command this module still has. `summarize` and `export` were subcommands here and are now
+    the `usage_summarize` and `export_transcript` MCP tools, so each mechanism has exactly one path to
+    it and nothing shells out to this module except the hook. Malformed stdin is a success: a hook that
+    exits non-zero on a payload it merely could not parse would interrupt the session it is observing.
+    """
+    parser = argparse.ArgumentParser(prog="python -m sy_tools.usage")
     sub = parser.add_subparsers(dest="command", required=True)
-
     sub.add_parser("hook", help="record agent/transcript mapping from hook stdin")
-
-    summarize_parser = sub.add_parser("summarize", help="emit compact JSON usage summary")
-    source = summarize_parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--session-id")
-    source.add_argument("--transcript")
-    summarize_parser.add_argument("--phase", default="ship")
-    summarize_parser.add_argument("--task")
-    summarize_parser.add_argument("--output")
-    summarize_parser.add_argument(
-        "--require-agent", action="append", default=[],
-        help="fail if an expected agent type is absent from the transcript roll-up",
-    )
-
-    export_parser = sub.add_parser("export", help="render a readable transcript of the whole session tree")
-    esource = export_parser.add_mutually_exclusive_group(required=True)
-    esource.add_argument("--session-id")
-    esource.add_argument("--transcript")
-    export_parser.add_argument("--task")
-    export_parser.add_argument("--output")
-
-    sub.add_parser("self-test", help="run deterministic synthetic parser test")
-
-    args = parser.parse_args(argv)
-    if args.command == "hook":
-        try:
-            payload = json.load(sys.stdin)
-        except json.JSONDecodeError:
-            return 0
-        if isinstance(payload, dict):
-            record_hook_event(payload)
-        return 0
-    if args.command == "self-test":
-        _self_test()
-        print("session_usage self-test passed")
-        return 0
-
-    if args.command == "export":
-        try:
-            main_transcript = _resolve_main_transcript(args.session_id, args.transcript)
-            text = render(main_transcript, task=args.task)
-        except (OSError, ValueError, RuntimeError) as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 2
-        if args.output:
-            Path(args.output).write_text(text, encoding="utf-8")
-        else:
-            sys.stdout.write(text)
-        return 0
-
+    parser.parse_args(argv)
     try:
-        main_transcript = _resolve_main_transcript(args.session_id, args.transcript)
-        result = summarize(main_transcript, phase=args.phase, task=args.task)
-        present = {row["agent_type"] for row in result["by_agent"]}
-        missing = sorted(set(args.require_agent) - present)
-        if missing:
-            raise RuntimeError(
-                "usage roll-up missing expected agent transcript(s): " + ", ".join(missing)
-            )
-    except (OSError, ValueError, RuntimeError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
-    text = json.dumps(result, indent=2, sort_keys=False) + "\n"
-    if args.output:
-        Path(args.output).write_text(text, encoding="utf-8")
-    else:
-        sys.stdout.write(text)
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+    if isinstance(payload, dict):
+        record_hook_event(payload)
     return 0
 
 

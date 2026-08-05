@@ -84,7 +84,7 @@ REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
 
 UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
-    "fingerprint_config",
+    "fingerprint_config", "usage_summarize", "export_transcript",
 })
 """Tools the server registers that this scenario deliberately does not call.
 
@@ -92,10 +92,15 @@ Named rather than implied, so the self-test can compare the two sets exactly: a 
 server and smoked by nobody has to be an explicit decision, not an omission that passes.
 
 None is a canonical contract verb, and none reaches the tracker: `reload_config` mutates the server's
-hot config out from under a live scenario, `check_env` reports environment presence, and the remaining
-five read the resolved configuration — so a live run has nothing to learn from any of them that
-`preflight` does not already prove, and `sy_tools/tests/test_config.py` covers what they resolve
-against a fixture layer chain rather than whatever the running machine happens to be configured to."""
+hot config out from under a live scenario, `check_env` reports environment presence, and five read the
+resolved configuration — so a live run has nothing to learn from any of them that `preflight` does not
+already prove, and `sy_tools/tests/test_config.py` covers what they resolve against a fixture layer
+chain rather than whatever the running machine happens to be configured to.
+
+`usage_summarize` and `export_transcript` are here for a different reason: both read the caller's own
+on-disk transcript tree, whose contents are whatever session happens to be running the smoke, so a
+live call proves nothing repeatable and an export would write a copy of this very session to disk.
+`sy_tools/tests/test_usage.py` covers both against a synthetic tree instead."""
 
 SERVER_SOURCE = PLUGIN_ROOT / "sy_tools" / "server.py"
 TOOL_REGISTRATION = re.compile(r"""@mcp\.tool\(name=["']([^"']+)["']\)""")

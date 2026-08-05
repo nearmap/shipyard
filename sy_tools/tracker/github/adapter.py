@@ -244,7 +244,9 @@ class GithubAdapter:
         if limit <= 0:
             raise TrackerError(f"limit must be a positive number of issues, got {limit}")
         # Board-first: `issue list --limit` takes the newest N and filters after, so an older match answered
-        # count: 0; ITEM_LIMIT bounds it by the repository (seconds per 1k rows) and --search silently caps at 1k.
+        # count: 0. Widening to ITEM_LIMIT instead bounds it by the repository, which costs about a second
+        # per hundred rows — a few thousand all-state issues and the call alone exceeds TIMEOUT_SECONDS —
+        # and with --search routes through the Search API, whose silent 1k cap is invisible in --json.
         if status is not None or issue_type is not None:
             return self._board_page(status=status, issue_type=issue_type, parent=parent, text=text, limit=limit)
         # --state all: a done issue is still one a caller searches for, and `issue list` hides closed ones.

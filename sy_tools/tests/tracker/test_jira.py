@@ -1393,6 +1393,22 @@ async def test_attachment_download_fetches_the_resolved_content_url_and_writes_t
 
 
 @pytest.mark.anyio
+async def test_a_destination_that_cannot_be_written_reaches_the_caller_as_a_tracker_error(
+    credentials, monkeypatch, tmp_path
+):
+    """Every other failure in this verb is a `TrackerError`; the write was the one raising raw `OSError`.
+
+    A caller of a tracker verb handles `TrackerError`, so a bare `FileNotFoundError` out of the write
+    crossed the seam as something nothing above it catches — the download's only unwrapped failure path.
+    """
+    _transport(monkeypatch, _attachments(_attachment()), (200, ARTIFACT_BYTES))
+    destination = tmp_path / "no-such-directory" / "downloaded.txt"
+
+    with pytest.raises(TrackerError, match="could not be written to"):
+        await adapter.JiraAdapter().attachment_download("PROJ-7", ARTIFACT_NAME, destination)
+
+
+@pytest.mark.anyio
 async def test_an_attachment_with_no_content_url_is_refused_rather_than_written_as_an_empty_file(
     credentials, monkeypatch, tmp_path
 ):

@@ -391,7 +391,14 @@ class JiraAdapter:
         _, data = await request("GET", content_url, auth, binary=True)
         if not isinstance(data, bytes):
             raise TrackerError(f"the download of {filename_or_id!r} from {issue} returned no bytes to write")
-        output_path.write_bytes(data)
+        try:
+            output_path.write_bytes(data)
+        except OSError as exc:
+            # Wrapped like every other failure in this verb: an unwritable destination is a failed read to
+            # the caller, and a bare OSError crosses the seam as something no caller of a tracker verb handles.
+            raise TrackerError(
+                f"the download of {filename_or_id!r} from {issue} could not be written to {output_path}: {exc}"
+            ) from None
         return {
             "issue": issue,
             "filename": _field(found, "filename"),
@@ -432,7 +439,9 @@ class JiraAdapter:
 
         Jira's `subtasks` field is sub-task-level only and comes back empty on every Epic whatever is
         parented beneath it, so it is trusted only for a `LEAF_TYPES` type. Everything else takes the
-        same `parent = <key>` search `find-issues` serves, one page, with the bound reported.
+        same `parent = <key>` search `find-issues` serves, one page, with the bound reported. That split
+        is only exhaustive because the execution model `skills/tracker/jira/ADAPTER.md` documents is flat:
+        one tracking Epic with every executable Task and Bug directly under it.
         """
         if canonical_type(_field(fields.get("issuetype"), "name")) in LEAF_TYPES:
             return _keys(fields.get("subtasks"), "subtasks"), False
@@ -445,7 +454,8 @@ class JiraAdapter:
         """Prove the configured account, credential and project are all usable, reporting no secret value.
 
         Each of the three can be present and still be wrong — a credential can be revoked, a project key
-        can name a board this account cannot see — so each is read rather than checked for presence.
+        can name a board this account cannot see — so each is read rather than checked for presence. All
+        three, because `skills/tracker/jira/ADAPTER.md`'s contract for this verb covers all three.
         """
         base, auth = _credentials()
         project = _project()
@@ -867,7 +877,9 @@ async def _project_key(base: str, auth: str, project: str) -> str:
 
     Nothing else here notices a wrong project key: Jira answers a JQL search naming a project that does
     not exist, or that this account cannot see, with zero issues rather than an error, so a mistyped key
-    reads as an empty board and only surfaces much later, as a 400 inside a create.
+    reads as an empty board and only surfaces much later, as a 400 inside a create. Reading the project
+    404s loudly instead, which is what makes `skills/tracker/jira/ADAPTER.md`'s preflight contract — one
+    failure naming which configured value is wrong — true of the project as well as of the credential.
     """
     try:
         _, item = await request("GET", f"{base}{API}/project/{quote(project, safe='')}", auth)

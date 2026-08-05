@@ -80,13 +80,20 @@ def test_an_empty_field_is_refused(store, title, scope, body):
      ("Resume drops it", "agent dispatch", "resume\rmodels")],
 )
 def test_a_newline_in_a_frontmatter_field_is_refused(store, title, scope, tags):
-    """Written verbatim onto one frontmatter line, either break would end the block early and gut the entry.
+    """Written verbatim onto one frontmatter line, either break truncates the value and orphans its remainder.
 
     A bare `\\r` corrupts identically: it survives the write, then reads back as `\\n`.
     """
     with pytest.raises(ValueError, match="no newline"):
         memory.add(title, scope, tags, "Pass it explicitly.")
     assert _lessons(store) == [], "a refused add must write nothing"
+
+
+def test_a_newline_in_a_refuted_title_is_refused(store):
+    """refute() writes the title to frontmatter too when the stored file carries none, so it guards it too."""
+    memory.add("Resume drops it", "agent dispatch", "resume", "Pass it explicitly.")
+    with pytest.raises(ValueError, match="no newline"):
+        memory.refute("Resume\ndrops it", "The 2.1 release fixed it.")
 
 
 def test_a_title_with_no_slug_is_refused(store):

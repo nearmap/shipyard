@@ -27,8 +27,10 @@ def _check(
     agents = tmp_path / "agents"
     agents.mkdir()
     tools = f"tools: {tools_line}\n" if tools_line is not None else ""
+    # `model:` trails tools: on purpose -- a valueless `tools:` line is only mis-read as an allowlist when
+    # there is a following frontmatter line for the pattern to run onto.
     (agents / f"{name}.md").write_text(
-        f"---\nname: {name}\ndescription: test\n{tools}---\nbody\n", encoding="utf-8",
+        f"---\nname: {name}\ndescription: test\n{tools}model: sonnet\n---\nbody\n", encoding="utf-8",
     )
     monkeypatch.setattr(validate, "ROOT", tmp_path)
     errors: list[str] = []
@@ -74,6 +76,18 @@ def test_a_ship_worker_declaring_no_tools_at_all_is_refused(tmp_path, monkeypatc
     """An absent tools field inherits every tool, memory writes included, so it cannot pass silently."""
     errors = _check(tmp_path, None, monkeypatch, name=agent)
     assert errors, f"{agent} with no tools: line inherits the memory writes and must be refused"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+@pytest.mark.parametrize("tools_line", ["", "   "])
+def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(tmp_path, monkeypatch, agent, tools_line):
+    """An empty allowlist grants every tool exactly as an absent field does, so it must be refused the same.
+
+    It is the sharper case: the valueless `tools:` line reads as present, and a pattern whose whitespace
+    class crosses the newline validates the *next* frontmatter line in its place.
+    """
+    errors = _check(tmp_path, tools_line, monkeypatch, name=agent)
+    assert errors, f"{agent} with an empty tools: value inherits the memory writes and must be refused"
 
 
 def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):

@@ -89,8 +89,7 @@ _ADVICE = (
     "permanent transcript history. Use the `check_env` MCP tool instead — it reports only whether a "
     "variable is set, never its value — or, with no MCP session available, the shell equivalent "
     '`[ -n "$THE_VAR" ]`, which tests presence without printing anything. For the tracker: '
-    "`sy_preflight.py check` / the adapter's `preflight` command, which names what's missing or dead "
-    "without ever printing a value."
+    "the `preflight` MCP tool, which names what's missing or dead without ever printing a value."
 )
 MAX_COMMAND_CHARS = 20_000
 _TOO_LONG = (

@@ -115,10 +115,10 @@ def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
     empty_bin.mkdir()
     env = {
         **{k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"},
-        "PATH": str(empty_bin), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT),
+        "PATH": str(empty_bin), "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "PYTHONPATH": str(PLUGIN_ROOT),
     }
     proc = subprocess.run(
-        [sys.executable, str(PLUGIN_ROOT / "scripts" / "secret_guard.py")],
+        [sys.executable, "-m", "sy_tools.guards.secret_guard"],
         input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo $ACLI_TOKEN"}}),
         cwd=tmp_path, capture_output=True, text=True, check=False, env=env,
     )
@@ -152,15 +152,17 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
     claim, which needs the root itself to refuse; the second answers every earlier call and wedges the
     last one, so the per-call bound check runs against all four sites and the four are asserted reached.
 
-    In a child process with `scripts/` on `PYTHONPATH`, as `test_config.py` runs that resolver: those
-    modules are the shipped CLI, not part of this package, so they are not importable from here. Every
-    check inside that child raises explicitly rather than asserting: the child inherits this
-    environment, and a `PYTHONOPTIMIZE`/`-O` in it would strip an `assert` and leave the negative
-    control — removing `timeout=` from the real code — passing when it must fail.
+    In a child process with `scripts/` and the plugin root on `PYTHONPATH`, as `test_config.py` runs
+    that resolver: the CLI copy is not part of this package, so it is not importable from here, and the
+    guard now resolves through `sy_tools.config`, so both roots have to be reachable. Every check inside
+    that child raises explicitly rather than asserting: the child inherits this environment, and a
+    `PYTHONOPTIMIZE`/`-O` in it would strip an `assert` and leave the negative control — removing
+    `timeout=` from the real code — passing when it must fail.
     """
     bound_check = (
         "import subprocess\n"
-        "import sy_config, secret_guard\n"
+        "import sy_config\n"
+        "from sy_tools.guards import secret_guard\n"
         "calls = []\n"
         "def check(cmd, kwargs):\n"
         "    calls.append(list(cmd))\n"
@@ -183,14 +185,15 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "        raise AssertionError(f'and the bound it hit: {exc}')\n"
         "else:\n"
         "    raise AssertionError('a wedged git must be refused, not waited on')\n"
+        "root_calls = len(calls)\n"  # the guard resolves through sy_tools.config, whose calls are its own
         "if secret_guard._extra_words() != frozenset():\n"
         "    raise AssertionError('the timeout must narrow the gate, not break it')\n"
         "if 'extra_words' not in (secret_guard._CONFIG_WARNING or ''):\n"
         "    raise AssertionError(f'the drop must be reported: {secret_guard._CONFIG_WARNING}')\n"
         "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
         "    raise AssertionError('built-ins must still deny')\n"
-        "if len(calls) != 1:\n"
-        "    raise AssertionError(f'one failed resolution waits len(calls) x the bound: {len(calls)}')\n"
+        "if root_calls != 1:\n"
+        "    raise AssertionError(f'one failed resolution waits root_calls x the bound: {root_calls}')\n"
     )
     wedge_last = bound_check + (
         "import os\n"
@@ -226,7 +229,8 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         proc = subprocess.run(
             [sys.executable, "-c", child], cwd=tmp_path, capture_output=True, text=True, check=False,
             env={
-                **os.environ, "PYTHONPATH": str(PLUGIN_ROOT / "scripts"),
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join([str(PLUGIN_ROOT / "scripts"), str(PLUGIN_ROOT)]),
                 "CLAUDE_PLUGIN_ROOT": str(PLUGIN_ROOT), "CLAUDE_PROJECT_DIR": str(tmp_path),
                 "HOME": str(tmp_path / "home"),  # so worktree.root stays derived, as it is by default
             },

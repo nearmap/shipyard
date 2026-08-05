@@ -53,7 +53,7 @@ import re
 import shlex
 import sys
 
-from secret_words import looks_like_secret_name as _base_looks_like_secret_name
+from sy_tools.secrets import looks_like_secret_name as _base_looks_like_secret_name
 
 _WRAPPER_ARG_FLAGS: dict[str, frozenset[str]] = {
     "sudo": frozenset({
@@ -378,11 +378,12 @@ def _extra_words() -> frozenset[str]:
     """`redaction.extra_words` from resolved config, cached for this process.
 
     Resolved in-process (not via subprocess — this hook already pays full interpreter startup on
-    every `Bash` call, so importing `sy_config` costs nothing beyond that). A misconfigured repo
+    every `Bash` call, so importing `sy_tools.config` costs nothing beyond that). A misconfigured repo
     must not turn every command into a hard failure: fall back to the built-in word list alone,
     exactly as an unresolvable `debug.evals` does in `scripts/eval_events.py`.
 
-    Every resolution failure degrades, including an `OSError`. `SystemExit` alone was not enough: the
+    Every resolution failure degrades, including an `OSError` and the `ConfigError` that is the shape
+    every `sy_tools.config` refusal takes. `SystemExit` alone was not enough: the
     resolver shells out to `git rev-parse`, so a `git` missing from `PATH` raised `FileNotFoundError`
     straight through this catch and crashed the hook process — and a crashed `PreToolUse` hook is
     fail-open, so the *whole* gate went quiet, not just the configured extra words. That is the
@@ -400,9 +401,10 @@ def _extra_words() -> frozenset[str]:
     global _EXTRA_WORDS, _CONFIG_WARNING
     if _EXTRA_WORDS is None:
         try:
-            from sy_config import get as _config_get
+            from sy_tools.config import ConfigError
+            from sy_tools.config import get as _config_get
             words = _config_get("redaction.extra_words", default=[])
-        except (SystemExit, OSError) as exc:
+        except (SystemExit, ConfigError, OSError) as exc:
             _CONFIG_WARNING = (
                 f"secret_guard: redaction.extra_words could not be resolved, so only the built-in secret "
                 f"word list applies for this command: {exc}"
@@ -664,7 +666,7 @@ def _test_extra_words_from_config() -> None:
     from pathlib import Path
     import tempfile
 
-    import sy_config
+    from sy_tools import config as sy_config
 
     global _EXTRA_WORDS
     saved = _EXTRA_WORDS
@@ -674,8 +676,8 @@ def _test_extra_words_from_config() -> None:
         repo = Path(tmp) / "repo"
         (home / ".shipyard").mkdir(parents=True)
         (repo / ".shipyard").mkdir(parents=True)
-        Path.home = staticmethod(lambda: home)  # type: ignore[method-assign]
-        sy_config.repo_root = lambda: repo
+        Path.home = staticmethod(lambda: home)  # ty: ignore[invalid-assignment]
+        sy_config.repo_root = lambda: repo  # ty: ignore[invalid-assignment]
         sy_config.reset_cache()
         _EXTRA_WORDS = None
         try:
@@ -689,7 +691,7 @@ def _test_extra_words_from_config() -> None:
             assert _looks_like_secret_name("NM_BEARER"), "redaction.extra_words must widen the gate"
             assert decision("Bash", {"command": "echo $NM_BEARER"}) is not None
         finally:
-            Path.home = original_home  # type: ignore[method-assign]
+            Path.home = original_home  # ty: ignore[invalid-assignment]
             sy_config.repo_root = original_repo_root
             sy_config.reset_cache()
             _EXTRA_WORDS = saved
@@ -709,7 +711,7 @@ def _test_unresolvable_config_warns_rather_than_dropping_silently() -> None:
     from pathlib import Path
     import tempfile
 
-    import sy_config
+    from sy_tools import config as sy_config
 
     global _EXTRA_WORDS, _CONFIG_WARNING
     saved, saved_warning = _EXTRA_WORDS, _CONFIG_WARNING

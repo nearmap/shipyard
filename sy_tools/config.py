@@ -606,7 +606,8 @@ def fingerprint() -> str:
     compares this across a run to catch any config-relevant change — and `config/floors.json`'s model and
     effort floors and `agents/*.md`'s `effort:` frontmatter are config-relevant without being resolved
     values, so a digest over the values alone reported no drift when either changed under a running
-    session. Folding in the build covers every such input at once, because they all ship with the plugin.
+    session. The build identifier moves on a plugin upgrade or a checkout's own commit; it does not move
+    on an in-place edit under one build, so drift detection is build-granular, not file-granular.
     """
     values, _ = resolve()
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))

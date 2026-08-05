@@ -1143,6 +1143,11 @@ def test_the_fingerprint_moves_with_the_plugin_build_and_not_only_with_the_value
         monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
 
 
+def test_no_plugin_root_resolves_to_a_stable_placeholder(monkeypatch):
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    assert config.plugin_build() == "unknown", "no CLAUDE_PLUGIN_ROOT must resolve to a stable placeholder"
+
+
 def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_repo, monkeypatch):
     """Config resolution runs inside the MCP server, whose stdin is the JSON-RPC transport.
 

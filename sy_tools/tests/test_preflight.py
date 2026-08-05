@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from sy_tools import config, preflight, server
+from sy_tools import preflight, server
 
 VARS = ["SY_TEST_VAR_A", "SY_TEST_VAR_B"]
 
@@ -30,10 +30,6 @@ def cache(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("SY_TEST_VAR_A", "a@b.c")
     monkeypatch.setenv("SY_TEST_VAR_B", "tok-1")
     return path
-
-
-def test_no_plugin_root_resolves_to_a_stable_placeholder(cache):
-    assert config.plugin_build() == "unknown", "no CLAUDE_PLUGIN_ROOT must resolve to a stable placeholder"
 
 
 def test_an_empty_cache_misses_and_a_fresh_record_hits(cache):

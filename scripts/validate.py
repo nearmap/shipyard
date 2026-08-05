@@ -386,6 +386,43 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
                 )
 
 
+def check_agent_mcp_allowlists(errors: list[str]) -> None:
+    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, and never by wildcard.
+
+    A subagent whose definition declares an explicit `tools:` list gets no MCP tool that is not named in
+    it, so an agent that resolves its own config needs the tool spelled out. The exposed name carries a
+    deployment-dependent prefix — `mcp__plugin_sy_sy__<tool>` for a marketplace install, `mcp__sy__<tool>`
+    where a project-level `.mcp.json` provides the server — and naming only one silently breaks the other
+    deployment, with config resolution simply unreachable rather than failing loudly. Hence the pairing
+    rule. The wildcard rule is the sharper one: a server-level `mcp__sy` grants every tool including the
+    tracker's mutation verbs, which would hand `create-issue` and `set-status` to the read-only review
+    agents whose whole contract is that they cannot write.
+    """
+    for p in sorted((ROOT / "agents").glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
+        declared = re.search(r"^tools:\s*(.+)$", block, re.M)
+        if not declared:
+            continue
+        named = [entry.strip() for entry in declared.group(1).split(",")]
+        for entry in named:
+            if entry in {"mcp__sy", "mcp__plugin_sy_sy"}:
+                fail(
+                    f"{p.relative_to(ROOT)}: tools names the server-level wildcard {entry!r}, which grants "
+                    "every tool including the tracker's mutation verbs; name individual tools instead",
+                    errors,
+                )
+        for entry in named:
+            for prefix, twin in (("mcp__sy__", "mcp__plugin_sy_sy__"), ("mcp__plugin_sy_sy__", "mcp__sy__")):
+                if entry.startswith(prefix) and twin + entry[len(prefix):] not in named:
+                    fail(
+                        f"{p.relative_to(ROOT)}: tools names {entry!r} but not its other-deployment twin "
+                        f"{twin + entry[len(prefix):]!r}; both prefixes must be listed or one deployment "
+                        "cannot reach the tool",
+                        errors,
+                    )
+
+
 def check_contract_completeness(errors: list[str]) -> None:
     contract = (ROOT / "skills/tracker/CONTRACT.md").read_text(encoding="utf-8")
     jira = (ROOT / "skills/tracker/jira/ADAPTER.md").read_text(encoding="utf-8")
@@ -787,6 +824,7 @@ def main() -> int:
     check_no_repo_scratch_refs(errors)
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
+    check_agent_mcp_allowlists(errors)
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)

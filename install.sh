@@ -7,6 +7,16 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 command -v python >/dev/null 2>&1 || { echo "ERROR: python not found on PATH" >&2; exit 1; }
 
+# Single reader for every setting; nothing here re-derives a default. Every other read of the resolver
+# is an MCP tool call, which a bash script cannot make, so this reaches the same `sy_tools.config`
+# functions the `validate_config`, `get_config` and `show_config` tools do, in-process. PYTHONPATH is
+# set the way `hooks/hooks.json` and `scripts/ci_poll.sh` set it, for the same reason: the plugin root
+# has to reach `sys.path`, and this script must run before `pixi run` is known to work.
+_resolver() {
+  local snippet="$1"; shift
+  PYTHONPATH="$PLUGIN_ROOT" python -c "$snippet" "$@"
+}
+
 # Hard, and checked for every tracker: the `sy` MCP server is launched as `pixi run sy-server`, so
 # without pixi it cannot start at all.
 command -v pixi >/dev/null 2>&1 || \
@@ -33,12 +43,17 @@ fi
 echo "Validating Shipyard plugin..."
 python "$PLUGIN_ROOT/scripts/validate.py"
 
-# Every setting resolves through one reader; nothing here re-derives a default.
-if ! python "$PLUGIN_ROOT/scripts/sy_config.py" validate; then
+if ! _resolver '
+import sys
+from sy_tools.config import validate
+errors = validate()
+sys.stderr.write("".join(f"  {e}\n" for e in errors))
+sys.exit(1 if errors else 0)
+'; then
   echo "ERROR: Shipyard configuration is invalid; fix the errors above before loading the plugin." >&2
   exit 1
 fi
-TRACKER="$(python "$PLUGIN_ROOT/scripts/sy_config.py" get tracker)"
+TRACKER="$(_resolver 'import sys; from sy_tools.config import get; print(get(sys.argv[1]))' tracker)"
 case "$TRACKER" in
   jira)
     command -v acli >/dev/null 2>&1 || echo "NOTE: tracker is 'jira' but 'acli' (Atlassian CLI) is not on PATH." >&2
@@ -55,15 +70,18 @@ command -v gitleaks >/dev/null 2>&1 || \
   echo "NOTE: gitleaks not on PATH; the MCP server resolves its own from pixi.lock, so only the off-tool path (running the two sanitisation passes by hand) stops before publish." >&2
 
 # CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes
-# every agent off whatever the resolver decided. `sy_config.py validate` already fails on it; this
-# is only a clearer message at install time.
+# every agent off whatever the resolver decided. The validation above already fails on it; this is
+# only a clearer message at install time.
 if [[ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]]; then
   echo "ERROR: CLAUDE_CODE_SUBAGENT_MODEL is set; it outranks resolved per-agent models and would reroute the reviewer, the image inspector, and the debate. Unset it." >&2
   exit 1
 fi
 
+# The same report the `show_config` tool returns — every value, the layer each came from, the digest,
+# and the layer chain on disk. Printed as JSON rather than reformatted here: a second renderer beside
+# the tool surface is exactly the duplication that retiring the config CLI removed.
 echo "Resolved configuration:"
-python "$PLUGIN_ROOT/scripts/sy_config.py" show
+_resolver 'import json; from sy_tools.config import show; print(json.dumps(show(), indent=2))'
 
 cat <<EOF
 

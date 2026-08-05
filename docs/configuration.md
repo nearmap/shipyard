@@ -1,15 +1,17 @@
 # Configuration
 
-Shipyard is configured through a layered JSON file that it owns and resolves itself. `scripts/sy_config.py` is the only reader; nothing else parses config, and nothing else supplies a default.
+Shipyard is configured through a layered JSON file that it owns and resolves itself. `sy_tools/config.py` is the only reader — the `sy` MCP server exposes it as the config tools below, and nothing else parses config, and nothing else supplies a default.
 
 Environment variables are reserved for **secrets**. A setting left in the environment is an error, not an override — see [Migrating](#migrating-from-the-env-block).
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show       # every value, with the layer it came from
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" validate   # every problem, each naming key and layer
+Two tools answer "what is configured" (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — `show_config` reports every value with the layer it came from, `validate_config` reports every problem, each naming its key and layer:
+
+```
+show_config {}
+validate_config {}
 ```
 
-Or `/sy:config` for the same thing with explanation.
+From a terminal rather than inside a session, `/sy:config` is the human-facing form: the same two reads with explanation.
 
 ## The three layers
 
@@ -31,8 +33,8 @@ Shipped defaults live in exactly one place, `config/defaults.json` — this tabl
 each key does and whether it's required, not its current value, so the two can never disagree. For
 what a key actually resolves to right now, in this repo, with every layer applied:
 
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
+```
+show_config {}
 ```
 
 | Key | Required | What it does |
@@ -46,7 +48,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
 | `tracker_config.*` | adapter-specific | The selected adapter's own settings. Each adapter declares its required keys in its `config-map.json` and its `ADAPTER.md`. |
 | `worktree.root` | no | Where `/sy:ship` builds worktrees. Unset derives a sibling `<repo>-worktrees/` directory beside the *main checkout*, resolved from the shared git directory so a build worktree cannot nest a second worktrees directory inside the first. Absolute paths only — a literal `~` is not expanded. |
 | `memory.dir` | no | Cross-session memory store. Unset derives a directory under `~/.claude/shipyard/`. |
-| `scratch.dir` | no | Root for per-identifier ephemeral working directories (verbose command output, throwaway artefacts, `/sy:ship` state). Resolve one identifier's with `scratch-dir <identifier>`, or the repository's own with `scratch-dir --repo`. Unset derives a directory under `~/.claude/shipyard/`. This backs `review_guard.py`'s hunt-mode write sandbox: a relative value, or one that resolves to any worktree of the repository — main or linked — or an ancestor of one, is refused rather than resolved. A value that resolves to a *subdirectory inside* a worktree is not itself refused — keep it outside every worktree it is asked to provide a scratch directory for. |
+| `scratch.dir` | no | Root for per-identifier ephemeral working directories (verbose command output, throwaway artefacts, `/sy:ship` state). Resolve one identifier's with `scratch_dir {"identifier": "<identifier>"}`, or the repository's own with `scratch_dir {"repo": true}`. Unset derives a directory under `~/.claude/shipyard/`. This backs `sy_tools/guards/review_guard.py`'s hunt-mode write sandbox: a relative value, or one that resolves to any worktree of the repository — main or linked — or an ancestor of one, is refused rather than resolved. A value that resolves to a *subdirectory inside* a worktree is not itself refused — keep it outside every worktree it is asked to provide a scratch directory for. |
 | `debug.evals` | no | Write the trigger/trace event log. |
 | `ci.poll_timeout` | no | Seconds before the CI poller gives up. Raise it for matrices that routinely run longer, so one poll call spans the wait. |
 | `ci.poll_interval` | no | Seconds between CI poll attempts. |
@@ -61,10 +63,10 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/sy_config.py" show
 | `ship.escalation.max_needs_decision` | no | A ship phase exceeding this many `needs-decision` returns without reaching `done` escalates to `/sy:spec` as underspecified. |
 | `ship.escalation.max_needs_trace` | no | A ship phase exceeding this many `needs-trace` returns without reaching `done` escalates to `/sy:spec` as missing evidence, on its own separate count. |
 | `transcript.attach` | no | Whether `/sy:plan`, `/sy:spec`, and (full-tier) `/sy:ship` render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself. |
-| `transcript.truncation_limits.tool_input` | no | Character limit per tool-input block when `scripts/session_usage.py` renders a readable transcript. |
+| `transcript.truncation_limits.tool_input` | no | Character limit per tool-input block when `sy_tools/usage.py` renders a readable transcript. |
 | `transcript.truncation_limits.tool_result` | no | Character limit per tool-result block. |
 | `transcript.truncation_limits.thinking` | no | Character limit per thinking block. |
-| `redaction.extra_words` | no | Org-specific credential-name fragments merged into the built-in secret-word list (`scripts/secret_words.py`) that `scripts/secret_guard.py` and `scripts/scrub_known_secrets.py` both match against. Each entry must be a single alphanumeric word — the matcher compares whole split words, never substrings, so a multi-word entry like `"ID_RSA"` is refused rather than silently never matching. |
+| `redaction.extra_words` | no | Org-specific credential-name fragments merged into the built-in secret-word list (`sy_tools/secrets.py`) that `sy_tools/guards/secret_guard.py` and `sy_tools/secrets.py`'s scrub pass both match against. Each entry must be a single alphanumeric word — the matcher compares whole split words, never substrings, so a multi-word entry like `"ID_RSA"` is refused rather than silently never matching. |
 
 The five column names are matched case-insensitively against the real board, and must be distinct under that same case-insensitive comparison — two statuses sharing one name would leave one of them unreachable through the canonical vocabulary, so `validate_config` names both offending keys instead of letting the first match win. `blocked` is deliberately not a column: blocking is a dependency relationship, not a lifecycle state.
 
@@ -161,13 +163,13 @@ Recorded so neither is re-derived. Verified against Claude Code 2.1.220:
 Secrets live in the environment and never in a config file. This is not a stylistic preference:
 
 - a config file is greppable and committed-adjacent, and any skill that `cat`s one burns the value into permanent transcript history, where every future transcript render reproduces it;
-- `scripts/secret_guard.py` covers environment-variable dumps as a `PreToolUse` hook; it does not cover file reads.
+- `sy_tools/guards/secret_guard.py` covers environment-variable dumps as a `PreToolUse` hook; it does not cover file reads.
 
-The resolver enforces the boundary three ways: `get` refuses to *read* a credential-shaped key, `validate` refuses any config layer that *declares* one, and `show` refuses to print anything at all rather than risk echoing one — printing a secret even once makes it a permanent part of whatever transcript ran the command.
+The resolver enforces the boundary three ways: `get_config` refuses to *read* a credential-shaped key, `validate_config` refuses any config layer that *declares* one, and `show_config` refuses to report anything at all rather than risk echoing one — a secret returned even once is a permanent part of whatever transcript asked for it.
 
-`validate` doesn't stop at secrets, either: every key in every layer is checked against `config/schema.json`, which declares every legitimate setting — an undeclared key is refused by name whether or not it looks like a secret (a typo like `columns.raedy` is caught the same way `api_token` is), and a declared key with the wrong type, an out-of-enum value, or a value outside its `minimum`/`pattern` is refused too. An undeclared key that *also* looks credential-shaped gets the sharper, specific reason ("keep it in the environment") rather than the generic "not a key config/schema.json declares." Detection of "looks credential-shaped" is two-layered: a word heuristic (`scripts/secret_words.py`, shared with `secret_guard.py` and `scrub_known_secrets.py`, so `ACLI_TOKEN` matches and `TOKENIZER_PATH` doesn't) for a secret Shipyard never named, plus an exact match against every tracker adapter's own declared `secret_env` name for the ones it did — the word heuristic alone would miss a declared secret name that happens not to contain a trigger word.
+`validate_config` doesn't stop at secrets, either: every key in every layer is checked against `config/schema.json`, which declares every legitimate setting — an undeclared key is refused by name whether or not it looks like a secret (a typo like `columns.raedy` is caught the same way `api_token` is), and a declared key with the wrong type, an out-of-enum value, or a value outside its `minimum`/`pattern` is refused too. An undeclared key that *also* looks credential-shaped gets the sharper, specific reason ("keep it in the environment") rather than the generic "not a key config/schema.json declares." Detection of "looks credential-shaped" is two-layered: a word heuristic (`sy_tools/secrets.py`, shared with the secret guard and the transcript scrub pass, so `ACLI_TOKEN` matches and `TOKENIZER_PATH` doesn't) for a secret Shipyard never named, plus an exact match against every tracker adapter's own declared `secret_env` name for the ones it did — the word heuristic alone would miss a declared secret name that happens not to contain a trigger word.
 
-Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env` (e.g. jira's is `ACLI_TOKEN`; github currently declares none), and its `ADAPTER.md` explains the one-time login it needs beyond that. `validate` also checks that every name an adapter lists there is actually *present* in `os.environ` — set, non-empty — reporting it by name if not, the same way it reports a missing required config key. This is presence, not liveness: a token can be set and still be revoked or expired, which only the adapter's own liveness check (below) can tell.
+Which value is the secret is adapter-specific — each adapter's `config-map.json` names it under `secret_env` (e.g. jira's is `ACLI_TOKEN`; github currently declares none), and its `ADAPTER.md` explains the one-time login it needs beyond that. `validate_config` also checks that every name an adapter lists there is actually *present* in `os.environ` — set, non-empty — reporting it by name if not, the same way it reports a missing required config key. This is presence, not liveness: a token can be set and still be revoked or expired, which only the adapter's own liveness check (below) can tell.
 
 ## Migrating from the `env` block
 
@@ -225,7 +227,7 @@ The preflight cache invalidates itself: its fingerprint folds in the resolved co
 
 ## Preflight: presence isn't liveness
 
-`validate` proves the config is *present* and internally consistent. It cannot prove a credential still works — a token can be set and revoked. Each adapter declares a real, minimal read for that, cached with a short TTL by `scripts/sy_preflight.py`. See `skills/shared/references/preflight.md`.
+`validate_config` proves the config is *present* and internally consistent. It cannot prove a credential still works — a token can be set and revoked. Each adapter declares a real, minimal read for that, which the `preflight` tool runs and caches with a short TTL. See `skills/shared/references/preflight.md`.
 
 ## Trigger/trace event log
 

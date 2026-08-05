@@ -51,15 +51,12 @@ def test_the_ledger_keys_on_session_id_alone_never_on_the_caller_s_cwd(tmp_path,
 
 
 def test_enabled_degrades_to_off_when_the_config_cannot_be_resolved(tmp_path, monkeypatch):
-    """An unresolvable config must leave the log off, never crash a hook that fires on every tool call.
-
-    The refusal is asserted first, so this cannot pass vacuously: catching the wrong exception would
-    turn this documented degradation into a crashed `PreToolUse` hook — which is fail-open, so the
-    whole gate around it would go quiet too.
-    """
+    """An unresolvable config must leave the log off, never crash a hook that fires on every tool call."""
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))  # exists, but is no checkout
     config.reset_cache()
     try:
+        # Refused first so this cannot pass vacuously: a crashed `PreToolUse` hook is fail-open, which
+        # takes the gate around it quiet too.
         with pytest.raises(config.ConfigError):
             config.get("debug.evals")
         assert eval_events.enabled() is False, "an unresolvable config must leave the event log off"

@@ -33,9 +33,9 @@ FIXTURE_LAYER = {
 
 def _resolved_repo_root() -> Path | None:
     """The repo root resolved from the current environment, or None when the pointer was refused."""
-    # The memoized root is dropped first, because the callers below change `CLAUDE_PROJECT_DIR` and then
-    # ask, where this would otherwise answer from the previous test's root. `reset_cache()` and not
-    # `reload()`: `reload()` resolves eagerly, so it would raise before the refusal could be inspected.
+    # Dropped first: the callers below change `CLAUDE_PROJECT_DIR` and then ask, so this would answer
+    # from the previous test's root. Not `reload()`, which resolves eagerly and raises before the
+    # refusal can be inspected.
     config.reset_cache()
     try:
         return config.repo_root()
@@ -60,12 +60,10 @@ def fixture_repo(tmp_path, monkeypatch):
 
 
 def test_repo_root_prefers_claude_project_dir_over_cwd(fixture_repo, tmp_path, monkeypatch):
-    """A `pixi run <declared-task>` dispatch resets cwd to the manifest's own directory (a real,
-    measured pixi behaviour — see `sy_tools/server.py`'s module docstring), so `repo_root()` must
-    not trust cwd when Claude Code's own pointer is available; it should win even when cwd disagrees.
+    """Claude Code's pointer outranks cwd, and a pointer at a subdirectory still lands on the root.
 
-    The pointer resolves through git exactly as cwd does, so a pointer at a *subdirectory* of the
-    checkout still lands on the checkout root — which is where the only `.shipyard/` layers are.
+    A `pixi run <declared-task>` dispatch resets cwd to the manifest's own directory (measured; see
+    `sy_tools/server.py`'s module docstring), so cwd cannot be trusted when the pointer is available.
     """
     other = tmp_path.parent / "not-the-cwd"
     (other / "deep" / "nested").mkdir(parents=True)
@@ -99,16 +97,15 @@ def test_the_whole_layer_chain_merges_in_precedence_order_and_reports_each_key_s
     """Four layers, lowest precedence first: shipped defaults, user-global, repo-committed, repo-local.
 
     Each must win over the ones below it and each resolved key must name the layer it came from, or a
-    caller has no way to know which file to edit. The two outer layers are the ones only this test
-    reaches: the user-global layer must not outrank a repo's own committed settings, and the repo-local
-    layer is the highest-precedence file and the only uncommitted one, so a resolver that never read it
-    would still look correct against a fixture carrying a committed layer alone.
+    caller has no way to know which file to edit.
     """
+    # The user-global layer must not outrank a repo's own committed settings.
     home_layer = Path.home() / ".shipyard"
     home_layer.mkdir(parents=True)
     (home_layer / "config.json").write_text(
         json.dumps({"columns": {"backlog": "Home Backlog"}, "limits": {"max_depth_agents": 7}}), encoding="utf-8"
     )
+    # Highest precedence and uncommitted: unread, the committed layer alone would still look correct.
     (fixture_repo / ".shipyard" / "config.local.json").write_text(
         json.dumps({"columns": {"done": "Local Done"}}), encoding="utf-8"
     )
@@ -132,9 +129,8 @@ def test_resolution_reads_the_layers_of_the_repo_the_project_pointer_names(fixtu
     """With cwd inside a *different* checkout, only `CLAUDE_PROJECT_DIR` names the fixture.
 
     The deleted-var case cannot reveal a resolver that never learned the pointer: with cwd already
-    inside the fixture it reads the right layers by accident. Here cwd is the plugin's own checkout and
-    only the pointer names the fixture, so a resolver ignoring it reads the wrong repo's layers —
-    exactly what a worktree-local `.shipyard/config.local.json` invisible to the server looks like.
+    inside the fixture it reads the right layers by accident. Here a resolver ignoring the pointer
+    reads the wrong repo's layers — the symptom being a worktree-local layer the server never sees.
     """
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture_repo))
     monkeypatch.chdir(PLUGIN_ROOT)
@@ -163,9 +159,8 @@ def test_layer_precedence_and_derived_defaults(fixture_repo):
 def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixture_repo):
     """An identifier that resolves anywhere but strictly inside the root is refused, root included.
 
-    `"."` and `"./"` are the load-bearing cases: they have no path parts, so a string-shaped guard
-    admits them and hands back the scratch root itself — shared by every identifier, and deleted by
-    the first caller that cleans up what it was given.
+    Handing back the scratch root itself shares one directory with every identifier, which the first
+    caller that cleans up what it was given then deletes.
     """
     root = Path(str(config.get("scratch.dir")))
     created = config.scratch_dir("AM-1")
@@ -175,6 +170,7 @@ def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixtu
     outside = fixture_repo / "outside"
     outside.mkdir()
     (root / "link").symlink_to(outside, target_is_directory=True)
+    # `.` and `./` have no path parts at all, so a string-shaped guard admits them.
     escapes = ("", ".", "./", " ", "..", "../elsewhere", "a/../../b", "link/x", "a\0b", str(fixture_repo))
     for escape in escapes:
         with pytest.raises(config.ConfigError, match="stays inside the resolved scratch root"):
@@ -183,13 +179,12 @@ def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixtu
 
 
 def test_repo_scratch_dir_resolves_to_one_directory_from_every_worktree(fixture_repo):
-    """The divergence this keys around is only reproducible from a linked worktree, so it is tested there.
+    """The main checkout and a linked worktree of it land on one path, however the root is asked for.
 
     Claude Code exports `CLAUDE_PROJECT_DIR` to hook subprocesses but not to a subagent's own Bash
     tool, so a root keyed on `repo_root().name` resolves the main checkout from the guard's side and
     the worktree from the guarded agent's, and the hunt sandbox then denies writes the agent believes
-    are permitted. Keyed on the shared git dir, the main checkout and a linked worktree of it — asked
-    for either explicitly or as the resolved default — must all land on one path.
+    are permitted. Only a linked worktree reproduces that divergence, so it is tested there.
     """
     root = Path(str(config.get("scratch.dir")))
     expected = root / fixture_repo.name
@@ -315,10 +310,8 @@ def test_repo_scratch_dir_keys_a_deinited_submodule_on_common_rather_than_module
     absolute git dir path, `.git/modules/<name>`) is used instead: still ends in the submodule's own
     name, still identical from every worktree of it, and never machine-global.
 
-    This exercises the general working-tree-verification mechanism (`_is_resolved_working_tree`), not
-    a `modules`-shaped pattern match: `test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctly`
-    below proves the same mechanism also catches shapes where `common.parent` is not literally named
-    `modules`, which a name-pattern detector was previously found not to generalize to.
+    The mechanism is `_is_resolved_working_tree`, not a `modules`-shaped pattern match: the test below
+    carries the shapes where `common.parent` is not named `modules` at all.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
     subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
@@ -351,18 +344,13 @@ def test_repo_scratch_dir_keys_a_deinited_submodule_on_common_rather_than_module
 
 
 def test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctly(fixture_repo):
-    """The resolution above must not be a `modules`-shaped pattern match: it must hold for any layout
-    where `core.worktree` is unresolvable and `common.parent` is not itself a working tree, including
-    shapes where `common.parent`'s name is not literally `modules` at all, and two unrelated such
-    repos must still resolve to two distinct identifiers.
+    """The resolution above must hold wherever `core.worktree` is unresolvable and `common.parent` is
+    not itself a working tree -- not only where that parent is named `modules` -- and two unrelated
+    such repos must still resolve to two distinct identifiers.
 
-    Two such shapes, both structurally guaranteed (no co-naming or co-location needed):
-    - a nested submodule (`outer/inner`), whose deinit'd common dir is
-      `<super>/.git/modules/outer/modules/inner`, so `common.parent.name` is `modules` but
-      `common.parent.parent.name` is `outer`, not `.git` -- the two-level name check a prior fix used
-      would have missed this.
-    - a submodule of a `--separate-git-dir` superproject, whose common dir is
-      `<detached-gitdir>/modules/<name>` -- there is no `.git` component in its ancestry at all.
+    Two structurally guaranteed shapes, needing no co-naming or co-location: a nested submodule, whose
+    deinit'd common dir is `<super>/.git/modules/outer/modules/inner`, and a submodule of a
+    `--separate-git-dir` superproject, whose common dir has no `.git` component in its ancestry at all.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
 
@@ -427,14 +415,11 @@ def test_logical_repo_keys_unresolvable_nested_and_detached_submodules_distinctl
 def test_logical_repo_resolves_a_plain_separate_git_dir_checkout_without_raising(fixture_repo):
     """`--separate-git-dir` is an ordinary documented git feature with no submodule involved at all.
 
-    It raised outright here, which was a real regression: no configuration resolution at all — not just
-    scratch and worktree resolution — could succeed from such a checkout, and the refusal said "run `git
-    submodule update --init`" on a repo with no submodules.
-
-    `core.worktree` is never set for a plain `--separate-git-dir` checkout, and the directory holding
-    the detached gitdir is not itself a working tree, so this correctly falls through to the final,
-    always-safe tier: `common` itself (the detached gitdir's own path). That is less readable than the
-    checkout's own directory name, but stable and distinct -- and, most importantly, does not crash.
+    Unhandled, no configuration resolution at all succeeded from such a checkout and the refusal told a
+    submodule-free repo to run `git submodule update --init`. `core.worktree` is never set for this
+    shape and the directory holding the detached gitdir is not itself a working tree, so it falls
+    through to the always-safe tier, `common` itself: less readable than the checkout's own directory
+    name, but stable, distinct, and not a crash.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
 
@@ -477,16 +462,12 @@ def test_scratch_dir_refuses_a_non_absolute_root(fixture_repo):
 
 
 def test_same_directory_identifies_a_symlinked_alias_portably(tmp_path):
-    """A basic, portable correctness check for `_same_directory` on any filesystem/OS: it identifies a
-    symlinked alias by device+inode even though the two paths differ as strings.
+    """`_same_directory` identifies a symlinked alias by device+inode though the paths differ as strings.
 
-    This does NOT discriminate `_same_directory` from the plain `a.resolve() == b.resolve()` it
-    replaced -- `Path.resolve()` already normalizes symlinks, so a symlink alone does not exercise the
-    regression that motivated the switch to device+inode comparison. Only a differently-*cased*
-    spelling on a case-insensitive filesystem does that (the case-variant spelling in
-    `test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout` below), and CI runs
-    `ubuntu-latest` only, where that spelling is never appended and the regression has no automated
-    coverage. Recorded here as a known gap rather than silently assumed covered.
+    This does NOT discriminate it from the `a.resolve() == b.resolve()` it replaced: `Path.resolve()`
+    already normalizes symlinks. Only a differently-*cased* spelling on a case-insensitive filesystem
+    does, which the overlap test below appends and CI (`ubuntu-latest` only) never reaches -- a known
+    coverage gap, recorded rather than assumed covered.
     """
     real = tmp_path / "real"
     real.mkdir()
@@ -500,19 +481,14 @@ def test_same_directory_identifies_a_symlinked_alias_portably(tmp_path):
 
 
 def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo):
-    """Even an absolute `scratch.dir` must not resolve to a directory that equals or contains the
-    checkout it is asked to provide a scratch directory for -- `scratch_dir()`'s own containment check
-    only constrains the *identifier* relative to the root, not the root itself, so a repo-committed
-    `.shipyard/config.json` pointing `scratch.dir` at (or above) its own checkout would otherwise hand
-    `review_guard.py`'s hunt-mode write sandbox the checkout's own source.
+    """Even an absolute `scratch.dir` must not equal or contain the checkout it is asked to serve.
 
-    A literal, already-canonical parent path is the vacuous spelling of this exploit -- pytest's own
-    `tmp_path` is already resolved, so that spelling alone would pass even without comparing resolved
-    paths. A `..`-suffixed spelling, a spelling through a symlinked ancestor, and -- on a
-    case-insensitive filesystem, probed rather than assumed -- a differently-cased spelling of the
-    same ancestor are exercised too, since each is indistinguishable from an ordinary absolute value
-    and `Path.resolve()` alone normalizes none of them the way a device+inode comparison does.
+    `scratch_dir()`'s own containment check constrains the *identifier* relative to the root, not the
+    root itself, so a repo-committed `.shipyard/config.json` pointing `scratch.dir` at (or above) its
+    own checkout would otherwise hand `review_guard.py`'s hunt-mode write sandbox the checkout's source.
     """
+    # The vacuous spelling: pytest's `tmp_path` is already resolved, so this one passes without
+    # comparing resolved paths at all. The others are what `Path.resolve()` alone does not normalize.
     literal_parent = str(fixture_repo.parent)
     dotdot_spelling = str(fixture_repo / "..")
     symlinked_dir = fixture_repo.parent / "symlinked-ancestor"
@@ -520,10 +496,8 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
     symlink_spelling = str(symlinked_dir)
     spellings = [literal_parent, dotdot_spelling, symlink_spelling]
 
-    # Probed with os.path.samestat directly, never config._same_directory (the function under test):
-    # a probe built from the same code path it is meant to catch a regression in would pass vacuously
-    # if that code regressed to a spelling-based comparison, since the same wrong logic would decide
-    # both "is this filesystem case-insensitive" and "does the case-variant spelling overlap".
+    # Probed with os.path.samestat, never `config._same_directory` (the function under test): a probe
+    # built from that code path would pass vacuously if it regressed to a spelling-based comparison.
     probe_dir = fixture_repo.parent / "CaseProbeDir"
     probe_dir.mkdir()
     case_variant_probe = probe_dir.parent / "caseprobedir"
@@ -540,16 +514,13 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
 
 
 def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_of_cwd(fixture_repo):
-    """A `PreToolUse` hook's cwd is the *main* checkout in the overwhelming majority of `sy:gate`/
-    `sy:hunt` runs, not the build/slice/review worktree the tool call actually targets -- `/sy:ship`
-    names the worktree only in the dispatched agent's prompt text, never as the subagent's own cwd.
-    So checking the overlap guard only against `start`'s own working tree is not enough: it must catch
-    a `scratch.dir` that overlaps some *other*, currently-inactive worktree of the repo regardless of
-    which one -- main or any linked worktree -- the current call happens to resolve from. A plausible,
-    non-adversarial layout reproduces this: a `worktree.root` nested inside the resolved `scratch.dir`
-    for this same repository (naturally plausible when both are configured under one shared parent),
-    so the review worktree `/sy:ship` creates there lands inside the very directory the "sandbox" is
-    rooted at.
+    """The guard must catch a `scratch.dir` overlapping *any* worktree, whichever one the call resolves.
+
+    A `PreToolUse` hook's cwd is the *main* checkout in the overwhelming majority of `sy:gate`/`sy:hunt`
+    runs, not the worktree the tool call targets -- `/sy:ship` names the worktree only in the dispatched
+    agent's prompt text, never as the subagent's own cwd. A non-adversarial layout reproduces it: a
+    `worktree.root` nested inside the same repository's resolved `scratch.dir`, as happens naturally
+    when both are configured under one shared parent.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
 
@@ -557,9 +528,8 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_o
     resolved_scratch_dir = shared_root / fixture_repo.name  # what scratch_dir(logical.name) will be
     resolved_scratch_dir.mkdir(parents=True)
 
-    # Committed (not just written) before the worktree is created, so it is a *tracked* file git
-    # actually checks out into the linked worktree too -- matching a real repo-committed
-    # .shipyard/config.json, which every worktree of the repo carries an identical copy of.
+    # Committed before the worktree is created, so git checks this tracked file out into the linked
+    # worktree too -- as every worktree of a repo carries its committed .shipyard/config.json.
     layer = {**FIXTURE_LAYER, "scratch": {"dir": str(shared_root)}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
     subprocess.run([*git, "-C", str(fixture_repo), "add", ".shipyard/config.json"], check=True)
@@ -569,9 +539,8 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_o
     subprocess.run([*git, "-C", str(fixture_repo), "worktree", "add", "-q", str(linked), "-b", "wt"], check=True)
     config.reload()
 
-    # The main checkout is the cwd that always occurs in practice, and is exactly where this must
-    # refuse -- the resolved scratch directory is an ancestor of the linked worktree regardless of
-    # which checkout the current invocation happens to resolve from.
+    # The cwd that always occurs in practice, and the resolved scratch directory is an ancestor of the
+    # linked worktree whichever checkout the invocation resolves from.
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(fixture_repo)
 
@@ -581,14 +550,13 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_any_worktree_regardless_o
 
 
 def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkout(fixture_repo, monkeypatch):
-    """A `--separate-git-dir` (or bare-plus-`worktree-add`) main checkout has no `core.worktree` and
-    no entry under `<common>/worktrees/` at all -- `<common>/worktrees/` only ever holds *linked*
-    worktrees, never the main one. `_logical_repo` falls back to `common` (the detached gitdir itself)
-    for this shape, so a fix that checks only `_all_worktrees` (which starts from `logical`) would
-    compare against the *gitdir's* location, not the actual working tree `start` is sitting in right
-    now -- the gitdir and the working tree share a basename here (both named `sepwork`) precisely so
-    the resolved scratch directory's *name* matches either, and only comparing against
-    `_git_toplevel(start)` catches the real overlap on the working tree's own, different, parent.
+    """The overlap must be caught for a main checkout whose gitdir is not inside its working tree.
+
+    Such a checkout has no `core.worktree` and no entry under `<common>/worktrees/`, which only ever
+    holds *linked* worktrees, so `_logical_repo` falls back to `common` and a check reading only
+    `_all_worktrees` compares against the gitdir's location rather than the working tree `start` is in.
+    The gitdir and the working tree are given the same basename precisely so the resolved scratch
+    directory's *name* matches either, and only `_git_toplevel(start)` catches the real overlap.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
 
@@ -612,18 +580,15 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
         "fixture must reproduce the tier-3 (common-dir) fallback for this test to be non-vacuous"
     )
 
-    # detached_work is its own, unrelated checkout (not a worktree of fixture_repo), so its own
-    # .shipyard/config.json -- not fixture_repo's -- is what a fresh resolver anchored there would
-    # read. Written there, and cwd moved there, so what is asserted is what a real invocation from
-    # detached_work would see.
+    # detached_work is an unrelated checkout, so its own .shipyard/config.json -- not fixture_repo's --
+    # is what a resolver anchored there reads; cwd is moved too, so this is what a real invocation sees.
     (detached_work / ".shipyard").mkdir()
     layer = {**FIXTURE_LAYER, "scratch": {"dir": str(checkouts_parent)}}
     (detached_work / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
     monkeypatch.chdir(detached_work)
     config.reload()
 
-    # The resolved scratch directory (checkouts_parent/"sepwork") is NOT an ancestor of `common`
-    # (gitdirs_parent/"sepwork") -- confirming _all_worktrees([logical]) alone would miss this.
+    # Not an ancestor of `common`, confirming _all_worktrees([logical]) alone would miss this.
     directory = checkouts_parent / "sepwork"
     assert not config._same_directory(directory, common) and not any(
         config._same_directory(directory, p) for p in common.parents
@@ -640,11 +605,6 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     worktree's `gitdir` record as a path relative to `<common>/worktrees/<id>/` itself, not absolute
     and not relative to any process's cwd. Comparing that value as-is would silently stat whatever the
     *guard process's* own cwd happens to be instead of the worktree, missing the overlap entirely.
-
-    The linked worktree is placed *inside* the resolved scratch directory (mirroring the
-    main-checkout-overlap test above) rather than merely beside the main checkout, so only the
-    (potentially broken) linked-worktree registry entry -- not the main checkout or `start`'s own
-    working tree, both already covered separately -- can catch this.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
     subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
@@ -652,6 +612,8 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     shared_root = fixture_repo.parent / "relative-shared-root"
     resolved_scratch_dir = shared_root / fixture_repo.name  # what scratch_dir(logical.name) will be
     resolved_scratch_dir.mkdir(parents=True)
+    # Inside the resolved scratch directory, so only the registry entry -- not the main checkout or
+    # `start`'s own working tree, both covered separately -- can catch the overlap.
     linked = resolved_scratch_dir / "AM-relative"
     subprocess.run(
         [*git, "-C", str(fixture_repo), "worktree", "add", "--relative-paths", "-q", str(linked), "-b", "wt"],
@@ -670,21 +632,17 @@ def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
     config.reload()
 
-    # The resolved scratch directory is not an ancestor of the main checkout or of start's own working
-    # tree -- both already covered separately -- so only the linked-worktree registry entry itself
-    # can catch this. It must, because the linked worktree lives inside the resolved scratch directory.
     with pytest.raises(config.ConfigError, match="contains a worktree of this repository"):
         config.repo_scratch_dir(fixture_repo)
 
 
 def test_all_worktrees_accepts_the_bare_directory_form_but_refuses_a_blank_record(fixture_repo):
-    """`git-worktree(1)`'s DETAILS section documents writing a linked worktree's `gitdir` record as
-    the bare directory path (no trailing `.git`) when hand-repairing it after moving the worktree
-    outside `git worktree move` -- a form git's own reader accepts by stripping an *optional* `.git`
-    suffix, not a form it requires. Refusing that form (an earlier version of this fix did) would deny
-    every `sy:hunt` write, including into its own sandbox, for a repository git itself considers
-    healthy. A genuinely blank record -- unambiguous corruption, not a git-documented spelling -- must
-    still refuse rather than silently resolve to `entry` itself.
+    """A git-documented `gitdir` spelling must be accepted; unambiguous corruption must still refuse.
+
+    `git-worktree(1)`'s DETAILS section documents the bare directory path (no trailing `.git`) for
+    hand-repairing a moved worktree, and git's own reader strips an *optional* `.git` suffix. Refusing
+    that form would deny every `sy:hunt` write, its own sandbox included, for a repository git itself
+    considers healthy.
     """
     git = ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", "-c", "protocol.file.allow=always"]
     subprocess.run([*git, "-C", str(fixture_repo), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
@@ -717,11 +675,7 @@ def test_agent_binding_reports_the_clamped_dispatch_values_and_where_they_came_f
 
     `sweep` is bound to `opus` by the fixture's own layer, well above its floor, so the request
     survives verbatim and nothing is reported as clamped. `img-inspector` is bound to a *tier* alias
-    rather than a model name, the indirection a dispatcher must never be handed raw. The clamped case
-    is constructed rather than looked for, because an agent already at its floor cannot tell a working
-    clamp from a report that never sets the flag: `gate`'s floor is the one cost-scaling may never
-    touch, so a layer asking for the cheapest model and the cheapest effort must come back as the
-    floor's own values with both flags raised and the request still legible beside them.
+    rather than a model name, the indirection a dispatcher must never be handed raw.
     """
     assert config.agent_binding("sweep") == {
         "agent": "sweep", "model": "opus", "effort": "high", "model_requested": "opus",
@@ -732,6 +686,8 @@ def test_agent_binding_reports_the_clamped_dispatch_values_and_where_they_came_f
     assert inspector["model"] in config.MODEL_ORDER, "a tier alias must be resolved to a model, never passed on"
     assert inspector["source"] == "shipped-default"
 
+    # The clamped case is constructed, not looked for: an agent already at its floor cannot tell a
+    # working clamp from a report that never sets the flag.
     (fixture_repo / ".shipyard" / "config.local.json").write_text(
         json.dumps({"models": {"agents": {"gate": {"model": "haiku", "effort": "low"}}}}), encoding="utf-8"
     )
@@ -786,12 +742,6 @@ def test_validate_reports_an_outranking_subagent_model_even_with_nothing_resolva
     nobody sees. It must also survive a configuration that cannot be resolved at all: the check reads
     only the environment, and a root that will not resolve is no reason to hide a live problem that has
     nothing to do with it.
-
-    The other half of that ordering is what a resolution failure must *not* produce. The retired-name
-    comparison absorbs the same failure into an empty flat config and would then lead with "disagrees
-    with <key>, which resolves to None" — wrong on its face, since the shipped defaults give that key a
-    value — burying the one real cause, so a retired name is set here too and that derived line must be
-    absent.
     """
     monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
     expected = (
@@ -801,8 +751,9 @@ def test_validate_reports_an_outranking_subagent_model_even_with_nothing_resolva
     assert expected in config.validate()
     assert expected in server.validate_config()["errors"], "it must reach the tool's own report"
 
-    # Set through the resolver's own map: spelling a retired variable's name in this file would trip
-    # the config seam that `scripts/validate.py` enforces over every file but the resolvers.
+    # Set too, because the retired-name comparison absorbs the same resolution failure into an empty
+    # flat config and would then lead with a "resolves to None" line that buries the real cause.
+    # Read from the resolver's own map: spelling a retired name here would trip the config seam.
     retired = next(name for name, path in config.LEGACY_ENV.items() if path == "ci.poll_timeout")
     monkeypatch.setenv(retired, "60")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture_repo / "definitely-not-a-repo"))
@@ -827,9 +778,9 @@ def test_validate_reports_a_retired_setting_variable_still_set_in_the_environmen
     Left set, a retired name is a second resolution path for one key that nothing reads — so it is
     reported rather than honoured, whether or not it happens to agree with what the key now resolves to,
     and an unrecognised `SY_*` name is reported too because a typo'd setting is indistinguishable from a
-    retired one to whoever exported it. The names are read out of the resolver's own map: spelling one
-    here would trip the config seam `scripts/validate.py` enforces over every file but the resolvers.
+    retired one to whoever exported it.
     """
+    # Read from the resolver's own map: spelling a retired name here would trip the config seam.
     disagreeing = next(name for name, path in config.LEGACY_ENV.items() if path == "columns.ready")
     agreeing = next(name for name, path in config.LEGACY_ENV.items() if path == "ci.poll_timeout")
     monkeypatch.setenv(disagreeing, "Env Ready")
@@ -893,9 +844,7 @@ def test_the_validator_reports_two_columns_configured_under_one_name(fixture_rep
 
     The canonical vocabulary matches a column name ignoring case and returns its first hit, so two
     statuses under one name leave an issue in that column reporting as only one of them for every
-    reader — a config that validates clean and breaks on the first status read. One collision must be
-    one line, and it must be `column_collisions()`'s own sentence rather than a copy of the wording:
-    two hand-maintained mirrors of one message are exactly what drifts.
+    reader — a config that validates clean and breaks on the first status read.
     """
     colliding = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "fixture in progress"}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(colliding), encoding="utf-8")
@@ -904,6 +853,7 @@ def test_the_validator_reports_two_columns_configured_under_one_name(fixture_rep
     reported = [e for e in server.validate_config()["errors"] if "shared by more than one" in e]
 
     assert len(reported) == 1, f"one collision must be one line: {reported}"
+    # Its own sentence, not a copy: two hand-maintained mirrors of one message are what drifts.
     assert reported == tracker.column_collisions(), "the report must be that function's own sentence"
     assert "columns.ready" in reported[0] and "columns.in_progress" in reported[0], reported[0]
 
@@ -912,10 +862,8 @@ def test_the_validator_reports_a_whitespace_only_column_as_unset(fixture_repo):
     """`"   "` is schema-valid and reads as absent everywhere else, so calling it configured is the fault.
 
     `columns.*` is `["string", "null"]` with no `minLength`, and `tracker.column_names()` treats a value
-    as unset via `str(value or "").strip()`. The validator tested emptiness as `in (None, "")`, so a
-    whitespace-only column passed as present and the session then failed its very first status read with
-    "missing required column name(s): columns.ready" — the same "validates clean, breaks on first use"
-    fault `column_collisions()` exists to prevent, reached through the other predicate.
+    as unset via `str(value or "").strip()`, so an emptiness test of `in (None, "")` passes it as present
+    and the session fails its very first status read — "validates clean, breaks on first use".
     """
     blank = {**FIXTURE_LAYER, "columns": {**FIXTURE_COLUMNS, "ready": "   "}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(blank), encoding="utf-8")
@@ -929,12 +877,10 @@ def test_the_validator_reports_a_whitespace_only_column_as_unset(fixture_repo):
 
 
 def test_an_unset_column_is_reported_once_by_the_tool_not_twice(fixture_repo):
-    """An unconfigured repo is the commonest input there is, and it named each fault twice.
+    """An unconfigured repo is the commonest input there is, and each fault must be named once.
 
-    Asking `column_names()` for the collision check made it so: the required-key loop already reports
-    every unset `columns.*` key, and that call added its own "missing required column name(s)" line
-    naming the same five. `column_collisions()` answers the collision question alone, so a column that
-    is merely unset is reported by the one check whose business it is.
+    The required-key loop already reports every unset `columns.*` key, so asking `column_names()` for
+    the collision check added a second "missing required column name(s)" line naming the same five.
     """
     (fixture_repo / ".shipyard" / "config.json").write_text(
         json.dumps({**FIXTURE_LAYER, "columns": {}}), encoding="utf-8",
@@ -952,12 +898,11 @@ def test_the_validator_refuses_a_tracker_that_only_resolves_as_a_path(fixture_re
     """`tracker` must be checked against the enumerated adapter names, not by joining it onto a path.
 
     `"."` and `".."` name existing directories — `skills/tracker/` itself and its parent — so the
-    `.is_dir()` form reported a clean configuration and then found no `config-map.json` for either,
-    silently skipping every adapter-declared `required` key and `secret_env` variable, which is exactly
-    the class of fault config validation exists to catch. A traversal like `../tracker/<adapter>` went
-    further and loaded a real adapter's map under a name no adapter answers to. `sy_tools/tracker`
-    refuses all three at tool-call time, so nothing is broken end to end — but catching them *before*
-    runtime is the whole purpose of this check.
+    `.is_dir()` form reports a clean configuration and then finds no `config-map.json` for either,
+    silently skipping every adapter-declared `required` key and `secret_env` variable. A traversal like
+    `../tracker/<adapter>` goes further and loads a real adapter's map under a name no adapter answers
+    to. `sy_tools/tracker` refuses all three at tool-call time; catching them before runtime is this
+    check's whole purpose.
     """
     adapter = _a_shipped_adapter_name()
     layer = fixture_repo / ".shipyard" / "config.json"
@@ -978,8 +923,7 @@ def test_the_validator_refuses_a_tracker_that_only_resolves_as_a_path(fixture_re
 
 def _a_shipped_adapter_name() -> str:
     """The name of one tracker adapter this checkout actually ships."""
-    # Read rather than spelled: an adapter's own name is vocabulary `scripts/validate.py`'s config seam
-    # fails every file but the resolver and the adapters themselves for carrying.
+    # Read rather than spelled: an adapter's own name is vocabulary the seam checks fail this file for.
     names = sorted(p.parent.name for p in (PLUGIN_ROOT / "skills" / "tracker").glob("*/config-map.json"))
     if not names:
         pytest.fail("no shipped tracker adapter declares a config-map.json")
@@ -989,9 +933,8 @@ def _a_shipped_adapter_name() -> str:
 def test_the_server_validator_collects_an_unreadable_layer_rather_than_raising(fixture_repo):
     """`validate_config`'s contract is to report a broken config rather than crash on one.
 
-    `_load_json` named a missing file and invalid JSON but let `PermissionError` through, so the SDK
-    turned it into an `isError` result carrying a raw traceback string instead of the clean report the
-    tool promises. Every other unreadable-layer case is already named; this one was not.
+    An unreadable layer left unnamed reaches the SDK as an `isError` result carrying a raw traceback
+    string instead of the clean report the tool promises.
     """
     layer = fixture_repo / ".shipyard" / "config.json"
     layer.chmod(0o000)
@@ -1007,12 +950,10 @@ def test_the_server_validator_collects_an_unreadable_layer_rather_than_raising(f
 def test_the_server_validator_reports_a_layer_corrupted_after_the_cache_warmed(fixture_repo):
     """The guard around `resolve()` cannot cover this one: once the hot copy is warm, it never fails again.
 
-    This deployment resolves once per *process lifetime*, so after the first successful call the only
-    things still touching disk are the per-layer schema pass and the adapter map. A layer edited into
-    invalid JSON after that point — and `reload()` is the only thing that would notice — raised straight
-    out of `validate_config`, the one tool whose entire job is diagnosing exactly this fault: the
-    operator got `Error executing tool validate_config: ...` instead of the report it promises. Reachable
-    for the whole life of a long-running server, not a race, so `validate()` reports it warm or cold.
+    This deployment resolves once per *process lifetime*, so after the first successful call only the
+    per-layer schema pass and the adapter map still touch disk. A layer edited into invalid JSON after
+    that point is reachable for the whole life of a long-running server, not a race, so `validate()`
+    must report it warm as well as cold rather than raising out of the one tool that diagnoses it.
     """
     assert not any("not valid JSON" in e for e in config.validate()), "the layer must parse before it is corrupted"
     config.fingerprint()  # warms the hot copy, exactly as any earlier tool call would have
@@ -1053,15 +994,11 @@ def test_a_working_directory_that_cannot_be_read_is_refused_by_name(tmp_path, mo
 def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, monkeypatch, pointer):
     """A missing `git` binary must not traceback out of *any* caller, under either resolution path.
 
-    `validate()` guards its own `repo_root()` call, but it was the only thing standing between an
-    absent binary and a crash: `resolve()` and `fingerprint()` reach `repo_root()` too and used to
-    raise `FileNotFoundError` straight through, on the path every tool call takes to a resolved value.
-    So the guard lives in `_git_toplevel`, and it is asked here through a non-`validate()` path as well
-    as through `validate()`, which must collect the failure rather than re-raise it.
-
-    Refused rather than degraded, and refused *distinguishably*: a bogus pointer and an absent binary
-    are separate causes, so the pointer's "not a directory inside a git checkout" must not be what a
-    missing binary reports, and the no-pointer case must not take the cwd fallback silently.
+    `validate()` guards its own `repo_root()` call, but `resolve()` and `fingerprint()` reach
+    `repo_root()` too, on the path every tool call takes to a resolved value, so the guard lives in
+    `_git_toplevel` and is asked here through a non-`validate()` path as well. Refused rather than
+    degraded and refused *distinguishably*: a bogus pointer and an absent binary are separate causes,
+    and the no-pointer case must not take the cwd fallback silently.
     """
     monkeypatch.setenv("PATH", str(_empty_bin(tmp_path)))
     monkeypatch.chdir(tmp_path)
@@ -1087,17 +1024,7 @@ def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, m
 
     A `git` that blocks rather than fails — a wrapper or credential helper waiting on something, a binary
     that does not return — is not an exception this resolver could have handled: it is the server never
-    answering, on the path every tool call takes to a resolved value. So the bound is asserted on
-    the call's own kwargs, not just on the refusal: `TimeoutExpired` is raised here by the fake either
-    way, so removing `timeout=` from the real code would still produce a `ConfigError` and pass a test
-    that only checked that. What proves the hang is actually bounded is that the real call asks for it.
-
-    Every call site is covered, not just the first. Resolution shells out to git in four places
-    (`GIT_CALL_SITES`) and the fake wedges on the *last* of them, so `seen` accumulates the real kwargs
-    of every earlier one before the refusal: wedging on the first call meant `seen` held a single entry,
-    and an `all(...)` over one element stayed green while the other three sites carried no `timeout=` at
-    all — which is exactly how three unbounded calls arrived here unnoticed. Each site is asserted to
-    have been reached as well, so removing a call rather than its bound also fails.
+    answering, on the path every tool call takes to a resolved value.
     """
     seen: list[dict] = []
     commands: list[list[str]] = []
@@ -1105,6 +1032,8 @@ def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, m
     def wedge(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         commands.append(list(cmd))
         seen.append(kwargs)
+        # Wedged on the *last* site, so `seen` holds every earlier call's real kwargs: wedging the first
+        # left `all(...)` running over one entry while the other three sites carried no `timeout=`.
         if "--is-inside-work-tree" in cmd:  # the last site a cold resolution reaches
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=config.GIT_TIMEOUT_SECONDS)
         if "--show-toplevel" in cmd:
@@ -1123,6 +1052,8 @@ def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, m
     assert len(seen) > 1, f"the refusal must come from a later site, with earlier ones recorded: {commands}"
     for site in GIT_CALL_SITES:
         assert any(site in cmd for cmd in commands), f"{site} was never reached, so its bound is unproven"
+    # Asserted on the real kwargs, not the refusal: the fake raises `TimeoutExpired` either way, so a
+    # test checking only the `ConfigError` would pass with `timeout=` removed from the real code.
     assert all(kwargs.get("timeout") == config.GIT_TIMEOUT_SECONDS for kwargs in seen), (
         f"only `timeout=` can refuse a hang, and every real call must pass it: {list(zip(commands, seen, strict=True))}"
     )
@@ -1172,17 +1103,12 @@ def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_
 def test_the_repo_root_resolves_once_per_process_refusal_included(fixture_repo, tmp_path, monkeypatch):
     """The bound `GIT_TIMEOUT_SECONDS` documents is per resolution, so resolution must happen once.
 
-    This resolver is on the path every tool call takes to a resolved value and it shelled out to `git
-    rev-parse` on each of them. Worse for the failing case, which is what the bound is for: one failed
-    `get()` asks for the root twice — the credential-shape gate resolves first and the value's own
-    `resolve()` asks again — so an unmemoized refusal made the real wait on a wedged git twice the
-    number anyone reading that constant would expect. The refusal is therefore memoized alongside the
-    answer.
-
-    Spawn counts are the assertion because a returned value cannot tell a fresh resolution from a cached
-    one, and `reset_cache()` clearing *both* is the other half: a root that outlived the cache it is
-    stored beside would leave `reload()` re-reading the previous repository's layers.
+    This resolver is on the path every tool call takes to a resolved value. Worse for the failing case,
+    which is what the bound is for: one failed `get()` asks for the root twice — the credential-shape
+    gate resolves first and the value's own `resolve()` asks again — so an unmemoized refusal waits on a
+    wedged git for twice the number anyone reading that constant would expect.
     """
+    # Spawn counts, not returned values: a value cannot tell a fresh resolution from a cached one.
     calls: list[list[str]] = []
     real_run = subprocess.run
 
@@ -1219,14 +1145,11 @@ def test_the_repo_root_resolves_once_per_process_refusal_included(fixture_repo, 
 def test_a_git_timeout_is_retried_on_the_next_call_rather_than_refusing_the_session(fixture_repo, monkeypatch):
     """This module backs a long-lived server, so a transient refusal must not outlive the transient fault.
 
-    A timeout says nothing about the repository — only that git did not answer inside five seconds, which a
-    momentary index lock or a slow filesystem produces — and memoizing that verdict turned one hiccup into a
-    server that refused every later tool call for the rest of its uptime. `reset_cache()` *is* reachable
-    without a restart — the `reload_config` tool reaches it through `config.reload()`, and that is the
-    recovery path for the settled refusal which is memoized — but nothing tells a client that a five-second
-    git hiccup is what it is now stuck on, so clearing it would depend on someone guessing to reload the
-    configuration, where the retry needs no client to know anything. A settled refusal is still memoized
-    here — the case above covers that — so this pins the distinction, not a blanket un-memoizing.
+    A timeout says nothing about the repository — only that git did not answer inside the bound, which a
+    momentary index lock or a slow filesystem produces — so memoizing that verdict turns one hiccup into
+    a server that refuses every later tool call for the rest of its uptime. The `reload_config` tool does
+    reach `reset_cache()`, but nothing tells a client that a git hiccup is what it is stuck on, where the
+    retry needs no client to know anything. A settled refusal stays memoized: this pins the distinction.
     """
     real_run = subprocess.run
     wedged = [True]
@@ -1250,19 +1173,12 @@ def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, 
     The case above pins only the `CLAUDE_PROJECT_DIR`-is-not-a-checkout branch, and the other two are
     environment faults reached by different code paths: a git that cannot be run at all, and a working
     directory that can no longer be read under a long-lived server. Neither can come out differently on
-    the next call, so both belong on the remembered side with it, and only the timeout on the retried
-    side. The property asserted is repeat-call consistency: the next call refuses with the same class and
-    the same message, and without resolving again — which, unlike a spawn count alone, also holds for the
-    branch that never reaches git, since each side counts its own attempts here.
+    the next call, so both belong on the remembered side and only the timeout on the retried side.
 
-    Deliberately *not* object identity, which this used to assert. `raise` extends an exception's own
-    `__traceback__` in place, so re-raising one cached instance grew that chain by two frames per call —
-    ~400 frames and ~53KB of rendered traceback after 200 calls in a server that stays up refusing. The
-    frame count of the raised exception is therefore asserted constant across repeats, because the
-    cheapest way to be repeat-consistent is exactly the one that leaks.
-
-    Each break is scoped to its own `monkeypatch.context()` because `fixture_repo`'s teardown resolves
-    the configuration again, and a still-broken git or cwd fails that teardown rather than this test.
+    Repeat-call consistency is the property, deliberately *not* object identity: `raise` extends an
+    exception's own `__traceback__` in place, so re-raising one cached instance grows that chain by two
+    frames per call — ~400 frames and ~53KB of rendered traceback after 200 calls in a server that stays
+    up refusing — and the cheapest way to be repeat-consistent is exactly the one that leaks.
     """
     def frames(exc: BaseException) -> int:
         traceback, depth = exc.__traceback__, 0
@@ -1291,6 +1207,7 @@ def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, 
         attempts.append(list(cmd))
         raise FileNotFoundError(2, "No such file or directory: 'git'")
 
+    # Scoped: `fixture_repo`'s teardown resolves again, and a still-broken git fails that, not this test.
     with monkeypatch.context() as mp:
         mp.setattr(config.subprocess, "run", unrunnable)
         config.reset_cache()
@@ -1298,6 +1215,7 @@ def test_the_other_two_settled_root_refusals_are_memoized_as_well(fixture_repo, 
             config.repo_root()
         repeats(first.value, attempts)
 
+    # Its own counter: a spawn count says nothing about the branch that never reaches git.
     reads: list = []
 
     def dead_cwd():

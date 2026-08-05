@@ -1,14 +1,12 @@
 """The tool surface, driven through the SDK's own client rather than a hand-rolled stdio harness.
 
-`mcp.Client(server.mcp)` is the SDK's in-memory client: a real client session over real
-`initialize` / `tools/list` / `tools/call` exchanges, with the streams short-circuited instead of
-crossing a pipe. That is the right level for these tests — they assert what this package decides
-(which tools exist, what they are shaped like, what the gate does), and nothing about framing,
-which is the SDK's to get right. `test_handshake.py` covers the wire.
+`mcp.Client(server.mcp)` is the SDK's in-memory client: a real client session over real `initialize`
+/ `tools/list` / `tools/call` exchanges, with the streams short-circuited instead of crossing a pipe.
+That is the right level here — framing is the SDK's to get right, and `test_handshake.py` covers the
+wire.
 
 The gate tests call the tool functions directly. `@mcp.tool` registers and returns the function
-unchanged, so `server.attach_artifact` is still the plain coroutine function it looks like, and a
-direct call keeps a gate assertion about *not doing work* readable.
+unchanged, so a direct call keeps a gate assertion about *not doing work* readable.
 """
 from __future__ import annotations
 
@@ -80,8 +78,8 @@ WIRING = [
 ]
 """Every canonical-verb tool, the adapter method it must reach, and the arguments it must pass.
 
-The whole slice is wiring, so wiring is what gets pinned: positional-versus-keyword is part of the
-expectation because a verb reached with its arguments transposed would otherwise still look green.
+Positional-versus-keyword is part of the expectation: a verb reached with its arguments transposed
+would otherwise still look green.
 """
 
 
@@ -89,8 +87,7 @@ class _Recorder:
     """An adapter that records which verb was asked for instead of performing it.
 
     `__getattr__` rather than a stub per verb: the cost is that a tool wired to a verb no real adapter
-    has would still pass here, so `test_every_adapter_implements_the_whole_protocol` in
-    `sy_tools/tests/tracker/test_canonical.py` is what closes that gap.
+    has still passes here, which `sy_tools/tests/tracker/test_canonical.py` is what closes.
     """
 
     name = "recorder"
@@ -184,9 +181,8 @@ async def test_each_canonical_tool_reaches_its_verb_with_the_arguments_it_was_gi
 async def test_the_three_folded_verbs_have_no_tool_of_their_own(monkeypatch):
     """`create-child`, `post-log` and `link-pr` are content, not tools — pin that they are absent.
 
-    A caller migrating from the shell verbs will look for all three by name, so their absence is
-    part of the surface's contract rather than an omission to rediscover. `create-child` is what is
-    checked positively here, because it is the only one with a distinguishable argument.
+    A caller will look for all three by name, so their absence is part of the surface's contract
+    rather than an omission to rediscover.
     """
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
@@ -194,6 +190,7 @@ async def test_the_three_folded_verbs_have_no_tool_of_their_own(monkeypatch):
         names = {t.name for t in (await client.list_tools()).tools}
         assert names.isdisjoint({"create-child", "post-log", "link-pr"}), names
 
+        # Checked positively because it is the only one of the three with a distinguishable argument.
         child = await client.call_tool("create-issue", {"issue_type": "task", "title": "T", "parent": "PROJ-1"})
         assert child.is_error is False, child.content
         assert recorder.calls[0][2]["parent"] == "PROJ-1", "create-issue with a parent is what serves create-child"
@@ -275,9 +272,8 @@ def test_validate_config_reports_a_column_read_that_refuses_rather_than_answerin
     """A `ConfigError` raised while reading the column keys is a reason no tracker verb can run.
 
     `config.validate()` does not reach every one of them — a credential-shaped key, an adapter map that
-    parses for the selected tracker and not for another — and swallowing this one answered
-    `valid: true, errors: []` for a config the very next tool call would refuse. The tool's contract is
-    every reason, so the refusal is a reason like any other.
+    parses for the selected tracker and not for another — so swallowing this one answers
+    `valid: true, errors: []` for a config the very next tool call would refuse.
     """
     def refuses(key: str, *, default: Any = None) -> None:
         raise server.config.ConfigError(f"config key {key!r} is credential-shaped and is never read")
@@ -312,13 +308,9 @@ async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
 async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch, tmp_path):
     """No head-of-line blocking: the whole reason the adapters went async.
 
-    A stalled upload used to wedge every call queued behind it. This drives a real upload that
-    blocks on an event and proves an unrelated `validate_config` completes *while it is still in
-    flight* — an ordering claim, so it is asserted against a recorded sequence rather than a
-    duration, which would only ever be flaky.
-
-    The deadline is not decoration: a server that serialised calls would never reach the release,
-    so without it a regression hangs the suite instead of failing it.
+    A stalled upload wedges every call queued behind it. An unrelated `validate_config` must complete
+    *while the upload is still in flight* — an ordering claim, so it is asserted against a recorded
+    sequence rather than a duration, which would only ever be flaky.
     """
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("already sanitised\n", encoding="utf-8")
@@ -338,6 +330,8 @@ async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch, tmp_pat
     monkeypatch.setattr(server.secrets, "sanitize", lambda *_a, **_k: {"redactions": 0})
     monkeypatch.setattr(server.tracker, "adapter", lambda: _StalledBackend())
 
+    # A server that serialised calls would never reach the release, so without the deadline a
+    # regression hangs the suite instead of failing it.
     with anyio.fail_after(10, shield=False):
         async with mcp.Client(server.mcp) as client:
             async with anyio.create_task_group() as tasks:
@@ -395,9 +389,8 @@ async def test_ship_caller_needs_the_full_process_tier(monkeypatch):
 async def test_sanitize_runs_strictly_before_upload(monkeypatch, tmp_path):
     """The security contract: the artifact never leaves the machine before the scrub returns.
 
-    Ordering alone is not observable from `sanitize`'s own tests, so record both calls against one
-    list: a swap of the two lines in `attach_artifact` reverses it, and a scrub that raises must
-    leave the upload unreached entirely rather than merely unreported.
+    Ordering is not observable from `sanitize`'s own tests, so both calls record against one list: a
+    scrub that raises must leave the upload unreached entirely rather than merely unreported.
     """
     path = tmp_path / "artifact.txt"
     path.write_text("nothing secret here\n", encoding="utf-8")
@@ -547,9 +540,8 @@ async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
 async def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_posted(monkeypatch, case, body):
     """The tool boundary is where this is enforced, so nothing reaches the adapter on a bad shape.
 
-    `pytest.fail` as the adapter factory is the assertion that matters: a validation that ran *after*
-    the write would still report an error while having already posted the malformed comment, which is
-    the incident this closes off.
+    `pytest.fail` as the adapter factory is the assertion that matters: a validation running *after*
+    the write would report an error having already posted the malformed comment.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     async with mcp.Client(server.mcp) as client:
@@ -605,8 +597,7 @@ async def test_a_second_block_claiming_the_schema_but_not_parsing_is_refused_not
 def _claiming_json_that_does_not_parse() -> str:
     """JSON naming the schema id that `json.loads` refuses, asserted rather than assumed.
 
-    An earlier version of this fixture still parsed, which quietly turned the test using it into a
-    no-op — so the malformedness is checked here, once, where every caller inherits the check.
+    A spelling that still parsed would quietly turn every test using it into a no-op.
     """
     text = json.dumps({"schema": SCHEMA_ID, "task": "PROJ-1"}, indent=2).replace('"PROJ-1"\n', '"PROJ-1",\n')
     with pytest.raises(json.JSONDecodeError):
@@ -627,11 +618,10 @@ async def test_a_fence_invisible_block_claiming_the_schema_is_refused_beside_a_v
     """A claiming block `FENCE` cannot see at all is the bypass one level below the raw-text tally.
 
     Counting candidates off `FENCE` matches only sees blocks whose closing marker is a bare fence on
-    its own line. An unclosed fence, or one whose closing marker carries trailing text, produces no
-    match — so it counted as neither a candidate nor an ambiguity, the valid block beside it validated
-    alone, and the comment posted with the malformed log inside it verbatim. It renders as a second
-    code block once the body goes through `markdown_to_adf`, which is to say it lands looking exactly
-    as authoritative as the block that was checked.
+    its own line, so an unclosed fence, or one whose closing marker carries trailing text, is neither
+    a candidate nor an ambiguity and the valid block beside it validates alone. It still renders as a
+    second code block once the body goes through `markdown_to_adf`, landing exactly as authoritative
+    as the block that was checked.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = _metrics_comment() + "\nAnd this run:\n\n" + tail.format(block=_claiming_json_that_does_not_parse())
@@ -663,10 +653,9 @@ async def test_a_record_in_the_fence_info_string_is_refused_beside_the_block_it_
 
     `FENCE`'s content group starts after the first newline: whatever sits after the marker on the
     opening line is the info-string position, conventionally a language tag, and the pattern allows
-    anything there. Tallying candidates off the whole match saw the id in that text and counted the
-    fence once, then validated only the content — a second, correctly schema'd record — and posted the
-    comment with the info string's record inside it verbatim, unread. It renders as part of the code
-    block's first line, which is to say it lands looking exactly as authoritative as what was checked.
+    anything there. Tallying candidates off the whole match counts the fence once for an id seen in
+    that text, then validates only the content, and the info string's own record posts unread —
+    rendering as part of the code block's first line, as authoritative as what was checked.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = (
@@ -736,9 +725,8 @@ async def test_an_unrelated_malformed_block_beside_a_valid_log_still_posts(monke
 def _escaped_id() -> str:
     """The schema id with its last character written as a `\\u` escape, so no literal id is present.
 
-    Both halves are asserted rather than assumed: an escape that did not decode to the id, or a
-    spelling that still held the id literally, would quietly turn every test below into a check of
-    the case it exists to defeat — the same trap `_claiming_json_that_does_not_parse` guards against.
+    Both halves are asserted rather than assumed: an escape that did not decode to the id, or one that
+    still held it literally, would turn every test below into a check of the case it exists to defeat.
     """
     escaped = SCHEMA_ID[:-1] + "\\u00" + format(ord(SCHEMA_ID[-1]), "x")
     assert json.loads(f'"{escaped}"') == SCHEMA_ID, f"{escaped} must decode to the schema id"
@@ -754,22 +742,20 @@ def _escaped_metrics_block(**fields: Any) -> str:
 
 @pytest.mark.anyio
 async def test_a_record_that_escapes_the_schema_id_is_still_validated(monkeypatch):
-    """Identity had two rules — a parse for what counts as the record, literal text for what arms the
-    check — and the bypass lived in the gap: JSON can spell one string many ways.
+    """A record claiming the id only through a `\\u` escape is validated, not waved through.
 
-    This body holds no literal occurrence of the id at all, so the literal arming saw nothing to check
-    and the record posted whole and unread — blank `task`, a negative count and a misspelled field
-    name, every one of them the failure this validation exists to catch. `json.loads` normalises the
-    escape, so it is a claim by every definition except the one the code was using.
+    Two identity rules — a parse for what counts as the record, literal text for what arms the check —
+    leave a gap, because JSON can spell one string many ways: a body with no literal occurrence of the
+    id arms nothing and posts unread. `json.loads` normalises the escape, so it is a claim by every
+    definition except the literal one.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = _escaped_metrics_block(task="   ", ci_fix_rounds=-7, ci_fix_round=2)
     assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
     async with mcp.Client(server.mcp) as client:
         result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-        # `extra="forbid"` fails before the model validators run at all, so the same record without the
-        # misspelled field is what shows the escaped content reaching them: the first to raise wins,
-        # which is the blank `task`.
+        # `extra="forbid"` fails before the model validators run, so only the same record without the
+        # misspelled field shows the escaped content reaching them: the blank `task` raises first.
         rest = await client.call_tool(
             "post-comment", {"issue": "PROJ-1", "body": _escaped_metrics_block(task="   ", ci_fix_rounds=-7)}
         )
@@ -865,15 +851,13 @@ def _claiming_record(spelling: str) -> str:
 async def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_shape(monkeypatch, case, shape):
     """One identity rule means the *same* answer for both spellings of the id, in every body shape.
 
-    Deciding identity on the parsed value fixed only the shapes where a parse happens: a properly closed
-    fence holding clean JSON. Every other shape falls back to a literal substring search for the id —
-    arming, an unparseable block's claim, a mention outside the fences — and an escaped spelling matches
-    none of them, so each of these bodies posted whole while its literal twin was refused: unclosed and
-    trailing-text fences and a CRLF body produce no block to parse, a BOM makes `json.loads` refuse
-    content the fence does close around, and unfenced prose was never a block at all.
+    Deciding identity on the parsed value covers only the shapes where a parse happens: a properly
+    closed fence holding clean JSON. Every other shape here — unclosed and trailing-text fences, a CRLF
+    body, a BOM the fence does close around, unfenced prose — falls back to a literal substring search
+    for the id, which an escaped spelling never matches.
 
-    Pinned as literal-versus-escaped pairs rather than as expected messages, because what went wrong
-    five times running was the two spellings diverging, not the wording of either answer.
+    Pinned as literal-versus-escaped pairs rather than as expected messages: what goes wrong is the two
+    spellings diverging, not the wording of either answer.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     literal = shape.format(record=_claiming_record(SCHEMA_ID))
@@ -935,16 +919,15 @@ def test_fence_detection_stays_linear_on_a_body_of_unclosed_openers():
 
     The backtracking pattern this replaced took 91 seconds here, because a lazy match reaching for the
     next closing marker re-scans the rest of the body once per opener. `_validate_machine_log` runs
-    synchronously inside the `post_comment` coroutine, so that was not one slow call — it was the whole
+    synchronously inside the `post_comment` coroutine, so that is not one slow call but the whole
     server's event loop wedged for every concurrent tool call by one malformed comment.
-
-    The bound is deliberately loose (the scan measures in single-digit milliseconds) so a slow runner
-    cannot make this flaky while still failing by three orders of magnitude on a quadratic regression.
     """
     body = f"The {SCHEMA_ID} log was meant to go here:\n" + "```json\n" * 40_000
     start = time.perf_counter()
     with pytest.raises(server.ToolError, match="carries no fenced block"):
         server._validate_machine_log(body)
+    # Loose on purpose (the scan measures in single-digit milliseconds): a slow runner must not make
+    # this flaky, while a quadratic regression still fails it by three orders of magnitude.
     assert time.perf_counter() - start < 2.0, "fence detection is backtracking again, not scanning"
 
     start = time.perf_counter()
@@ -1003,9 +986,8 @@ async def test_a_malformed_ship_metrics_body_is_refused_by_every_write_not_only_
 ):
     """The gate belongs to the body, so a body write must refuse a log a comment would have refused.
 
-    `pytest.fail` as the adapter factory is again the assertion that matters: validation reached only
-    from `post-comment` left an issue body as an unguarded second route for exactly the malformed log
-    that gate exists to stop, and one that reports an error after writing is the same incident.
+    Validation reached only from `post-comment` leaves an issue body as an unguarded second route for
+    exactly the malformed log the gate exists to stop.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     async with mcp.Client(server.mcp) as client:
@@ -1114,8 +1096,7 @@ async def test_a_known_credential_value_never_reaches_the_adapter_through_a_body
 
     Bodies are assembled out of command output and transcript text, so a credential landing in one is a
     routine accident rather than an exotic one — and a posted comment is durable, visible to everyone
-    with issue access, and not made safe again by deleting it. The load-bearing assertion is the
-    value's *absence* from what the adapter received; the marker only proves the scrub ran.
+    with issue access, and not made safe again by deleting it.
     """
     monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
     recorder = _Recorder()
@@ -1125,6 +1106,7 @@ async def test_a_known_credential_value_never_reaches_the_adapter_through_a_body
         result = await client.call_tool(tool, arguments(body))
     assert result.is_error is False, result.content
     sent = _body_sent(recorder)
+    # The load-bearing assertion is the value's absence; the marker below only proves the scrub ran.
     assert FAKE_SECRET not in sent, f"{tool} handed the credential straight to the tracker"
     assert sent.count(f"<REDACTED:{FAKE_SECRET_VAR}>") == 2, f"{tool} redacted only part of the body: {sent}"
     report = _payload(result)["scrub"]
@@ -1164,10 +1146,10 @@ async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypat
 async def test_every_caller_supplied_field_is_scrubbed_not_only_the_body(monkeypatch, tool, arguments, field):
     """A write's other caller-supplied strings are the same class of value as its body.
 
-    The scrub was wired to `body` alone, so a credential pasted into `create-issue`'s `title` reached the
-    adapter verbatim — while the report beside it said `redactions: 1` for the body, which reads as full
-    coverage of the write. A title is durable, echoed by every search result and every failed write, and
-    not made safe again by editing it. `add-label`'s `label` is the same shape at lower volume.
+    A scrub wired to `body` alone hands a credential pasted into `create-issue`'s `title` to the adapter
+    verbatim, while the report beside it says `redactions: 1` and reads as full coverage of the write. A
+    title is durable, echoed by every search result and every failed write, and not made safe again by
+    editing it; `add-label`'s `label` is the same shape at lower volume.
     """
     monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
     recorder = _Recorder()
@@ -1248,11 +1230,11 @@ async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip
 async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_redacted(monkeypatch):
     """The length floor is not part of the heuristic a declaration overrides: it stops a corruption.
 
-    Forcing a sub-floor value in replaced every occurrence of it anywhere in the write, so a
-    one-character declared credential redacted every space in the prose — mangling the body to protect a
-    value too short to be one, and disagreeing with `secrets.sanitize`, which treats a sub-floor value as
-    absent and refuses. Dropping it silently is the other half of the fault: this path cannot refuse, so
-    a caller who has exported a credential that will not be scrubbed has to be told which one.
+    Forcing a sub-floor value in replaces every occurrence of it anywhere in the write, so a
+    one-character declared credential redacts every space in the prose — mangling the body to protect a
+    value too short to be one, and disagreeing with `secrets.sanitize`, which treats a sub-floor value
+    as absent and refuses. Dropping it silently is the other half: this path cannot refuse, so a caller
+    whose exported credential will not be scrubbed has to be told which one.
     """
     monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
     monkeypatch.setenv("SY_TEST_DECLARED", " ")

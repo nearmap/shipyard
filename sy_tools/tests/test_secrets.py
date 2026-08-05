@@ -128,10 +128,9 @@ def test_missing_artifact_is_refused(tmp_path):
 def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
     """`secret_guard.py` reads `redaction.extra_words`, and that resolution shells out to `git`.
 
-    With no `git` on `PATH` the resolver raised `FileNotFoundError`, which crashed the whole hook
-    process: a `PreToolUse` hook that dies emits no decision and Claude Code continues, so a missing
-    binary silently disabled every built-in denial too, not merely the configured extra words. Run as
-    a subprocess because the failure was a process-level crash, which an in-process call cannot see.
+    A `PreToolUse` hook that dies emits no decision and Claude Code continues, so an unrunnable `git`
+    silently disables every built-in denial too, not merely the configured extra words. Run as a
+    subprocess: the failure is a process-level crash, which an in-process call cannot see.
     """
     empty_bin = tmp_path / "no-git-here"
     empty_bin.mkdir()
@@ -155,27 +154,16 @@ def test_a_git_that_cannot_be_run_does_not_disable_the_secret_gate(tmp_path):
 def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
     """The same call site as the test above, failing the one way an `except` clause cannot catch.
 
-    `secret_guard.py` resolves `redaction.extra_words` through `config.repo_root()`, which shells out
-    to `git rev-parse`. That call had no `timeout=`, so a git that blocks rather than fails — a wrapper
-    or credential helper waiting on something, a binary that does not return — left the `PreToolUse` hook
-    with no output for as long as the platform allowed, and no output is no decision, i.e. every built-in
-    denial silently skipped. The hook's own fail-closed backstop is an `except Exception`, which a hang
-    never reaches, so only the bound closes this path. Once bounded, it degrades exactly as the missing
-    binary above does: a `ConfigError` the hook's word-list fallback already catches.
-
-    Two phases, because a fake that wedges the *first* git call proves the bound on that call alone: the
-    resolver reaches git in four places (`--show-toplevel`, `--git-common-dir`, `config --get
-    core.worktree`, `--is-inside-work-tree`) and execution never reached the last three, so they carried
-    no `timeout=` at all while this test stayed green. The first phase keeps the refusal-memoization
-    claim, which needs the root itself to refuse; the second answers every earlier call and wedges the
-    last one, so the per-call bound check runs against all four sites and the four are asserted reached.
-
-    In a child process, because what is asserted is that the hook process still produces a decision
-    rather than hanging, which an in-process call cannot observe. Every check inside
-    that child raises explicitly rather than asserting: the child inherits this environment, and a
-    `PYTHONOPTIMIZE`/`-O` in it would strip an `assert` and leave the negative control — removing
-    `timeout=` from the real code — passing when it must fail.
+    `secret_guard.py` resolves `redaction.extra_words` through `config.repo_root()`, which shells out to
+    `git rev-parse`. Unbounded, a git that blocks rather than fails — a wrapper or credential helper
+    waiting on something, a binary that does not return — leaves the `PreToolUse` hook with no output for
+    as long as the platform allows, and no output is no decision: every built-in denial silently skipped.
+    The hook's own fail-closed backstop is an `except Exception`, which a hang never reaches, so only the
+    bound closes this path. In a child process, because a hang is only observable as a process that
+    produces no decision.
     """
+    # Raises rather than asserts: the child inherits this environment, and a `PYTHONOPTIMIZE` in it
+    # would strip the assert and pass the negative control of removing `timeout=` from the real code.
     bound_check = (
         "import subprocess\n"
         "from sy_tools import config as sy_config\n"
@@ -188,6 +176,8 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "    if kwargs.get('stdin') is not subprocess.DEVNULL:\n"
         "        raise AssertionError(f'the git call must not read the hook event on stdin: {cmd} {kwargs}')\n"
     )
+    # Phase one wedges the first git call, which the refusal-memoization claim needs: the root itself
+    # has to refuse.
     wedge_first = bound_check + (
         "def wedge(cmd, **kwargs):\n"
         "    check(cmd, kwargs)\n"
@@ -209,6 +199,8 @@ def test_a_wedged_git_does_not_hang_the_secret_gate(tmp_path):
         "if not secret_guard.decision('Bash', {'command': 'echo $ACLI_TOKEN'}):\n"
         "    raise AssertionError('built-ins must still deny')\n"
     )
+    # Phase two answers every earlier call and wedges the last: the resolver reaches git in four
+    # places, and wedging the first left the other three carrying no `timeout=` while this stayed green.
     wedge_last = bound_check + (
         "import os\n"
         "root = os.environ['CLAUDE_PROJECT_DIR']\n"

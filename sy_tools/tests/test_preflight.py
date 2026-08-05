@@ -1,10 +1,8 @@
 """The preflight cache's mechanics, and the `preflight` tool's use of them.
 
 The cache path and every variable read are redirected into `tmp_path`, so nothing here reads or writes
-the operator's real liveness verdict.
-
-The tracker names are placeholders. This module has no notion of what a tracker is beyond an opaque
-cache-key string, so a real one would only make the test look like it depended on something.
+the operator's real liveness verdict. The tracker names are placeholders: this module sees a tracker
+only as an opaque cache-key string.
 """
 from __future__ import annotations
 
@@ -98,11 +96,7 @@ def tool_config(cache, monkeypatch) -> None:
 
 @pytest.mark.anyio
 async def test_the_tool_reads_live_on_a_miss_and_short_circuits_on_the_next_call(tool_config, monkeypatch):
-    """The whole point of the cache: the second call must not touch the network.
-
-    Asserted on the adapter's own read count, not on the returned `cached` flag alone, because a flag
-    can say "cached" beside a live read that happened anyway.
-    """
+    """The whole point of the cache: the second call must not touch the network."""
     adapter = _Preflighting()
     monkeypatch.setattr(server.tracker, "adapter", lambda: adapter)
 
@@ -112,6 +106,7 @@ async def test_the_tool_reads_live_on_a_miss_and_short_circuits_on_the_next_call
 
     second = await server.preflight()
     assert second["cached"] is True, second
+    # Counted on the adapter, not the `cached` flag: a flag can say "cached" beside a live read.
     assert adapter.reads == 1, "a cache hit must not reach the adapter at all"
 
     forced = await server.preflight(force=True)

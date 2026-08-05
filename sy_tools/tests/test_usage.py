@@ -17,9 +17,9 @@ from sy_tools import usage
 def session_tree(tmp_path, monkeypatch) -> Path:
     """A synthetic session `s1`: one main transcript, one nested subagent, one legacy sibling dir.
 
-    Returns the main transcript's path. The ledger is redirected into the same throwaway directory so
-    attribution is exercised against a written mapping rather than the developer's real ledger.
+    Returns the main transcript's path.
     """
+    # Redirected too, so attribution runs against a written mapping, not the developer's real ledger.
     monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
     main = tmp_path / "s1.jsonl"
     subdir = tmp_path / "s1" / "subagents"
@@ -76,8 +76,7 @@ def session_tree(tmp_path, monkeypatch) -> Path:
         },
     ]
     main.write_text("".join(json.dumps(r) + "\n" for r in main_records), encoding="utf-8")
-    # Deliberately omit agent_type from the transcript: attribution comes from
-    # the same hook ledger used by real Shipyard agents.
+    # No agent_type here: attribution comes from the same hook ledger real Shipyard agents write.
     sub.write_text(
         json.dumps(
             {
@@ -106,8 +105,7 @@ def session_tree(tmp_path, monkeypatch) -> Path:
             "transcript_path": str(sub),
         }
     )
-    # Legacy project-level subagents dir: same-session file counts, other-session
-    # file must be excluded rather than contaminating this session's totals.
+    # Legacy project-level subagents dir: the other-session file must be excluded, not folded in.
     legacy = tmp_path / "subagents"
     legacy.mkdir()
     (legacy / "agent-b.jsonl").write_text(
@@ -224,11 +222,7 @@ def test_render_limits_fall_back_to_the_shipped_defaults_without_an_override(con
 
 
 def test_a_config_override_reaches_render_limits_leaf_by_leaf(config_layers):
-    """`_flatten()` only stores leaf keys, so a naive whole-object `get()` would silently be swallowed.
-
-    This exercises the real per-leaf resolution against a live (faked) config layer, not just "it
-    doesn't crash".
-    """
+    """`_flatten()` only stores leaf keys, so a naive whole-object `get()` would silently be swallowed."""
     overridden = _reresolve(config_layers, {"transcript": {"truncation_limits": {"tool_result": 99}}})
     assert overridden["tool_result"] == 99, "a config override must actually change render_limits()"
     assert overridden["tool_input"] == usage._DEFAULT_RENDER_LIMITS["tool_input"], (
@@ -237,17 +231,15 @@ def test_a_config_override_reaches_render_limits_leaf_by_leaf(config_layers):
 
 
 def test_an_unresolvable_config_falls_back_instead_of_crashing_the_render(tmp_path, monkeypatch):
-    """A render usually happens late in a session, so a broken config must cost the override, not the run.
-
-    The refusal is asserted first, so this pins that the degradation catches the exception actually
-    thrown rather than passing vacuously because nothing was raised at all.
-    """
+    """A render usually happens late in a session, so a broken config must cost the override, not the run."""
     from sy_tools import config as sy_config
 
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))  # exists, but is no checkout
     monkeypatch.setattr(usage, "_RENDER_LIMITS", None)
     sy_config.reset_cache()
     try:
+        # Refused first, so the degradation is pinned against the exception actually thrown rather
+        # than passing vacuously because nothing was raised.
         with pytest.raises(sy_config.ConfigError):
             sy_config.get("transcript.truncation_limits.tool_result")
         assert usage.render_limits() == usage._DEFAULT_RENDER_LIMITS, (

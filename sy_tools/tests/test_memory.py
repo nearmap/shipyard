@@ -1,10 +1,8 @@
 """The durable memory store's behaviour, and the three tools that serve it.
 
-Every test resolves the store root through the fixture below, which replaces the resolver call the
-module makes, so nothing here reads or writes the operator's real user-global memory.
-
-The lessons are plausible-looking placeholders. The store has no notion of what a lesson is beyond
-Markdown text, so a real one would only make the test look like it depended on its content.
+The `store` fixture replaces the resolver call the module makes, so nothing here reads or writes the
+operator's real user-global memory. The lesson text is a placeholder: the store sees only Markdown, so
+a real lesson would just make these tests look content-dependent.
 """
 from __future__ import annotations
 

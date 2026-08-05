@@ -43,6 +43,9 @@ LEGACY_CONFIG_ENV = {
     "SY_DONE_COLNAME", "SY_FRONTIER_MODEL", "SY_FRONTIER_FALLBACK", "SY_IMAGE_MODEL",
     "SY_DEBATE_MODEL", "SY_GH_PROJECT", "SY_GH_REPO",
 }
+# Every spelling of "give this agent the whole `sy` server": the bare server name under either
+# deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
+SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -366,7 +369,11 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
             continue
         named = [entry.strip() for entry in declared.group(1).split(",")]
         for entry in named:
-            if entry in {"mcp__sy", "mcp__plugin_sy_sy"}:
+            # Both spellings, because Claude Code documents `mcp__<server>__*` as granting every tool
+            # from that server exactly as the bare server name does — and the pair
+            # `mcp__sy__*, mcp__plugin_sy_sy__*` also satisfies the twin check below, so the
+            # bare-name-only form of this check let a full server grant through clean.
+            if SERVER_WILDCARD.fullmatch(entry):
                 fail(
                     f"{p.relative_to(ROOT)}: tools names the server-level wildcard {entry!r}, which grants "
                     "every tool including the tracker's mutation verbs; name individual tools instead",

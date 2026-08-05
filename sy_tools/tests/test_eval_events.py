@@ -1,8 +1,4 @@
-"""`eval_events`' own assertions, plus the degradation that keeps a broken config off the hot path.
-
-Ported from the module's `self-test` subcommand, which `scripts/validate.py` was the only caller of;
-`sy_tools/` code is pytest-tested, so the coverage lives here now.
-"""
+"""`eval_events`' own assertions, plus the degradation that keeps a broken config off the hot path."""
 from __future__ import annotations
 
 import json
@@ -57,8 +53,7 @@ def test_the_ledger_keys_on_session_id_alone_never_on_the_caller_s_cwd(tmp_path,
 def test_enabled_degrades_to_off_when_the_config_cannot_be_resolved(tmp_path, monkeypatch):
     """An unresolvable config must leave the log off, never crash a hook that fires on every tool call.
 
-    The refusal is asserted first, so this cannot pass vacuously: `sy_tools.config` raises
-    `ConfigError` where `scripts/sy_config.py` raises `SystemExit`, and catching only `SystemExit` would
+    The refusal is asserted first, so this cannot pass vacuously: catching the wrong exception would
     turn this documented degradation into a crashed `PreToolUse` hook — which is fail-open, so the
     whole gate around it would go quiet too.
     """

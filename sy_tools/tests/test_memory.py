@@ -1,9 +1,7 @@
 """The durable memory store's behaviour, and the three tools that serve it.
 
-Ported from the module's own `self-test` subcommand, which `scripts/validate.py` was the only caller
-of; `sy_tools/` code is pytest-tested, so the coverage lives here now. Every test resolves the store
-root through the fixture below, which replaces the resolver call the module makes, so nothing here
-reads or writes the operator's real user-global memory.
+Every test resolves the store root through the fixture below, which replaces the resolver call the
+module makes, so nothing here reads or writes the operator's real user-global memory.
 
 The lessons are plausible-looking placeholders. The store has no notion of what a lesson is beyond
 Markdown text, so a real one would only make the test look like it depended on its content.

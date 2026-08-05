@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """Trigger/trace event log for building Shipyard eval harnesses against real runs.
 
-Disabled by default — zero cost unless `debug.evals` is true. When enabled, appends one
-compact JSON line per hook firing to ~/.claude/shipyard/eval-events/<session_id>.jsonl: which
-skill or subagent triggered (Trigger), and the tool-call sequence around it (Trace). Keyed by
-session_id under the home directory, like `sy_tools/usage.py`'s usage-agent-map ledger, rather
-than a task- or repository-keyed scratch directory — such a directory accumulates every run
-against that key, while an eval must read exactly one run, so any key coarser than the session
-would interleave concurrent sessions' traces in a single file. Wired into
-every PreToolUse call, not just the mutating ones review_guard.py cares about, because
-Trigger/Trace evals need to see Skill and Agent invocations too.
+Disabled by default — zero cost unless `debug.evals` is true. When enabled, appends one compact JSON
+line per hook firing to ~/.claude/shipyard/eval-events/<session_id>.jsonl: which skill or subagent
+triggered (Trigger), and the tool-call sequence around it (Trace). It fires on every PreToolUse call,
+not only the mutating ones, so a Trigger/Trace eval sees Skill and Agent invocations too.
 
 Commands:
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.eval_events hook
@@ -17,15 +12,9 @@ Commands:
 
 That hook runs on bare `python` with no environment of its own, so **this module's import graph must
 stay standard library only** — `sy_tools.config` is admissible because it is stdlib-only too, and
-nothing here may reach the MCP server or anything the server needs. `sy_tools/usage.py` and
+nothing here may reach the MCP server or anything the server needs. "Bare `python`" is also whatever
+interpreter the operator has on `PATH`, so the graph must import on 3.9. `sy_tools/usage.py` and
 `sy_tools/guards/secret_guard.py` are the siblings under the same constraint.
-
-"Bare `python`" is also whatever interpreter the operator has on `PATH`, which is why the timestamp
-below spells `timezone.utc` rather than the 3.11+ `datetime.UTC` the linter would prefer: this module's
-whole contract is to cost nothing when it is off, and an `ImportError` on an older interpreter is a
-non-zero exit from a `PreToolUse` hook — the one failure mode a disabled-by-default event log must not
-have. The rest of the graph (`sy_tools.config`, the sibling hook modules) imports on 3.9 today, so this
-one line was the only thing narrowing the floor.
 """
 from __future__ import annotations
 
@@ -40,23 +29,17 @@ from .config import get as config_get
 
 SCHEMA = "shipyard.eval_events.v1"
 AGENT_TOOL_NAMES = {"Agent", "Task"}
+# Keyed by session id, never by task or repository: an eval must read exactly one run, and any
+# coarser key accumulates runs and interleaves concurrent sessions' traces in a single file.
 EVENTS_ROOT = Path.home() / ".claude" / "shipyard" / "eval-events"
 
 
 def enabled() -> bool:
-    """Whether the event log is on, per `debug.evals`.
-
-    This runs on every hook firing, so a misconfigured repo must not turn every tool call into a
-    hard failure: an unresolvable config leaves the log off, exactly as an unset var used to.
-
-    `ConfigError` is the shape every `sy_tools.config` refusal takes, where `scripts/sy_config.py`
-    raises `SystemExit` — catching `SystemExit` here instead would turn this documented degradation
-    into a crashed `PreToolUse` hook, which is worse than a lost trace. `OSError` degrades for the same
-    reason `sy_tools/guards/secret_guard.py` catches it: the resolver shells out to `git` and reads
-    layer files, and an environment fault it does not manage to name must still leave the log off.
-    """
+    """Whether the event log is on, per `debug.evals`; an unresolvable config leaves it off."""
     try:
         return bool(config_get("debug.evals"))
+    # This runs on every hook firing, so a misconfigured repo must cost a trace, not the tool call.
+    # `OSError` too: the resolver shells out to `git` and reads layer files.
     except (ConfigError, OSError):
         return False
 
@@ -85,7 +68,9 @@ def build_event(payload: dict) -> dict | None:
         return None
     event: dict = {
         "schema": SCHEMA,
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),  # noqa: UP017 -- see module docstring
+        # `datetime.UTC` is 3.11+ and this runs on whatever bare `python` is on `PATH` — 3.9 on some
+        # machines, where a crash is the one failure mode a disabled-by-default log must not have.
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),  # noqa: UP017
         "session_id": session_id,
         "hook_event": payload.get("hook_event_name"),
         "agent_type": normalize_agent_type(payload.get("agent_type") or payload.get("agentType")),
@@ -125,9 +110,7 @@ def record(payload: dict) -> None:
 def main() -> int:
     """Run the `hook` command: append one event line for this hook firing, if the log is enabled.
 
-    The only command, and `self-test` is gone: the assertions it carried are pytest tests under
-    `sy_tools/tests/test_eval_events.py` now. Malformed stdin is a success, because a hook that exits
-    non-zero on a payload it merely could not parse would interrupt the session it exists to observe.
+    The only command. Malformed stdin is a success: exit 0, nothing recorded.
     """
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     if arg != "hook":
@@ -137,6 +120,7 @@ def main() -> int:
         return 0
     try:
         payload = json.load(sys.stdin)
+    # A non-zero exit on an unparseable payload would interrupt the session this log exists to observe.
     except json.JSONDecodeError:
         return 0
     if isinstance(payload, dict):

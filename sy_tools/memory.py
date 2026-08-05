@@ -3,9 +3,9 @@
 The store is a directory of Markdown files under the user-global root the resolver reports for
 `memory.dir` — one file per lesson, its name the lesson title as a kebab-slug, holding a short
 frontmatter block (title, scope, tags, date) and the body. Beside them sits a greppable `index.md`,
-regenerated on every write and rebuilt on read whenever it disagrees with the lessons on disk, so a
-lesson deleted by hand never reads back as a ghost entry. Writes are idempotent by title: re-adding
-a lesson under a title already stored replaces that one file rather than adding a second copy of it.
+regenerated on every write and rebuilt on read whenever it disagrees with the lessons on disk. Writes
+are idempotent by title: re-adding a lesson under a title already stored replaces that one file
+rather than adding a second copy of it.
 
 The write/read discipline (when a lesson is worth storing, who reads it back) lives in
 skills/shared/references/memory.md.
@@ -108,6 +108,7 @@ def _ensure_index() -> None:
     if not lessons and not index.is_file():
         return
     entries = len(re.findall(r"^- \[", index.read_text(encoding="utf-8"), re.M)) if index.is_file() else -1
+    # Lessons get deleted by hand, and a stale index would keep reading them back as ghost entries.
     if entries != len(lessons):
         _rebuild_index(directory)
 

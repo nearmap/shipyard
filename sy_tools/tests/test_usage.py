@@ -1,11 +1,7 @@
 """`usage`'s parser and renderer, against a synthetic transcript tree built here.
 
 Deterministic by construction: every transcript, ledger entry and config layer these tests read is
-written by the test, so nothing depends on whichever session happens to be running them. That is also
-why the two MCP tools over this module are not part of `docs/smoke_mcp.py`'s live scenario.
-
-Ported from the module's own `self-test` subcommand, which `scripts/validate.py` was the only caller
-of; `sy_tools/` code is pytest-tested, so the coverage lives here now.
+written by the test, so nothing depends on whichever session happens to be running them.
 """
 from __future__ import annotations
 
@@ -243,9 +239,8 @@ def test_a_config_override_reaches_render_limits_leaf_by_leaf(config_layers):
 def test_an_unresolvable_config_falls_back_instead_of_crashing_the_render(tmp_path, monkeypatch):
     """A render usually happens late in a session, so a broken config must cost the override, not the run.
 
-    The refusal is asserted first: `sy_tools.config` raises `ConfigError` where `scripts/sy_config.py`
-    raises `SystemExit`, so this pins that the degradation catches the exception actually thrown rather
-    than passing vacuously because nothing was raised at all.
+    The refusal is asserted first, so this pins that the degradation catches the exception actually
+    thrown rather than passing vacuously because nothing was raised at all.
     """
     from sy_tools import config as sy_config
 

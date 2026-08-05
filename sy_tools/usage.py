@@ -8,7 +8,7 @@ main transcript plus the documented nested subagent transcript tree.
 Two surfaces over one implementation. `summarize()` and `render()` are the portable subset the `sy`
 MCP server exposes as the `usage_summarize` and `export_transcript` tools, which is how a workflow
 reaches them; `summarize`'s output is compact JSON suitable for a small standalone tracker comment.
-The one command left is the hook:
+The one command is the hook:
 
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.usage hook
       Read Claude Code hook JSON from stdin and record agent-id/type/transcript mapping.
@@ -132,9 +132,7 @@ def _iter_jsonl(path: Path, warnings: list[str]) -> Iterable[dict[str, Any]]:
 def resolve_main_transcript(session_id: str | None, transcript: str | None) -> Path:
     """The one on-disk main transcript a session id or an explicit path names.
 
-    Takes exactly one of the two. A session id that matches no transcript, or more than one, is an
-    error naming what was found rather than a silently-picked file: both tools' whole output is
-    derived from this path, so guessing here would misreport somebody else's session.
+    Takes exactly one of the two. No match, or more than one, is an error naming what was found.
     """
     if transcript:
         path = Path(transcript).expanduser().resolve()
@@ -151,6 +149,7 @@ def resolve_main_transcript(session_id: str | None, transcript: str | None) -> P
     matches = sorted({p.resolve() for p in matches})
     if not matches:
         raise FileNotFoundError(f"no Claude transcript found for session {session_id}")
+    # Both tools' whole output derives from this path, so a silent pick misreports another session.
     if len(matches) > 1:
         joined = "\n  ".join(str(p) for p in matches)
         raise RuntimeError(f"multiple transcripts found for session {session_id}:\n  {joined}")
@@ -209,9 +208,8 @@ def _load_agent_map(session_id: str) -> tuple[dict[Path, str], dict[str, str]]:
     by_id: dict[str, str] = {}
     primary = _ledger_path(session_id)
     paths: list[Path] = [primary] if primary.is_file() else []
-    # Some Claude Code versions/surfaces may expose a subagent-local session_id to
-    # an agent Stop hook. Exact transcript paths make it safe to scan the tiny
-    # mapping ledger directory as a fallback.
+    # Some Claude Code surfaces expose a subagent-local session_id to an agent Stop hook, so the whole
+    # (tiny) ledger directory is a fallback — safe because the mapping is keyed on exact paths.
     if LEDGER_ROOT.is_dir():
         paths.extend(p for p in LEDGER_ROOT.glob("*.jsonl") if p != primary)
     warnings: list[str] = []
@@ -375,7 +373,7 @@ def summarize(
     return result
 
 
-# ---- readable transcript rendering (replaces the manual /export step) ----
+# ---- readable transcript rendering ----
 
 _DEFAULT_RENDER_LIMITS = {"tool_input": 1500, "tool_result": 4000, "thinking": 1200}
 _RENDER_LIMITS: dict[str, int] | None = None
@@ -384,28 +382,18 @@ _RENDER_LIMITS: dict[str, int] | None = None
 def render_limits() -> dict[str, int]:
     """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
 
-    Resolved once per process and cached. `sy_tools.config._flatten()` only ever stores leaf keys, so
-    `transcript.truncation_limits` as a whole path is never resolvable — each of its three fields
-    must be fetched individually. A repo whose config can't be resolved at all (run outside a
-    checkout, a corrupted layer), or whose resolved value isn't actually numeric (a hand-edited
-    layer bypassing `validate`), falls back to the shipped defaults rather than crashing a render
-    that's usually happening late in a session.
-
-    The import stays inside the function so the `hook` command — the hot path, one process per Stop
-    and SubagentStop firing — never pays for `sy_tools.config` at all: it records a ledger line and
-    resolves nothing. `ConfigError` is the shape every `sy_tools.config` refusal takes, including the
-    environment faults (an unrunnable `git`, an unreadable layer) that `scripts/sy_config.py` raises
-    `SystemExit` for, so it is what this degradation catches.
+    Resolved once per process and cached. An unresolvable config, or a resolved value that is not
+    numeric, falls back to the shipped defaults.
     """
     global _RENDER_LIMITS
     if _RENDER_LIMITS is None:
         try:
+            # Imported here so the `hook` command, one process per firing that resolves nothing, never pays.
             from .config import ConfigError
             from .config import get as config_get
             _RENDER_LIMITS = {
-                # `get()` is typed as returning `object` because a layer can hold anything, and calling
-                # int() on that unchecked is the point rather than a gap: a non-numeric value raises
-                # straight into the fallback below instead of rendering with a nonsense limit.
+                # `config._flatten()` stores leaf keys only: the whole path never resolves, each field does.
+                # int() on `get()`'s unchecked `object` is the point: a non-numeric value hits the fallback.
                 key: int(config_get(f"transcript.truncation_limits.{key}"))  # ty: ignore[invalid-argument-type]
                 for key in _DEFAULT_RENDER_LIMITS
             }
@@ -557,10 +545,7 @@ def render(main: Path, *, task: str | None) -> str:
 def main(argv: list[str] | None = None) -> int:
     """Run the `hook` command: append one agent/transcript mapping line from hook JSON on stdin.
 
-    The only command this module still has. `summarize` and `export` were subcommands here and are now
-    the `usage_summarize` and `export_transcript` MCP tools, so each mechanism has exactly one path to
-    it and nothing shells out to this module except the hook. Malformed stdin is a success: a hook that
-    exits non-zero on a payload it merely could not parse would interrupt the session it is observing.
+    The only command. Malformed stdin is a success: exit 0, nothing recorded.
     """
     parser = argparse.ArgumentParser(prog="python -m sy_tools.usage")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -568,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         payload = json.load(sys.stdin)
+    # A non-zero exit on an unparseable payload would interrupt the session this hook is observing.
     except json.JSONDecodeError:
         return 0
     if isinstance(payload, dict):

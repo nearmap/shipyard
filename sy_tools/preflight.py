@@ -1,21 +1,14 @@
 """Tracker-agnostic preflight cache: skip a repeated live liveness check once one has
 recently succeeded for the same plugin build, tracker, and resolved config.
 
-A live network read (a real read, not just a local-credential-status command) is the only
-way to tell a present-but-dead credential from a working one, but it is not free, and the
-setup it verifies changes rarely. This module owns only the fingerprint, cache, and TTL
-mechanics so every adapter shares one cheap short-circuit; what "a real read" means for a
-given tracker stays adapter-side, declared in that adapter's own configuration doc.
+A live network read (a real read, not just a local-credential-status command) is the only way to tell
+a present-but-dead credential from a working one. This module owns the fingerprint, cache, and TTL
+mechanics so every adapter shares one cheap short-circuit; what "a real read" means for a given
+tracker stays adapter-side, declared in that adapter's own configuration doc.
 
-The fingerprint folds in the resolved Shipyard config, so a changed setting invalidates the cache
-without the caller listing anything. `var_names` therefore carries only secret env var names.
-
-`check` and `record` have one caller: the `preflight` MCP tool, which resolves the tracker and those
-var names from configuration itself, so no caller can pass a list that does not match the credential
-the adapter actually reads with.
-
-The dependency runs one way — this module imports `sy_tools.config`, and `sy_tools.config` never
-imports this one — which is what makes the module-scope import below sound.
+`var_names` carries only secret env var names: the fingerprint folds in the resolved Shipyard config
+whole. `check` and `record` have one caller, the `preflight` MCP tool, which resolves both the tracker
+and those var names from configuration itself.
 """
 from __future__ import annotations
 
@@ -26,6 +19,7 @@ from pathlib import Path
 import subprocess
 import time
 
+# Module scope is sound because the dependency runs one way: `sy_tools.config` never imports this.
 from .config import fingerprint as config_fingerprint
 from .config import repo_scratch_dir
 
@@ -53,12 +47,10 @@ def record(tracker: str, var_names: list[str]) -> None:
 def fingerprint(tracker: str, var_names: list[str]) -> str:
     """Hash the plugin build, the tracker, the resolved config, and the values of `var_names`.
 
-    A changed var value (a rotated token), a changed setting (a switched project, a renamed
-    column), or a new plugin build invalidates the cache automatically; the raw values never
-    leave this process. `var_names` now carries only secrets, since everything else moved into
-    the config file the config fingerprint covers. An empty list is legitimate: an adapter may
-    hold no credential in the environment at all, and the config fingerprint still covers its
-    settings.
+    A rotated var value, a changed setting, or a new plugin build therefore invalidates the cache
+    automatically; the raw values never leave this process. An empty `var_names` is legitimate — an
+    adapter may hold no credential in the environment at all, and the config fingerprint still covers
+    its settings.
     """
     values = "|".join(f"{name}={os.environ.get(name, '')}" for name in sorted(var_names))
     digest = hashlib.sha256(f"{plugin_build()}|{tracker}|{config_fingerprint()}|{values}".encode()).hexdigest()
@@ -90,13 +82,10 @@ def cache_path() -> Path:
 
     Scoped by the repository's own directory name rather than machine-global, so differently named
     repos never share one liveness verdict — two repos that happen to share a name still do, which is
-    the same name-keying limitation `repo_scratch_dir` itself carries. Resolved outside the checkout
-    rather than beside it so it outlives a `/sy:ship` worktree — the
-    old repo-relative path meant every ship threw the cache away with the worktree it was built in.
-
-    A function rather than a module constant because resolution shells out to git and reads the config
-    layers, which no import of this module should pay for.
+    the same name-keying limitation `repo_scratch_dir` itself carries.
     """
+    # Outside the checkout, not beside it, so the verdict outlives a `/sy:ship` worktree.
+    # A function, not a constant: resolution shells out to git and reads the config layers.
     return repo_scratch_dir() / "sy" / "preflight-cache.json"
 
 

@@ -1,9 +1,7 @@
 """The preflight cache's mechanics, and the `preflight` tool's use of them.
 
-Ported from the module's own `self-test` subcommand, which `scripts/validate.py` was the only caller
-of; `sy_tools/` code is pytest-tested, so the coverage lives here now. The cache path and every
-variable read are redirected into `tmp_path`, so nothing here reads or writes the operator's real
-liveness verdict.
+The cache path and every variable read are redirected into `tmp_path`, so nothing here reads or writes
+the operator's real liveness verdict.
 
 The tracker names are placeholders. This module has no notion of what a tracker is beyond an opaque
 cache-key string, so a real one would only make the test look like it depended on something.

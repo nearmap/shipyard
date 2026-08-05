@@ -1378,6 +1378,10 @@ def test_an_unrunnable_git_is_refused_by_name_from_every_call_path(tmp_path, mon
     assert "git could not be run" in probe.stderr, f"the refusal must name its cause: {probe.stderr!r}"
 
 
+GIT_CALL_SITES = ("--show-toplevel", "--git-common-dir", "core.worktree", "--is-inside-work-tree")
+"""One marker per git call site config resolution reaches, in the order a cold resolution reaches them."""
+
+
 def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, monkeypatch):
     """The same call site as the test above, failing the one way no `except` clause can catch.
 
@@ -1389,25 +1393,43 @@ def test_a_wedged_git_is_refused_rather_than_hanging_every_tool_call(tmp_path, m
     the call's own kwargs, not just on the refusal: `TimeoutExpired` is raised here by the fake either
     way, so removing `timeout=` from the real code would still produce a `ConfigError` and pass a test
     that only checked that. What proves the hang is actually bounded is that the real call asks for it.
+
+    Every call site is covered, not just the first. Resolution shells out to git in four places
+    (`GIT_CALL_SITES`) and the fake wedges on the *last* of them, so `seen` accumulates the real kwargs
+    of every earlier one before the refusal: wedging on the first call meant `seen` held a single entry,
+    and an `all(...)` over one element stayed green while the other three sites carried no `timeout=` at
+    all — which is exactly how three unbounded calls arrived here unnoticed. Each site is asserted to
+    have been reached as well, so removing a call rather than its bound also fails.
     """
     seen: list[dict] = []
+    commands: list[list[str]] = []
 
     def wedge(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        commands.append(list(cmd))
         seen.append(kwargs)
-        raise subprocess.TimeoutExpired(cmd=cmd, timeout=config.GIT_TIMEOUT_SECONDS)
+        if "--is-inside-work-tree" in cmd:  # the last site a cold resolution reaches
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=config.GIT_TIMEOUT_SECONDS)
+        if "--show-toplevel" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{tmp_path}\n", stderr="")
+        if "--git-common-dir" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{tmp_path / '.git'}\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")  # no core.worktree
 
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # so worktree.root stays derived, as it is by default
     monkeypatch.setattr(config.subprocess, "run", wedge)
-    with pytest.raises(config.ConfigError, match="did not resolve the repository root") as raised:
+    with pytest.raises(config.ConfigError, match="is a working tree") as raised:
         config.reload()
     assert f"within {config.GIT_TIMEOUT_SECONDS}s" in str(raised.value), raised.value
     assert "CLAUDE_PROJECT_DIR" not in str(raised.value), "a wedged binary is not the pointer's fault"
-    assert seen, "the refusal must come from the git call, not from something short of it"
+    assert len(seen) > 1, f"the refusal must come from a later site, with earlier ones recorded: {commands}"
+    for site in GIT_CALL_SITES:
+        assert any(site in cmd for cmd in commands), f"{site} was never reached, so its bound is unproven"
     assert all(kwargs.get("timeout") == config.GIT_TIMEOUT_SECONDS for kwargs in seen), (
-        f"only `timeout=` can refuse a hang, and the real call must pass it: {seen}"
+        f"only `timeout=` can refuse a hang, and every real call must pass it: {list(zip(commands, seen, strict=True))}"
     )
     assert all(kwargs.get("stdin") is subprocess.DEVNULL for kwargs in seen), (
-        f"the git call must not inherit the server's JSON-RPC stdin: {seen}"
+        f"no git call may inherit the server's JSON-RPC stdin: {list(zip(commands, seen, strict=True))}"
     )
 
 

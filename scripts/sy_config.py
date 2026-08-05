@@ -54,17 +54,23 @@ CONFIG_FILENAME = "config.json"
 LOCAL_FILENAME = "config.local.json"
 CONFIG_DIRNAME = ".shipyard"
 SCHEMA_URL = "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json"
-# The only subprocess this module runs (`git rev-parse --show-toplevel`) is bounded, because
-# `secret_guard.py`'s `PreToolUse` hook reaches it on the Bash hot path and a hook that blocks emits no
-# decision, which is an allow. Generous for a local rev-parse under load, short of anything a caller
-# would sit through on a single tool call — and that is a bound per *process*, not per call, because
-# `repo_root()` memoizes its refusal as well as its answer: one failed `get()` reaches root resolution
-# twice (once through the credential-shape gate's own `resolve()`, once for the value), and re-running
-# git for the second would have made the real wait twice this number. What is bounded is the git
-# subprocess and nothing else — `layers()` and `_load_json` read `~/.shipyard/config.json` and the
-# repo's own layers with no bound at all, so a home directory that has stopped answering hangs there
-# whatever this says. Same shape as `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS` and
-# `sy_tools/config.py::GIT_TIMEOUT_SECONDS`.
+# Every subprocess this module runs is a git query, and all four call sites are bounded by this:
+# `rev-parse --show-toplevel` (`_git_toplevel`), `rev-parse --git-common-dir` (`_git_common_dir`),
+# `config --get core.worktree` (`_configured_worktree`) and `rev-parse --is-inside-work-tree`
+# (`_is_resolved_working_tree`). `secret_guard.py`'s `PreToolUse` hook reaches them on the Bash hot path
+# and a hook that blocks emits no decision, which is an allow. Generous for a local rev-parse under
+# load, short of anything a caller would sit through on a single tool call — but a bound per subprocess,
+# not per call: only root resolution is memoized (`repo_root()` remembers its refusal as well as its
+# answer, so one failed `get()`, which reaches root resolution twice — once through the credential-shape
+# gate's own `resolve()`, once for the value — runs git once), while the other three sites are resolved
+# fresh every time, and a cold `repo_scratch_dir()` reaches 13 git subprocesses in an ordinary checkout
+# (measured, not estimated — one root resolution, one `_git_common_dir`, five for `_logical_repo`, five
+# more for the `worktree.root` derived default's own `_logical_repo`, one closing `_git_toplevel`). So a
+# git slow enough to answer just under the bound every time costs 13x this number, where a *wedged* one
+# refuses at the first site it reaches. What is bounded is the git subprocess and nothing else —
+# `layers()` and `_load_json` read `~/.shipyard/config.json` and the repo's own layers with no bound at
+# all, so a home directory that has stopped answering hangs there whatever this says. Same shape as
+# `sy_tools/secrets.py::SCANNER_TIMEOUT_SECONDS` and `sy_tools/config.py::GIT_TIMEOUT_SECONDS`.
 GIT_TIMEOUT_SECONDS = 5
 
 # Weakest to strongest. Clamping a floor needs a total order, so an alias absent here is an error
@@ -645,7 +651,8 @@ def repo_root() -> Path:
     One failed `get()` asks for the root twice — the credential-shape gate resolves first through
     `_extra_secret_words()`, which swallows the refusal, and the value's own `resolve()` asks again — so
     without this the wait a caller actually sits through on a wedged git was twice
-    `GIT_TIMEOUT_SECONDS`, not the one bound that constant documents. `reset_cache()` clears both, the
+    `GIT_TIMEOUT_SECONDS`, not the one root resolution that constant's own accounting counts (the other
+    three bounded call sites are counted where the constant is defined). `reset_cache()` clears both, the
     same contract `_RESOLVED` already has: nothing re-reads until something asks it to.
     """
     global _REPO_ROOT, _REPO_ROOT_REFUSAL
@@ -740,8 +747,12 @@ def _git_common_dir(start: Path) -> Path | None:
     against *this process's* cwd instead of `start` — fail-soft on the one boundary these callers
     exist to keep. A relative answer is None, the same as no checkout.
 
-    A `git` that cannot be run is refused by name here for the reasons `_git_toplevel` gives; None
-    means only "git ran and reported no checkout", which the callers act on themselves.
+    A `git` that cannot be run is refused by name here for the reasons `_git_toplevel` gives, and one
+    that *hangs* is bounded and refused for those same reasons: the secret gate's fail-closed backstop is
+    an `except Exception`, which a hang never raises, so only `timeout=` closes that fail-open path. None
+    means only "git ran and reported no checkout", which the callers act on themselves. `stdin` is closed
+    as `_git_toplevel` closes its own: the caller can be a `PreToolUse` hook whose stdin carries the very
+    event it is deciding on.
     """
     if not start.is_dir():
         return None
@@ -749,7 +760,14 @@ def _git_common_dir(start: Path) -> Path | None:
         proc = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"sy_config: git did not resolve the repository's shared git directory from {start} within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, so "
+            "resolution refuses instead."
+        ) from None
     except OSError as exc:
         raise SystemExit(
             f"sy_config: git could not be run to resolve the repository's scratch directory from {start}: "
@@ -779,12 +797,24 @@ def _configured_worktree(common: Path) -> Path | None:
     git-dirs are deliberately colocated under one shared parent directory, the same class of
     collision as two ordinary same-named repos elsewhere on the machine, and out of scope for the
     same reason.
+
+    Each read is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and close
+    their own: a `PreToolUse` hook reaches here, its stdin carries the event it is deciding on, and a git
+    that never returns leaves it with no decision at all, which reads as an allow.
     """
     for filename in ("config.worktree", "config"):
-        proc = subprocess.run(
-            ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["git", "config", "--file", str(common / filename), "--get", "core.worktree"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise SystemExit(
+                f"sy_config: git did not read core.worktree from {common / filename} within "
+                f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, "
+                "so resolution refuses instead."
+            ) from None
         out = proc.stdout.strip()
         if proc.returncode == 0 and out:
             resolved = (common / out).resolve()
@@ -805,13 +835,25 @@ def _is_resolved_working_tree(candidate: Path, common: Path) -> bool:
     Settled by asking git directly rather than pattern-matching directory names: a real working tree
     answers `--is-inside-work-tree` and its own `--git-common-dir` agrees with `common`; a storage
     directory answers neither.
+
+    The question is bounded and `stdin` is closed for the same reasons the sibling resolvers bound and
+    close their own: a `PreToolUse` hook reaches here, its stdin carries the event it is deciding on, and
+    a git that never returns leaves it with no decision at all, which reads as an allow.
     """
     if not candidate.is_dir():
         return False
-    proc = subprocess.run(
-        ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"sy_config: git did not answer whether {candidate} is a working tree within "
+            f"{GIT_TIMEOUT_SECONDS}s and was killed. A wedged git binary cannot be waited out here, so "
+            "resolution refuses instead."
+        ) from None
     if proc.returncode != 0 or proc.stdout.strip() != "true":
         return False
     return _git_common_dir(candidate) == common

@@ -33,7 +33,6 @@ import os
 from pathlib import Path
 import sys
 
-from sy_tools.config import ConfigError
 from sy_tools.config import get as config_get
 
 AGENT_TOOL_NAMES = {"Agent", "Task"}
@@ -83,8 +82,7 @@ def decision(event: dict) -> tuple[str | None, str | None]:
     count, warning = _prior_dispatches(path)
     if count >= cap:
         return _deny_reason(count, cap), warning
-    _record_dispatch(path, session_id)
-    return None, warning
+    return None, _record_dispatch(path, session_id) or warning
 
 
 def main() -> None:
@@ -112,10 +110,18 @@ def _normalized_agent_type(agent_type: object) -> str:
 
 def _resolved_cap() -> tuple[int | None, str | None]:
     try:
-        return int(config_get(CAP_KEY)), None  # ty: ignore[invalid-argument-type]
-    # OSError too: the resolver shells out to `git`, so a `git` missing from PATH raises through here.
-    except (SystemExit, ConfigError, OSError) as exc:
-        return None, _degraded(f"{CAP_KEY} could not be resolved ({exc})")
+        value = int(config_get(CAP_KEY))  # ty: ignore[invalid-argument-type]
+    # Every failure, not an enumeration: `config.get` is a flat-dict lookup that applies no schema, so a
+    # dict-, None- or text-shaped value raises TypeError/ValueError here and must reach this same
+    # fail-open rather than main()'s generic backstop. SystemExit is no Exception subclass and
+    # sy_tools.config can raise it; OSError arrives because the resolver shells out to `git`.
+    except (SystemExit, Exception) as exc:
+        return None, _unusable_cap(repr(exc))
+    if value < 1:
+        # schema.json's `"minimum": 1` binds on write, never on this read: a cap below 1 would deny
+        # every dispatch of the session including the first, so it is no cap at all.
+        return None, _unusable_cap(f"{value} is not a positive number of rounds")
+    return value, None
 
 
 def _ledger_path(session_id: str) -> Path:
@@ -146,17 +152,26 @@ def _prior_dispatches(path: Path) -> tuple[int, str | None]:
     return count, None
 
 
-def _record_dispatch(path: Path, session_id: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _record_dispatch(path: Path, session_id: str) -> str | None:
+    """Spend one round of the session's budget; returns the warning if the ledger could not be written.
+
+    A read-only `$HOME`, a full disk or a permission fault leaves the round uncounted, which is its own
+    reportable failure: the dispatch was evaluated and allowed, only the accounting was lost.
+    """
     # `datetime.UTC` is 3.11+ and a hook runs this on bare `python`, 3.9 on some machines.
     entry = {"session_id": session_id, "at": datetime.now(timezone.utc).isoformat()}  # noqa: UP017
     line = json.dumps(entry, separators=(",", ":"), sort_keys=True) + "\n"
-    # O_APPEND keeps each small event write atomic on normal local filesystems.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # O_APPEND keeps each small event write atomic on normal local filesystems.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        return _uncounted_round(path, exc)
+    return None
 
 
 def _deny_reason(count: int, cap: int) -> str:
@@ -172,6 +187,18 @@ def _deny_reason(count: int, cap: int) -> str:
 
 def _degraded(detail: str) -> str:
     return f"spec_gate_cap_guard: {detail}, so {CAP_KEY} is not being enforced for this dispatch."
+
+
+def _unusable_cap(detail: str) -> str:
+    return _degraded(f"{CAP_KEY} could not be resolved and validated as a positive integer ({detail})")
+
+
+def _uncounted_round(path: Path, detail: object) -> str:
+    """Deliberately unlike `_degraded`: the cap held for this call and stops holding for every later one."""
+    return (
+        f"spec_gate_cap_guard: dispatch allowed but this round was not counted (writing the ledger "
+        f"{path} failed: {detail}), so {CAP_KEY} will not bind again for this session."
+    )
 
 
 def _unreadable_ledger(path: Path, detail: object) -> str:
@@ -202,19 +229,48 @@ def _self_test() -> None:
                 _test_the_cap_th_dispatch_is_the_last_one_allowed,
                 _test_a_corrupted_ledger_counts_as_zero_prior_dispatches,
                 _test_two_sessions_do_not_share_one_budget,
+                _test_the_hook_json_output_is_the_deny_contract_claude_code_reads,
+                _test_a_ledger_that_cannot_be_written_allows_an_uncounted_round,
             )):
                 globals()["LEDGER_ROOT"] = Path(tmp) / f"case-{index}"
                 globals()["_resolved_cap"] = lambda: (_SELF_TEST_CAP, None)
                 case()
-            globals()["LEDGER_ROOT"] = Path(tmp) / "live-cap"
             globals()["_resolved_cap"] = live_cap
-            _test_an_unresolvable_cap_allows_and_reports_it()
+            for index, case in enumerate((
+                _test_a_cap_below_one_fails_open_instead_of_locking_the_session_out,
+                _test_an_unresolvable_cap_allows_and_reports_it,
+            )):
+                globals()["LEDGER_ROOT"] = Path(tmp) / f"live-cap-{index}"
+                case()
     finally:
         globals()["LEDGER_ROOT"], globals()["_resolved_cap"] = original_root, live_cap
 
 
 def _event(session_id: str, tool: str = "Agent", subagent_type: str | None = GUARDED_AGENT_TYPE) -> dict:
     return {"session_id": session_id, "tool_name": tool, "tool_input": {"subagent_type": subagent_type}}
+
+
+def _hook_output(event: dict) -> dict:
+    """`main()` driven the way Claude Code drives it: the event on stdin, the parsed payload from stdout.
+
+    Nothing below `decision()` can assert the JSON key names Claude Code actually reads, and a hook that
+    prints nothing is read as an allow — so a misspelling anywhere in `emit()` is a silent allow.
+    """
+    # Imported here rather than at module scope: the hook path pays every import on each Agent call.
+    import contextlib
+    import io
+
+    saved_stdin, saved_argv = sys.stdin, sys.argv
+    captured = io.StringIO()
+    try:
+        sys.argv = [saved_argv[0]]  # the hook's stdin path, not the self-test this may be running inside
+        sys.stdin = io.StringIO(json.dumps(event))
+        with contextlib.redirect_stdout(captured):
+            main()
+    finally:
+        sys.stdin, sys.argv = saved_stdin, saved_argv
+    printed = captured.getvalue()
+    return json.loads(printed) if printed.strip() else {}
 
 
 def _test_a_dispatch_that_is_not_spec_gate_allows_at_any_count() -> None:
@@ -284,6 +340,65 @@ def _test_two_sessions_do_not_share_one_budget() -> None:
     assert reason is None, f"a second session starts with a full budget: {reason!r}"
     assert _prior_dispatches(_ledger_path("session-a"))[0] == _SELF_TEST_CAP, "session-a's count is its own"
     assert _prior_dispatches(_ledger_path("session-b"))[0] == 1, "session-b's count is its own"
+
+
+def _test_the_hook_json_output_is_the_deny_contract_claude_code_reads() -> None:
+    """The whole hook, stdin to stdout: an in-budget allow prints nothing, the over-cap one denies."""
+    for n in range(1, _SELF_TEST_CAP + 1):
+        payload = _hook_output(_event("emitted"))
+        assert payload == {}, f"dispatch {n} of {_SELF_TEST_CAP} must print nothing at all: {payload!r}"
+    payload = _hook_output(_event("emitted"))
+    decided = payload.get("hookSpecificOutput")
+    assert isinstance(decided, dict), f"the over-cap dispatch must emit a hook decision: {payload!r}"
+    assert decided.get("hookEventName") == "PreToolUse", payload
+    assert decided.get("permissionDecision") == "deny", f"the over-cap dispatch must deny: {payload!r}"
+    reason = decided.get("permissionDecisionReason") or ""
+    for named in (f"{_SELF_TEST_CAP} time(s)", f"{CAP_KEY} is {_SELF_TEST_CAP}"):
+        assert named in reason, f"the emitted reason must name {named!r}: {payload!r}"
+    assert "systemMessage" not in payload, f"a deny this guard reached is not degraded: {payload!r}"
+
+
+def _test_a_ledger_that_cannot_be_written_allows_an_uncounted_round() -> None:
+    """An unwritable ledger allows, and says the round went uncounted rather than that nothing was decided.
+
+    `LEDGER_ROOT` is made a regular file, so both the read and the `O_APPEND` write raise `OSError` the
+    way a read-only `$HOME` or a full disk would. The warning has to be the top-level `systemMessage`:
+    an exit-0 `PreToolUse` hook's stderr reaches no human.
+    """
+    LEDGER_ROOT.parent.mkdir(parents=True, exist_ok=True)
+    LEDGER_ROOT.write_text("", encoding="utf-8")
+    for n in range(1, _SELF_TEST_CAP + 2):
+        payload = _hook_output(_event("unwritable"))
+        assert "hookSpecificOutput" not in payload, f"dispatch {n} must not deny on a write fault: {payload!r}"
+        warning = payload.get("systemMessage") or ""
+        assert "not counted" in warning, f"the lost round must be named as lost: {payload!r}"
+        assert str(_ledger_path("unwritable")) in warning, f"and must name the ledger: {warning!r}"
+        assert CAP_KEY in warning, f"and the enforcement it costs: {warning!r}"
+        assert "could not be evaluated" not in warning, f"the dispatch *was* evaluated: {warning!r}"
+
+
+def _test_a_cap_below_one_fails_open_instead_of_locking_the_session_out() -> None:
+    """`config.get` is a flat-dict read, so `schema.json`'s `"minimum": 1` never binds here.
+
+    A resolved cap of `0` denies from the very first dispatch onward for the rest of the session, which
+    includes `/sy:spec`'s own mandatory spec-gate pass — an unusable cap must therefore fail open like an
+    unresolvable one. The malformed shapes are the same read with no schema behind it.
+    """
+    original = config_get
+    try:
+        for value in (0, -3, None, {"rounds": 2}, "some", [2]):
+            globals()["config_get"] = lambda _key, _value=value: _value
+            cap, warning = _resolved_cap()
+            assert cap is None, f"a cap of {value!r} must not be trusted as {cap!r}"
+            assert warning and CAP_KEY in warning, f"the dropped enforcement must be reported: {warning!r}"
+            reason, decided_warning = decision(_event("below-one"))
+            assert reason is None, f"a cap of {value!r} must never deny a dispatch: {reason!r}"
+            assert decided_warning == warning, f"and must report the same drop: {decided_warning!r}"
+            assert not LEDGER_ROOT.exists(), "and must not spend a round it cannot bound"
+        globals()["config_get"] = lambda _key: 1
+        assert _resolved_cap() == (1, None), "a cap of exactly 1 is the smallest usable one, not a fault"
+    finally:
+        globals()["config_get"] = original
 
 
 def _test_an_unresolvable_cap_allows_and_reports_it() -> None:

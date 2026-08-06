@@ -43,6 +43,25 @@ def test_two_sessions_do_not_share_one_budget(pinned_cap):
     guard._test_two_sessions_do_not_share_one_budget()
 
 
+def test_the_hook_json_output_is_the_deny_contract_claude_code_reads(pinned_cap):
+    """stdin to stdout through `main()`: the JSON keys Claude Code reads, not just `decision()`."""
+    guard._test_the_hook_json_output_is_the_deny_contract_claude_code_reads()
+
+
+def test_a_ledger_that_cannot_be_written_allows_an_uncounted_round(pinned_cap):
+    guard._test_a_ledger_that_cannot_be_written_allows_an_uncounted_round()
+
+
+def test_a_cap_below_one_fails_open_instead_of_locking_the_session_out(ledger):
+    """The live resolver over a faked `config.get`, so this one runs without the pinned cap."""
+    guard._test_a_cap_below_one_fails_open_instead_of_locking_the_session_out()
+
+
 def test_an_unresolvable_cap_allows_and_reports_it(ledger):
     """The live config resolver, so this one runs without the pinned cap."""
     guard._test_an_unresolvable_cap_allows_and_reports_it()
+
+
+def test_the_guards_own_self_test_passes():
+    """Its own `self-test` argv corpus, so a case added there is caught here and not only by hand."""
+    guard._self_test()

@@ -46,6 +46,10 @@ LEGACY_CONFIG_ENV = {
 # Every spelling of "give this agent the whole `sy` server": the bare server name under either
 # deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
 SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
+# The only two prefixes under which an entry names a real `sy` tool. An entry under neither -- a bare
+# `check_env`, or a foreign server's -- grants nothing, however it splits, so every verb extraction
+# below must read the prefix rather than the tail.
+SY_PREFIXES = ("mcp__sy__", "mcp__plugin_sy_sy__")
 MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
 # Exactly the tracker-mutation verbs each `/sy:ship` worker's own procedure names: `start-resume.md`
 # step 7 sets status and self-assigns, `immutable-gate.md`'s promote step sets status, and
@@ -375,6 +379,14 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
                 )
 
 
+def _sy_verb(entry: str) -> str | None:
+    """The tool name if `entry` is `mcp__sy__<verb>` or `mcp__plugin_sy_sy__<verb>`, else `None`."""
+    for prefix in SY_PREFIXES:
+        if entry.startswith(prefix):
+            return entry[len(prefix):]
+    return None
+
+
 def check_agent_mcp_allowlists(errors: list[str]) -> None:
     """An agent's `tools:` allowlist reaches the server's tools under both prefixes, never by wildcard, always
     reaches `check_env`, never gives a `/sy:ship` worker a durable-memory write, and gives a `/sy:ship` worker
@@ -406,7 +418,7 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                 errors,
             )
             named = [entry for entry in named if entry]
-        granted = {entry.rpartition("__")[2] for entry in named}
+        granted = {verb for entry in named if (verb := _sy_verb(entry)) is not None}
         if CHECK_ENV_TOOL not in granted:
             fail(
                 f"{p.relative_to(ROOT)}: tools is an explicit allowlist naming no {CHECK_ENV_TOOL!r}, so this "
@@ -416,7 +428,7 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
             )
         if p.stem in SHIP_WORKER_AGENTS:
             for entry in named:
-                if entry.rpartition("__")[2] in MEMORY_WRITE_TOOLS:
+                if _sy_verb(entry) in MEMORY_WRITE_TOOLS:
                     fail(
                         f"{p.relative_to(ROOT)}: tools names {entry!r}, but only the /sy:ship parent writes the "
                         "user-global memory store; a worker relays a MEMORY_REFUTE candidate instead",
@@ -459,7 +471,7 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         # `mcp__plugin_sy_sy__` is a marketplace install's prefix, `mcp__sy__` a project `.mcp.json`'s, and an
         # explicit `tools:` list grants nothing it does not name: one prefix silently strands the other.
         for entry in named:
-            for prefix, twin in (("mcp__sy__", "mcp__plugin_sy_sy__"), ("mcp__plugin_sy_sy__", "mcp__sy__")):
+            for prefix, twin in (SY_PREFIXES, SY_PREFIXES[::-1]):
                 if entry.startswith(prefix) and twin + entry[len(prefix):] not in named:
                     fail(
                         f"{p.relative_to(ROOT)}: tools names {entry!r} but not its other-deployment twin "

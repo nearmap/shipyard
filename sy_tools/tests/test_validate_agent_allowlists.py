@@ -168,3 +168,17 @@ def test_an_explicit_allowlist_without_check_env_is_refused(tmp_path, monkeypatc
 
 def test_an_explicit_allowlist_with_check_env_twins_passes(tmp_path, monkeypatch):
     assert not _check(tmp_path, _twins("check_env"), monkeypatch), "check_env under both prefixes is the fix"
+
+
+@pytest.mark.parametrize("entry", ["check_env", "mcp__other__check_env"])
+def test_an_unprefixed_or_foreign_check_env_does_not_satisfy_the_grant(tmp_path, monkeypatch, entry):
+    """A tail-matching read counts a bare or foreign-server name as the grant; neither reaches the `sy` tool."""
+    errors = _check(tmp_path, entry, monkeypatch)
+    assert any("check_env" in error for error in errors), f"{entry!r} grants no check_env: {errors}"
+
+
+def test_an_unprefixed_tracker_verb_does_not_satisfy_a_ship_workers_declared_set(tmp_path, monkeypatch):
+    """Same tail-matching hazard on the exact-verb-set check: `assign` alone reaches no tool."""
+    errors = _check(tmp_path, f"assign, {_twins('check_env', 'set-status')}", monkeypatch, name="ship-start")
+    assert any("missing" in error and "assign" in error for error in errors), \
+        f"an unprefixed verb must read as still missing: {errors}"

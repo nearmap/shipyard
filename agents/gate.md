@@ -3,7 +3,7 @@ name: gate
 description: >-
   Independent adversarial ship gate over one immutable base/head SHA pair. Review
   behaviour and standards, use hunt/refute for depth, and return a cited verdict.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: fable
 effort: max
 ---

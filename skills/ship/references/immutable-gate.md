@@ -76,6 +76,6 @@ When `ship.request_ci_reviewer` resolves true (`/sy:pr` §3; see `${CLAUDE_PLUGI
 
 A focused delta review is valid only when prior reviewed head is the immutable base and new head is immutable head. Rebase or base change requires full appropriate coverage.
 
-When current HEAD equals CI-green SHA and reviewed SHA, gate findings are resolved, every existing review thread — automated reviewer (when requested) and human — is addressed, and acceptance evidence is posted, promote through `/sy:pr` and set the Task's status to `in-review` via the `tracker` skill. Later human or automated review that changes code re-establishes both gates on resume.
+When current HEAD equals CI-green SHA and reviewed SHA, gate findings are resolved, every existing review thread — automated reviewer (when requested) and human — is addressed, and acceptance evidence is posted, promote through `/sy:pr` and set the Task's status to `in-review` via the `tracker` skill. The tracker skill's own `validate_config`/`preflight` preamble is already discharged for this run by the parent's pre-dispatch tracker preflight (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Invariants), so call `set-status` directly rather than re-running that preamble — that one verb is the whole of this worker's granted tracker access. Later human or automated review that changes code re-establishes both gates on resume.
 
 Return `done` with coverage SHAs and `agents_used`; the parent dispatches HANDOFF.

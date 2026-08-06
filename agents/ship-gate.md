@@ -3,7 +3,7 @@ name: ship-gate
 description: >-
   GATE worker for /sy:ship: a lightweight convergence loop that delegates the frontier verdict to
   `sy:gate`, CI triage to `/sy:ci`, and review-thread reconciliation to `/sy:pr`, drives the fix cycle, and promotes.
-tools: Read, Write, Edit, Glob, Grep, Bash, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__fingerprint_config, mcp__sy__fingerprint_config
+tools: Read, Write, Edit, Glob, Grep, Bash, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__fingerprint_config, mcp__sy__fingerprint_config, mcp__plugin_sy_sy__set-status, mcp__sy__set-status, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: sonnet
 effort: high
 ---

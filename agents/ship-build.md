@@ -3,7 +3,7 @@ name: ship-build
 description: >-
   BUILD worker for /sy:ship: implement and integrate the plan via bounded `sy:slice` delegates,
   verify against acceptance criteria, open the draft PR, and return the build brief.
-tools: Read, Write, Edit, Glob, Grep, Bash, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir
+tools: Read, Write, Edit, Glob, Grep, Bash, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

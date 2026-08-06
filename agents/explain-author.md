@@ -4,7 +4,7 @@ description: >-
   Investigate one gnarly topic (a bug family, a design constraint, a system) for /sy:explain,
   verify every mechanism claim against source or a live repro, and author a layered, checkpointed
   explainer doc. Read-only outside the topic's resolved scratch directory.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

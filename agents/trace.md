@@ -3,7 +3,7 @@ name: trace
 description: >-
   Read-only depth trace of one load-bearing behaviour or data path for /sy:spec, /sy:spike, or a /sy:ship parent.
   Follow it end to end, expose breaking cases, and return decisive evidence pointers.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

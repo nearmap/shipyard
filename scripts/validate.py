@@ -556,8 +556,6 @@ def check_invariants(errors: list[str]) -> None:
     # otherwise satisfy a file-wide check on its own, leaving these two unfalsifiable. Both sections have to name
     # the fields, since either one alone silently reintroduces the contradiction between them.
     ship_pregate = ship.partition("## Pre-gate checkpoint")[2].partition("## State router")[0]
-    if "## State router" not in ship:
-        fail("ship SKILL must have a § State router section immediately after § Pre-gate checkpoint", errors)
     if "pregate_checkpoint_gate_dispatched" not in ship_pregate:
         fail(
             "ship SKILL's § Pre-gate checkpoint must carry pregate_checkpoint_gate_dispatched; without that "
@@ -819,8 +817,16 @@ def check_invariants(errors: list[str]) -> None:
     # route straight to BUILD or GATE and passes through no phase procedure that could own either rule, so the
     # router the parent always loads must carry its own copy of both.
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
-    if "## Completion bar" not in ship:
-        fail("ship SKILL must have a § Completion bar section immediately after § State router", errors)
+    _pregate_pos, _router_pos, _completion_pos = (
+        ship.find("## Pre-gate checkpoint"), ship.find("## State router"), ship.find("## Completion bar"),
+    )
+    if -1 in (_pregate_pos, _router_pos, _completion_pos) or not (_pregate_pos < _router_pos < _completion_pos):
+        fail(
+            "ship SKILL must keep § Pre-gate checkpoint, § State router, and § Completion bar present and in "
+            "that order; a missing or reordered section lets a section-scoped pin's slice silently widen to "
+            "swallow a neighbouring section instead of failing loud",
+            errors,
+        )
     if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
         fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
     if "pregate_checkpoint_cleared_sha" not in ship_router:
@@ -832,6 +838,13 @@ def check_invariants(errors: list[str]) -> None:
         fail(
             "ship SKILL's state router must scope its pre-gate re-check by pregate_checkpoint_gate_dispatched; an "
             "unscoped re-check fires again on a resumed GATE fix cycle, one layer below the § Pre-gate checkpoint fix",
+            errors,
+        )
+    if "pregate_checkpoint_request_text" not in ship_router:
+        fail(
+            "ship SKILL's state router must re-check pregate_checkpoint_request_text; without that override a "
+            "resume mid-BUILD-continuation can misclassify to GATE instead of BUILD, double-incrementing "
+            "pregate_checkpoint_changes_requested or letting an escape leave a stale request for BUILD to refold",
             errors,
         )
     for agent in ("ship-start", "ship-build", "ship-gate"):

@@ -43,6 +43,7 @@ class ShipMetricsV1(BaseModel):
     deviations_declined: int | None = None
     ci_fix_rounds: int | None = None
     review_fix_rounds: int | None = None
+    gate_rounds_total: int | None = None
     review_findings_accepted: int | None = None
     review_findings_rejected: int | None = None
     # Defaults to `0` and rejects an explicit `null`: "no human found anything" is a real observation at
@@ -84,6 +85,7 @@ class ShipMetricsV1(BaseModel):
             "deviations_declined": self.deviations_declined,
             "ci_fix_rounds": self.ci_fix_rounds,
             "review_fix_rounds": self.review_fix_rounds,
+            "gate_rounds_total": self.gate_rounds_total,
             "review_findings_accepted": self.review_findings_accepted,
             "review_findings_rejected": self.review_findings_rejected,
             "human_review_defects": self.human_review_defects,

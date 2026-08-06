@@ -131,10 +131,10 @@ class TrackerAdapter(Protocol):
       possible to bypass the 32,767 character limit for both description and comments" (citing
       JRACLOUD-59124). The property behind it, `jira.text.field.character.limit`, is documented and
       admin-tunable in Data Center only; JRACLOUD-63007 is Atlassian declining to expose it in Cloud
-      without disputing the reporter's premise that the same default applies there, and JRACLOUD-68949
-      corroborates the
-      description-field limit specifically. The *unit* is still undocumented under ADF, so the figure
-      remains best-effort even though its coverage of descriptions is documented, not merely assumed.
+      without disputing the reporter's premise that the same default applies there, and
+      JRACLOUD-68949 corroborates the description-field limit specifically. The *unit* is still
+      undocumented under ADF, so the figure remains best-effort even though its coverage of
+      descriptions is documented, not merely assumed.
     - GitHub's 65,536 is undocumented entirely, attested by nothing but the API's own error string.
 
     So a body under the limit is one this tracker has not been observed to refuse, not one it promises

@@ -46,4 +46,4 @@ Doc, marketing, and other prose deliverables get a deterministic content-QA pass
 
 Every load-bearing claim the brief will assert — diff scope, invariants preserved, "nothing else affected", lockfile/dependency effects, verification outcomes — carries a checkable pointer (the command run and where its output lives), never a bare assertion; a claim you cannot back is not `done`. Verify a claim about a generated or dependency artifact (lockfile hash, `depends`/`run_exports`, package moves) against the artifact itself, not against intent.
 
-Then commit/push and open a draft PR through `/sy:pr draft`; Task remains `in-progress`. Return `done` with the updated state brief; the parent dispatches GATE.
+Then commit/push and open a draft PR through `/sy:pr draft`; Task remains `in-progress`. Return `done` with the updated state brief; the parent honours any plan-declared pre-gate checkpoint (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint) before dispatching GATE — this worker's own contract and return value are unchanged either way.

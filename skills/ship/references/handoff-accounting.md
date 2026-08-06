@@ -13,7 +13,7 @@ Distinct from BUILD's leaked-token content-QA grep (`${CLAUDE_PLUGIN_ROOT}/skill
 Post `# Ship retrospective` as clear prose:
 
 - shipped vs plan;
-- divergences and mid-ship decisions — accepted deviations, any parent-resolved `needs-decision`, and any memory refutation this run already applied — and why;
+- divergences and mid-ship decisions — accepted deviations, any parent-resolved `needs-decision`, any memory refutation this run already applied, and any pre-gate-checkpoint outcome (proceeded as-is, or the changes it sent back to BUILD) — and why;
 - what the plan missed;
 - lessons for next `/sy:plan`;
 - a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — when this run surfaced a new team-process decision, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
@@ -74,6 +74,8 @@ Post a second small comment containing only a JSON object under `# Claude Code s
   "review_findings_accepted": 0,
   "review_findings_rejected": 0,
   "human_review_defects": 0,
+  "pregate_checkpoint_declared": false,
+  "pregate_checkpoint_changes_requested": 0,
   "gate_false_pass": null,
   "gate_false_pass_reason": null,
   "post_merge_defect": null,
@@ -94,7 +96,9 @@ These are settled definitions, not restatements: several of them were being coun
 - `ci_fix_rounds` — CI-red states resolved by a landed code change, and only those. A gate or review round-trip is not a CI fix round even when CI reran, and a no-diff rerun (a flake, a retry, a re-request) is not one either.
 - `review_fix_rounds` — gate/review rounds with at least one accepted finding folded into a following commit. A round that produced only rejected or non-actionable findings does not count.
 - `review_findings_accepted` / `review_findings_rejected` — individual findings, not rounds. A round can contribute to both.
-- `human_review_defects` — defaults to `0` and is **never** `null`: "no human found anything" is a real observation available at ship time, where `null` would make a clean run indistinguishable from an unfinished record. It is the one field the all-nullable rule does not cover, and it counts more than defects — a human-directed scope or behaviour reversal after observing a run belongs here too, because the signal being tracked is "a human had to intervene on substance", not "a human found a bug".
+- `human_review_defects` — defaults to `0` and is **never** `null`: "no human found anything" is a real observation available at ship time, where `null` would make a clean run indistinguishable from an unfinished record. It is one of the fields the all-nullable rule does not cover, and it counts more than defects — a human-directed scope or behaviour reversal after observing a run belongs here too, because the signal being tracked is "a human had to intervene on substance", not "a human found a bug".
+- `pregate_checkpoint_declared` — straight from the plan's `pre-gate checkpoint` field: whether one was declared at all. Never `null`; a plan that declared none records `false`.
+- `pregate_checkpoint_changes_requested` — how many times the checkpoint sent work back to BUILD before an eventual proceed. `0` either way — for a run that declared no checkpoint and for one that was waved straight through — and computed from the state file at handoff, never hand-incremented as the run goes (mirroring `plan_divergence_count`'s rule).
 - `gate_false_pass` — unknowable at ship time: always post it as `null`, then set it post-hoc, correcting the same comment per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`, when a human or CI later finds a defect the gate passed. It is the shadow-run signal for whether the gate can be trusted without its human backstop; the backstop is retained until that record says otherwise.
 - `gate_false_pass_reason` — required whenever `gate_false_pass` is not `null`, and rejected as missing otherwise. A bare `true` records that the gate was wrong without recording what it missed, which is the half of the signal that could actually change the gate.
 - `post_merge_defect` / `rollback` — also post-hoc, `null` at ship time, corrected the same way.

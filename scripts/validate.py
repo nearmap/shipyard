@@ -546,7 +546,7 @@ def check_invariants(errors: list[str]) -> None:
             "START cannot be checked before a later GATE dispatch",
             errors,
         )
-    if "Pre-gate checkpoint" not in ship or "pregate_checkpoint_channel" not in ship:
+    if "pregate_checkpoint_channel" not in ship:
         fail(
             "ship SKILL must own the § Pre-gate checkpoint procedure and name pregate_checkpoint_channel; the "
             "pause between BUILD's done and GATE is parent-owned and lives nowhere else",
@@ -711,7 +711,7 @@ def check_invariants(errors: list[str]) -> None:
         )
     elif re.search(r"\b(?:Agent|Skill)\b", tools_value):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
-    completeness = ("docs requiring updates", "visual-debug obligations", "pre-gate checkpoint")
+    completeness = ("docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
     if any(field not in spec for field in completeness):
         fail(
             "spec's /sy:ship section must require the docs-sync, visual-debug, and pre-gate-checkpoint "
@@ -789,8 +789,11 @@ def check_invariants(errors: list[str]) -> None:
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
     if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
         fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
-    if "pregate_checkpoint" not in ship_router:
-        fail("ship SKILL's state router must re-check the pre-gate checkpoint on a resume routing to GATE", errors)
+    if "pregate_checkpoint_cleared_sha" not in ship_router:
+        fail(
+            "ship SKILL's state router must re-check the pre-gate checkpoint's cleared SHA on a resume routing to GATE",
+            errors,
+        )
     if "pregate_checkpoint_gate_dispatched" not in ship_router:
         fail(
             "ship SKILL's state router must scope its pre-gate re-check by pregate_checkpoint_gate_dispatched; an "

@@ -532,6 +532,21 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec must define verification obligations and record PLAN_BASE_SHA", errors)
     if "plan_base_sha" not in start:
         fail("ship start/resume must carry plan_base_sha state", errors)
+    pregate_fields = (
+        "pregate_checkpoint_channel", "pregate_checkpoint_cleared_sha", "pregate_checkpoint_changes_requested",
+    )
+    if any(field not in start for field in pregate_fields):
+        fail(
+            "ship start/resume must stamp the pre-gate checkpoint trio (channel, cleared SHA, changes-requested "
+            "count) at START; a field never written at START cannot be checked before a later GATE dispatch",
+            errors,
+        )
+    if "Pre-gate checkpoint" not in ship or "pregate_checkpoint_channel" not in ship:
+        fail(
+            "ship SKILL must own the § Pre-gate checkpoint procedure and name pregate_checkpoint_channel; the "
+            "pause between BUILD's done and GATE is parent-owned and lives nowhere else",
+            errors,
+        )
     if "TARGET_SHA" not in gate_ref or "TARGET_SHA" not in merge:
         fail("review pin and merge revalidation must record TARGET_SHA", errors)
     if "process tier" not in handoff:
@@ -613,6 +628,13 @@ def check_invariants(errors: list[str]) -> None:
         fail("build implementation must include the deterministic content-QA grep for leaked wrapper tokens", errors)
     if "docs requiring updates" not in impl:
         fail("build implementation must route the plan's docs requiring updates field into a verification obligation", errors)
+    # Lower-cased unlike most pins here: the sentence names a parent-owned step, so its casing is not load-bearing.
+    if "pre-gate checkpoint" not in impl.lower():
+        fail(
+            "build implementation must state that the parent honours the plan's pre-gate checkpoint after done; "
+            "a BUILD that thinks the pause is its own will run or skip a checkpoint it cannot even observe",
+            errors,
+        )
     for name, text in (("ship", ship), ("implementation", impl), ("ship-build agent", build_agent)):
         if "needs-trace" not in text:
             fail(f"{name} must carry the needs-trace worker return (parent dispatches sy:trace, BUILD never does)", errors)
@@ -636,6 +658,17 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate agent restates an axis definition; cite spec-gate.md instead of copying it", errors)
     if axis_phrase in spec:
         fail("spec restates a spec-gate axis definition; cite spec-gate.md instead of copying it", errors)
+    checkpoint_axis_phrase = "not a fact this axis checks against the diff"
+    if checkpoint_axis_phrase not in spec_gate_ref:
+        fail(
+            f"spec-gate reference must define the pre-gate-checkpoint axis as presence-only with "
+            f"{checkpoint_axis_phrase!r}",
+            errors,
+        )
+    if checkpoint_axis_phrase in spec_gate:
+        fail("spec-gate agent restates the pre-gate-checkpoint axis; cite spec-gate.md instead of copying it", errors)
+    if checkpoint_axis_phrase in spec:
+        fail("spec restates the pre-gate-checkpoint axis definition; cite spec-gate.md instead of copying it", errors)
     tools_value = _frontmatter_field(spec_gate, "tools").strip()
     if not tools_value:
         fail(
@@ -645,8 +678,13 @@ def check_invariants(errors: list[str]) -> None:
         )
     elif re.search(r"\b(?:Agent|Skill)\b", tools_value):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
-    if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
-        fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)
+    completeness = ("docs requiring updates", "visual-debug obligations", "pre-gate checkpoint")
+    if any(field not in spec for field in completeness):
+        fail(
+            "spec's /sy:ship section must require the docs-sync, visual-debug, and pre-gate-checkpoint "
+            "completeness fields",
+            errors,
+        )
     # Section-scoped on purpose: a whole-file check passes on §2's prose (which legitimately permits a
     # research-phase body edit), a whole-§7 one on Step 1's consent sentence. Widening either disables it.
     spec_s7 = spec.partition("## 7.")[2].partition("## 8.")[0]
@@ -711,11 +749,15 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must relay a contradicted anchor as a MEMORY_REFUTE candidate in memory_refutations", errors)
     if "memory_refutations" not in ship or "memory_refute" not in ship:
         fail("ship SKILL must carry memory_refutations in the done payload and the parent-applies-it rule", errors)
-    # Section-scoped on purpose: § Worker contract's drain covers an in-flight return only, and a resume can
-    # route straight to BUILD or GATE, so the router the parent always loads must carry its own drain.
+    # Section-scoped on purpose, and for the same reason in both cases: § Worker contract's drain covers an
+    # in-flight return only and § Pre-gate checkpoint is written around a fresh BUILD `done`, but a resume can
+    # route straight to BUILD or GATE and passes through no phase procedure that could own either rule, so the
+    # router the parent always loads must carry its own copy of both.
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
     if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
         fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
+    if "pregate_checkpoint" not in ship_router:
+        fail("ship SKILL's state router must re-check the pre-gate checkpoint on a resume routing to GATE", errors)
     for agent in ("ship-start", "ship-build", "ship-gate"):
         if "MEMORY_REFUTE" not in read(f"agents/{agent}.md"):
             fail(f"agent {agent} must carry MEMORY_REFUTE in its return-contract status block", errors)

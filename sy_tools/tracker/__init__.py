@@ -54,7 +54,9 @@ class TrackerAdapter(Protocol):
     Three contract verbs have no method of their own, each being one of these writes carrying
     different content: `create-child` is `create_issue` with `parent` set, `post-log` is a
     `post_comment` carrying only a fenced JSON block, and `link-pr`'s durable half is a `post_comment`
-    carrying the PR URL. Keeping them out means one write path per effect.
+    carrying the PR URL. Keeping them out means one write path per effect. Method, not tool: `post-log`
+    does have a tool of its own above this seam, because that is where a machine log's heading and
+    fence get assembled — the adapter still only ever sees the one finished string.
 
     The verbs are `async` because the transports are I/O-bound and the server serves calls
     concurrently: a slow upload must not block an unrelated tool call. An adapter with only a

@@ -70,6 +70,8 @@ pregate_checkpoint_request_text: null
 accepted_deviations: []
 memory_refutations: []
 phase_checkpoint: null
+phase_active: null
+gate_rounds_total: 0
 ship_session_id: <current session id if available>
 ship_session_started_at: <timestamp>
 sibling_scan: <step-2 scan result: branches, open PRs, worktrees>
@@ -80,6 +82,6 @@ agents_used: []
 
 Each phase's `*_model_requested` is written when that phase is dispatched and its `*_model_observed` only once the usage transcript confirms what ran, so the `build_model_*` pair stays `null` until the parent dispatches BUILD and the `review_model_*` pair stays `null` until GATE. `pregate_checkpoint_channel` is stamped once here too, taken from the plan's `pre-gate checkpoint` field in the normalized form the block above shows (`draft-pr` / `running-preview`) and left `null` when the plan declares none; `pregate_checkpoint_gate_dispatched` starts `false` and `pregate_checkpoint_request_text` starts `null` alongside it, stamped once here for the same reason the rest are; `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint owns how the rest are later set and re-checked.
 
-The state file is local resume state, not shared truth. Never prune unrelated worktrees or paths. `phase_checkpoint` is the active worker's idempotent resume anchor (e.g. a slice manifest with per-slice status), passed to any continuation worker.
+The state file is local resume state, not shared truth. Never prune unrelated worktrees or paths. `phase_checkpoint` is the active worker's idempotent resume anchor (e.g. a slice manifest with per-slice status), passed to any continuation worker. Its two neighbours are the parent's own per-dispatch bookkeeping, not a worker's: `phase_active` names the phase currently in flight and is set and cleared around every dispatch, so a value still set at resume means the prior session ended without confirming that phase finished (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Worker contract and § State router own both halves); `gate_rounds_total` is GATE's live fix-cycle round count, owned by `references/immutable-gate.md` § Fix cycle. Both are stamped once here so a resume reads them rather than inferring them, and an older state file carrying neither reads as `null`/`0` respectively — nothing to detect, no rounds yet spent.
 
 Return `done` with the state brief; the parent dispatches BUILD.

@@ -496,6 +496,16 @@ def check_invariants(errors: list[str]) -> None:
     def read(rel: str) -> str:
         return (ROOT / rel).read_text(encoding="utf-8")
 
+    # Read out of the source rather than imported: `python scripts/validate.py` puts `scripts/` on
+    # `sys.path`, not the repo root, so importing the adapters needs a `sys.path` shim this file has
+    # never needed for anything else.
+    def declared_body_limit(rel: str) -> int:
+        match = re.search(r"^ {4}body_limit: int = ([\d_]+)$", read(rel), re.MULTILINE)
+        if match is None:
+            fail(f"{rel} must declare `body_limit: int = <literal>`; its ADAPTER.md figure cannot be checked", errors)
+            return 0
+        return int(match.group(1))
+
     ship = read("skills/ship/SKILL.md")
     handoff = read("skills/ship/references/handoff-accounting.md")
     merge = read("skills/ship/references/merge-accounting.md")
@@ -787,6 +797,16 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate agent restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
     if economy_axis_phrase in spec:
         fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
+
+    # Each adapter's body limit lives in the constant and again in its agent-facing ADAPTER.md prose.
+    # Both spellings count because the prose groups thousands and the code does not.
+    for name, source, doc_rel, doc in (
+        ("jira", "sy_tools/tracker/jira/adapter.py", "skills/tracker/jira/ADAPTER.md", jira_adapter),
+        ("github", "sy_tools/tracker/github/adapter.py", "skills/tracker/github/ADAPTER.md", github_adapter),
+    ):
+        limit = declared_body_limit(source)
+        if str(limit) not in doc and f"{limit:,}" not in doc:
+            fail(f"{name} adapter's body_limit is {limit} ({source}); {doc_rel} states a different figure", errors)
 
     # `post-comment` takes `human` and `agent_detail`, both required, and assembles the boundary itself.
     # These are the highest-traffic call sites, so a reference still describing one hand-composed body

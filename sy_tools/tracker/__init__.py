@@ -118,7 +118,8 @@ class TrackerAdapter(Protocol):
         ...
 
     body_limit: int
-    """The largest body this tracker is believed to take, in characters. Best-effort, not a guarantee.
+    """The largest body this tracker is believed to take, in characters of the Markdown body Shipyard
+    sends. Best-effort, not a guarantee.
 
     Annotation only, with no value: a default here would put a non-verb into `vars()`, which is where
     `sy_tools/tests/tracker/test_canonical.py` pins the canonical verb set.

@@ -127,9 +127,11 @@ class TrackerAdapter(Protocol):
     Neither adapter's figure is firm, and both are stated with their provenance rather than presented
     as spec:
 
-    - Jira's 32,767 comes from JRACLOUD-63007 and the Jira Cloud KB. The *unit* is undocumented under
-      ADF, and the figure is established for **comments only** — applying it to an issue description is
-      an unverified assumption that adapter makes deliberately.
+    - Jira's 32,767 comes from JRACLOUD-63007 and the Jira Cloud KB, and is governed by the site-wide
+      `jira.text.field.character.limit` property, which Atlassian documents for both descriptions and
+      comments (JRACLOUD-59124, JRACLOUD-68949) — not comments only. The *unit* is still undocumented
+      under ADF, so the figure remains best-effort even though its coverage of descriptions is
+      documented, not assumed.
     - GitHub's 65,536 is undocumented entirely, attested by nothing but the API's own error string.
 
     So a body under the limit is one this tracker has not been observed to refuse, not one it promises

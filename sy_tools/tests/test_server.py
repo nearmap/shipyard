@@ -271,6 +271,46 @@ async def test_post_comment_encloses_the_agent_half_in_one_closed_collapsed_sect
     assert sent.endswith(server._AGENT_DETAIL_CLOSE), f"the body carries content past the section: {sent!r}"
 
 
+PRIOR_BODY = "Prior comment said:" + server._AGENT_DETAIL_OPEN + "HEAD 6144373" + server._AGENT_DETAIL_CLOSE
+"""An earlier comment's whole body, the way a caller quoting one would paste it into a half."""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field", ["human", "agent_detail"])
+async def test_post_comment_refuses_a_half_that_already_carries_the_section_opening(monkeypatch, field):
+    """A half bringing its own opening would nest one section in another, and nesting loses content.
+
+    The nested body is not mangled visibly: a tracker is free to render the inner section by dropping
+    what it holds, so the loss lands in durable state with no exception and nothing to read. Both
+    halves are pinned because a quoted body can arrive in either, and the tool owns the boundary in
+    both directions — a replace that fixed only the first occurrence would silently swap which half
+    collapses when the duplicate is in `human`.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    arguments = {"issue": "PROJ-1", "human": "TL;DR: the gate passed.", "agent_detail": "HEAD 6144373"}
+    arguments[field] = PRIOR_BODY
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", arguments)
+    assert result.is_error is True, f"a nested section was posted: {result.content}"
+    assert field in _text(result), f"the refusal must name the half that carries it: {_text(result)}"
+
+
+@pytest.mark.anyio
+async def test_post_comment_still_takes_a_half_carrying_some_other_disclosure_block(monkeypatch):
+    """The refusal is on the tool's own opening, not on the tag pair: other content passes untouched."""
+    human = "TL;DR: the gate passed.\n\n<details>\n\n<summary>Raw command output</summary>\n\nls -la\n\n</details>"
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-comment", {"issue": "PROJ-1", "human": human, "agent_detail": "HEAD 6144373"}
+        )
+    assert result.is_error is False, result.content
+    assert _body_sent(recorder) == (
+        human + server._AGENT_DETAIL_OPEN + "HEAD 6144373" + server._AGENT_DETAIL_CLOSE
+    ), _body_sent(recorder)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "arguments"),

@@ -315,7 +315,9 @@ async def post_comment(
     is not a flat separator: `agent_detail` is wrapped in a captioned section that both trackers
     render collapsed by default, so a reader meets the human half first and expands the rest only
     when they want it. Do not compose the boundary yourself, and do not fold the agent-facing
-    pointers into `human` to fill the field.
+    pointers into `human` to fill the field. A half that already carries that section's opening —
+    an earlier comment's body pasted in whole, say — is refused rather than nested inside a second
+    one, which is a shape a tracker can render by dropping the inner content.
 
     Both parts are credential-scrubbed before assembly, and `scrub` reports the variable names it
     redacted. The assembled body is machine-log validated as a backstop: it is refused when it names
@@ -325,6 +327,14 @@ async def post_comment(
     """
     _required(issue=issue, human=human, agent_detail=agent_detail)
     (human, agent_detail), scrub = _scrub_texts(human, agent_detail)
+    for field, half in (("human", human), ("agent_detail", agent_detail)):
+        if _AGENT_DETAIL_TAG in half:
+            raise ToolError(
+                f"'{field}' already carries the section opening this tool writes. The tool — not the "
+                "caller — writes the boundary between the two halves, so a half cannot bring its own: "
+                "pass the two parts as content and let the tool compose the boundary. If you are "
+                "quoting an earlier comment, quote the part you mean rather than its whole body."
+            )
     body = human.strip() + _AGENT_DETAIL_OPEN + agent_detail.strip() + _AGENT_DETAIL_CLOSE
     # Kept as a defensive backstop, not as routing: `post-log` assembles and validates its own body, and
     # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
@@ -381,6 +391,13 @@ blank line to read as Markdown rather than as one raw-HTML run."""
 
 _AGENT_DETAIL_CLOSE = "\n\n</details>\n"
 """Closes the half `_AGENT_DETAIL_OPEN` opens."""
+
+_AGENT_DETAIL_TAG = _AGENT_DETAIL_OPEN.strip()
+"""The opening's tag-and-caption substring, which no caller-supplied half may already contain.
+
+Derived from the constant rather than written out again, so it cannot be the copy that drifts. A body
+carrying it twice is a section nested in a section, and a tracker is free to render that by dropping
+the inner content — silently, and only in durable state — so the second one is refused at the door."""
 
 
 # Loose on purpose — markers are interchangeable and the counts need not match: looseness can only ever

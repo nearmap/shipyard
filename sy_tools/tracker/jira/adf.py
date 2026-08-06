@@ -16,13 +16,32 @@ from marklas import to_adf, to_md
 
 from .. import TrackerError
 
+_BARE_EXPAND_OPEN = (
+    "<details>\n\n<summary>Below this line: for a future agent session, not "
+    "for your judgment.</summary>"
+)
+"""Must stay byte-identical to `sy_tools/server.py::_AGENT_DETAIL_OPEN`'s tag-and-caption substring; a
+round-trip test pins the two against drifting apart. Duplicated rather than imported, so the adapter
+does not import core."""
+
+_ADF_EXPAND_OPEN = (
+    '<details adf="expand">\n\n<summary>Below this line: for a future agent '
+    'session, not for your judgment.</summary>'
+)
+"""The same opening in the attributed form the converter turns into a native Expand node."""
+
 
 def markdown_to_adf(text: str) -> dict:
     """`text` as a Jira Atlassian Document Format document, proven well-shaped before it is sent.
 
     Empty or whitespace-only `text` converts to a valid empty document rather than failing:
     callers pass optional bodies straight through here.
+
+    Core's one fixed collapsed-section opening is rewritten to the attributed form first. Deliberately
+    a single fixed-literal replace and not a general `<details>` rule: a hand-authored disclosure block
+    in some other body is left exactly as written.
     """
+    text = text.replace(_BARE_EXPAND_OPEN, _ADF_EXPAND_OPEN)
     try:
         doc = to_adf(text)
     except Exception as exc:

@@ -311,8 +311,11 @@ async def post_comment(
     that is the caller's part of the split to keep.
 
     Both parts are required, and the tool — not the caller — writes the boundary between them, so
-    every comment splits the same way and a reader always knows which half is theirs. Do not compose
-    a separator yourself, and do not fold the agent-facing pointers into `human` to fill the field.
+    every comment splits the same way and a reader always knows which half is theirs. That boundary
+    is not a flat separator: `agent_detail` is wrapped in a captioned section that both trackers
+    render collapsed by default, so a reader meets the human half first and expands the rest only
+    when they want it. Do not compose the boundary yourself, and do not fold the agent-facing
+    pointers into `human` to fill the field.
 
     Both parts are credential-scrubbed before assembly, and `scrub` reports the variable names it
     redacted. The assembled body is machine-log validated as a backstop: it is refused when it names
@@ -322,7 +325,7 @@ async def post_comment(
     """
     _required(issue=issue, human=human, agent_detail=agent_detail)
     (human, agent_detail), scrub = _scrub_texts(human, agent_detail)
-    body = human.strip() + _TWO_PART_SEPARATOR + agent_detail.strip()
+    body = human.strip() + _AGENT_DETAIL_OPEN + agent_detail.strip() + _AGENT_DETAIL_CLOSE
     # Kept as a defensive backstop, not as routing: `post-log` assembles and validates its own body, and
     # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
     _validate_machine_log(body)
@@ -368,8 +371,16 @@ async def post_log(
     return {**posted, "scrub": scrub}
 
 
-_TWO_PART_SEPARATOR = "\n\n---\n\n*Below this line: for a future agent session, not for your judgment.*\n\n"
-"""The boundary `post-comment` writes between its two halves. Fixed here so no caller invents its own."""
+_AGENT_DETAIL_OPEN = (
+    "\n\n<details>\n\n<summary>Below this line: for a future agent "
+    "session, not for your judgment.</summary>\n\n"
+)
+"""Opens the collapsed half `post-comment` writes around `agent_detail`, fixed here so no caller invents
+its own. The tags are never inline: that form can lose the caption, and the enclosed body needs the
+blank line to read as Markdown rather than as one raw-HTML run."""
+
+_AGENT_DETAIL_CLOSE = "\n\n</details>\n"
+"""Closes the half `_AGENT_DETAIL_OPEN` opens."""
 
 
 # Loose on purpose — markers are interchangeable and the counts need not match: looseness can only ever

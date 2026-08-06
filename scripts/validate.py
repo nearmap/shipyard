@@ -82,7 +82,7 @@ CONFIG_ENV_ALLOWED = {
 TRACKER_TOKENS = [
     re.compile(p, f) for p, f in [
         (r"\bjira\b", re.I), (r"\bacli\b", re.I), (r"\batlassian\b", re.I),
-        (r"\.atlassian\.net", 0), (r"\bADF\b", 0), (r"md_to_adf", 0),
+        (r"\.atlassian\.net", 0), (r"\bADF\b", re.I), (r"md_to_adf", 0),
         (r"\bgh issue\b", re.I), (r"\bgh project\b", re.I), (r"\bgh gist\b", re.I),
         (r"\bsubtask\b", re.I), (r"\bsub-issue\b", re.I), (r"issueType", 0),
         (r"--blocked-by", 0), (r"--add-blocked-by", 0),

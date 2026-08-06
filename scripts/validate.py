@@ -92,6 +92,7 @@ REQUIRED = {
     "sy_tools/secrets.py",
     "sy_tools/guards/secret_guard.py",
     "sy_tools/guards/review_guard.py",
+    "sy_tools/guards/spec_gate_cap_guard.py",
     "skills/tracker/SKILL.md",
     "skills/tracker/CONTRACT.md",
     "skills/tracker/jira/ADAPTER.md",
@@ -453,6 +454,7 @@ def check_contract_completeness(errors: list[str]) -> None:
 
 
 def check_hooks(errors: list[str]) -> None:
+    """Every pinned hook module runs under each event it is pinned to, and every hook command is runnable."""
     text = (ROOT / "hooks/hooks.json").read_text(encoding="utf-8")
     try:
         parsed = json.loads(text)
@@ -461,23 +463,25 @@ def check_hooks(errors: list[str]) -> None:
         return
     # Decoded command strings, not the raw file: each embeds a quoted `${CLAUDE_PLUGIN_ROOT}`, so on disk
     # the quotes are backslash-escaped and a substring test against the file text never matches.
-    commands = [
-        hook.get("command", "")
-        for matchers in parsed.get("hooks", {}).values()
-        for matcher in matchers
-        for hook in matcher.get("hooks", [])
-    ]
-    joined = "\n".join(commands)
+    commands_by_event = {
+        event: [hook.get("command", "") for matcher in matchers for hook in matcher.get("hooks", [])]
+        for event, matchers in parsed.get("hooks", {}).items()
+    }
+    commands = [command for event_commands in commands_by_event.values() for command in event_commands]
+    # Checked per named event, not against every command in the file joined together: a module wired under one
+    # event alone satisfied a flattened substring test even while pinned to run under several.
     # Matched as `python -m <module>`, not as a bare module name: the hook modules live inside a package,
     # so a plain script path naming one would satisfy a substring test yet not be runnable.
-    for module, where in (
-        ("sy_tools.guards.review_guard", "PreToolUse"),
-        ("sy_tools.guards.secret_guard", "PreToolUse"),
-        ("sy_tools.usage", "Stop/SubagentStop"),
-        ("sy_tools.eval_events", "PreToolUse/SubagentStop/Stop"),
+    for module, events in (
+        ("sy_tools.guards.review_guard", ("PreToolUse",)),
+        ("sy_tools.guards.secret_guard", ("PreToolUse",)),
+        ("sy_tools.guards.spec_gate_cap_guard", ("PreToolUse",)),
+        ("sy_tools.usage", ("Stop", "SubagentStop")),
+        ("sy_tools.eval_events", ("PreToolUse", "SubagentStop", "Stop")),
     ):
-        if f"python -m {module}" not in joined:
-            fail(f"hooks/hooks.json must wire `python -m {module}` ({where})", errors)
+        for event in events:
+            if not any(f"python -m {module}" in command for command in commands_by_event.get(event, [])):
+                fail(f"hooks/hooks.json must wire `python -m {module}` under {event}", errors)
     # The plugin root has to reach `sys.path` for `python -m sy_tools.…` to resolve at all, and a hook runs
     # on bare `python`: `pixi run` would make every hook depend on a resolved environment in the caller's repo.
     for command in commands:
@@ -544,6 +548,14 @@ def check_invariants(errors: list[str]) -> None:
             "ship start/resume must stamp all five pre-gate checkpoint fields (channel, cleared SHA, "
             "changes-requested count, gate-dispatched flag, request text) at START; a field never written at "
             "START cannot be checked before a later GATE dispatch",
+            errors,
+        )
+    dispatch_fields = ("phase_active", "gate_rounds_total")
+    if any(field not in start for field in dispatch_fields):
+        fail(
+            "ship start/resume must stamp both parent-owned per-dispatch fields (phase_active, gate_rounds_total) "
+            "at START; a field never written at START is absent at resume, leaving a session that died mid-phase "
+            "and a spent fix-cycle round budget indistinguishable from a clean start",
             errors,
         )
     if "pregate_checkpoint_channel" not in ship:
@@ -817,14 +829,18 @@ def check_invariants(errors: list[str]) -> None:
     # route straight to BUILD or GATE and passes through no phase procedure that could own either rule, so the
     # router the parent always loads must carry its own copy of both.
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
-    _pregate_pos, _router_pos, _completion_pos = (
-        ship.find("## Pre-gate checkpoint"), ship.find("## State router"), ship.find("## Completion bar"),
+    ship_worker = ship.partition("## Worker contract")[2].partition("## Pre-gate checkpoint")[0]
+    _worker_pos, _pregate_pos, _router_pos, _completion_pos = (
+        ship.find("## Worker contract"), ship.find("## Pre-gate checkpoint"),
+        ship.find("## State router"), ship.find("## Completion bar"),
     )
-    if -1 in (_pregate_pos, _router_pos, _completion_pos) or not (_pregate_pos < _router_pos < _completion_pos):
+    if -1 in (_worker_pos, _pregate_pos, _router_pos, _completion_pos) or not (
+        _worker_pos < _pregate_pos < _router_pos < _completion_pos
+    ):
         fail(
-            "ship SKILL must keep § Pre-gate checkpoint, § State router, and § Completion bar present and in "
-            "that order; a missing or reordered section lets a section-scoped pin's slice silently widen to "
-            "swallow a neighbouring section instead of failing loud",
+            "ship SKILL must keep § Worker contract, § Pre-gate checkpoint, § State router, and § Completion bar "
+            "present and in that order; a missing or reordered section lets a section-scoped pin's slice silently "
+            "widen to swallow a neighbouring section instead of failing loud",
             errors,
         )
     if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
@@ -845,6 +861,22 @@ def check_invariants(errors: list[str]) -> None:
             "ship SKILL's state router must re-check pregate_checkpoint_request_text; without that override a "
             "resume mid-BUILD-continuation can misclassify to GATE instead of BUILD, double-incrementing "
             "pregate_checkpoint_changes_requested or letting an escape leave a stale request for BUILD to refold",
+            errors,
+        )
+    # Section-scoped for the same reason again: § Worker contract owns the write half of phase_active (stamped
+    # before each dispatch, cleared on every return) and § State router the resume-read half, so a file-wide pin
+    # is satisfied by whichever section still names it and neither half is really checked.
+    if "phase_active" not in ship_worker:
+        fail(
+            "ship SKILL's § Worker contract must stamp and clear phase_active around every dispatch; a field the "
+            "router reads at resume but no dispatch ever writes can only ever report nothing in flight",
+            errors,
+        )
+    if "phase_active" not in ship_router:
+        fail(
+            "ship SKILL's § State router must check phase_active in its pre-dispatch step; a resume routing "
+            "straight to BUILD or GATE otherwise trusts a checkpoint left by a phase that never confirmed it "
+            "finished, and the stale flag reports the same crash on every later resume",
             errors,
         )
     for agent in ("ship-start", "ship-build", "ship-gate"):
@@ -907,10 +939,38 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (("pr", pr), ("merge-accounting", merge)):
         if "ship.merge_strategy" not in text:
             fail(f"{name} must resolve ship.merge_strategy rather than hardcoding a merge strategy", errors)
-    if "ship.escalation.max_needs_decision" not in ship or "ship.escalation.max_needs_trace" not in ship:
-        fail("ship must name ship.escalation.max_needs_decision/max_needs_trace rather than vague escalation thresholds", errors)
+    escalation_keys = (
+        "ship.escalation.max_needs_decision",
+        "ship.escalation.max_needs_trace",
+        "ship.escalation.max_gate_rounds",
+    )
+    if any(key not in ship for key in escalation_keys):
+        fail(
+            "ship must name all three escalation thresholds (ship.escalation.max_needs_decision/max_needs_trace/"
+            "max_gate_rounds) rather than vague escalation thresholds",
+            errors,
+        )
+    if "ship.escalation.max_gate_rounds" not in gate_ref:
+        fail(
+            "immutable-gate's fix cycle must bound its rounds on ship.escalation.max_gate_rounds; a loop whose only "
+            "stopping rule is its own convergence judgment spends the user's budget without ever asking them",
+            errors,
+        )
+    if "gate_rounds_total" not in ship:
+        fail(
+            "ship must name gate_rounds_total as the counter its max_gate_rounds disposition resets; a budget raise "
+            "that leaves the count where it stands re-breaches the cap on the very next round",
+            errors,
+        )
     if "spec.light_tier_max_files" not in spec:
         fail("spec must name spec.light_tier_max_files rather than an undefined 'small' threshold", errors)
+    if "spec.max_spec_gate_rounds" not in spec_gate_ref or "spec_gate_cap_guard" not in spec_gate_ref:
+        fail(
+            "spec-gate must name both spec.max_spec_gate_rounds and the spec_gate_cap_guard that enforces it; a "
+            "per-session dispatch budget with no named enforcement point holds only while the session chooses to "
+            "honour it, which is the judgment the backstop exists to bound",
+            errors,
+        )
     for name, text in (
         ("ship", ship), ("spec", spec), ("spike", spike), ("plan", plan), ("pr", pr),
         ("immutable-gate", gate_ref), ("handoff-accounting", handoff), ("merge-accounting", merge),

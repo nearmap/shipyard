@@ -3,7 +3,7 @@ name: seam
 description: >-
   Read-only depth investigation of one unclear architectural boundary for /sy:plan.
   Find the thinnest interface, hidden coupling, and real dependency order.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

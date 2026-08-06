@@ -3,7 +3,7 @@ name: img-inspector
 description: >-
   Short-lived visual inspector: receives image path(s) and an inspection task, looks at the
   pixels, and returns a text-only verdict. Keeps image tokens out of the long-running context.
-tools: Read, Glob, Bash
+tools: Read, Glob, Bash, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: sonnet
 effort: medium
 ---

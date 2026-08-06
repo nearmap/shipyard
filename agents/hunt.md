@@ -4,7 +4,7 @@ description: >-
   Deep correctness investigation for gate. Hunt one coherent area for concrete bug
   candidates, or refute one candidate adversarially. Source-read-only; writes only in the
   repository's resolved scratch directory.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

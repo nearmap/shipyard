@@ -3,7 +3,7 @@ name: slice
 description: >-
   Implement one tightly specified, low-ambiguity /sy:ship slice in a caller-owned worktree.
   Test, commit locally, and return the commit plus dense verification pointers.
-tools: Read, Write, Edit, Glob, Grep, Bash
+tools: Read, Write, Edit, Glob, Grep, Bash, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

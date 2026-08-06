@@ -3,7 +3,7 @@ name: sweep
 description: >-
   Read-only breadth reconnaissance. Map large code, PR, ticket, docs, or CI surfaces
   into pointer-dense leads for caller verification. Not for depth or verdicts.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: sonnet
 effort: high
 ---

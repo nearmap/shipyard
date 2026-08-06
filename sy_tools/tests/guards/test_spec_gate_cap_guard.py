@@ -57,6 +57,11 @@ def test_a_cap_below_one_fails_open_instead_of_locking_the_session_out(ledger):
     guard._test_a_cap_below_one_fails_open_instead_of_locking_the_session_out()
 
 
+def test_a_bool_or_fractional_cap_is_not_silently_coerced(ledger):
+    """`int(True) == 1` and `int(5.7) == 5` raise nothing, so only this catches a silently wrong cap."""
+    guard._test_a_bool_or_fractional_cap_is_not_silently_coerced()
+
+
 def test_an_unresolvable_cap_allows_and_reports_it(ledger):
     """The live config resolver, so this one runs without the pinned cap."""
     guard._test_an_unresolvable_cap_allows_and_reports_it()

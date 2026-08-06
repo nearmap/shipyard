@@ -110,7 +110,15 @@ def _normalized_agent_type(agent_type: object) -> str:
 
 def _resolved_cap() -> tuple[int | None, str | None]:
     try:
-        value = int(config_get(CAP_KEY))  # ty: ignore[invalid-argument-type]
+        raw = config_get(CAP_KEY)
+        # The two shapes `int()` accepts in silence, and so the only two this has to reject by hand: a
+        # `bool` is an `int` subclass (`int(True) == 1`) and a `float` truncates (`int(5.7) == 5`), so
+        # either would bind a cap nobody wrote with no warning at all. A whole float is the same number
+        # written differently, and failing open on an unambiguous `5.0` costs enforcement for nothing. A
+        # numeric string stays the deliberate coercion this guard already relies on.
+        if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+            return None, _unusable_cap(f"{raw!r} is a {type(raw).__name__}, not a whole number")
+        value = int(raw)  # ty: ignore[invalid-argument-type]
     # Every failure, not an enumeration: `config.get` is a flat-dict lookup that applies no schema, so a
     # dict-, None- or text-shaped value raises TypeError/ValueError here and must reach this same
     # fail-open rather than main()'s generic backstop. SystemExit is no Exception subclass and
@@ -238,6 +246,7 @@ def _self_test() -> None:
             globals()["_resolved_cap"] = live_cap
             for index, case in enumerate((
                 _test_a_cap_below_one_fails_open_instead_of_locking_the_session_out,
+                _test_a_bool_or_fractional_cap_is_not_silently_coerced,
                 _test_an_unresolvable_cap_allows_and_reports_it,
             )):
                 globals()["LEDGER_ROOT"] = Path(tmp) / f"live-cap-{index}"
@@ -397,6 +406,34 @@ def _test_a_cap_below_one_fails_open_instead_of_locking_the_session_out() -> Non
             assert not LEDGER_ROOT.exists(), "and must not spend a round it cannot bound"
         globals()["config_get"] = lambda _key: 1
         assert _resolved_cap() == (1, None), "a cap of exactly 1 is the smallest usable one, not a fault"
+    finally:
+        globals()["config_get"] = original
+
+
+def _test_a_bool_or_fractional_cap_is_not_silently_coerced() -> None:
+    """The malformed caps `int()` accepts without raising, which is the one way this guard can go quiet.
+
+    `int(True) == 1` and `int(5.7) == 5` clear the `value < 1` check, so before this each would enforce a
+    cap nobody wrote with no `systemMessage` — the exact silent-enforcement failure every other path here
+    reports. The warning has to name the value and its type or an operator cannot see what they typo'd.
+    A numeric string and a whole float still resolve, so the coercion the config relies on is intact.
+    """
+    original = config_get
+    try:
+        for value in (True, False, 5.7, -0.5):
+            globals()["config_get"] = lambda _key, _value=value: _value
+            cap, warning = _resolved_cap()
+            assert cap is None, f"a cap of {value!r} must not be silently coerced to {cap!r}"
+            assert warning and CAP_KEY in warning, f"the dropped enforcement must be reported: {warning!r}"
+            assert repr(value) in warning, f"the warning must name the misconfigured value: {warning!r}"
+            assert type(value).__name__ in warning, f"and its type: {warning!r}"
+            payload = _hook_output(_event("coerced"))
+            assert "hookSpecificOutput" not in payload, f"a cap of {value!r} must never deny: {payload!r}"
+            assert payload.get("systemMessage") == warning, f"and must fail open visibly: {payload!r}"
+            assert not LEDGER_ROOT.exists(), "and must not spend a round it cannot bound"
+        for value, expected in (("5", 5), (5.0, 5), (5, 5), (" 5 ", 5)):
+            globals()["config_get"] = lambda _key, _value=value: _value
+            assert _resolved_cap() == (expected, None), f"a cap of {value!r} must still resolve as {expected}"
     finally:
         globals()["config_get"] = original
 

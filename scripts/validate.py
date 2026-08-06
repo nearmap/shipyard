@@ -657,6 +657,30 @@ def check_invariants(errors: list[str]) -> None:
     if "Step 2 — after approval" not in spec:
         fail("spec must keep the staged reveal: full plan posted only in Step 2, after approval", errors)
 
+    # `post-comment` takes `human` and `agent_detail`, both required, and assembles the boundary itself.
+    # These are the highest-traffic call sites, so a reference still describing one hand-composed body
+    # would have every future session write the shape the tool now refuses. The lower-traffic sites
+    # (`# SEAMS`, shelve evidence, the decomposition note, the spike verdict) are covered by gate's diff
+    # read instead: one hardcoded regex per prose paragraph is what makes this file unmaintainable.
+    for name, text in (
+        ("spec §7", spec_s7),
+        ("checkpoint-handoff", checkpoint_handoff),
+        ("handoff-accounting's retrospective", handoff.partition("## 1.")[2].partition("## 2.")[0]),
+    ):
+        if "human" not in text or "agent_detail" not in text:
+            fail(f"{name} must name post-comment's human/agent_detail parts, not a hand-composed body", errors)
+    # `post-log` takes the record as an object it serialises and fences: a reference still showing a
+    # hand-built ```json block teaches the caller-composed shape the separate tool exists to remove.
+    for name, text in (
+        ("handoff-accounting's usage section", handoff.partition("## 2.")[2].partition("## 3.")[0]),
+        ("handoff-accounting's metrics section", handoff.partition("## 3.")[2].partition("## 4.")[0]),
+        ("merge-accounting", merge),
+    ):
+        if "post-log" not in text or "title" not in text or "payload" not in text:
+            fail(f"{name} must post its machine log through post-log with a title and a payload object", errors)
+    if "tracker ticket" not in pr:
+        fail("pr description contract must require a link to the tracker ticket", errors)
+
     if "undispositioned actionable finding" not in gate_ref:
         fail("immutable-gate fix cycle must state the stopping rule (no undispositioned actionable finding)", errors)
     if "drift re-check" not in gate_ref.lower():

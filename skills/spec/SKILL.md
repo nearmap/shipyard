@@ -127,10 +127,11 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - design invariants — the deliberately small load-bearing list `sy:gate` must protect;
 - `docs requiring updates: <list, or 'none'>`;
 - `visual-debug obligations: <list, or 'none'>`;
+- `pre-gate checkpoint: <channel: 'draft PR' or 'running preview'>, or 'none'` — whether `/sy:ship`'s parent pauses for a human look at the draft PR (or a running local preview) before dispatching GATE, framed as "is this the right thing", never as a correctness review; `/sy:ship` never launches a preview itself, only points at the channel declared here. Default when absent is `none`: an unattended or overnight ship run that never declares one sees no change at all;
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 
-Those last two fields are both required and both legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–5 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder.
+Those last three fields are all required and all legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–6 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder; a `none` on the pre-gate checkpoint is the plan author's call, and is never second-guessed that way.
 
 End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
 

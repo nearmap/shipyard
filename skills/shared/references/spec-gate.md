@@ -6,7 +6,7 @@ It is not a second debate. `sy:debate` has already settled the core decision (`$
 
 The checklist below is the single copy. Cite this file from the dispatch prompt and from the agent's own instructions; never restate the axes at the call site, because a restated checklist drifts from this one and the drift is invisible from either end.
 
-## The five axes
+## The six axes
 
 Three are reviewer judgment — the reviewer has to think, and a pass with nothing found is a real result:
 
@@ -14,10 +14,11 @@ Three are reviewer judgment — the reviewer has to think, and a pass with nothi
 2. **Simplicity.** Is this the smallest change that delivers the goal? Look for a config toggle where an unconditional behaviour would do, a new abstraction with one caller, ordered steps that collapse into one, and scope the goal does not require.
 3. **Correctness.** Do the ordered changes actually produce the stated outcome? Look for a step whose stated effect its cited anchor cannot have, an invariant the plan breaks elsewhere while protecting it here, an ordering that leaves an intermediate state broken, and an acceptance criterion that would pass without the behaviour existing.
 
-Two are required-field completeness — the plan's `/sy:ship` section either carries the field or it does not:
+Three are required-field completeness — the plan's `/sy:ship` section either carries the field or it does not:
 
 4. **Docs-sync.** `docs requiring updates` must be present and honest: every doc, README, guide, or reference whose content the change makes stale, or the literal `none`. A change to a documented surface with `none` here is a finding; so is a field listing files the change never touches.
 5. **Visual-debug flagging.** `visual-debug obligations` must be present and honest: every figure, screenshot, plot, or rendered visual the work produces, regenerates, selects among, or invalidates — each one a verification obligation whose named evidence is an `sy:img-inspector` text verdict per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md` — or the literal `none`. Work that touches a visual with `none` here is a finding.
+6. **Pre-gate-checkpoint flagging.** `pre-gate checkpoint` must be present, naming a channel (`draft PR` or `running preview`) or the literal `none`. Checked for presence only: whether a task warrants a human checkpoint is the plan author's call, not a fact this axis checks against the diff, so — unlike axes 4–5 — a `none` here is never itself a finding; an *omitted* field is.
 
 ## When it runs
 

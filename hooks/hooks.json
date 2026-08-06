@@ -20,6 +20,15 @@
         ]
       },
       {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.guards.spec_gate_cap_guard"
+          }
+        ]
+      },
+      {
         "hooks": [
           {
             "type": "command",

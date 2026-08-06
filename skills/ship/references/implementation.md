@@ -6,6 +6,8 @@ Before executing any plan step, verify its load-bearing plan facts against the c
 
 An adjacent issue you surface mid-build that sits outside the plan's declared file set follows the same test: fold a small, low-risk fix into this branch as a recorded scope extension in `accepted_deviations` rather than filing a follow-up that loses the context you have now; defer only when it justifies its own ticket (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
 
+A seeded memory anchor this phase's own direct observation contradicts is handled the same way rather than silently carried forward or left to HANDOFF: author it as a `MEMORY_REFUTE` candidate in the return block and record it to `memory_refutations` in state, for the parent to apply the moment this phase returns (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`).
+
 ## Resolve build model
 
 Parent-owned, resolved once before BUILD is dispatched (this worker never picks its own model), from the plan's ship profile and the resolver, live (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):

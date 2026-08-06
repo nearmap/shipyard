@@ -72,7 +72,7 @@ REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
 UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
     "fingerprint_config", "usage_summarize", "export_transcript",
-    "memory_add", "memory_search", "memory_list",
+    "memory_add", "memory_search", "memory_list", "memory_refute",
 })
 """Tools the server registers that this scenario deliberately does not call.
 

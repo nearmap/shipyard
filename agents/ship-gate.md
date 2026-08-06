@@ -19,9 +19,10 @@ DONE: promoted to `in-review`
 CI_GREEN_SHA: <sha>; REVIEWED_SHA: <sha>; REVIEW_BASE_SHA: <sha>; TARGET_SHA: <sha>
 REVIEW_MODEL_REQUESTED: <model>; PR: <url>
 FINDINGS: accepted <n>, rejected <n>; REVIEW_THREADS: addressed <n>
+MEMORY_REFUTE: none|<per candidate: title + evidence + correction (empty = tombstone)>
 STATE: scratch_dir($TASK_KEY)/ship-state.yaml; AGENTS_USED: <names>
 ```
 
-or `NEEDS-DECISION: <ambiguous finding>; OPTIONS: …; CHECKPOINT: <resolved vs pending + pushed SHA>; BEARING: <spans>`, `BAIL-TO-SPEC: <finding invalidates plan contract>; ANCHORS: <paths>`, or `BLOCKED: <external>; NEEDS: <unblock>`.
+or `NEEDS-DECISION: <ambiguous finding>; OPTIONS: …; CHECKPOINT: <resolved vs pending + pushed SHA>; BEARING: <spans>; MEMORY_REFUTE: none|<candidate>`, `BAIL-TO-SPEC: <finding invalidates plan contract>; ANCHORS: <paths>; MEMORY_REFUTE: none|<candidate>`, or `BLOCKED: <external>; NEEDS: <unblock>; MEMORY_REFUTE: none|<candidate>` — the parent drains candidates on every one of these, so no form may omit the field.
 
 If review or fix reporting cannot fit the budget, return `SPLIT_REQUIRED` with coherent review/fix partitions rather than truncating.

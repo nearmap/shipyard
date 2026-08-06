@@ -12,7 +12,7 @@ Shipyard is a Claude Code plugin that runs a `plan → spec → ship` delivery l
 - **Spec**: a single ACTIVE execution plan per task, produced by `/sy:spec <task>` and approved by the user before anything is built. It's stamped with the commit it was planned against. Not every spec ends in a plan — when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead.
 - **Ship**: `/sy:ship <task>` builds the plan in its own worktree, gets CI green, and runs `sy:gate` — an independent reviewer on a frontier model, in an isolated read-only checkout, that must refute-test every bug candidate before reporting it. Head, CI-green, and reviewed commits must converge before it stops.
 - **Merge**: never automatic. The user's explicit word is required every time.
-- **Cross-session memory**: a small, user-global store (the `sy` server's memory tools, rooted at `memory.dir`) of durable lessons — a CLI flag with inverted semantics, a silent model fallback — that outlive any one ticket or repo. `/sy:plan` and `/sy:spec` read it early; `/sy:ship` writes to it at the retrospective.
+- **Cross-session memory**: a small, user-global store (the `sy` server's memory tools, rooted at `memory.dir`) of durable lessons — a CLI flag with inverted semantics, a silent model fallback — that outlive any one ticket or repo. `/sy:plan` and `/sy:spec` read it early; `/sy:ship` writes to it at the retrospective. A lesson later contradicted by direct observation is corrected or retired through the same tools (`memory_refute`), never hand-edited.
 
 ## Installing
 

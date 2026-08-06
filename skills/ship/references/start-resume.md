@@ -6,8 +6,8 @@ This phase runs as the `sy:ship-start` worker: it initializes or resumes ownersh
 2. Read parent Epic only enough for sibling interfaces/blockers; use `sy:sweep` for a large tail.
 3. Ship profile (the plan's explicit per-phase models, plus effort and process tier) is a parent precondition verified before dispatch; if the parent's own running session is below plan it stops and asks via `AskUserQuestion` (raise the profile / proceed at plan floor / other) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. That check concerns the parent's own session tier only; how each phase's model reaches its worker is the separate dispatch mechanism in `## Resolve start model` below. The profile floors worker models (may raise, never lower, so BUILD keeps its opus tier) and sets worker effort to match the work; it never lowers review effort (`sy:gate` stays max). Do not prompt the user from the worker.
 4. Resolve standards in a delegate (subagent running `/sy:standards resolve <task scope>`, added to `agents_used`) that returns only the retained contract — authority, implementation contract, primitives, risk lenses; rule-file reads stay out of the ship context.
-5. Read durable cross-session memory — `memory_list` (or `memory_search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the state brief as a known anchor.
-6. Load `ship-state.yaml` from the task's resolved scratch directory — `scratch_dir {"identifier": "$TASK_KEY"}`, whose reported `path` is that directory — if present.
+5. Read durable cross-session memory — `memory_list` (or `memory_search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the state brief as a known anchor. A known anchor this phase's own direct observation already contradicts is never carried forward as if it still held: author it as a `MEMORY_REFUTE` candidate in the return block and record it to `memory_refutations` in state, for the parent to apply — this worker holds no memory write itself.
+6. Load `ship-state.yaml` from the task's resolved scratch directory — `scratch_dir {"identifier": "$TASK_KEY"}`, whose reported `path` is that directory — if present. Draining any `memory_refutations` the loaded state still carries is the parent's own pre-dispatch step (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router), never this worker's, which holds no memory write.
 
 Classify:
 
@@ -63,6 +63,7 @@ start_model_observed: null
 build_model_requested: null
 build_model_observed: null
 accepted_deviations: []
+memory_refutations: []
 phase_checkpoint: null
 ship_session_id: <current session id if available>
 ship_session_started_at: <timestamp>

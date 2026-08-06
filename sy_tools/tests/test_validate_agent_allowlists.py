@@ -21,11 +21,20 @@ validate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validate)
 
 
-def _check(tmp_path: Path, tools_line: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _check(
+    tmp_path: Path,
+    tools_line: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str = "probe",
+) -> list[str]:
     agents = tmp_path / "agents"
     agents.mkdir()
-    (agents / "probe.md").write_text(
-        f"---\nname: probe\ndescription: test\ntools: {tools_line}\n---\nbody\n", encoding="utf-8",
+    tools = f"tools: {tools_line}\n" if tools_line is not None else ""
+    # `model:` trails tools: because that is the layout a valueless `tools:` is mis-read as an allowlist
+    # in: a pattern whose whitespace class crosses the newline captures the following frontmatter line.
+    fields = f"{tools}model: sonnet\n"
+    (agents / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: test\n{fields}---\nbody\n", encoding="utf-8",
     )
     monkeypatch.setattr(validate, "ROOT", tmp_path)
     errors: list[str] = []
@@ -55,3 +64,56 @@ def test_named_tools_with_both_deployment_twins_pass_clean(tmp_path, monkeypatch
 def test_a_missing_twin_is_refused(tmp_path, monkeypatch):
     errors = _check(tmp_path, "mcp__sy__set_status", monkeypatch)
     assert errors, "an entry with no other-deployment twin listed must be refused"
+
+
+@pytest.mark.parametrize("tools_line", [
+    "mcp__sy__set_status, mcp__plugin_sy_sy__set_status,",
+    ", mcp__sy__set_status, mcp__plugin_sy_sy__set_status",
+    "mcp__sy__set_status,, mcp__plugin_sy_sy__set_status",
+])
+def test_an_empty_allowlist_entry_is_refused(tmp_path, monkeypatch, tools_line):
+    """A stray comma leaves an empty name every later check skips, so it is flagged rather than dropped mute."""
+    errors = _check(tmp_path, tools_line, monkeypatch)
+    assert any("empty entry" in error for error in errors), f"{tools_line!r} must be refused: {errors}"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+@pytest.mark.parametrize("tool", ["memory_add", "memory_refute"])
+def test_a_ship_worker_granted_a_memory_write_is_refused(tmp_path, monkeypatch, agent, tool):
+    """Only the /sy:ship parent writes the user-global store; a worker relays a MEMORY_REFUTE candidate."""
+    tools = f"mcp__sy__{tool}, mcp__plugin_sy_sy__{tool}"
+    errors = _check(tmp_path, tools, monkeypatch, name=agent)
+    assert any(tool in error for error in errors), f"{agent} must not be able to grant itself {tool}: {errors}"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+def test_a_ship_worker_declaring_no_tools_at_all_is_refused(tmp_path, monkeypatch, agent):
+    """An absent tools field inherits every tool, memory writes included, so it cannot pass silently."""
+    errors = _check(tmp_path, None, monkeypatch, name=agent)
+    assert errors, f"{agent} with no tools: line inherits the memory writes and must be refused"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+@pytest.mark.parametrize("tools_line", ["", "   "])
+def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(tmp_path, monkeypatch, agent, tools_line):
+    """An empty `tools:` value launches the worker with no tools at all rather than inheriting every tool, but
+    either way it is not the explicit allowlist a ship worker must declare, so it is refused the same.
+
+    It is the sharper case: the valueless `tools:` line reads as present, and a pattern whose whitespace
+    class crosses the newline validates the *next* frontmatter line in its place.
+    """
+    errors = _check(tmp_path, tools_line, monkeypatch, name=agent)
+    assert errors, f"{agent} with an empty tools: value declares no usable allowlist and must be refused"
+
+
+def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):
+    """The pin is scoped to the ship workers; other agents legitimately inherit the default tool set."""
+    assert not _check(tmp_path, None, monkeypatch, name="sweep"), "the guard must not widen past ship workers"
+
+
+def test_a_ship_worker_keeps_the_memory_read_tools(tmp_path, monkeypatch):
+    """START reads memory back, so the guard must pin the write verbs alone, not the whole tool family."""
+    tools = ", ".join(
+        f"mcp__{prefix}__{tool}" for tool in ("memory_list", "memory_search") for prefix in ("sy", "plugin_sy_sy")
+    )
+    assert not _check(tmp_path, tools, monkeypatch, name="ship-start"), "the read side must stay allowed"

@@ -46,6 +46,8 @@ LEGACY_CONFIG_ENV = {
 # Every spelling of "give this agent the whole `sy` server": the bare server name under either
 # deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
 SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
+MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
+SHIP_WORKER_AGENTS = {"ship-start", "ship-build", "ship-gate"}
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -361,14 +363,43 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
 
 
 def check_agent_mcp_allowlists(errors: list[str]) -> None:
-    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, and never by wildcard."""
+    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, never by wildcard, and
+    never gives a `/sy:ship` worker a durable-memory write."""
     for p in sorted((ROOT / "agents").glob("*.md")):
         text = p.read_text(encoding="utf-8")
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
-        declared = re.search(r"^tools:\s*(.+)$", block, re.M)
-        if not declared:
+        # Horizontal whitespace only, then strip: `\s*(.+)` would cross the newline after a valueless
+        # `tools:` and capture the next frontmatter line, validating an empty allowlist as if it named that
+        # line's tool.
+        declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
+        value = declared.group(1).strip() if declared else ""
+        if not value:
+            if p.stem in SHIP_WORKER_AGENTS:
+                fail(
+                    f"{p.relative_to(ROOT)}: a /sy:ship worker's tools: must be an explicit, non-empty allowlist; "
+                    f"an absent tools field inherits every tool including {'/'.join(sorted(MEMORY_WRITE_TOOLS))}, "
+                    "and an empty value launches the worker with no tools at all",
+                    errors,
+                )
             continue
-        named = [entry.strip() for entry in declared.group(1).split(",")]
+        named = [entry.strip() for entry in value.split(",")]
+        if not all(named):
+            # Every check below skips an empty name, so a leading, trailing, or doubled comma would
+            # otherwise validate clean and hide the typo it came from.
+            fail(
+                f"{p.relative_to(ROOT)}: tools has an empty entry from a leading, trailing, or doubled comma "
+                f"in {value!r}; name one tool per comma",
+                errors,
+            )
+            named = [entry for entry in named if entry]
+        if p.stem in SHIP_WORKER_AGENTS:
+            for entry in named:
+                if entry.rpartition("__")[2] in MEMORY_WRITE_TOOLS:
+                    fail(
+                        f"{p.relative_to(ROOT)}: tools names {entry!r}, but only the /sy:ship parent writes the "
+                        "user-global memory store; a worker relays a MEMORY_REFUTE candidate instead",
+                        errors,
+                    )
         for entry in named:
             # Both spellings, because Claude Code documents `mcp__<server>__*` as granting every tool
             # from that server exactly as the bare server name does — and the pair
@@ -470,6 +501,7 @@ def check_invariants(errors: list[str]) -> None:
     contract = read("skills/tracker/CONTRACT.md")
     impl = read("skills/ship/references/implementation.md")
     img_ref = read("skills/shared/references/image-inspection.md")
+    memory_ref = read("skills/shared/references/memory.md")
     plan = read("skills/plan/SKILL.md")
     spike = read("skills/spike/SKILL.md")
     pr = read("skills/pr/SKILL.md")
@@ -663,6 +695,30 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
     if "memory_add" not in handoff or "memory.md" not in handoff:
         fail("ship handoff retro must distill durable lessons into cross-session memory (memory_add, per memory.md)", errors)
+    if "memory_refute" not in memory_ref or "never left standing" not in memory_ref:
+        fail("memory.md must document memory_refute and that a refuted anchor is never left standing", errors)
+    if "delete-by-hand is deliberate friction" in memory_ref.lower():
+        fail(
+            "memory.md must not restore its old 'delete-by-hand is deliberate friction' line: refuting, "
+            "not hand-deleting, is how a wrong lesson is retired",
+            errors,
+        )
+    for name, text in (("plan", plan), ("spec", spec)):
+        if "memory_refute" not in text:
+            fail(f"{name} runs as the parent session and must refute a contradicted lesson directly", errors)
+    for name, text in (("start-resume", start), ("implementation", impl), ("immutable-gate", gate_ref)):
+        if "memory_refutations" not in text or "MEMORY_REFUTE" not in text:
+            fail(f"{name} must relay a contradicted anchor as a MEMORY_REFUTE candidate in memory_refutations", errors)
+    if "memory_refutations" not in ship or "memory_refute" not in ship:
+        fail("ship SKILL must carry memory_refutations in the done payload and the parent-applies-it rule", errors)
+    # Section-scoped on purpose: § Worker contract's drain covers an in-flight return only, and a resume can
+    # route straight to BUILD or GATE, so the router the parent always loads must carry its own drain.
+    ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
+    if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
+        fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
+    for agent in ("ship-start", "ship-build", "ship-gate"):
+        if "MEMORY_REFUTE" not in read(f"agents/{agent}.md"):
+            fail(f"agent {agent} must carry MEMORY_REFUTE in its return-contract status block", errors)
     if "close with evidence" not in spec.lower() or "shelve" not in spec.lower():
         fail("spec must bless the shelve terminal state (close with evidence, no plan)", errors)
     for name, text in (

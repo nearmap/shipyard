@@ -32,7 +32,7 @@ $ARGUMENTS
 
 Read small cohesive evidence directly. Use `sy:sweep` for large code/ticket/PR/docs surfaces and `sy:seam` only for one unresolved boundary that changes roadmap shape. At most the resolved `limits.max_depth_agents` cap in flight — resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`. Agent returns are compressed leads; verify decisive spans and own the cut.
 
-Read durable cross-session memory early — `memory_list` (or `memory_search` on the tools/surfaces the objective touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the objective enters the brief as a known anchor.
+Read durable cross-session memory early — `memory_list` (or `memory_search` on the tools/surfaces the objective touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the objective enters the brief as a known anchor, and a lesson this objective's own research directly contradicts is refuted immediately (`memory_refute`, same reference) rather than carried forward or silently dropped.
 
 Seed every agent prompt with known anchors — paths, symbols, entry points, keys — and name ground already covered; agents must not rediscover what the caller knows.
 

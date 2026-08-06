@@ -66,6 +66,17 @@ def test_a_missing_twin_is_refused(tmp_path, monkeypatch):
     assert errors, "an entry with no other-deployment twin listed must be refused"
 
 
+@pytest.mark.parametrize("tools_line", [
+    "mcp__sy__set_status, mcp__plugin_sy_sy__set_status,",
+    ", mcp__sy__set_status, mcp__plugin_sy_sy__set_status",
+    "mcp__sy__set_status,, mcp__plugin_sy_sy__set_status",
+])
+def test_an_empty_allowlist_entry_is_refused(tmp_path, monkeypatch, tools_line):
+    """A stray comma leaves an empty name every later check skips, so it is flagged rather than dropped mute."""
+    errors = _check(tmp_path, tools_line, monkeypatch)
+    assert any("empty entry" in error for error in errors), f"{tools_line!r} must be refused: {errors}"
+
+
 @pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
 @pytest.mark.parametrize("tool", ["memory_add", "memory_refute"])
 def test_a_ship_worker_granted_a_memory_write_is_refused(tmp_path, monkeypatch, agent, tool):

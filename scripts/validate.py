@@ -383,6 +383,15 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                 )
             continue
         named = [entry.strip() for entry in value.split(",")]
+        if not all(named):
+            # Every check below skips an empty name, so a leading, trailing, or doubled comma would
+            # otherwise validate clean and hide the typo it came from.
+            fail(
+                f"{p.relative_to(ROOT)}: tools has an empty entry from a leading, trailing, or doubled comma "
+                f"in {value!r}; name one tool per comma",
+                errors,
+            )
+            named = [entry for entry in named if entry]
         if p.stem in SHIP_WORKER_AGENTS:
             for entry in named:
                 if entry.rpartition("__")[2] in MEMORY_WRITE_TOOLS:

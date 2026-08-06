@@ -115,6 +115,19 @@ def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(tmp_path, monke
     assert errors, f"{agent} with an empty tools: value declares no usable allowlist and must be refused"
 
 
+@pytest.mark.parametrize("agent", ["sweep", "ship-build"])
+def test_a_block_list_tools_value_is_refused_by_shape(tmp_path, monkeypatch, agent):
+    """A block list puts nothing after `tools:` on its own line, so it reads as an absent field and every
+    check below is skipped -- for a non-ship agent silently, however wrong the allowlist it hides.
+
+    check_env rides along under both prefixes so the form itself is the only thing left to refuse.
+    """
+    block_list = "\n" + "".join(f"  - mcp__{prefix}__check_env\n" for prefix in ("sy", "plugin_sy_sy")).rstrip("\n")
+    errors = _check(tmp_path, block_list, monkeypatch, name=agent)
+    assert any("block list" in error for error in errors), \
+        f"{agent}'s block-list tools: must be refused naming the shape: {errors}"
+
+
 def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):
     """The pin is scoped to the ship workers; other agents legitimately inherit the default tool set."""
     assert not _check(tmp_path, None, monkeypatch, name="sweep"), "the guard must not widen past ship workers"

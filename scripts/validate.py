@@ -399,6 +399,18 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         # line's tool.
         declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
         value = declared.group(1).strip() if declared else ""
+        if declared and not value and re.match(r"\r?\n[ \t]*-[ \t]", block[declared.end():]):
+            # A block list leaves nothing after `tools:` on its own line, so it reads exactly like an absent
+            # or valueless field and every check below is skipped -- for a non-ship agent silently, allowlist
+            # and all. Refuse the shape rather than grow a second YAML parser for it, as with the
+            # unrecognised glob shapes further down.
+            fail(
+                f"{p.relative_to(ROOT)}: tools: is a YAML block list of indented `- item` lines; rewrite it as "
+                "the single-line comma-separated form `tools: item, item` so the allowlist checks below read "
+                "it, rather than read it as declaring no tools and skip",
+                errors,
+            )
+            continue
         if not value:
             if p.stem in SHIP_WORKER_AGENTS:
                 fail(

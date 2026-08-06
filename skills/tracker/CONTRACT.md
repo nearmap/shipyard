@@ -54,12 +54,12 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `add-dependency` | Record that issue X is blocked by issue Y. |
 | `add-label` | Add a label, preserving existing labels. |
 | `type-convert` | Change an existing issue's canonical type in place. Best-effort; loud failure — see below. |
-| `post-comment` | Post a Markdown comment. The TL;DR-first convention applies here, in core. |
-| `post-log` | Post a **standalone** machine log comment (fenced JSON). Never combined with prose — see below. |
+| `post-comment` | Post a Markdown comment as two required parts: `human` (the TL;DR and the reasoning, leading) and `agent_detail` (pointers, SHAs, URLs, footers). The tool writes the boundary between them, so a caller never composes one. |
+| `post-log` | Post a **standalone** machine log comment from a `title` and a `payload` object, which the tool serialises and fences itself. It can carry nothing else — see below. |
 | `attach-artifact` | Attach a durable file (the session transcript) to the issue — see below. |
 | `attachment-download` | Fetch an artifact already attached to an issue to a local path, named by filename or the tracker-native id (the disambiguator when two attachments share a filename). |
 | `attachment-update` | Replace the attached artifact of the same filename. Destructive; sanitised like `attach-artifact`. |
-| `link-pr` | Associate a PR with an issue. |
+| `link-pr` | Associate a PR with an issue: `human` is a short note that a PR now exists for this work, `agent_detail` is the PR URL. |
 
 ### Every verb is one MCP tool call
 
@@ -75,10 +75,14 @@ identifier: the name carries a deployment-dependent prefix — `mcp__plugin_sy_s
 marketplace install, `mcp__sy__<verb>` where a project-level `.mcp.json` provides the server instead.
 Both point at the same tool; hardcoding either breaks the other deployment.
 
-Three verbs have no tool of their own, because each is another verb's write carrying different
-content: `create-child` is `create-issue` with `parent` set, `post-log` is a `post-comment` carrying
-only a fenced JSON block, and `link-pr`'s durable half is a `post-comment` carrying the PR URL. That
-keeps one write path per effect.
+Two verbs have no tool of their own, because each is another verb's write carrying different
+content: `create-child` is `create-issue` with `parent` set, and `link-pr`'s durable half is a
+`post-comment` whose `human` notes that a PR now exists for this work and whose `agent_detail` is the
+PR URL. Today no call site makes that write standalone — the content rides in the ship retrospective's
+own `agent_detail` — but the shape is defined for a caller that does. That keeps one write path per
+effect. `post-log` was a third until it was pulled out: a machine log has no human-judgment half to
+pair with, so it has nothing to put in `post-comment`'s leading part, and giving it its own signature
+makes the standalone rule structural instead of something a caller has to remember.
 
 If the server itself is unavailable, there is no maintained fallback recipe to copy — deliberately.
 `preflight` is what tells you that up front rather than mid-workflow.
@@ -106,14 +110,14 @@ artifact — without exposing standalone deletion.
 
 ### Machine logs are standalone (`post-log`)
 
-Usage and metrics logs are small, machine-readable, and posted as their own comments — never appended to a retrospective, plan, decomposition, or checkpoint comment. Schemas:
+Usage and metrics logs are small, machine-readable, and posted as their own comments — never appended to a retrospective, plan, decomposition, or checkpoint comment. That rule is now structural rather than a convention a caller upholds: `post-log` takes a `title` and a `payload` object and writes the heading and the single fenced block itself, so there is no field in which other content could ride along. Schemas:
 
 - `# Claude Code usage` → `{"schema": "shipyard.claude_usage.v1", ...}`
 - `# Claude Code ship metrics` → `{"schema": "shipyard.ship_metrics.v1", ...}`
 
 Generate usage from the on-disk transcript tree with the `usage_summarize` tool (tracker-agnostic, and named the same way as every verb above). The adapter only posts the resulting JSON.
 
-`shipyard.ship_metrics.v1` is **enforced**, not just documented: a body naming that id must carry exactly one fenced JSON block whose top-level `schema` key claims it, and `post-comment`, `create-issue` and `update-issue` alike refuse the whole write when that block does not match the schema — the identical gate on all three bodies, so a machine log written into an issue body is held to exactly what a comment is — and equally when the body carries more than one such block, since which is the log is then ambiguous and validating the first would write the rest unchecked. That count is not limited to well-formed fences: an unclosed block, a closing marker with trailing text, or a bare prose mention of the id all count as a candidate too, so naming the id anywhere outside the one valid block is also a refusal, not a silent pass-through. A malformed metrics log therefore cannot land and then be read as authoritative. Field definitions live in exactly one place, `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md`; the executable copy is `sy_tools/ship_metrics.py`. Every field is optional except `schema` and `task` — an unknown metric is posted as `null`, never as a plausible zero — with one exception the model states and the reference explains. A body that neither names the id — literally or via a JSON `\uXXXX` escape — nor carries a block whose parsed content resolves to it passes through unvalidated.
+`shipyard.ship_metrics.v1` is **enforced**, not just documented: a body naming that id must carry exactly one fenced JSON block whose top-level `schema` key claims it, and `post-log`, `post-comment`, `create-issue` and `update-issue` alike refuse the whole write when that block does not match the schema — the identical gate on all four bodies, so a machine log written into an issue body is held to exactly what a comment is — and equally when the body carries more than one such block, since which is the log is then ambiguous and validating the first would write the rest unchecked. That count is not limited to well-formed fences: an unclosed block, a closing marker with trailing text, or a bare prose mention of the id all count as a candidate too, so naming the id anywhere outside the one valid block is also a refusal, not a silent pass-through. A malformed metrics log therefore cannot land and then be read as authoritative. Field definitions live in exactly one place, `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md`; the executable copy is `sy_tools/ship_metrics.py`. Every field is optional except `schema` and `task` — an unknown metric is posted as `null`, never as a plausible zero — with one exception the model states and the reference explains. A body that neither names the id — literally or via a JSON `\uXXXX` escape — nor carries a block whose parsed content resolves to it passes through unvalidated.
 
 ### Attachments may degrade to a link
 

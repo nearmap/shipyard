@@ -50,13 +50,13 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 
 ## Conventions that live here, not in an adapter
 
-- **Standalone machine logs.** `post-log` output (`# Claude Code usage`, `# Claude Code ship metrics`) is its own comment, never merged into prose. Generate usage from the transcript tree with the `usage_summarize` tool.
+- **Standalone machine logs.** `post-log` is its own tool, taking a `title` (`Claude Code usage`, `Claude Code ship metrics`) and the record as a `payload` object it fences itself, so a log is its own comment by construction and can never be merged into prose. Generate usage from the transcript tree with the `usage_summarize` tool.
 - **Exactly one ACTIVE plan** per task/bug; supersede explicitly and re-read to confirm.
 - **Closure is not delivery.** Merged/delivered closure satisfies a dependency; decomposed or superseded closure does not — follow replacement links until delivered capability is reached.
 - **Canonical decomposition** when replacing one task with smaller ones:
   1. create/approve replacements as direct children of the same epic;
   2. record replacement dependencies with `add-dependency`;
-  3. `post-comment` a `# Decomposition` note with reason and replacement IDs;
+  3. `post-comment` a `# Decomposition` note: `human` is the reason for the decomposition, `agent_detail` is the replacement IDs;
   4. `add-label` the old task `decomposed` (labels preserved);
   5. `set-status` the old task `done`;
   6. ensure the old and replacement work are never simultaneously actionable;

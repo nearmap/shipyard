@@ -110,7 +110,7 @@ artifact — without exposing standalone deletion.
 
 ### Machine logs are standalone (`post-log`)
 
-Usage and metrics logs are small, machine-readable, and posted as their own comments — never appended to a retrospective, plan, decomposition, or checkpoint comment. That rule is now structural rather than a convention a caller upholds: `post-log` takes a `title` and a `payload` object and writes the heading and the single fenced block itself, so there is no field in which other content could ride along. Schemas:
+Usage and metrics logs are small, machine-readable, and posted as their own comments — never appended to a retrospective, plan, decomposition, or checkpoint comment. `post-log` makes that structural for anything written through it: it takes a single-line `title` and a `payload` object and writes the heading and the single fenced block itself, so its signature offers no field in which other content could ride along. Reaching for `post-log` rather than `post-comment` remains the caller's call — `post-comment` does not turn a pasted-in log away. Schemas:
 
 - `# Claude Code usage` → `{"schema": "shipyard.claude_usage.v1", ...}`
 - `# Claude Code ship metrics` → `{"schema": "shipyard.ship_metrics.v1", ...}`

@@ -265,12 +265,13 @@ async def test_post_comment_refuses_anything_but_the_two_part_shape(monkeypatch,
 
 
 @pytest.mark.anyio
-async def test_a_metrics_claim_inside_agent_detail_is_still_refused_on_the_assembled_body(monkeypatch):
+async def test_a_malformed_metrics_claim_inside_agent_detail_is_still_refused_on_the_assembled_body(monkeypatch):
     """The validator runs on what gets sent, so splitting a body in two is not a way past it.
 
     `post-log` is where a machine log belongs now, and the backstop on `post-comment` only means
     anything if it sees the assembled string: checking `human` alone would let the half nobody reads
-    carry the unvalidated log.
+    carry the unvalidated log. Scoped to a malformed claim on purpose — the backstop catches what would
+    land and be read as authoritative, not a well-formed record a caller chose the wrong tool for.
     """
     monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     async with mcp.Client(server.mcp) as client:
@@ -297,6 +298,27 @@ async def test_post_log_refuses_a_payload_with_nothing_in_it_before_the_adapter_
     async with mcp.Client(server.mcp) as client:
         result = await client.call_tool("post-log", arguments)
     assert result.is_error is True, f"an empty payload was posted: {result.content}"
+
+
+@pytest.mark.anyio
+async def test_post_log_refuses_a_title_that_spans_lines_before_the_adapter_is_touched(monkeypatch):
+    """A multi-line `title` is the one way prose and a second block could still ride along with a log.
+
+    The tool's claim is that a log is standalone by construction, not by convention, and `title` is the
+    only free-text field left: interpolated raw under the `#`, a heading holding its own newlines,
+    paragraphs and fences posts exactly the merged comment `post-log` exists to make unrepresentable.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-log",
+            {
+                "issue": "PROJ-1",
+                "title": 'Claude Code usage\n\nAnd some prose.\n\n```json\n{"a": 1}\n```\n\nMore prose',
+                "payload": {"schema": "shipyard.claude_usage.v1", "task": "PROJ-1"},
+            },
+        )
+    assert result.is_error is True, f"a multi-line title was posted: {result.content}"
 
 
 @pytest.mark.anyio

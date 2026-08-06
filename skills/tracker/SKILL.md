@@ -50,7 +50,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 
 ## Conventions that live here, not in an adapter
 
-- **Standalone machine logs.** `post-log` is its own tool, taking a single-line `title` (`Claude Code usage`, `Claude Code ship metrics`) and the record as a `payload` object it fences itself, so a log posted through it is its own comment by construction — its signature has no field prose could ride in. Choosing that tool over `post-comment` is still yours. Generate usage from the transcript tree with the `usage_summarize` tool.
+- **Standalone machine logs.** `post-log` is its own tool, taking a single-line `title` (`Claude Code usage`, `Claude Code ship metrics`) and the record as a `payload` object it fences itself, so a log posted through it is its own comment by construction — its signature has no field a second block or a detached paragraph could ride in. Choosing that tool over `post-comment` is still yours. Generate usage from the transcript tree with the `usage_summarize` tool.
 - **Exactly one ACTIVE plan** per task/bug; supersede explicitly and re-read to confirm.
 - **Closure is not delivery.** Merged/delivered closure satisfies a dependency; decomposed or superseded closure does not — follow replacement links until delivered capability is reached.
 - **Canonical decomposition** when replacing one task with smaller ones:

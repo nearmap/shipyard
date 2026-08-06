@@ -66,6 +66,8 @@ An issue's opaque id is its **URL** in everything this adapter returns. `gh` acc
 - **`link-pr`**: reference the issue from the PR body as a plain `#<NUMBER>`, **not** a closing keyword — the done transition is owned by native project automation on merge, not by the PR text.
 - **`type-convert`** rewrites the board `Type` field on an existing issue, verified by the same bounded re-read every board write uses.
 
+This adapter's body limit is **65,536 characters**, applied by the shared whole-write refusal in `../CONTRACT.md`. GitHub documents no such limit anywhere: the figure is attested by nothing but the API's own error string on a write that exceeds it, so treat it as observed behaviour that could move rather than a published bound.
+
 ### `attach-artifact` and the attachment lifecycle — gist + link (deliberate asymmetry)
 
 GitHub issues have no CLI-scriptable file attachment, so the artifact is uploaded as a **secret** (private) gist and linked from a comment on the issue. Hand the rendered path to the `attach-artifact` tool: it checks the gate and runs both sanitisation passes — the same ones, in the same order, as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter. Privacy is verified by reading the created gist back rather than assumed from the flags passed: a public gist would publish a transcript irrevocably.

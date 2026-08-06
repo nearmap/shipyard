@@ -60,6 +60,8 @@ Everything below is Jira-specific behaviour a caller can rely on. Where a verb i
 - **`link-pr`**: PRs surface in the Jira development panel when the branch or commit names the issue key. The verb's durable half is a comment whose `human` notes that a PR now exists and whose `agent_detail` is the PR URL, so the association survives regardless of dev-panel wiring.
 - **`type-convert`** rewrites the work item's type in place and verifies by reading it back. Some site workflows restrict type changes (required fields, hierarchy rules); it then fails loudly rather than leaving the type silently unchanged. Irreversible side effects — parent links, board membership — follow the type.
 
+This adapter's body limit is **32,767 characters**, applied by the shared whole-write refusal in `../CONTRACT.md`. Two things about that number matter before relying on it: it comes from JRACLOUD-63007 and the Jira Cloud KB, where the *unit* is left undocumented for an ADF body, and it is stated for **comments** only — holding `create-issue` and `update-issue` descriptions to the same figure is this adapter's deliberate assumption, not something Jira documents.
+
 Deleting a dependency link is not a contract verb: no workflow drives it, so it stays a manual `acli jira workitem link delete --id <id> --yes` outside Shipyard.
 
 ## `attach-artifact` and the attachment lifecycle

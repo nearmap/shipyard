@@ -97,6 +97,9 @@ class JiraAdapter:
     """The canonical tracker verbs, implemented against the Jira Cloud REST API."""
 
     name = "jira"
+    # Characters, per JRACLOUD-63007 and the Jira Cloud KB. That figure is stated for comments only and
+    # its unit is undocumented under ADF; holding descriptions to it too is a deliberate assumption.
+    body_limit: int = 32_767
 
     def __init__(self) -> None:
         self._account_id: str | None = None

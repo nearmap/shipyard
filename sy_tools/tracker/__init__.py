@@ -117,6 +117,26 @@ class TrackerAdapter(Protocol):
         """Add `label` to `issue`, preserving the labels already on it, and return the resulting set."""
         ...
 
+    body_limit: int
+    """The largest body this tracker is believed to take, in characters. Best-effort, not a guarantee.
+
+    Annotation only, with no value: a default here would put a non-verb into `vars()`, which is where
+    `sy_tools/tests/tracker/test_canonical.py` pins the canonical verb set.
+
+    It guards issue descriptions as well as comments, which is why it is not `comment_body_limit`.
+    Neither adapter's figure is firm, and both are stated with their provenance rather than presented
+    as spec:
+
+    - Jira's 32,767 comes from JRACLOUD-63007 and the Jira Cloud KB. The *unit* is undocumented under
+      ADF, and the figure is established for **comments only** — applying it to an issue description is
+      an unverified assumption that adapter makes deliberately.
+    - GitHub's 65,536 is undocumented entirely, attested by nothing but the API's own error string.
+
+    So a body under the limit is one this tracker has not been observed to refuse, not one it promises
+    to accept. The point of the number is to turn the common overflow into a refusal a caller can act
+    on before the write, not to certify the boundary.
+    """
+
     async def post_comment(self, issue: str, body: str) -> dict:
         """Post `body` as a Markdown comment on `issue` and return the comment the write created."""
         ...

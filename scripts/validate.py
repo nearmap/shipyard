@@ -533,18 +533,35 @@ def check_invariants(errors: list[str]) -> None:
     if "plan_base_sha" not in start:
         fail("ship start/resume must carry plan_base_sha state", errors)
     pregate_fields = (
-        "pregate_checkpoint_channel", "pregate_checkpoint_cleared_sha", "pregate_checkpoint_changes_requested",
+        "pregate_checkpoint_channel",
+        "pregate_checkpoint_cleared_sha",
+        "pregate_checkpoint_changes_requested",
+        "pregate_checkpoint_gate_dispatched",
+        "pregate_checkpoint_request_text",
     )
     if any(field not in start for field in pregate_fields):
         fail(
-            "ship start/resume must stamp the pre-gate checkpoint trio (channel, cleared SHA, changes-requested "
-            "count) at START; a field never written at START cannot be checked before a later GATE dispatch",
+            "ship start/resume must stamp all five pre-gate checkpoint fields (channel, cleared SHA, "
+            "changes-requested count, gate-dispatched flag, request text) at START; a field never written at "
+            "START cannot be checked before a later GATE dispatch",
             errors,
         )
     if "Pre-gate checkpoint" not in ship or "pregate_checkpoint_channel" not in ship:
         fail(
             "ship SKILL must own the § Pre-gate checkpoint procedure and name pregate_checkpoint_channel; the "
             "pause between BUILD's done and GATE is parent-owned and lives nowhere else",
+            errors,
+        )
+    if "pregate_checkpoint_gate_dispatched" not in ship:
+        fail(
+            "ship SKILL must carry pregate_checkpoint_gate_dispatched; without that GATE-re-entry guard § Pre-gate "
+            "checkpoint and § State router contradict each other on a resumed fix-cycle commit",
+            errors,
+        )
+    if "pregate_checkpoint_request_text" not in ship:
+        fail(
+            "ship SKILL must carry pregate_checkpoint_request_text; a requested change the parent never persists "
+            "leaves the BUILD continuation it dispatches with nothing to resume into",
             errors,
         )
     if "TARGET_SHA" not in gate_ref or "TARGET_SHA" not in merge:
@@ -628,6 +645,18 @@ def check_invariants(errors: list[str]) -> None:
         fail("build implementation must include the deterministic content-QA grep for leaked wrapper tokens", errors)
     if "docs requiring updates" not in impl:
         fail("build implementation must route the plan's docs requiring updates field into a verification obligation", errors)
+    if "pregate_revision" not in impl:
+        fail(
+            "build implementation must document the pregate_revision slice source; a request-changes continuation "
+            "needs a concrete slice type to resume into, not a name only the plan knows",
+            errors,
+        )
+    if "pregate_checkpoint_request_text" not in impl:
+        fail(
+            "build implementation must name pregate_checkpoint_request_text; BUILD cannot fold a requested revision "
+            "into its manifest without naming the field it reads",
+            errors,
+        )
     # Lower-cased unlike most pins here: the sentence names a parent-owned step, so its casing is not load-bearing.
     if "pre-gate checkpoint" not in impl.lower():
         fail(
@@ -758,6 +787,12 @@ def check_invariants(errors: list[str]) -> None:
         fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
     if "pregate_checkpoint" not in ship_router:
         fail("ship SKILL's state router must re-check the pre-gate checkpoint on a resume routing to GATE", errors)
+    if "pregate_checkpoint_gate_dispatched" not in ship_router:
+        fail(
+            "ship SKILL's state router must scope its pre-gate re-check by pregate_checkpoint_gate_dispatched; an "
+            "unscoped re-check fires again on a resumed GATE fix cycle, one layer below the § Pre-gate checkpoint fix",
+            errors,
+        )
     for agent in ("ship-start", "ship-build", "ship-gate"):
         if "MEMORY_REFUTE" not in read(f"agents/{agent}.md"):
             fail(f"agent {agent} must carry MEMORY_REFUTE in its return-contract status block", errors)

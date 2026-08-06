@@ -65,6 +65,8 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 ![The ship dispatcher](docs/img/ship-states.png)
 
+The diagram shows phase-level sequencing only; it omits every parent-level pause along the way — this one, the START profile guard, `needs-decision` resolution, merge authorization — so a plan that declares no checkpoint runs exactly the arrows shown, and one that does still shows as a plain BUILD→GATE arrow here.
+
 ## Under the hood
 
 The workflow skills stay small and delegate expensive reads and builds to a fleet of specialist agents, each in its own context with its own model, each returning a compact brief. `/sy:ship` in particular runs each phase — start, build, gate — as a disposable worker, so the orchestrator owns only the durable state and the conversation with you, while the heavy lifting happens in fresh contexts that never accumulate.

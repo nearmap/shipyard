@@ -399,15 +399,19 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         # line's tool.
         declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
         value = declared.group(1).strip() if declared else ""
-        if declared and not value and re.match(r"\r?\n[ \t]*-[ \t]", block[declared.end():]):
-            # A block list leaves nothing after `tools:` on its own line, so it reads exactly like an absent
-            # or valueless field and every check below is skipped -- for a non-ship agent silently, allowlist
-            # and all. Refuse the shape rather than grow a second YAML parser for it, as with the
-            # unrecognised glob shapes further down.
+        if declared and not value and _frontmatter_field(text, "tools").strip():
+            # `tools:` names nothing on its own line, but a block list or flow sequence follows -- on the next
+            # line, after a blank line, or after a comment line -- so it reads exactly like an absent or
+            # valueless field and every check below would be skipped, for a non-ship agent silently, allowlist
+            # and all. `_frontmatter_field` already joins that continuation correctly (it reads spec-gate's own
+            # tools: pin the same way); reuse it here rather than re-detect the shape by hand a second time,
+            # which is what missed the blank-line/comment-preceded cases in the first place. Refuse the shape
+            # rather than parse it -- as with the unrecognised glob shapes further down -- since every real
+            # agent already uses the single-line comma form.
             fail(
-                f"{p.relative_to(ROOT)}: tools: is a YAML block list of indented `- item` lines; rewrite it as "
-                "the single-line comma-separated form `tools: item, item` so the allowlist checks below read "
-                "it, rather than read it as declaring no tools and skip",
+                f"{p.relative_to(ROOT)}: tools: is a YAML block list or flow sequence rather than the "
+                "single-line comma-separated form every allowlist check below expects; rewrite it as "
+                "`tools: item, item, ...` on one line",
                 errors,
             )
             continue

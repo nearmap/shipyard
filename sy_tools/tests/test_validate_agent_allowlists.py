@@ -115,17 +115,27 @@ def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(tmp_path, monke
     assert errors, f"{agent} with an empty tools: value declares no usable allowlist and must be refused"
 
 
+_CHECK_ENV_TWINS = ("mcp__sy__check_env", "mcp__plugin_sy_sy__check_env")
+_BLOCK_LIST = "".join(f"  - {tool}\n" for tool in _CHECK_ENV_TWINS).rstrip("\n")
+
+
 @pytest.mark.parametrize("agent", ["sweep", "ship-build"])
-def test_a_block_list_tools_value_is_refused_by_shape(tmp_path, monkeypatch, agent):
-    """A block list puts nothing after `tools:` on its own line, so it reads as an absent field and every
-    check below is skipped -- for a non-ship agent silently, however wrong the allowlist it hides.
+@pytest.mark.parametrize("continuation", [
+    f"\n{_BLOCK_LIST}",
+    f"\n\n{_BLOCK_LIST}",
+    f"\n  # both deployment prefixes\n{_BLOCK_LIST}",
+    f"\n  [{', '.join(_CHECK_ENV_TWINS)}]",
+], ids=["block list", "blank line then block list", "comment then block list", "flow sequence"])
+def test_a_multi_line_tools_value_is_refused_by_shape(tmp_path, monkeypatch, agent, continuation):
+    """Every one of these puts nothing after `tools:` on its own line, so it reads as an absent field and every
+    check below is skipped -- for a non-ship agent silently, however wrong the allowlist it hides. The blank-line,
+    comment-preceded, and flow-sequence siblings each bypassed a guard that only looked at the very next line.
 
     check_env rides along under both prefixes so the form itself is the only thing left to refuse.
     """
-    block_list = "\n" + "".join(f"  - mcp__{prefix}__check_env\n" for prefix in ("sy", "plugin_sy_sy")).rstrip("\n")
-    errors = _check(tmp_path, block_list, monkeypatch, name=agent)
+    errors = _check(tmp_path, continuation, monkeypatch, name=agent)
     assert any("block list" in error for error in errors), \
-        f"{agent}'s block-list tools: must be refused naming the shape: {errors}"
+        f"{agent}'s multi-line tools: must be refused naming the shape: {errors}"
 
 
 def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):

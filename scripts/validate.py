@@ -798,15 +798,19 @@ def check_invariants(errors: list[str]) -> None:
     if economy_axis_phrase in spec:
         fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
 
-    # Each adapter's body limit lives in the constant and again in its agent-facing ADAPTER.md prose.
-    # Both spellings count because the prose groups thousands and the code does not.
+    # Each adapter's body limit lives in the constant, again in its agent-facing ADAPTER.md prose, and
+    # again in the `body_limit` Protocol docstring that names both figures. Both spellings count in every
+    # place, because the prose groups thousands and the code does not.
+    protocol_rel = "sy_tools/tracker/__init__.py"
+    protocol = read(protocol_rel)
     for name, source, doc_rel, doc in (
         ("jira", "sy_tools/tracker/jira/adapter.py", "skills/tracker/jira/ADAPTER.md", jira_adapter),
         ("github", "sy_tools/tracker/github/adapter.py", "skills/tracker/github/ADAPTER.md", github_adapter),
     ):
         limit = declared_body_limit(source)
-        if str(limit) not in doc and f"{limit:,}" not in doc:
-            fail(f"{name} adapter's body_limit is {limit} ({source}); {doc_rel} states a different figure", errors)
+        for target_rel, target in ((doc_rel, doc), (protocol_rel, protocol)):
+            if str(limit) not in target and f"{limit:,}" not in target:
+                fail(f"{name} adapter's body_limit is {limit} ({source}); {target_rel} states no such figure", errors)
 
     # `post-comment` takes `human` and `agent_detail`, both required, and assembles the boundary itself.
     # These are the highest-traffic call sites, so a reference still describing one hand-composed body

@@ -73,7 +73,8 @@ WIRING = [
      "add_dependency", ("PROJ-9", "PROJ-10"), {}),
     ("add-label", {"issue": "PROJ-11", "label": "needs-spec"}, "add_label", ("PROJ-11", "needs-spec"), {}),
     ("post-comment", {"issue": "PROJ-12", "human": "TL;DR: done", "agent_detail": "HEAD abc123"},
-     "post_comment", ("PROJ-12", "TL;DR: done" + server._TWO_PART_SEPARATOR + "HEAD abc123"), {}),
+     "post_comment",
+     ("PROJ-12", "TL;DR: done" + server._AGENT_DETAIL_OPEN + "HEAD abc123" + server._AGENT_DETAIL_CLOSE), {}),
     ("post-log", {"issue": "PROJ-15", "title": "Claude Code usage", "payload": {"schema": "shipyard.claude_usage.v1"}},
      "post_comment", ("PROJ-15", '# Claude Code usage\n\n```json\n{\n  "schema": "shipyard.claude_usage.v1"\n}\n```\n'),
      {}),
@@ -220,10 +221,10 @@ async def test_the_two_folded_verbs_have_no_tool_of_their_own(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_post_comment_assembles_both_halves_in_order_with_the_separator_between_them(monkeypatch):
+async def test_post_comment_assembles_both_halves_in_order_with_the_boundary_between_them(monkeypatch):
     """The boundary is the tool's to write, so the adapter sees one body split exactly one way.
 
-    The failure this rules out is not a missing separator but a drifting one: every caller composing
+    The failure this rules out is not a missing boundary but a drifting one: every caller composing
     its own heading was the convention that never held, and a body assembled anywhere but here would
     let it come back.
     """
@@ -236,8 +237,38 @@ async def test_post_comment_assembles_both_halves_in_order_with_the_separator_be
         )
     assert result.is_error is False, result.content
     sent = _body_sent(recorder)
-    assert sent == "TL;DR: the gate passed." + server._TWO_PART_SEPARATOR + "HEAD 6144373", sent
-    assert sent.index("TL;DR") < sent.index("6144373"), "the human half leads; a reader stops at the rule"
+    assert sent == (
+        "TL;DR: the gate passed."
+        + server._AGENT_DETAIL_OPEN
+        + "HEAD 6144373"
+        + server._AGENT_DETAIL_CLOSE
+    ), sent
+    assert sent.index("TL;DR") < sent.index("6144373"), "the human half leads; a reader opens the rest"
+
+
+@pytest.mark.anyio
+async def test_post_comment_encloses_the_agent_half_in_one_closed_collapsed_section(monkeypatch):
+    """Multi-line Markdown halves stay whole, and the section that holds the second one is closed.
+
+    A body that opens the disclosure and never closes it, or closes it before the agent-facing half
+    ends, renders as an expanded wall of pointers on both trackers — the thing the section exists to
+    stop — and neither failure shows up on single-line halves.
+    """
+    human = "TL;DR: the gate passed.\n\nOne finding left, in the notes.\n"
+    agent_detail = "## Pointers\n\n- HEAD 6144373\n- https://example.invalid/pr/7\n"
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-comment", {"issue": "PROJ-1", "human": human, "agent_detail": agent_detail}
+        )
+    assert result.is_error is False, result.content
+    sent = _body_sent(recorder)
+    assert sent == (
+        human.strip() + server._AGENT_DETAIL_OPEN + agent_detail.strip() + server._AGENT_DETAIL_CLOSE
+    ), sent
+    assert sent.count(server._AGENT_DETAIL_OPEN) == 1, f"the section is opened more than once: {sent!r}"
+    assert sent.endswith(server._AGENT_DETAIL_CLOSE), f"the body carries content past the section: {sent!r}"
 
 
 @pytest.mark.anyio
@@ -1236,7 +1267,7 @@ def _assembled(tool: str, text: str) -> str:
     the assertion that would stop noticing if the separator or the second half went missing.
     """
     if tool == "post-comment":
-        return text.strip() + server._TWO_PART_SEPARATOR + AGENT_DETAIL
+        return text.strip() + server._AGENT_DETAIL_OPEN + AGENT_DETAIL + server._AGENT_DETAIL_CLOSE
     return text
 
 FAKE_SECRET_VAR = "SY_TEST_FAKE_TOKEN"
@@ -1422,8 +1453,9 @@ async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip
     assert result.is_error is False, result.content
     assert _body_sent(recorder) == (
         "TL;DR: it said <REDACTED:SY_TEST_DECLARED>."
-        + server._TWO_PART_SEPARATOR
+        + server._AGENT_DETAIL_OPEN
         + "the log line was <REDACTED:SY_TEST_DECLARED>"
+        + server._AGENT_DETAIL_CLOSE
     ), _body_sent(recorder)
     assert _payload(result)["scrub"] == {
         "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 2,
@@ -1451,9 +1483,9 @@ async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_r
             "post-comment", {"issue": "PROJ-1", "human": human, "agent_detail": "HEAD abc123"}
         )
     assert result.is_error is False, result.content
-    assert _body_sent(recorder) == human + server._TWO_PART_SEPARATOR + "HEAD abc123", (
-        f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
-    )
+    assert _body_sent(recorder) == (
+        human + server._AGENT_DETAIL_OPEN + "HEAD abc123" + server._AGENT_DETAIL_CLOSE
+    ), f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
     assert _payload(result)["scrub"] == {
         "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": [],
         "declared_below_length_floor": ["SY_TEST_DECLARED"],

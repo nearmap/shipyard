@@ -556,6 +556,8 @@ def check_invariants(errors: list[str]) -> None:
     # otherwise satisfy a file-wide check on its own, leaving these two unfalsifiable. Both sections have to name
     # the fields, since either one alone silently reintroduces the contradiction between them.
     ship_pregate = ship.partition("## Pre-gate checkpoint")[2].partition("## State router")[0]
+    if "## State router" not in ship:
+        fail("ship SKILL must have a § State router section immediately after § Pre-gate checkpoint", errors)
     if "pregate_checkpoint_gate_dispatched" not in ship_pregate:
         fail(
             "ship SKILL's § Pre-gate checkpoint must carry pregate_checkpoint_gate_dispatched; without that "
@@ -659,6 +661,12 @@ def check_invariants(errors: list[str]) -> None:
         fail(
             "build implementation must name pregate_checkpoint_request_text; BUILD cannot fold a requested revision "
             "into its manifest without naming the field it reads",
+            errors,
+        )
+    if "pregate_checkpoint_gate_dispatched" in impl:
+        fail(
+            "build implementation must never name pregate_checkpoint_gate_dispatched; that field is "
+            "parent-only, and BUILD referencing it violates the ownership boundary the design invariant states",
             errors,
         )
     # Lower-cased unlike most pins here: the sentence names a parent-owned step, so its casing is not load-bearing.
@@ -811,6 +819,8 @@ def check_invariants(errors: list[str]) -> None:
     # route straight to BUILD or GATE and passes through no phase procedure that could own either rule, so the
     # router the parent always loads must carry its own copy of both.
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
+    if "## Completion bar" not in ship:
+        fail("ship SKILL must have a § Completion bar section immediately after § State router", errors)
     if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
         fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
     if "pregate_checkpoint_cleared_sha" not in ship_router:

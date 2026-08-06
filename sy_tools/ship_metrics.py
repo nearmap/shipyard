@@ -10,8 +10,9 @@ native payload and validates that; `post-comment`, `create-issue` and `update-is
 check on their own bodies as a backstop. A body carrying no `shipyard.ship_metrics.v1` block is not
 this module's business and passes through untouched.
 
-Every field but `schema` and `task` is optional: a metric genuinely unknown at ship time must be
-recordable as unknown rather than as a plausible zero.
+Every field but `schema`, `task`, `human_review_defects` and the two `pregate_checkpoint_*` fields is
+optional: a metric genuinely unknown at ship time must be recordable as unknown rather than as a
+plausible zero, and those exceptions are the ones a finished run always knows.
 """
 from __future__ import annotations
 
@@ -47,6 +48,10 @@ class ShipMetricsV1(BaseModel):
     # Defaults to `0` and rejects an explicit `null`: "no human found anything" is a real observation at
     # ship time, where `null` would make a clean run indistinguishable from an unfinished record.
     human_review_defects: int = 0
+    # Also never `null`: whether the plan declared a pre-gate checkpoint, and how many times that
+    # checkpoint sent work back, are both settled by ship time, so `null` would hide an unfinished record.
+    pregate_checkpoint_declared: bool = False
+    pregate_checkpoint_changes_requested: int = 0
     gate_false_pass: bool | None = None
     gate_false_pass_reason: str | None = None
     post_merge_defect: bool | None = None
@@ -82,6 +87,7 @@ class ShipMetricsV1(BaseModel):
             "review_findings_accepted": self.review_findings_accepted,
             "review_findings_rejected": self.review_findings_rejected,
             "human_review_defects": self.human_review_defects,
+            "pregate_checkpoint_changes_requested": self.pregate_checkpoint_changes_requested,
             "lead_time_seconds": self.lead_time_seconds,
         }
         negative = sorted(name for name, value in counts.items() if value is not None and value < 0)

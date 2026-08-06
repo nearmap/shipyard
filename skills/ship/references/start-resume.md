@@ -62,6 +62,11 @@ start_model_requested: <resolved START_MODEL>
 start_model_observed: null
 build_model_requested: null
 build_model_observed: null
+pregate_checkpoint_channel: <the plan's declared channel — draft-pr | running-preview — or null when the plan declares none>
+pregate_checkpoint_cleared_sha: null
+pregate_checkpoint_changes_requested: 0
+pregate_checkpoint_gate_dispatched: false
+pregate_checkpoint_request_text: null
 accepted_deviations: []
 memory_refutations: []
 phase_checkpoint: null
@@ -73,7 +78,7 @@ agents_used: []
 
 7. set the Task `in-progress` via the `tracker` skill, self-assign, and ensure the parent Epic is `in-progress`.
 
-Each phase's `*_model_requested` is written when that phase is dispatched and its `*_model_observed` only once the usage transcript confirms what ran, so the `build_model_*` pair stays `null` until the parent dispatches BUILD and the `review_model_*` pair stays `null` until GATE.
+Each phase's `*_model_requested` is written when that phase is dispatched and its `*_model_observed` only once the usage transcript confirms what ran, so the `build_model_*` pair stays `null` until the parent dispatches BUILD and the `review_model_*` pair stays `null` until GATE. `pregate_checkpoint_channel` is stamped once here too, taken from the plan's `pre-gate checkpoint` field in the normalized form the block above shows (`draft-pr` / `running-preview`) and left `null` when the plan declares none; `pregate_checkpoint_gate_dispatched` starts `false` and `pregate_checkpoint_request_text` starts `null` alongside it, stamped once here for the same reason the rest are; `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint owns how the rest are later set and re-checked.
 
 The state file is local resume state, not shared truth. Never prune unrelated worktrees or paths. `phase_checkpoint` is the active worker's idempotent resume anchor (e.g. a slice manifest with per-slice status), passed to any continuation worker.
 

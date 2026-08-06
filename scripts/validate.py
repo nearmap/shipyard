@@ -532,6 +532,42 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec must define verification obligations and record PLAN_BASE_SHA", errors)
     if "plan_base_sha" not in start:
         fail("ship start/resume must carry plan_base_sha state", errors)
+    pregate_fields = (
+        "pregate_checkpoint_channel",
+        "pregate_checkpoint_cleared_sha",
+        "pregate_checkpoint_changes_requested",
+        "pregate_checkpoint_gate_dispatched",
+        "pregate_checkpoint_request_text",
+    )
+    if any(field not in start for field in pregate_fields):
+        fail(
+            "ship start/resume must stamp all five pre-gate checkpoint fields (channel, cleared SHA, "
+            "changes-requested count, gate-dispatched flag, request text) at START; a field never written at "
+            "START cannot be checked before a later GATE dispatch",
+            errors,
+        )
+    if "pregate_checkpoint_channel" not in ship:
+        fail(
+            "ship SKILL must own the § Pre-gate checkpoint procedure and name pregate_checkpoint_channel; the "
+            "pause between BUILD's done and GATE is parent-owned and lives nowhere else",
+            errors,
+        )
+    # Section-scoped, not file-scoped: § State router's own copy of the gate-dispatched guard (below) would
+    # otherwise satisfy a file-wide check on its own, leaving these two unfalsifiable. Both sections have to name
+    # the fields, since either one alone silently reintroduces the contradiction between them.
+    ship_pregate = ship.partition("## Pre-gate checkpoint")[2].partition("## State router")[0]
+    if "pregate_checkpoint_gate_dispatched" not in ship_pregate:
+        fail(
+            "ship SKILL's § Pre-gate checkpoint must carry pregate_checkpoint_gate_dispatched; without that "
+            "GATE-re-entry guard it and § State router contradict each other on a resumed fix-cycle commit",
+            errors,
+        )
+    if "pregate_checkpoint_request_text" not in ship_pregate:
+        fail(
+            "ship SKILL's § Pre-gate checkpoint must carry pregate_checkpoint_request_text; a requested change the "
+            "parent never persists leaves the BUILD continuation it dispatches with nothing to resume into",
+            errors,
+        )
     if "TARGET_SHA" not in gate_ref or "TARGET_SHA" not in merge:
         fail("review pin and merge revalidation must record TARGET_SHA", errors)
     if "process tier" not in handoff:
@@ -613,6 +649,31 @@ def check_invariants(errors: list[str]) -> None:
         fail("build implementation must include the deterministic content-QA grep for leaked wrapper tokens", errors)
     if "docs requiring updates" not in impl:
         fail("build implementation must route the plan's docs requiring updates field into a verification obligation", errors)
+    if "pregate_revision" not in impl:
+        fail(
+            "build implementation must document the pregate_revision slice source; a request-changes continuation "
+            "needs a concrete slice type to resume into, not a name only the plan knows",
+            errors,
+        )
+    if "pregate_checkpoint_request_text" not in impl:
+        fail(
+            "build implementation must name pregate_checkpoint_request_text; BUILD cannot fold a requested revision "
+            "into its manifest without naming the field it reads",
+            errors,
+        )
+    if "pregate_checkpoint_gate_dispatched" in impl:
+        fail(
+            "build implementation must never name pregate_checkpoint_gate_dispatched; that field is "
+            "parent-only, and BUILD referencing it violates the ownership boundary the design invariant states",
+            errors,
+        )
+    # Lower-cased unlike most pins here: the sentence names a parent-owned step, so its casing is not load-bearing.
+    if "pre-gate checkpoint" not in impl.lower():
+        fail(
+            "build implementation must state that the parent honours the plan's pre-gate checkpoint after done; "
+            "a BUILD that thinks the pause is its own will run or skip a checkpoint it cannot even observe",
+            errors,
+        )
     for name, text in (("ship", ship), ("implementation", impl), ("ship-build agent", build_agent)):
         if "needs-trace" not in text:
             fail(f"{name} must carry the needs-trace worker return (parent dispatches sy:trace, BUILD never does)", errors)
@@ -636,6 +697,17 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate agent restates an axis definition; cite spec-gate.md instead of copying it", errors)
     if axis_phrase in spec:
         fail("spec restates a spec-gate axis definition; cite spec-gate.md instead of copying it", errors)
+    checkpoint_axis_phrase = "not a fact this axis checks against the diff"
+    if checkpoint_axis_phrase not in spec_gate_ref:
+        fail(
+            f"spec-gate reference must define the pre-gate-checkpoint axis as presence-only with "
+            f"{checkpoint_axis_phrase!r}",
+            errors,
+        )
+    if checkpoint_axis_phrase in spec_gate:
+        fail("spec-gate agent restates the pre-gate-checkpoint axis; cite spec-gate.md instead of copying it", errors)
+    if checkpoint_axis_phrase in spec:
+        fail("spec restates the pre-gate-checkpoint axis definition; cite spec-gate.md instead of copying it", errors)
     tools_value = _frontmatter_field(spec_gate, "tools").strip()
     if not tools_value:
         fail(
@@ -645,8 +717,13 @@ def check_invariants(errors: list[str]) -> None:
         )
     elif re.search(r"\b(?:Agent|Skill)\b", tools_value):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
-    if "docs requiring updates" not in spec or "visual-debug obligations" not in spec:
-        fail("spec's /sy:ship section must require the docs-sync and visual-debug completeness fields", errors)
+    completeness = ("docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
+    if any(field not in spec for field in completeness):
+        fail(
+            "spec's /sy:ship section must require the docs-sync, visual-debug, and pre-gate-checkpoint "
+            "completeness fields",
+            errors,
+        )
     # Section-scoped on purpose: a whole-file check passes on §2's prose (which legitimately permits a
     # research-phase body edit), a whole-§7 one on Step 1's consent sentence. Widening either disables it.
     spec_s7 = spec.partition("## 7.")[2].partition("## 8.")[0]
@@ -735,11 +812,41 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must relay a contradicted anchor as a MEMORY_REFUTE candidate in memory_refutations", errors)
     if "memory_refutations" not in ship or "memory_refute" not in ship:
         fail("ship SKILL must carry memory_refutations in the done payload and the parent-applies-it rule", errors)
-    # Section-scoped on purpose: § Worker contract's drain covers an in-flight return only, and a resume can
-    # route straight to BUILD or GATE, so the router the parent always loads must carry its own drain.
+    # Section-scoped on purpose, and for the same reason in both cases: § Worker contract's drain covers an
+    # in-flight return only and § Pre-gate checkpoint is written around a fresh BUILD `done`, but a resume can
+    # route straight to BUILD or GATE and passes through no phase procedure that could own either rule, so the
+    # router the parent always loads must carry its own copy of both.
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
+    _pregate_pos, _router_pos, _completion_pos = (
+        ship.find("## Pre-gate checkpoint"), ship.find("## State router"), ship.find("## Completion bar"),
+    )
+    if -1 in (_pregate_pos, _router_pos, _completion_pos) or not (_pregate_pos < _router_pos < _completion_pos):
+        fail(
+            "ship SKILL must keep § Pre-gate checkpoint, § State router, and § Completion bar present and in "
+            "that order; a missing or reordered section lets a section-scoped pin's slice silently widen to "
+            "swallow a neighbouring section instead of failing loud",
+            errors,
+        )
     if "memory_refutations" not in ship_router or "memory_refute" not in ship_router:
         fail("ship SKILL's state router must drain pending memory_refutations on resume before dispatching", errors)
+    if "pregate_checkpoint_cleared_sha" not in ship_router:
+        fail(
+            "ship SKILL's state router must re-check the pre-gate checkpoint's cleared SHA on a resume routing to GATE",
+            errors,
+        )
+    if "pregate_checkpoint_gate_dispatched" not in ship_router:
+        fail(
+            "ship SKILL's state router must scope its pre-gate re-check by pregate_checkpoint_gate_dispatched; an "
+            "unscoped re-check fires again on a resumed GATE fix cycle, one layer below the § Pre-gate checkpoint fix",
+            errors,
+        )
+    if "pregate_checkpoint_request_text" not in ship_router:
+        fail(
+            "ship SKILL's state router must re-check pregate_checkpoint_request_text; without that override a "
+            "resume mid-BUILD-continuation can misclassify to GATE instead of BUILD, double-incrementing "
+            "pregate_checkpoint_changes_requested or letting an escape leave a stale request for BUILD to refold",
+            errors,
+        )
     for agent in ("ship-start", "ship-build", "ship-gate"):
         if "MEMORY_REFUTE" not in read(f"agents/{agent}.md"):
             fail(f"agent {agent} must carry MEMORY_REFUTE in its return-contract status block", errors)

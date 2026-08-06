@@ -43,6 +43,7 @@ TOOL_NAMES = {
     "memory_refute",
     "memory_search",
     "post-comment",
+    "post-log",
     "preflight",
     "reload_config",
     "scratch_dir",
@@ -71,7 +72,11 @@ WIRING = [
     ("add-dependency", {"issue": "PROJ-9", "blocked_by": "PROJ-10"},
      "add_dependency", ("PROJ-9", "PROJ-10"), {}),
     ("add-label", {"issue": "PROJ-11", "label": "needs-spec"}, "add_label", ("PROJ-11", "needs-spec"), {}),
-    ("post-comment", {"issue": "PROJ-12", "body": "TL;DR: done"}, "post_comment", ("PROJ-12", "TL;DR: done"), {}),
+    ("post-comment", {"issue": "PROJ-12", "human": "TL;DR: done", "agent_detail": "HEAD abc123"},
+     "post_comment", ("PROJ-12", "TL;DR: done" + server._TWO_PART_SEPARATOR + "HEAD abc123"), {}),
+    ("post-log", {"issue": "PROJ-15", "title": "Claude Code usage", "payload": {"schema": "shipyard.claude_usage.v1"}},
+     "post_comment", ("PROJ-15", '# Claude Code usage\n\n```json\n{\n  "schema": "shipyard.claude_usage.v1"\n}\n```\n'),
+     {}),
     ("preflight", {}, "preflight", (), {}),
     ("type-convert", {"issue": "PROJ-13", "issue_type": "epic"}, "type_convert", ("PROJ-13", "epic"), {}),
     ("attachment-download", {"issue": "PROJ-14", "filename_or_id": "log.txt", "output_path": "/tmp/log.txt"},
@@ -158,6 +163,20 @@ async def test_initialize_list_and_call_roundtrip():
             "status", "issue_type", "parent", "text", "limit", "page_token"
         }, "the cursor a page returns has to be sendable back, or the paging it advertises is unusable"
 
+        # The two-part split is only real if the *schema* refuses a one-part call: a default of `""` on
+        # either half would let a caller keep writing single-blob comments and be told nothing.
+        assert set(schemas["post-comment"]["required"]) == {"issue", "human", "agent_detail"}, (
+            schemas["post-comment"]
+        )
+        assert "body" not in schemas["post-comment"]["properties"], (
+            "a surviving `body` is the escape hatch the split exists to remove"
+        )
+        assert set(schemas["post-log"]["required"]) == {"issue", "title", "payload"}, schemas["post-log"]
+        assert schemas["post-log"]["properties"]["payload"]["type"] == "object", (
+            "the log is taken as an object and serialised by the tool; a string parameter re-opens "
+            "hand-composed Markdown"
+        )
+
         result = await client.call_tool("validate_config", {})
         assert result.is_error is False
         assert set(_payload(result)) == {"valid", "errors", "tracker", "fingerprint"}
@@ -179,22 +198,127 @@ async def test_each_canonical_tool_reaches_its_verb_with_the_arguments_it_was_gi
 
 
 @pytest.mark.anyio
-async def test_the_three_folded_verbs_have_no_tool_of_their_own(monkeypatch):
-    """`create-child`, `post-log` and `link-pr` are content, not tools — pin that they are absent.
+async def test_the_two_folded_verbs_have_no_tool_of_their_own(monkeypatch):
+    """`create-child` and `link-pr` are content, not tools — pin that they are absent.
 
-    A caller will look for all three by name, so their absence is part of the surface's contract
-    rather than an omission to rediscover.
+    A caller will look for both by name, so their absence is part of the surface's contract rather
+    than an omission to rediscover. `post-log` was the third and is now its own tool: a machine log
+    has no human half to pair with `post-comment`'s, so folding it there meant a caller could append
+    one to prose by hand. Its own signature is what makes the standalone rule structural.
     """
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
         names = {t.name for t in (await client.list_tools()).tools}
-        assert names.isdisjoint({"create-child", "post-log", "link-pr"}), names
+        assert names.isdisjoint({"create-child", "link-pr"}), names
+        assert "post-log" in names, "post-log is a tool of its own now, not content folded onto post-comment"
 
-        # Checked positively because it is the only one of the three with a distinguishable argument.
+        # Checked positively because it is the only one of the two with a distinguishable argument.
         child = await client.call_tool("create-issue", {"issue_type": "task", "title": "T", "parent": "PROJ-1"})
         assert child.is_error is False, child.content
         assert recorder.calls[0][2]["parent"] == "PROJ-1", "create-issue with a parent is what serves create-child"
+
+
+@pytest.mark.anyio
+async def test_post_comment_assembles_both_halves_in_order_with_the_separator_between_them(monkeypatch):
+    """The boundary is the tool's to write, so the adapter sees one body split exactly one way.
+
+    The failure this rules out is not a missing separator but a drifting one: every caller composing
+    its own heading was the convention that never held, and a body assembled anywhere but here would
+    let it come back.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-comment",
+            {"issue": "PROJ-1", "human": "  TL;DR: the gate passed.  ", "agent_detail": "  HEAD 6144373  "},
+        )
+    assert result.is_error is False, result.content
+    sent = _body_sent(recorder)
+    assert sent == "TL;DR: the gate passed." + server._TWO_PART_SEPARATOR + "HEAD 6144373", sent
+    assert sent.index("TL;DR") < sent.index("6144373"), "the human half leads; a reader stops at the rule"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "arguments"),
+    [
+        ("no agent_detail", {"issue": "PROJ-1", "human": "TL;DR: done."}),
+        ("no human", {"issue": "PROJ-1", "agent_detail": "HEAD 6144373"}),
+        ("neither half", {"issue": "PROJ-1"}),
+        ("the old single-blob shape", {"issue": "PROJ-1", "body": "TL;DR: done."}),
+    ],
+)
+async def test_post_comment_refuses_anything_but_the_two_part_shape(monkeypatch, case, arguments):
+    """Both halves are plain-required, so a one-part call fails at the schema, before the function runs.
+
+    A default of `""` on either half is what makes a split advisory: the caller keeps writing one blob,
+    the tool appends an empty section, and nothing ever says no. Refusing at the schema is also what
+    makes the removal of `body` legible — an old-shape call is an error naming the field, not a comment
+    posted with the body silently dropped.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", arguments)
+    assert result.is_error is True, f"{case} was accepted: {result.content}"
+
+
+@pytest.mark.anyio
+async def test_a_malformed_metrics_claim_inside_agent_detail_is_still_refused_on_the_assembled_body(monkeypatch):
+    """The validator runs on what gets sent, so splitting a body in two is not a way past it.
+
+    `post-log` is where a machine log belongs now, and the backstop on `post-comment` only means
+    anything if it sees the assembled string: checking `human` alone would let the half nobody reads
+    carry the unvalidated log. Scoped to a malformed claim on purpose — the backstop catches what would
+    land and be read as authoritative, not a well-formed record a caller chose the wrong tool for.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-comment",
+            {"issue": "PROJ-1", "human": "TL;DR: shipped.", "agent_detail": _metrics_comment(ci_fix_rounds=-1)},
+        )
+    assert result.is_error is True, f"a claim in agent_detail was posted unread: {result.content}"
+    assert SCHEMA_ID in _text(result), f"the refusal must name the schema it checked: {_text(result)}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("payload", [{}, None], ids=["empty object", "omitted"])
+async def test_post_log_refuses_a_payload_with_nothing_in_it_before_the_adapter_is_touched(monkeypatch, payload):
+    """An empty log is a heading over an empty block: durable, authoritative-looking, and content-free.
+
+    Omission fails at the schema and `{}` fails in the function, and both are pinned because only the
+    second is this tool's own check — a required field says nothing about a caller sending an empty one.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    arguments: dict[str, Any] = {"issue": "PROJ-1", "title": "Claude Code usage"}
+    if payload is not None:
+        arguments["payload"] = payload
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-log", arguments)
+    assert result.is_error is True, f"an empty payload was posted: {result.content}"
+
+
+@pytest.mark.anyio
+async def test_post_log_refuses_a_title_that_spans_lines_before_the_adapter_is_touched(monkeypatch):
+    """A multi-line `title` is the one way prose and a second block could still ride along with a log.
+
+    The tool's claim is that a log is standalone by construction, not by convention, and `title` is the
+    only free-text field left: interpolated raw under the `#`, a heading holding its own newlines,
+    paragraphs and fences posts exactly the merged comment `post-log` exists to make unrepresentable.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-log",
+            {
+                "issue": "PROJ-1",
+                "title": 'Claude Code usage\n\nAnd some prose.\n\n```json\n{"a": 1}\n```\n\nMore prose',
+                "payload": {"schema": "shipyard.claude_usage.v1", "task": "PROJ-1"},
+            },
+        )
+    assert result.is_error is True, f"a multi-line title was posted: {result.content}"
 
 
 @pytest.mark.anyio
@@ -477,10 +601,33 @@ def test_gate_matrix(monkeypatch, kind, caller, tier, expected_skip):
     assert (server._gate_skip_reason(kind, caller, tier) is not None) is expected_skip
 
 
+def _metrics_payload(**fields: Any) -> dict[str, Any]:
+    """A `shipyard.ship_metrics.v1` record, shaped exactly as `post-log`'s `payload` takes one."""
+    return {"schema": SCHEMA_ID, "task": "PROJ-1", **fields}
+
+
 def _metrics_comment(**fields: Any) -> str:
-    """A `# Claude Code ship metrics` comment body, shaped exactly as handoff-accounting.md posts one."""
-    body = {"schema": SCHEMA_ID, "task": "PROJ-1", **fields}
-    return "# Claude Code ship metrics\n\n```json\n" + json.dumps(body, indent=2) + "\n```\n"
+    """The assembled body `post-log` produces for that record, byte for byte.
+
+    Still built here rather than read back off the tool because the adversarial cases below deform it
+    into shapes no tool can produce — an unclosed fence, CRLF endings, a record in the info string —
+    and they have to start from the real thing to be deformations of it at all.
+    """
+    return "# Claude Code ship metrics\n\n```json\n" + json.dumps(_metrics_payload(**fields), indent=2) + "\n```\n"
+
+
+def _refused(body: str) -> str:
+    """The validator's refusal message for `body`, taken from a direct call — no client, no adapter.
+
+    These cases belong to the validator, not to any one tool. They reached it through `post-comment`'s
+    free-form `body` while one existed; that parameter is gone, and routing them through a tool that
+    now *assembles* its body would test the assembly rather than the check. Calling it directly keeps
+    every case exactly as adversarial as it was, and a body that is wrongly accepted fails here as a
+    missing exception rather than as a write that happened.
+    """
+    with pytest.raises(server.ToolError) as refusal:
+        server._validate_machine_log(body)
+    return str(refusal.value)
 
 
 ALL_NULLS = {
@@ -507,17 +654,41 @@ answer to "we do not know yet" is exactly this body.
 
 
 @pytest.mark.anyio
-async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
+async def test_an_all_nulls_ship_metrics_payload_is_accepted(monkeypatch):
     """`null` means unknown and must stay postable: converting one to zero is the failure mode."""
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": _metrics_comment(**ALL_NULLS)})
+        result = await client.call_tool(
+            "post-log",
+            {"issue": "PROJ-1", "title": "Claude Code ship metrics", "payload": _metrics_payload(**ALL_NULLS)},
+        )
     assert result.is_error is False, result.content
-    assert recorder.calls[0][0] == "post_comment", recorder.calls
+    assert recorder.calls[0][1] == ("PROJ-1", _metrics_comment(**ALL_NULLS)), recorder.calls
 
 
 @pytest.mark.anyio
+async def test_post_log_validates_the_payload_it_serialises_before_the_adapter_is_touched(monkeypatch):
+    """Taking the record as an object must not become a way past the schema check.
+
+    Composing the block inside the tool removes every malformed-*string* shape the cases below cover,
+    which is the point — but it would be worth nothing if a caller could put a wrong-shaped record in
+    an object and have the tool fence it into something that looks authoritative.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-log",
+            {
+                "issue": "PROJ-1",
+                "title": "Claude Code ship metrics",
+                "payload": _metrics_payload(ci_fix_rounds=-1),
+            },
+        )
+    assert result.is_error is True, f"a malformed metrics record was posted: {result.content}"
+    assert SCHEMA_ID in _text(result), f"the refusal must name the schema it checked: {_text(result)}"
+
+
 @pytest.mark.parametrize(
     ("case", "body"),
     [
@@ -538,44 +709,35 @@ async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
         ),
     ],
 )
-async def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_posted(monkeypatch, case, body):
-    """The tool boundary is where this is enforced, so nothing reaches the adapter on a bad shape.
+def test_a_malformed_ship_metrics_body_is_refused_before_anything_is_posted(case, body):
+    """The check runs before any write, so a bad shape never becomes a comment.
 
-    `pytest.fail` as the adapter factory is the assertion that matters: a validation running *after*
-    the write would report an error having already posted the malformed comment.
+    Raising is the assertion that matters: a validation running *after* the write would report an
+    error having already posted the malformed comment.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"{case} was accepted: {result.content}"
-    assert SCHEMA_ID in _text(result), f"the refusal for {case} must name the schema it checked"
+    assert SCHEMA_ID in _refused(body), f"the refusal for {case} must name the schema it checked"
 
 
-@pytest.mark.anyio
-async def test_a_second_block_claiming_the_schema_is_refused_rather_than_validated_off_the_first(monkeypatch):
+def test_a_second_block_claiming_the_schema_is_refused_rather_than_validated_off_the_first():
     """Two candidate blocks are ambiguous, and a first-match check posts the one it never looked at.
 
     The body quotes a prior valid metrics block for comparison and then carries the log it actually
     means to post, which is malformed. Validating the first match accepts the comment and lands the
     second block unchecked — the same unvalidated-log incident, wearing a valid block as cover.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = (
         "TL;DR: compare against last time's numbers.\n\n"
         + _metrics_comment(ci_fix_rounds=1)
         + "\nAnd this run:\n\n"
         + _metrics_comment(ci_fix_rounds=-1)
     )
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"the first matching block validated and the second posted unread: {body}"
-    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
-        f"the refusal must name the schema and how many candidate blocks it found: {_text(result)}"
+    text = _refused(body)
+    assert SCHEMA_ID in text and "2" in text, (
+        f"the refusal must name the schema and how many candidate blocks it found: {text}"
     )
 
 
-@pytest.mark.anyio
-async def test_a_second_block_claiming_the_schema_but_not_parsing_is_refused_not_silently_dropped(monkeypatch):
+def test_a_second_block_claiming_the_schema_but_not_parsing_is_refused_not_silently_dropped():
     """The candidate tally must arm on a block's raw text, or an unparseable block is invisible twice.
 
     Counting only blocks that *parsed* into a matching object drops a malformed one from both the
@@ -583,15 +745,11 @@ async def test_a_second_block_claiming_the_schema_but_not_parsing_is_refused_not
     posts carrying an unread machine log — the bypass this validation exists to close, one level down
     from the body-level "names the id" arming that already refuses a lone unparseable block.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     unparseable = _metrics_comment().replace('"PROJ-1"\n', '"PROJ-1",\n')
     assert SCHEMA_ID in unparseable and '"PROJ-1",' in unparseable, "the second block must claim the id and not parse"
-    body = _metrics_comment(ci_fix_rounds=1) + "\nAnd this run:\n\n" + unparseable
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"an unparseable second block claiming the schema was posted unread: {body}"
-    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
-        f"the refusal must name the schema and count the unparseable block too: {_text(result)}"
+    text = _refused(_metrics_comment(ci_fix_rounds=1) + "\nAnd this run:\n\n" + unparseable)
+    assert SCHEMA_ID in text and "2" in text, (
+        f"the refusal must name the schema and count the unparseable block too: {text}"
     )
 
 
@@ -606,7 +764,6 @@ def _claiming_json_that_does_not_parse() -> str:
     return text
 
 
-@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "tail"),
     [
@@ -615,7 +772,7 @@ def _claiming_json_that_does_not_parse() -> str:
         ("a tilde fence that is never closed", "~~~json\n{block}\n"),
     ],
 )
-async def test_a_fence_invisible_block_claiming_the_schema_is_refused_beside_a_valid_log(monkeypatch, case, tail):
+def test_a_fence_invisible_block_claiming_the_schema_is_refused_beside_a_valid_log(case, tail):
     """A claiming block `FENCE` cannot see at all is the bypass one level below the raw-text tally.
 
     Counting candidates off `FENCE` matches only sees blocks whose closing marker is a bare fence on
@@ -624,12 +781,8 @@ async def test_a_fence_invisible_block_claiming_the_schema_is_refused_beside_a_v
     second code block once the body goes through `markdown_to_adf`, landing exactly as authoritative
     as the block that was checked.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = _metrics_comment() + "\nAnd this run:\n\n" + tail.format(block=_claiming_json_that_does_not_parse())
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"{case} was invisible to the check and posted unread: {body}"
-    assert SCHEMA_ID in _text(result), f"the refusal for {case} must name the schema it checked: {_text(result)}"
+    assert SCHEMA_ID in _refused(body), f"the refusal for {case} must name the schema it checked"
 
 
 @pytest.mark.anyio
@@ -643,13 +796,12 @@ async def test_a_fence_invisible_block_that_never_names_the_schema_still_posts(m
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     body = _metrics_comment() + '\nThe payload that failed:\n\n```json\n{"schema": "other.v1", "a": 1,}\n'
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        result = await client.call_tool("update-issue", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"an unfenced block naming no schema must not arm the check: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
 
 
-@pytest.mark.anyio
-async def test_a_record_in_the_fence_info_string_is_refused_beside_the_block_it_hides_behind(monkeypatch):
+def test_a_record_in_the_fence_info_string_is_refused_beside_the_block_it_hides_behind():
     """A fence's opening line is not its content, so a log parked there was validated by nothing.
 
     `FENCE`'s content group starts after the first newline: whatever sits after the marker on the
@@ -658,35 +810,27 @@ async def test_a_record_in_the_fence_info_string_is_refused_beside_the_block_it_
     that text, then validates only the content, and the info string's own record posts unread —
     rendering as part of the code block's first line, as authoritative as what was checked.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = (
         f'```json {{"schema": "{SCHEMA_ID}", "task": "AM-9999", "human_review_defects": 99}}\n'
         f'{{"schema": "{SCHEMA_ID}", "task": "AM-1236"}}\n'
         "```\n"
     )
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"a record in the info string was invisible to the check: {body}"
-    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
-        f"the refusal must name the schema and count the info string's record too: {_text(result)}"
+    text = _refused(body)
+    assert SCHEMA_ID in text and "2" in text, (
+        f"the refusal must name the schema and count the info string's record too: {text}"
     )
 
 
-@pytest.mark.anyio
-async def test_an_info_string_naming_the_schema_over_content_that_does_not_is_refused_as_carrying_no_block(monkeypatch):
+def test_an_info_string_naming_the_schema_over_content_that_does_not_is_refused_as_carrying_no_block():
     """The degenerate half of the same split: the only mention of the id is in a non-content position.
 
     Nothing here is a candidate block — the content parses but is not a machine log — so this is the
     "names the id, carries no block" case, not the ambiguity case. Pinning *which* refusal it gets is
     the point: reading it as ambiguous would tell the caller to remove a second block that isn't there.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
-    body = f'```json {{"schema": "{SCHEMA_ID}"}}\n{{"task": "AM-1236"}}\n```\n'
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"an info-string-only mention was posted unchecked: {body}"
-    assert "carries no fenced block that parses as one" in _text(result), (
-        f"one mention in a non-content position is the no-valid-block refusal, not ambiguity: {_text(result)}"
+    text = _refused(f'```json {{"schema": "{SCHEMA_ID}"}}\n{{"task": "AM-1236"}}\n```\n')
+    assert "carries no fenced block that parses as one" in text, (
+        f"one mention in a non-content position is the no-valid-block refusal, not ambiguity: {text}"
     )
 
 
@@ -701,7 +845,7 @@ async def test_a_valid_log_whose_info_string_carries_more_than_a_language_tag_st
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     body = _metrics_comment().replace("```json\n", '```json title="ship metrics"\n')
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        result = await client.call_tool("update-issue", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"an annotated info string must not arm the check: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
 
@@ -718,7 +862,7 @@ async def test_an_unrelated_malformed_block_beside_a_valid_log_still_posts(monke
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     body = _metrics_comment() + '\nThe payload that failed:\n\n```json\n{"schema": "other.v1", "a": 1,}\n```\n'
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        result = await client.call_tool("update-issue", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"an unrelated malformed block must not be a candidate: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
 
@@ -741,8 +885,7 @@ def _escaped_metrics_block(**fields: Any) -> str:
     return '```json\n{"schema": "' + _escaped_id() + '"' + written + "}\n```\n"
 
 
-@pytest.mark.anyio
-async def test_a_record_that_escapes_the_schema_id_is_still_validated(monkeypatch):
+def test_a_record_that_escapes_the_schema_id_is_still_validated():
     """A record claiming the id only through a `\\u` escape is validated, not waved through.
 
     Two identity rules — a parse for what counts as the record, literal text for what arms the check —
@@ -750,23 +893,15 @@ async def test_a_record_that_escapes_the_schema_id_is_still_validated(monkeypatc
     id arms nothing and posts unread. `json.loads` normalises the escape, so it is a claim by every
     definition except the literal one.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = _escaped_metrics_block(task="   ", ci_fix_rounds=-7, ci_fix_round=2)
     assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-        # `extra="forbid"` fails before the model validators run, so only the same record without the
-        # misspelled field shows the escaped content reaching them: the blank `task` raises first.
-        rest = await client.call_tool(
-            "post-comment", {"issue": "PROJ-1", "body": _escaped_metrics_block(task="   ", ci_fix_rounds=-7)}
-        )
-    assert result.is_error is True, f"an escaped record was posted unvalidated: {body}"
-    text = _text(result)
+    text = _refused(body)
     assert "does not match the schema" in text, f"the escaped record must be validated, not merely refused: {text}"
     assert "ci_fix_round" in text, f"the refusal must name the misspelled field it rejected: {text}"
-    assert rest.is_error is True and "cannot be blank" in _text(rest), (
-        f"an escaped record must be checked field by field like any other: {_text(rest)}"
-    )
+    # `extra="forbid"` fails before the model validators run, so only the same record without the
+    # misspelled field shows the escaped content reaching them: the blank `task` raises first.
+    rest = _refused(_escaped_metrics_block(task="   ", ci_fix_rounds=-7))
+    assert "cannot be blank" in rest, f"an escaped record must be checked field by field like any other: {rest}"
 
 
 @pytest.mark.anyio
@@ -781,37 +916,32 @@ async def test_a_valid_record_that_escapes_the_schema_id_posts(monkeypatch):
     body = _escaped_metrics_block(task="PROJ-1", ci_fix_rounds=1)
     assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        result = await client.call_tool("update-issue", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"a valid escaped record must post: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), "the body must reach the adapter byte-for-byte"
 
 
-@pytest.mark.anyio
-async def test_an_escaped_second_record_is_counted_beside_a_literal_valid_one(monkeypatch):
+def test_an_escaped_second_record_is_counted_beside_a_literal_valid_one():
     """The tally has to see an escaped claim too, or a valid block is cover for one nobody read.
 
     A literal valid log beside an escaped record correcting the gate verdict with no reason: counting
     claims by literal text found only the first, validated it alone, and posted a `gate_false_pass`
     the schema would have rejected — the ambiguity case wearing an escape instead of a trailing comma.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = _metrics_comment() + "\nAnd the correction:\n\n" + _escaped_metrics_block(
         task="PROJ-1", gate_false_pass=True
     )
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"an escaped second record was invisible to the tally: {body}"
-    assert SCHEMA_ID in _text(result) and "2" in _text(result), (
-        f"the refusal must name the schema and count the escaped record too: {_text(result)}"
+    text = _refused(body)
+    assert SCHEMA_ID in text and "2" in text, (
+        f"the refusal must name the schema and count the escaped record too: {text}"
     )
 
 
-@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "wrapper"),
     [("wrapped in an array", "[{inner}]"), ("nested under a key", '{{"log": {inner}}}')],
 )
-async def test_an_escaped_record_one_level_down_is_still_a_claim(monkeypatch, case, wrapper):
+def test_an_escaped_record_one_level_down_is_still_a_claim(case, wrapper):
     """Identity is one rule at every depth, or the gap reopens exactly one level lower.
 
     A literal `[{"schema": "shipyard.ship_metrics.v1", ...}]` is already refused, caught by the
@@ -819,15 +949,11 @@ async def test_an_escaped_record_one_level_down_is_still_a_claim(monkeypatch, ca
     let the *escaped* spelling of that same block post unread — the same two-rules asymmetry, one
     nesting deep. Counted, never validated: what a machine log is stays the top-level object.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     inner = '{"schema": "' + _escaped_id() + '", "task": "   ", "ci_fix_round": 2}'
     body = "```json\n" + wrapper.format(inner=inner) + "\n```\n"
     assert SCHEMA_ID not in body, f"the escaped body must not arm a literal-text check: {body}"
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"an escaped record {case} was posted unread: {body}"
-    assert "carries no fenced block that parses as one" in _text(result), (
-        f"a buried claim is the no-block refusal, not a validated record: {_text(result)}"
+    assert "carries no fenced block that parses as one" in _refused(body), (
+        f"a buried claim {case} is the no-block refusal, not a validated record"
     )
 
 
@@ -837,7 +963,6 @@ def _claiming_record(spelling: str) -> str:
     return '{"schema": "' + spelling + '", "task": "   ", "ci_fix_rounds": -7, "ci_fix_round": 2}'
 
 
-@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "shape"),
     [
@@ -849,7 +974,7 @@ def _claiming_record(spelling: str) -> str:
         ("a closed fence whose content parses cleanly", "```json\n{record}\n```\n"),
     ],
 )
-async def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_shape(monkeypatch, case, shape):
+def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_shape(case, shape):
     """One identity rule means the *same* answer for both spellings of the id, in every body shape.
 
     Deciding identity on the parsed value covers only the shapes where a parse happens: a properly
@@ -860,19 +985,15 @@ async def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_sha
     Pinned as literal-versus-escaped pairs rather than as expected messages: what goes wrong is the two
     spellings diverging, not the wording of either answer.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     literal = shape.format(record=_claiming_record(SCHEMA_ID))
     escaped = shape.format(record=_claiming_record(_escaped_id()))
     assert SCHEMA_ID not in escaped, f"the escaped body must not arm a literal-text check: {escaped}"
-    async with mcp.Client(server.mcp) as client:
-        results = [await client.call_tool("post-comment", {"issue": "PROJ-1", "body": b}) for b in (literal, escaped)]
-    assert [r.is_error for r in results] == [True, True], f"{case} was accepted for one spelling: {results}"
-    assert _text(results[0]) == _text(results[1]), (
-        f"{case} answers the two spellings differently: {_text(results[0])!r} vs {_text(results[1])!r}"
+    answers = [_refused(body) for body in (literal, escaped)]
+    assert answers[0] == answers[1], (
+        f"{case} answers the two spellings differently: {answers[0]!r} vs {answers[1]!r}"
     )
 
 
-@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "payload"),
     [
@@ -880,7 +1001,7 @@ async def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_sha
         ("brackets nested past the decoder's stack", "[" * 100_000),
     ],
 )
-async def test_content_json_cannot_parse_at_all_is_a_refusal_not_a_crash(monkeypatch, case, payload):
+def test_content_json_cannot_parse_at_all_is_a_refusal_not_a_crash(case, payload):
     """`json.loads` fails in three ways, and only one of them is a `JSONDecodeError`.
 
     A digit string past `sys.int_info.str_digits_check_threshold` raises a bare `ValueError`, and
@@ -888,13 +1009,9 @@ async def test_content_json_cannot_parse_at_all_is_a_refusal_not_a_crash(monkeyp
     let a body choose which uncaught exception escaped the tool instead of being answered as content
     that does not parse — which is the fallback path, and a refusal.
     """
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
     body = f"```json\n{{\"schema\": \"{SCHEMA_ID}\", \"n\": {payload}\n```\n"
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
-    assert result.is_error is True, f"{case} was posted unread: {result.content}"
-    assert "carries no fenced block that parses as one" in _text(result), (
-        f"{case} must be answered as unparseable content, not as an uncaught exception: {_text(result)}"
+    assert "carries no fenced block that parses as one" in _refused(body), (
+        f"{case} must be answered as unparseable content, not as an uncaught exception"
     )
 
 
@@ -956,7 +1073,7 @@ async def test_a_body_that_is_not_a_ship_metrics_log_passes_through_unvalidated(
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        result = await client.call_tool("update-issue", {"issue": "PROJ-1", "body": body})
     assert result.is_error is False, f"{case} must post unchanged: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", body), f"{case} must reach the adapter byte-for-byte"
 
@@ -1065,13 +1182,35 @@ async def test_check_env_reads_an_empty_variable_as_unset(monkeypatch):
     assert _payload(result)["present"] is False, _payload(result)
 
 
-SCRUB_WRITES = [("post-comment", lambda body: {"issue": "PROJ-1", "body": body}), *BODY_WRITES]
-"""Every tool that takes a caller-supplied body, the comment write included.
+AGENT_DETAIL = "agent-facing detail, nothing sensitive here."
+"""`post-comment`'s other required half, held constant so the assertions turn on the scrubbed one."""
+
+SCRUB_WRITES = [
+    ("post-comment", lambda text: {"issue": "PROJ-1", "human": text, "agent_detail": AGENT_DETAIL}),
+    *BODY_WRITES,
+]
+"""Every tool that takes caller-supplied prose, the comment write included.
 
 `BODY_WRITES` leaves `post-comment` out because the machine-log gate drives it separately, but the
 scrub is one shared helper serving all three writes — and a helper wired into two of the three sites
-is precisely the half-fixed duplicate this closes, so every write that takes a body is asserted.
+is precisely the half-fixed duplicate this closes, so every write that takes prose is asserted.
+
+`post-comment` no longer takes a `body`, so what it is handed here is the `human` half and what
+reaches the adapter is the assembled two-part string — which is why the assertions below compare
+against `_assembled`, never against the text passed in.
 """
+
+
+def _assembled(tool: str, text: str) -> str:
+    """The body a `SCRUB_WRITES` entry actually sends for `text`, assembly included.
+
+    Only `post-comment` assembles; the other two pass their body through, so this is the identity for
+    them. Written as one helper because the alternative — comparing against the raw input — is exactly
+    the assertion that would stop noticing if the separator or the second half went missing.
+    """
+    if tool == "post-comment":
+        return text.strip() + server._TWO_PART_SEPARATOR + AGENT_DETAIL
+    return text
 
 FAKE_SECRET_VAR = "SY_TEST_FAKE_TOKEN"
 """A test-only variable name, credential-shaped by the same word heuristic discovery uses.
@@ -1102,9 +1241,9 @@ async def test_a_known_credential_value_never_reaches_the_adapter_through_a_body
     monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
-    body = f"TL;DR: the run exported {FAKE_SECRET} and then logged {FAKE_SECRET} again.\n"
+    text = f"TL;DR: the run exported {FAKE_SECRET} and then logged {FAKE_SECRET} again.\n"
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool(tool, arguments(body))
+        result = await client.call_tool(tool, arguments(text))
     assert result.is_error is False, result.content
     sent = _body_sent(recorder)
     # The load-bearing assertion is the value's absence; the marker below only proves the scrub ran.
@@ -1124,15 +1263,40 @@ async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypat
     monkeypatch.setattr(server.config, "adapter_map", lambda: {})
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
-    body = "TL;DR: ordinary prose.\n\n```bash\ngit log -1\n```\n"
+    text = "TL;DR: ordinary prose.\n\n```bash\ngit log -1\n```\n"
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool(tool, arguments(body))
+        result = await client.call_tool(tool, arguments(text))
     assert result.is_error is False, result.content
-    assert _body_sent(recorder) == body, f"{tool} rewrote a body holding nothing to redact"
+    assert _body_sent(recorder) == _assembled(tool, text), f"{tool} rewrote prose holding nothing to redact"
     assert _payload(result)["scrub"] == {
         "scrubbed_vars": [], "redactions": 0,
         "declared_absent_from_env": [], "declared_below_length_floor": [],
     }, _payload(result)
+
+
+@pytest.mark.anyio
+async def test_post_log_scrubs_its_title_and_its_serialised_payload_alike(monkeypatch):
+    """Off the `SCRUB_WRITES` table because its shape is different, and asserted because it is.
+
+    A machine log is assembled from command output and transcript numbers, so a credential landing in
+    a payload value is the same routine accident as one landing in prose. The scrub runs on the
+    serialised text rather than on the object, so this also pins that the *sent* body is the text that
+    was scrubbed and not a re-serialisation of the original.
+    """
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-log",
+            {"issue": "PROJ-1", "title": f"Usage for {FAKE_SECRET}", "payload": {"token": FAKE_SECRET, "runs": 2}},
+        )
+    assert result.is_error is False, result.content
+    sent = _body_sent(recorder)
+    assert FAKE_SECRET not in sent, "post-log handed the credential straight to the tracker"
+    assert sent.count(f"<REDACTED:{FAKE_SECRET_VAR}>") == 2, f"post-log redacted only part of the log: {sent}"
+    assert _payload(result)["scrub"]["redactions"] == 2, _payload(result)
+    assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
 
 
 @pytest.mark.anyio
@@ -1201,7 +1365,9 @@ async def test_a_declared_credential_absent_from_the_environment_is_reported_not
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: nothing secret.\n"})
+        result = await client.call_tool(
+            "post-comment", {"issue": "PROJ-1", "human": "TL;DR: nothing secret.", "agent_detail": "HEAD abc123"}
+        )
     assert result.is_error is False, result.content
     assert _payload(result)["scrub"]["declared_absent_from_env"] == ["SY_TEST_UNSET_TOKEN"], _payload(result)
 
@@ -1212,17 +1378,28 @@ async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip
 
     This name holds no credential word, so auto-discovery alone would post the value verbatim — while
     the configuration says in as many words that it is the credential.
+
+    Both halves carry the value, because `post-comment` scrubs them in one call before assembling: a
+    scrub covering `human` alone would hand the credential over inside `agent_detail` while the report
+    beside it read as full coverage of the write.
     """
     monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
     monkeypatch.setenv("SY_TEST_DECLARED", "q7zx4m")
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": "TL;DR: it said q7zx4m.\n"})
+        result = await client.call_tool(
+            "post-comment",
+            {"issue": "PROJ-1", "human": "TL;DR: it said q7zx4m.", "agent_detail": "the log line was q7zx4m"},
+        )
     assert result.is_error is False, result.content
-    assert _body_sent(recorder) == "TL;DR: it said <REDACTED:SY_TEST_DECLARED>.\n", _body_sent(recorder)
+    assert _body_sent(recorder) == (
+        "TL;DR: it said <REDACTED:SY_TEST_DECLARED>."
+        + server._TWO_PART_SEPARATOR
+        + "the log line was <REDACTED:SY_TEST_DECLARED>"
+    ), _body_sent(recorder)
     assert _payload(result)["scrub"] == {
-        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 1,
+        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 2,
         "declared_absent_from_env": [], "declared_below_length_floor": [],
     }, _payload(result)
 
@@ -1241,11 +1418,15 @@ async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_r
     monkeypatch.setenv("SY_TEST_DECLARED", " ")
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
-    body = "TL;DR: ordinary prose with spaces in it.\n"
+    human = "TL;DR: ordinary prose with spaces in it."
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("post-comment", {"issue": "PROJ-1", "body": body})
+        result = await client.call_tool(
+            "post-comment", {"issue": "PROJ-1", "human": human, "agent_detail": "HEAD abc123"}
+        )
     assert result.is_error is False, result.content
-    assert _body_sent(recorder) == body, f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
+    assert _body_sent(recorder) == human + server._TWO_PART_SEPARATOR + "HEAD abc123", (
+        f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
+    )
     assert _payload(result)["scrub"] == {
         "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": [],
         "declared_below_length_floor": ["SY_TEST_DECLARED"],

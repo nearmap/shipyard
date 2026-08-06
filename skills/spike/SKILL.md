@@ -86,14 +86,17 @@ Repository-specific plotting/style defaults belong to repository standards, not 
 
 Before posting it, pressure-test the directional conclusion with `sy:debate` — unconditionally, not only when the result looks contested: even a clear-looking gain/regression measurement can hide a confound, a sampling bias, or a stronger alternative explanation that only an adversary surfaces. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`.
 
-Post a tracker verdict comment containing:
+Post a tracker verdict comment. Its `human` part is the call being made:
 
 - TL;DR verdict;
+- strongest failure cases;
+- recommendation: stop, iterate another spike, or start `/sy:plan`.
+
+Its `agent_detail` part is what a later session reruns or cites from:
+
 - headline gain and regression numbers;
 - baseline-fidelity confidence;
-- strongest failure cases;
-- artifact path/link;
-- recommendation: stop, iterate another spike, or start `/sy:plan`.
+- artifact path/link.
 
 If the idea clears the bar, write a `/sy:plan` brief that states the opportunity, evidence, success bar, constraints, failure modes, and the next unanswered project-level questions. Link it from the verdict.
 

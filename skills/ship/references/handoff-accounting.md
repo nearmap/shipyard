@@ -10,15 +10,16 @@ Distinct from BUILD's leaked-token content-QA grep (`${CLAUDE_PLUGIN_ROOT}/skill
 
 ## 1. Human retrospective comment
 
-Post `# Ship retrospective` as clear prose:
+Post `# Ship retrospective`. Its `human` part is clear prose:
 
 - shipped vs plan;
 - divergences and mid-ship decisions — accepted deviations, any parent-resolved `needs-decision`, and any memory refutation this run already applied — and why;
 - what the plan missed;
 - lessons for next `/sy:plan`;
 - a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — when this run surfaced a new team-process decision, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
-- follow-ups;
-- PR URL and gate coverage.
+- follow-ups.
+
+Its `agent_detail` part is the receipts a later session needs and a reader does not: the PR URL, the coverage SHAs, the CI outcome, and the requested-plus-observed gate coverage. `link-pr`'s durable content lives here — the PR URL is recorded in this `agent_detail` rather than as an independent write.
 
 Do **not** embed token or metrics JSON in this comment.
 
@@ -46,21 +47,18 @@ Inspect the JSON before posting:
 - `by_agent` must include nested agents when present;
 - totals must not be manually reconstructed or inferred.
 
-Post one small tracker comment containing only:
+Post it with `post-log`, never `post-comment`:
 
-````text
-# Claude Code usage
-
-```json
-<contents of the claude-usage-$TASK_KEY.json written above>
 ```
-````
+post-log {"issue": "$TASK_KEY", "title": "Claude Code usage",
+          "payload": <the object in claude-usage-$TASK_KEY.json, as JSON>}
+```
 
-Post via the `tracker` skill (it renders Markdown to the tracker's native format). This usage log is standalone; never append it to the retrospective, execution plan, or decomposition comment.
+Pass the native object: `payload` is not a string and the caller composes neither the heading nor the fenced block. That is why this log is standalone by construction rather than by convention — there is no field in the call through which it could be appended to the retrospective, execution plan, or decomposition comment. Post via the `tracker` skill (it renders the result to the tracker's native format).
 
 ## 3. Standalone ship-metrics JSON comment
 
-Post a second small comment containing only a JSON object under `# Claude Code ship metrics`:
+Post a second log the same way — `post-log` with `title` `Claude Code ship metrics` and this object as its `payload`:
 
 ```json
 {
@@ -83,7 +81,7 @@ Post a second small comment containing only a JSON object under `# Claude Code s
 }
 ```
 
-Use `null` for unknown values. Never infer metrics. This section is the **only** definition of the shape; `sy_tools/ship_metrics.py` is the same definition as code, and the `post-comment` verb refuses a block claiming this schema that does not match it — so a field name that drifts from the list below is a failed write, not a comment nobody notices is wrong.
+Use `null` for unknown values. Never infer metrics. This section is the **only** definition of the shape; `sy_tools/ship_metrics.py` is the same definition as code, and the `post-log` verb refuses a payload claiming this schema that does not match it — so a field name that drifts from the list below is a failed write, not a comment nobody notices is wrong.
 
 ### What each field counts
 

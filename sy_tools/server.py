@@ -287,27 +287,89 @@ async def add_label(
 @mcp.tool(name="post-comment")
 async def post_comment(
     issue: IssueId,
-    body: Annotated[str, Field(description="The comment as Markdown, leading with its TL;DR.")],
+    human: Annotated[
+        str,
+        Field(
+            description="The part a human should read and judge: the TL;DR, the reasoning, what needs "
+            "their attention. Leads the comment."
+        ),
+    ],
+    agent_detail: Annotated[
+        str,
+        Field(
+            description="The part a future agent session needs and a human does not: pointers, SHAs, "
+            "URLs, checkpoint footers, exact identifiers."
+        ),
+    ],
 ) -> dict[str, Any]:
-    """Post a Markdown comment on an issue.
+    """Post a two-part Markdown comment on an issue: human judgment first, agent-facing detail after.
 
-    Canonical verb `post-comment`, and the tool for two more canonical verbs that have no tool of
-    their own. `post-log` is this call carrying a fenced JSON block and nothing else — a machine
-    log is always its own comment, never appended to prose, and honouring that is yours to do.
-    `link-pr`'s durable half is this call carrying the PR URL.
+    Canonical verb `post-comment`, and the tool for one more canonical verb that has no tool of its
+    own: `link-pr`'s durable half is this call with `human` saying a PR now exists for this work and
+    `agent_detail` carrying the PR URL. Machine logs are not this tool at all: `post-log` is the path
+    for them. Nothing here structurally stops a caller pasting a well-formed log into `agent_detail` —
+    that is the caller's part of the split to keep.
 
-    A body that claims `shipyard.ship_metrics.v1` — by naming it, literally or as a `\\uXXXX` escape, or
-    by carrying a block that parses as it — must carry exactly one fenced JSON block that validates
-    against that schema, and must not name the id anywhere else: none, several, one that does not
-    match, or a mention loose in the body or in a fence left unclosed, and nothing is posted. Every
-    other body passes through unchanged apart from the credential scrub, whose `scrub` key reports the
-    variable names it redacted.
+    Both parts are required, and the tool — not the caller — writes the boundary between them, so
+    every comment splits the same way and a reader always knows which half is theirs. Do not compose
+    a separator yourself, and do not fold the agent-facing pointers into `human` to fill the field.
+
+    Both parts are credential-scrubbed before assembly, and `scrub` reports the variable names it
+    redacted. The assembled body is machine-log validated as a backstop: it is refused when it names
+    `shipyard.ship_metrics.v1` in prose — literally or as a `\\uXXXX` escape — or carries a claim
+    against that schema that is malformed or ambiguous. One well-formed, standalone record, identical
+    to what `post-log` would have written, passes this check; it is still `post-log`'s content.
     """
-    _required(issue=issue)
-    (body,), scrub = _scrub_texts(body)
+    _required(issue=issue, human=human, agent_detail=agent_detail)
+    (human, agent_detail), scrub = _scrub_texts(human, agent_detail)
+    body = human.strip() + _TWO_PART_SEPARATOR + agent_detail.strip()
+    # Kept as a defensive backstop, not as routing: `post-log` assembles and validates its own body, and
+    # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
     _validate_machine_log(body)
     posted = await tracker.adapter().post_comment(issue, body)
     return {**posted, "scrub": scrub}
+
+
+@mcp.tool(name="post-log")
+async def post_log(
+    issue: IssueId,
+    title: Annotated[
+        str,
+        Field(description="The log's heading line, as plain text, e.g. `Claude Code ship metrics`."),
+    ],
+    payload: Annotated[
+        dict[str, Any],
+        Field(description="The log record itself, as a JSON object. Serialised by the tool, not by you."),
+    ],
+) -> dict[str, Any]:
+    """Post a standalone machine log on an issue: one heading and one fenced JSON block, nothing else.
+
+    Canonical verb `post-log`. A machine log has no human-judgment half to pair with, which is why it
+    is this tool and not `post-comment`. It takes the record as a native object and does the
+    serialising and fencing itself, so the "a machine log is never appended to any other content"
+    rule holds by this signature rather than by a caller remembering it.
+
+    `title` must be a single line — it is the heading, not a place to carry prose or a second fenced
+    block in beside the log — and `payload` must be a non-empty object. A payload claiming
+    `shipyard.ship_metrics.v1` is validated against that schema and the whole write is refused when it
+    does not match. `title` and the serialised payload are credential-scrubbed, and `scrub` reports the
+    variable names it redacted.
+    """
+    _required(issue=issue, title=title)
+    if len(title.strip().splitlines()) > 1:
+        raise ToolError("'title' is the log's one heading line and cannot span lines")
+    if not payload:
+        raise ToolError("'payload' is required and must be a non-empty JSON object")
+    payload_json = json.dumps(payload, indent=2, sort_keys=False)
+    (title, payload_json), scrub = _scrub_texts(title, payload_json)
+    body = f"# {title.strip()}\n\n```json\n{payload_json}\n```\n"
+    _validate_machine_log(body)
+    posted = await tracker.adapter().post_comment(issue, body)
+    return {**posted, "scrub": scrub}
+
+
+_TWO_PART_SEPARATOR = "\n\n---\n\n*Below this line: for a future agent session, not for your judgment.*\n\n"
+"""The boundary `post-comment` writes between its two halves. Fixed here so no caller invents its own."""
 
 
 # Loose on purpose — markers are interchangeable and the counts need not match: looseness can only ever
@@ -416,7 +478,8 @@ def _claims_within(parsed: object) -> bool:
 def _validate_machine_log(body: str) -> None:
     """Reject a malformed `shipyard.ship_metrics.v1` block before the body it sits in is written.
 
-    Every caller that accepts a body runs this — `post-comment`, `create-issue`, `update-issue` — so an
+    Every caller that composes or accepts a body runs this — `post-log` on the body it assembles,
+    `post-comment` on its two joined halves, `create-issue` and `update-issue` on the body given — so an
     issue body is gated identically to a comment's. A body *claims* this schema when it names the id in
     any JSON spelling, or carries a fenced block that parses as this schema however that block spelled
     the id. A body that claims it must carry exactly one fenced JSON object that validates against the

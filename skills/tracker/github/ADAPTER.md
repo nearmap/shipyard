@@ -62,7 +62,7 @@ An issue's opaque id is its **URL** in everything this adapter returns. `gh` acc
 - **`add-dependency`** uses GitHub's native blocked-by relation and re-reads it to prove it took.
 - **`add-label`** returns every label the re-read reports, so nothing looks dropped. A label that does not exist on the repository is rejected rather than created.
 - **`link-parent`** re-parents through the native sub-issue relation.
-- **`post-comment`** takes the comment's id from the URL the write printed. `post-log` is this same verb carrying only a fenced JSON block, and `link-pr`'s durable half is it carrying the PR URL. A `shipyard.ship_metrics.v1` block is schema-validated before anything is posted; see `../CONTRACT.md`.
+- **`post-comment`** joins `human` and `agent_detail` into the one body and takes the comment's id from the URL the write printed. `link-pr`'s durable half is this same verb — `human` noting that a PR now exists for this work, `agent_detail` carrying the PR URL. `post-log` is its own verb, posted over the same comment path. A `shipyard.ship_metrics.v1` block is schema-validated before anything is posted; see `../CONTRACT.md`.
 - **`link-pr`**: reference the issue from the PR body as a plain `#<NUMBER>`, **not** a closing keyword — the done transition is owned by native project automation on merge, not by the PR text.
 - **`type-convert`** rewrites the board `Type` field on an existing issue, verified by the same bounded re-read every board write uses.
 

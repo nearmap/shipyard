@@ -44,9 +44,10 @@ class ShipMetricsV1(BaseModel):
     ci_fix_rounds: int | None = None
     review_fix_rounds: int | None = None
     gate_rounds_total: int | None = None
-    # Never `null` either: `0` is the truthful record for a run whose gate-round budget was never raised,
-    # and it is `gate_rounds_total` minus this base that `ship.escalation.max_gate_rounds` bounds, so a
-    # `null` here would leave the cap comparison underivable from the record.
+    # Never `null` either: `0` is the truthful record for a run whose gate-round budget was never
+    # raised. This field mirrors the live `ship-state.yaml` value the round-cap comparison actually
+    # reads during the run, never this posted record; `gate_rounds_total` stays nullable since a run
+    # can post this schema having recorded no gate-round bookkeeping at all.
     gate_rounds_budget_base: int = 0
     review_findings_accepted: int | None = None
     review_findings_rejected: int | None = None

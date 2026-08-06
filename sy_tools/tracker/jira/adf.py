@@ -39,7 +39,8 @@ def markdown_to_adf(text: str) -> dict:
 
     Core's one fixed collapsed-section opening is rewritten to the attributed form first. Deliberately
     a single fixed-literal replace and not a general `<details>` rule: a hand-authored disclosure block
-    in some other body is left exactly as written.
+    in some other body passes through this rewrite untouched, and the converter then drops its tags and
+    its caption. Collapsing is a guarantee core's one caption earns, not a property of the tag pair.
     """
     text = text.replace(_BARE_EXPAND_OPEN, _ADF_EXPAND_OPEN)
     try:

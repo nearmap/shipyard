@@ -108,7 +108,7 @@ Not every spec ends in a plan. When research shows the premise is already delive
 
 Nothing here starts until both mandatory §3 passes have run — the `sy:debate` pass over the core decision and the `sy:spec-gate` review of the drafted plan — with every spec-gate finding already dispositioned.
 
-The plan itself has two clearly labeled parts, so a human reviewer and a fresh `/sy:ship` session each get only what they need without wading through the other's. Both parts are drafted under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`; read it before writing either. The rule that bites hardest here: the `/sy:ship` part is written to the implementer, so a decision this plan has already settled is stated for them to act on, never re-argued in the half they act from.
+The plan itself has two clearly labeled parts, so a human reviewer and a fresh `/sy:ship` session each get only what they need without wading through the other's. Both parts are drafted under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`; read it before writing either.
 
 **For your sign-off** (rationale and judgment calls):
 

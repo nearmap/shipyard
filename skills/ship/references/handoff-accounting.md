@@ -2,7 +2,7 @@
 
 This phase runs mostly as a worker for the records and accounting. The readable transcript is rendered from the on-disk session tree by a delegate, so no manual `/export` is ever run.
 
-Create the durable records for the plan's process tier, each as its own tracker comment, never combined: `full` = all four below; `light` = records 1–3 only, with `transcript_attachment: null` in the metrics JSON. The tier never changes CI/review coverage. Record 4 has a second, independent gate on top of tier — see §4.
+Create the durable records for the plan's process tier, each as its own tracker comment, never combined: `full` = all four below; `light` = records 1–3 only, with `transcript_attachment: null` in the metrics JSON. The tier never changes CI/review coverage. Record 4 has a second, independent gate on top of tier — see §4. Every record here, and every state brief and handoff record this phase hands on, is written under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
 
 ## Doc-accuracy self-check (before the retro)
 

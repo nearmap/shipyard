@@ -116,6 +116,7 @@ REQUIRED = {
     "skills/shared/references/model-dispatch.md",
     "skills/shared/references/config-values.md",
     "skills/shared/references/transcript-attach.md",
+    "skills/shared/references/context-economy.md",
     "skills/plan/references/new-objective.md",
     "skills/plan/references/reentry.md",
     "skills/plan/references/roadmap-shaping.md",
@@ -516,6 +517,8 @@ def check_invariants(errors: list[str]) -> None:
     preflight_ref = read("skills/shared/references/preflight.md")
     debate_ref = read("skills/shared/references/debate.md")
     spec_gate_ref = read("skills/shared/references/spec-gate.md")
+    economy_ref = read("skills/shared/references/context-economy.md")
+    contributing = read("CONTRIBUTING.md")
     roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
     jira_adapter = read("skills/tracker/jira/ADAPTER.md")
@@ -746,6 +749,44 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec §7's Step 2 procedure must state it never writes the Task body", errors)
     if "Step 2 — after approval" not in spec:
         fail("spec must keep the staged reveal: full plan posted only in Step 2, after approval", errors)
+    # §7 Step 2's summary comment was removed: it restated, on the ticket, a summary the user had just
+    # read and approved. Both spellings are pinned because the instruction lived in two places — Step 2's
+    # numbered procedure and Step 1's auto-mode consent sentence — and a consent sentence still naming a
+    # write the run no longer performs states a false authorization.
+    if "post the Step-1 summary" in spec_s7:
+        fail("spec §7 must not post the Step-1 summary back as a second comment restating the plan", errors)
+    if "post this summary as a comment on the Task" in spec:
+        fail("spec's sign-off consent sentence names a summary-comment write §7 Step 2 no longer performs", errors)
+
+    # Context economy is a single copy: the two cut tests are phrased once, in the reference, and every
+    # authoring surface carries a pointer to it. A consumer that spells a cut test out has forked the rule.
+    cut_tests = (
+        "Does removing this sentence change what its reader does?",
+        "Would a pointer do the work this text is doing?",
+    )
+    for cut_test in cut_tests:
+        if cut_test not in economy_ref:
+            fail(f"context-economy.md must state the cut test {cut_test!r} verbatim", errors)
+    economy_consumers = (
+        ("spec", spec),
+        ("plan", plan),
+        ("pr", pr),
+        ("handoff-accounting", handoff),
+        ("CONTRIBUTING.md", contributing),
+    )
+    for name, text in economy_consumers:
+        if "context-economy.md" not in text:
+            fail(f"{name} authors an agent-facing artifact and must cite context-economy.md", errors)
+        for cut_test in cut_tests:
+            if cut_test in text:
+                fail(f"{name} restates a context-economy cut test; cite context-economy.md instead", errors)
+    economy_axis_phrase = "narrates what a cited anchor already shows"
+    if economy_axis_phrase not in spec_gate_ref:
+        fail(f"spec-gate reference's Simplicity axis must state the prose trigger {economy_axis_phrase!r}", errors)
+    if economy_axis_phrase in spec_gate:
+        fail("spec-gate agent restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
+    if economy_axis_phrase in spec:
+        fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
 
     # `post-comment` takes `human` and `agent_detail`, both required, and assembles the boundary itself.
     # These are the highest-traffic call sites, so a reference still describing one hand-composed body

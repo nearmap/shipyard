@@ -36,7 +36,7 @@ Read durable cross-session memory early — `memory_list` (or `memory_search` on
 
 Seed every agent prompt with known anchors — paths, symbols, entry points, keys — and name ground already covered; agents must not rediscover what the caller knows.
 
-Machine-facing agent briefs stay pointer-dense. Human-facing Epic maps and decision logs remain clear prose.
+Machine-facing agent briefs stay pointer-dense. Human-facing Epic maps and decision logs remain clear prose. Both, and the roadmap and `# SEAMS` comments this skill posts, are written under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
 
 ## State router
 

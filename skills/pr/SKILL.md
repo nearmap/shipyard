@@ -34,7 +34,7 @@ Base on real diff/log. The mutable description is the PR's human-attention secti
 - image placeholder only when needed;
 - no AI self-credit/co-author lines.
 
-**Acceptance criteria/evidence never live only in the mutable description.** `/sy:ship` posts them as a dedicated PR comment so promotion/refresh cannot erase them.
+**Acceptance criteria/evidence never live only in the mutable description.** `/sy:ship` posts them as a dedicated PR comment so promotion/refresh cannot erase them, and that comment gets the same collapsed-by-default treatment the two-part comment convention uses: its mechanical half sits inside a disclosure section a reader opens on demand.
 
 Title: `<TICKET> - <imperative summary>` when branch carries a ticket key.
 

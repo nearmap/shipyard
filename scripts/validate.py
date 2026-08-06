@@ -552,16 +552,20 @@ def check_invariants(errors: list[str]) -> None:
             "pause between BUILD's done and GATE is parent-owned and lives nowhere else",
             errors,
         )
-    if "pregate_checkpoint_gate_dispatched" not in ship:
+    # Section-scoped, not file-scoped: § State router's own copy of the gate-dispatched guard (below) would
+    # otherwise satisfy a file-wide check on its own, leaving these two unfalsifiable. Both sections have to name
+    # the fields, since either one alone silently reintroduces the contradiction between them.
+    ship_pregate = ship.partition("## Pre-gate checkpoint")[2].partition("## State router")[0]
+    if "pregate_checkpoint_gate_dispatched" not in ship_pregate:
         fail(
-            "ship SKILL must carry pregate_checkpoint_gate_dispatched; without that GATE-re-entry guard § Pre-gate "
-            "checkpoint and § State router contradict each other on a resumed fix-cycle commit",
+            "ship SKILL's § Pre-gate checkpoint must carry pregate_checkpoint_gate_dispatched; without that "
+            "GATE-re-entry guard it and § State router contradict each other on a resumed fix-cycle commit",
             errors,
         )
-    if "pregate_checkpoint_request_text" not in ship:
+    if "pregate_checkpoint_request_text" not in ship_pregate:
         fail(
-            "ship SKILL must carry pregate_checkpoint_request_text; a requested change the parent never persists "
-            "leaves the BUILD continuation it dispatches with nothing to resume into",
+            "ship SKILL's § Pre-gate checkpoint must carry pregate_checkpoint_request_text; a requested change the "
+            "parent never persists leaves the BUILD continuation it dispatches with nothing to resume into",
             errors,
         )
     if "TARGET_SHA" not in gate_ref or "TARGET_SHA" not in merge:

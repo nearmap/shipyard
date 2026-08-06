@@ -127,11 +127,12 @@ class TrackerAdapter(Protocol):
     Neither adapter's figure is firm, and both are stated with their provenance rather than presented
     as spec:
 
-    - Jira's 32,767 comes from JRACLOUD-63007 and the Jira Cloud KB, and is governed by the site-wide
-      `jira.text.field.character.limit` property, which Atlassian documents for both descriptions and
-      comments (JRACLOUD-59124, JRACLOUD-68949) — not comments only. The *unit* is still undocumented
-      under ADF, so the figure remains best-effort even though its coverage of descriptions is
-      documented, not assumed.
+    - Jira's 32,767 comes from the Jira Cloud KB, which documents Jira validating any System or Custom
+      text field — descriptions included — against a `jira.text.field.character.limit` default of
+      32,767; Cloud customers report the same figure on both fields (JRACLOUD-63007, JRACLOUD-68949).
+      That property is exposed for tuning in Data Center only — Cloud keeps the default without a UI to
+      change it — and the *unit* is still undocumented under ADF, so the figure remains best-effort even
+      though its coverage of descriptions is corroborated, not merely assumed.
     - GitHub's 65,536 is undocumented entirely, attested by nothing but the API's own error string.
 
     So a body under the limit is one this tracker has not been observed to refuse, not one it promises

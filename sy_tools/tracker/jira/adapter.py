@@ -97,9 +97,10 @@ class JiraAdapter:
     """The canonical tracker verbs, implemented against the Jira Cloud REST API."""
 
     name = "jira"
-    # Characters, per JRACLOUD-63007 and the Jira Cloud KB, governed by the site-wide
-    # jira.text.field.character.limit property and documented for both descriptions and comments
-    # (JRACLOUD-59124, JRACLOUD-68949); its unit is still undocumented under ADF.
+    # Characters. The Jira Cloud KB documents this text-field validation
+    # (jira.text.field.character.limit, default 32767) covering descriptions as well as comments;
+    # Cloud tickets JRACLOUD-63007/68949 corroborate the same figure on both fields, though the
+    # property itself is tunable only in Data Center. Its unit is still undocumented under ADF.
     body_limit: int = 32_767
 
     def __init__(self) -> None:

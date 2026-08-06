@@ -58,14 +58,14 @@ VERB_TOOLS: dict[str, str] = {
     "add-dependency": "add-dependency",
     "add-label": "add-label",
     "post-comment": "post-comment",
-    "post-log": "post-comment",
+    "post-log": "post-log",
     "link-pr": "post-comment",
     "attach-artifact": "attach-artifact",
     "type-convert": "type-convert",
     "attachment-download": "attachment-download",
     "attachment-update": "attachment-update",
 }
-"""Canonical verb -> the tool that serves it. Three verbs share a tool with another by contract."""
+"""Canonical verb -> the tool that serves it. Two verbs share a tool with another by contract."""
 
 REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
 
@@ -225,12 +225,23 @@ class Smoke:
 
         await self._attachments(run_tag, tmp, first)
 
-        await self.call("post-comment", {"issue": first, "body": f"TL;DR: smoke run {run_tag} drove the verb set.\n"})
-        # A real `shipyard.ship_metrics.v1` body, not a stand-in: `post-comment` schema-validates any
-        # block claiming that id, so an approximate one exercises the rejection path rather than the verb.
-        log = json.dumps({"schema": "shipyard.ship_metrics.v1", "task": first, "pr_url": PR_PLACEHOLDER}, indent=2)
-        await self.call("post-log", {"issue": first, "body": f"# Claude Code ship metrics\n\n```json\n{log}\n```\n"})
-        await self.call("link-pr", {"issue": epic, "body": f"Delivery PR for {run_tag}: {PR_PLACEHOLDER}\n"})
+        await self.call("post-comment", {
+            "issue": first,
+            "human": f"TL;DR: smoke run {run_tag} drove the verb set.",
+            "agent_detail": f"Run tag {run_tag}; issues {epic}, {first}.",
+        })
+        # A real `shipyard.ship_metrics.v1` record, not a stand-in: `post-log` schema-validates any
+        # payload claiming that id, so an approximate one exercises the rejection path rather than the verb.
+        await self.call("post-log", {
+            "issue": first,
+            "title": "Claude Code ship metrics",
+            "payload": {"schema": "shipyard.ship_metrics.v1", "task": first, "pr_url": PR_PLACEHOLDER},
+        })
+        await self.call("link-pr", {
+            "issue": epic,
+            "human": f"A delivery PR now exists for {run_tag}.",
+            "agent_detail": PR_PLACEHOLDER,
+        })
 
     async def _attachments(self, run_tag: str, tmp: Path, issue: str) -> None:
         """Attach a scrubbed artifact, then round-trip it through download and update."""
@@ -352,12 +363,11 @@ def _self_test() -> None:
         f"{sorted(REQUIRED_TOOLS - registered)}; only the server registers: "
         f"{sorted(registered - REQUIRED_TOOLS - UNEXERCISED_TOOLS)}"
     )
-    assert len(REQUIRED_TOOLS) == 16, sorted(REQUIRED_TOOLS)
+    assert len(REQUIRED_TOOLS) == 17, sorted(REQUIRED_TOOLS)
     assert all(tool and tool == tool.strip() for tool in REQUIRED_TOOLS), sorted(REQUIRED_TOOLS)
     assert VERB_TOOLS["create-child"] == VERB_TOOLS["create-issue"], "a child is the create-issue write"
-    assert VERB_TOOLS["post-log"] == VERB_TOOLS["post-comment"], "a machine log is a comment"
     assert VERB_TOOLS["link-pr"] == VERB_TOOLS["post-comment"], "a PR link's durable half is a comment"
-    for verb in ("type-convert", "attachment-download", "attachment-update"):
+    for verb in ("post-log", "type-convert", "attachment-download", "attachment-update"):
         assert VERB_TOOLS[verb] == verb, f"{verb} has a tool of its own"
 
 

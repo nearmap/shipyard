@@ -29,8 +29,8 @@ therefore not this hook, and two controls that do not depend on classifying a co
 - to find out whether a credential is present, use the `check_env` MCP tool. It reports only whether a
   variable is set, never its value, so there is nothing left worth printing;
 - any write of non-code text to an external system goes through the MCP tracker tools
-  (`create-issue`, `update-issue`, `post-comment`), which scrub known secret values out of what they
-  send.
+  (`create-issue`, `update-issue`, `post-comment`, `post-log`), which scrub known secret values out of
+  what they send.
 
 Name-based, not value-based, like `sy_tools/secrets.py`'s own `discover_secret_vars()`: this hook never
 reads the actual environment, only the command string, so it fires the same way whether or not a secret

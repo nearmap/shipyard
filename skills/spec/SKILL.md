@@ -91,7 +91,7 @@ Ask immediately, via `AskUserQuestion`, when research reaches a real owner decis
 
 Do not split an oversized Task ad hoc.
 
-For an existing `/sy:plan` leaf, post a `# SEAMS` comment describing pieces, interfaces, and dependencies, then stop with `/sy:plan <epic>`. `/sy:plan` performs the tracker's canonical decomposition (see the `tracker` skill).
+For an existing `/sy:plan` leaf, post a `# SEAMS` comment — `human` is why this has to be cut and along what line, `agent_detail` is the pieces, interfaces, and dependencies — then stop with `/sy:plan <epic>`. `/sy:plan` performs the tracker's canonical decomposition (see the `tracker` skill).
 
 For a standalone objective, confirm via `AskUserQuestion` before promoting it to an Epic, then post the seams report and stop with `/sy:plan <epic>`.
 
@@ -100,7 +100,7 @@ For a standalone objective, confirm via `AskUserQuestion` before promoting it to
 Not every spec ends in a plan. When research shows the premise is already delivered, invalidated, or superseded — whether at the §1 prior-work check or from evidence surfacing later — the blessed terminal state is a shelve: the Task closes with evidence instead of acquiring a plan for work that should not ship. This is distinct from §5, where a sound premise is merely too big for one PR.
 
 1. Present the evidence as a status update, then close the turn with a single `AskUserQuestion` (shelve as described / keep researching / other), naming the mutations the go-ahead covers: post the evidence comment and set the Task's terminal status.
-2. Post a durable evidence comment on the Task: what was found, the decisive pointers (commits, PRs, work items, spans), and why no plan should exist.
+2. Post a durable evidence comment on the Task: `human` is what was found and why no plan should exist, `agent_detail` is the decisive pointers (commits, PRs, work items, spans).
 3. Set an **existing** status via the `tracker` skill — `done` when the premise was already delivered or the item should close, `backlog` when it is merely premature — never a new status; the evidence comment is what distinguishes this closure from delivery (decomposed/superseded/invalidated closure is not delivery).
 4. Capture the session per §8 as on every run.
 
@@ -159,7 +159,7 @@ Status: SUPERSEDED
 Superseded by: v<N>
 ```
 
-2. append the new comment, carrying both labeled parts above in full:
+2. append the new comment, carrying both labeled parts above in full. `post-comment`'s split is the plan's own split, so pass them as they are: `human` is this heading block plus **For your sign-off**, `agent_detail` is **For `/sy:ship`** — never one hand-composed body:
 
 ```text
 # Execution Plan v<N>
@@ -168,7 +168,7 @@ Supersedes: v<N-1>   # omit for v1
 ```
 
 3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
-4. post the Step-1 summary as a comment on the Task via the `tracker` skill (`post-comment`). This step never writes the Task body — not for a pre-existing Task, and not even for one this run just created — so no existing body content is ever a target of this run's write. (A body edit during research, §2, is governed separately by that section, not by this rule.)
+4. post the Step-1 summary as a comment on the Task via the `tracker` skill (`post-comment`): `human` is the approach, the strongest rejected alternative, the risks, and the exclusions; `agent_detail` is the mutations the approval authorized. This step never writes the Task body — not for a pre-existing Task, and not even for one this run just created — so no existing body content is ever a target of this run's write. (A body edit during research, §2, is governed separately by that section, not by this rule.)
 5. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
 The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.

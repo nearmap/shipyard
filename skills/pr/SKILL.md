@@ -22,8 +22,9 @@ Never operate on `main`. Confirm branch and PR state.
 
 ## 2. Description contract
 
-Base on real diff/log. Keep the mutable PR body concise:
+Base on real diff/log. The mutable description is the PR's human-attention section — the judgment a reviewer has to make — so mechanical detail belongs in the dedicated PR comment `/sy:ship` posts separately rather than here. Keep the body concise:
 
+- a link to the tracker ticket: its issue key or URL, so the PR and the durable record each reach the other;
 - why and why this approach;
 - 2–4 single-line summary bullets;
 - no redundant file/function inventory;

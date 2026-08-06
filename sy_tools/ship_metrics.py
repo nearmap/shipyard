@@ -4,9 +4,11 @@
 only place their meanings are settled; this module is the same shape as a rejection, so a metrics
 comment cannot land malformed and then be read as authoritative months later.
 
-Validation happens at the tool boundary (`sy_tools/server.py`'s `post-comment`), not in a caller: a
-check a caller performs is a check a caller can skip. A body carrying no `shipyard.ship_metrics.v1`
-block is not this module's business and passes through untouched.
+Validation happens at the tool boundary, not in a caller: a check a caller performs is a check a
+caller can skip. `sy_tools/server.py`'s `post-log` is the primary path — it assembles the body from a
+native payload and validates that; `post-comment`, `create-issue` and `update-issue` run the same
+check on their own bodies as a backstop. A body carrying no `shipyard.ship_metrics.v1` block is not
+this module's business and passes through untouched.
 
 Every field but `schema`, `task`, `human_review_defects` and the two `pregate_checkpoint_*` fields is
 optional: a metric genuinely unknown at ship time must be recordable as unknown rather than as a

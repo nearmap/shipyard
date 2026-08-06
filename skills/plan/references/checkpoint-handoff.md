@@ -13,7 +13,7 @@ Re-render:
 
 ## Decision log = adaptation delta
 
-For each planning run that changes the tracker, append one clear human-facing comment. Keep it short and plain: one short sentence or single-line dot point per item below, no nested outline and no restated roadmap — a reader should take in the whole delta at a glance.
+For each planning run that changes the tracker, append one clear human-facing comment. Keep it short and plain: one short sentence or single-line dot point per item below, no nested outline and no restated roadmap — a reader should take in the whole delta at a glance. These bullets are the comment's `human` part; the footer below is its `agent_detail`, which is what re-entry reads back.
 
 - what changed and why;
 - what shipped since prior checkpoint;
@@ -21,7 +21,7 @@ For each planning run that changes the tracker, append one clear human-facing co
 - Tasks created, decomposed, blocked, or superseded;
 - how the remaining path changed.
 
-End with:
+End with, as `agent_detail`:
 
 ```text
 Plan checkpoint: <n>

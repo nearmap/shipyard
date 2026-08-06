@@ -525,6 +525,8 @@ async def test_an_all_nulls_ship_metrics_body_is_accepted(monkeypatch):
         ("misspelled field", _metrics_comment(ci_fix_round=2)),
         ("null where the field is never null", _metrics_comment(human_review_defects=None)),
         ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
+        ("null where the checkpoint flag is never null", _metrics_comment(pregate_checkpoint_declared=None)),
+        ("a checkpoint round-trip count below zero", _metrics_comment(pregate_checkpoint_changes_requested=-1)),
         ("a corrected gate verdict with no reason", _metrics_comment(gate_false_pass=True)),
         ("a string where a count belongs", _metrics_comment(review_fix_rounds="two")),
         ("json the fence holds but nothing parses", _metrics_comment().replace('"PROJ-1"\n', '"PROJ-1",\n')),

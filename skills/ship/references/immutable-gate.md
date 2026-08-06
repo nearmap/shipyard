@@ -42,15 +42,22 @@ TARGET_SHA=<target branch SHA at review pin>
 REVIEW_MODEL_REQUESTED=<Agent model override>
 ```
 
-Post compact PR review coverage:
+Post compact PR review coverage, collapsed by default so the mechanical half stays out of a human reader's way until they open it. Plain HTML, and the layout is load-bearing: each tag on its own line with a blank line around it and around the nested fence, never inline — that blank line after `</summary>` is what makes the enclosed block parse as Markdown instead of one raw-HTML run.
+
+````
+<details>
+
+<summary>Review coverage</summary>
 
 ```text
-Review coverage
 REVIEW_BASE_SHA: <sha>
 REVIEWED_SHA: <sha>
 REVIEW_MODEL_REQUESTED: <model>
 REVIEW_EFFORT: max
 ```
+
+</details>
+````
 
 Acceptance evidence gets its own PR comment, never only the mutable description.
 

@@ -70,6 +70,9 @@ pregate_checkpoint_request_text: null
 accepted_deviations: []
 memory_refutations: []
 phase_checkpoint: null
+phase_active: null
+gate_rounds_total: 0
+gate_rounds_budget_base: 0
 ship_session_id: <current session id if available>
 ship_session_started_at: <timestamp>
 sibling_scan: <step-2 scan result: branches, open PRs, worktrees>
@@ -80,6 +83,6 @@ agents_used: []
 
 Each phase's `*_model_requested` is written when that phase is dispatched and its `*_model_observed` only once the usage transcript confirms what ran, so the `build_model_*` pair stays `null` until the parent dispatches BUILD and the `review_model_*` pair stays `null` until GATE. `pregate_checkpoint_channel` is stamped once here too, taken from the plan's `pre-gate checkpoint` field in the normalized form the block above shows (`draft-pr` / `running-preview`) and left `null` when the plan declares none; `pregate_checkpoint_gate_dispatched` starts `false` and `pregate_checkpoint_request_text` starts `null` alongside it, stamped once here for the same reason the rest are; `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint owns how the rest are later set and re-checked.
 
-The state file is local resume state, not shared truth. Never prune unrelated worktrees or paths. `phase_checkpoint` is the active worker's idempotent resume anchor (e.g. a slice manifest with per-slice status), passed to any continuation worker.
+The state file is local resume state, not shared truth. Never prune unrelated worktrees or paths. `phase_checkpoint` is the active worker's idempotent resume anchor (e.g. a slice manifest with per-slice status), passed to any continuation worker. Its neighbours are the run's dispatch bookkeeping. `phase_active` is the parent's own, never a worker's: it names the phase currently in flight and is set and cleared around every dispatch, so a value still set at resume means the prior session ended without confirming that phase finished (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Worker contract and § State router own both halves). `gate_rounds_total` and `gate_rounds_budget_base` are GATE's live fix-cycle round accounting, owned by `references/immutable-gate.md` § Fix cycle — every pass this run has made, and the floor a raise-budget disposition stamps under it (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Worker contract). All three are stamped once here so a resume reads them rather than inferring them, and an older state file carrying none of them reads as `null`/`0`/`0` respectively — nothing to detect, no rounds yet spent, no budget yet raised.
 
 Return `done` with the state brief; the parent dispatches BUILD.

@@ -141,6 +141,11 @@
           "type": "integer",
           "minimum": 1,
           "description": "File-count proxy for \"small\": the light process tier is allowed only when the plan's declared file set is at most this many files and no risk lenses are activated."
+        },
+        "max_spec_gate_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many times /sy:spec may dispatch sy:spec-gate for the same session before the guard denies a further dispatch and the session must stop and ask you how to proceed. Per session, not per plan — a session that runs /sy:spec on two tickets in a row shares one budget. A dispatch consumes a round even if later aborted."
         }
       }
     },
@@ -170,6 +175,11 @@
               "type": "integer",
               "minimum": 1,
               "description": "A ship phase exceeding this many needs-trace returns without reaching done escalates to /sy:spec as missing evidence, on its own separate count."
+            },
+            "max_gate_rounds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "A GATE phase whose fix-cycle rounds for the run have reached this many without converging returns needs-decision (tagged max_gate_rounds) rather than continuing; a count that has reached the cap is a breach, so the cap-th round is the last one allowed. The count is never reset merely because a fix round pushes a new head, only by an explicit raise-budget disposition."
             }
           }
         }

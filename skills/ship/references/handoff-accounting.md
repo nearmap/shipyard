@@ -69,6 +69,8 @@ Post a second log the same way — `post-log` with `title` `Claude Code ship met
   "deviations_declined": 0,
   "ci_fix_rounds": 0,
   "review_fix_rounds": 0,
+  "gate_rounds_total": 0,
+  "gate_rounds_budget_base": 0,
   "review_findings_accepted": 0,
   "review_findings_rejected": 0,
   "human_review_defects": 0,
@@ -93,6 +95,8 @@ These are settled definitions, not restatements: several of them were being coun
 - `deviations_declined` — proposed deviations rejected rather than applied. Kept separate precisely so `plan_divergence_count` measures what the branch actually did.
 - `ci_fix_rounds` — CI-red states resolved by a landed code change, and only those. A gate or review round-trip is not a CI fix round even when CI reran, and a no-diff rerun (a flake, a retry, a re-request) is not one either.
 - `review_fix_rounds` — gate/review rounds with at least one accepted finding folded into a following commit. A round that produced only rejected or non-actionable findings does not count.
+- `gate_rounds_total` — **every** GATE pass of the run, including the passes that found nothing and the ones whose findings were all rejected. That is the difference from `review_fix_rounds`, which counts only the subset folded into a following commit: a run that ground through six clean-verdict-chasing rounds and changed nothing records six here and zero there. It only ever increases: it is never reset when a fix round pushes a new head, and never reset by a budget raise either (that stamps `gate_rounds_budget_base` instead), because under-counting it hides the runs that never converged.
+- `gate_rounds_budget_base` — the `gate_rounds_total` a raise-budget disposition was taken at, or `0` for the run that never hit the cap. Never `null`: `gate_rounds_total - gate_rounds_budget_base` — mirrored here from the live `ship-state.yaml` fields the round-cap comparison actually reads during the run (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/immutable-gate.md` § Fix cycle), never this posted record, which lands only at handoff — is the quantity `ship.escalation.max_gate_rounds` bounds. A non-zero value is the signal worth reading: this run asked for more rounds and got them, and `gate_rounds_total` says how many it spent in all.
 - `review_findings_accepted` / `review_findings_rejected` — individual findings, not rounds. A round can contribute to both.
 - `human_review_defects` — defaults to `0` and is **never** `null`: "no human found anything" is a real observation available at ship time, where `null` would make a clean run indistinguishable from an unfinished record. It is one of the fields the all-nullable rule does not cover, and it counts more than defects — a human-directed scope or behaviour reversal after observing a run belongs here too, because the signal being tracked is "a human had to intervene on substance", not "a human found a bug".
 - `pregate_checkpoint_declared` — straight from the plan's `pre-gate checkpoint` field: whether one was declared at all. Never `null`; a plan that declared none records `false`.

@@ -112,7 +112,7 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 ```text
 shipyard/
   .claude-plugin/plugin.json      # name: sy, plus the version `claude plugin update` gates on
-  hooks/hooks.json                # review guard + usage accounting (plugin-level)
+  hooks/hooks.json                # review + secret guards, spec-gate round cap, usage accounting, eval-event log (plugin-level)
   sy_tools/                       # the sy MCP server: the tool surface, config resolution, guards, tracker adapters
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}

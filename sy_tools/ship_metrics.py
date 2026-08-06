@@ -10,9 +10,9 @@ native payload and validates that; `post-comment`, `create-issue` and `update-is
 check on their own bodies as a backstop. A body carrying no `shipyard.ship_metrics.v1` block is not
 this module's business and passes through untouched.
 
-Every field but `schema`, `task`, `human_review_defects` and the two `pregate_checkpoint_*` fields is
-optional: a metric genuinely unknown at ship time must be recordable as unknown rather than as a
-plausible zero, and those exceptions are the ones a finished run always knows.
+Every field but `schema`, `task`, `human_review_defects`, `gate_rounds_budget_base` and the two
+`pregate_checkpoint_*` fields is optional: a metric genuinely unknown at ship time must be recordable as
+unknown rather than as a plausible zero, and those exceptions are the ones a finished run always knows.
 """
 from __future__ import annotations
 
@@ -44,6 +44,10 @@ class ShipMetricsV1(BaseModel):
     ci_fix_rounds: int | None = None
     review_fix_rounds: int | None = None
     gate_rounds_total: int | None = None
+    # Never `null` either: `0` is the truthful record for a run whose gate-round budget was never raised,
+    # and it is `gate_rounds_total` minus this base that `ship.escalation.max_gate_rounds` bounds, so a
+    # `null` here would leave the cap comparison underivable from the record.
+    gate_rounds_budget_base: int = 0
     review_findings_accepted: int | None = None
     review_findings_rejected: int | None = None
     # Defaults to `0` and rejects an explicit `null`: "no human found anything" is a real observation at
@@ -86,6 +90,7 @@ class ShipMetricsV1(BaseModel):
             "ci_fix_rounds": self.ci_fix_rounds,
             "review_fix_rounds": self.review_fix_rounds,
             "gate_rounds_total": self.gate_rounds_total,
+            "gate_rounds_budget_base": self.gate_rounds_budget_base,
             "review_findings_accepted": self.review_findings_accepted,
             "review_findings_rejected": self.review_findings_rejected,
             "human_review_defects": self.human_review_defects,

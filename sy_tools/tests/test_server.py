@@ -669,13 +669,15 @@ async def test_an_all_nulls_ship_metrics_payload_is_accepted(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_a_record_from_before_gate_rounds_total_existed_still_posts(monkeypatch):
-    """A count added to this schema must not make the records already on tasks unpostable.
+async def test_a_record_from_before_the_gate_round_fields_existed_still_posts(monkeypatch):
+    """Counts added to this schema must not make the records already on tasks unpostable.
 
-    The case that matters is a correction re-posting an older comment: the omitted field has to fall
-    through to its default and stay absent from the body, not appear as a zero nobody measured.
+    The case that matters is a correction re-posting an older comment: the omitted fields have to fall
+    through to their defaults and stay absent from the body, not appear as zeros nobody measured. That
+    covers `gate_rounds_budget_base` too, which `ALL_NULLS` never carries because it rejects `null`.
     """
     older = {name: value for name, value in ALL_NULLS.items() if name != "gate_rounds_total"}
+    assert "gate_rounds_budget_base" not in older, "the never-null budget base must be omitted here too"
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
@@ -717,6 +719,8 @@ async def test_post_log_validates_the_payload_it_serialises_before_the_adapter_i
         ("null where the field is never null", _metrics_comment(human_review_defects=None)),
         ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
         ("a gate-round count below zero", _metrics_comment(gate_rounds_total=-1)),
+        ("a gate-round budget base below zero", _metrics_comment(gate_rounds_budget_base=-1)),
+        ("null where the budget base is never null", _metrics_comment(gate_rounds_budget_base=None)),
         ("null where the checkpoint flag is never null", _metrics_comment(pregate_checkpoint_declared=None)),
         ("a checkpoint round-trip count below zero", _metrics_comment(pregate_checkpoint_changes_requested=-1)),
         ("a corrected gate verdict with no reason", _metrics_comment(gate_false_pass=True)),

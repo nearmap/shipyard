@@ -63,7 +63,7 @@ show_config {}
 | `ship.merge_strategy` | no | `squash`, `merge`, or `rebase`, passed to `gh pr merge`. Only `squash` composes a subject/body from the PR description. |
 | `ship.escalation.max_needs_decision` | no | A ship phase exceeding this many `needs-decision` returns without reaching `done` escalates to `/sy:spec` as underspecified. |
 | `ship.escalation.max_needs_trace` | no | A ship phase exceeding this many `needs-trace` returns without reaching `done` escalates to `/sy:spec` as missing evidence, on its own separate count. |
-| `ship.escalation.max_gate_rounds` | no | A GATE phase exceeding this many rounds over the current head without converging returns `needs-decision` (tagged `max_gate_rounds`) rather than continuing. |
+| `ship.escalation.max_gate_rounds` | no | A GATE phase whose fix-cycle rounds for the run have reached this many without converging returns `needs-decision` (tagged `max_gate_rounds`) rather than continuing; a count that has reached the cap is a breach, so the cap-th round is the last one allowed. The count is never reset merely because a fix round pushes a new head, only by an explicit raise-budget disposition. |
 | `transcript.attach` | no | Whether `/sy:plan`, `/sy:spec`, and (full-tier) `/sy:ship` render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself. |
 | `transcript.truncation_limits.tool_input` | no | Character limit per tool-input block when `sy_tools/usage.py` renders a readable transcript. |
 | `transcript.truncation_limits.tool_result` | no | Character limit per tool-result block. |

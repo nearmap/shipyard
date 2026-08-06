@@ -179,7 +179,7 @@
             "max_gate_rounds": {
               "type": "integer",
               "minimum": 1,
-              "description": "A GATE phase exceeding this many rounds over the current head without converging returns needs-decision (tagged max_gate_rounds) rather than continuing."
+              "description": "A GATE phase whose fix-cycle rounds for the run have reached this many without converging returns needs-decision (tagged max_gate_rounds) rather than continuing; a count that has reached the cap is a breach, so the cap-th round is the last one allowed. The count is never reset merely because a fix round pushes a new head, only by an explicit raise-budget disposition."
             }
           }
         }

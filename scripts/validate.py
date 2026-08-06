@@ -550,12 +550,13 @@ def check_invariants(errors: list[str]) -> None:
             "START cannot be checked before a later GATE dispatch",
             errors,
         )
-    dispatch_fields = ("phase_active", "gate_rounds_total")
+    dispatch_fields = ("phase_active", "gate_rounds_total", "gate_rounds_budget_base")
     if any(field not in start for field in dispatch_fields):
         fail(
-            "ship start/resume must stamp both parent-owned per-dispatch fields (phase_active, gate_rounds_total) "
-            "at START; a field never written at START is absent at resume, leaving a session that died mid-phase "
-            "and a spent fix-cycle round budget indistinguishable from a clean start",
+            "ship start/resume must stamp all three per-dispatch fields (the parent's own phase_active, plus GATE's "
+            "gate_rounds_total and gate_rounds_budget_base) at START; a field never written at START is absent at "
+            "resume, leaving a session that died mid-phase and a spent fix-cycle round budget indistinguishable "
+            "from a clean start",
             errors,
         )
     if "pregate_checkpoint_channel" not in ship:
@@ -956,10 +957,11 @@ def check_invariants(errors: list[str]) -> None:
             "stopping rule is its own convergence judgment spends the user's budget without ever asking them",
             errors,
         )
-    if "gate_rounds_total" not in ship:
+    if "gate_rounds_total" not in ship or "gate_rounds_budget_base" not in ship:
         fail(
-            "ship must name gate_rounds_total as the counter its max_gate_rounds disposition resets; a budget raise "
-            "that leaves the count where it stands re-breaches the cap on the very next round",
+            "ship must name both gate_rounds_total and the gate_rounds_budget_base its max_gate_rounds disposition "
+            "stamps; a budget raise that moves neither re-breaches the cap on the very next round, and one that "
+            "resets the total instead destroys the durable metric that flags a run which never converged",
             errors,
         )
     if "spec.light_tier_max_files" not in spec:

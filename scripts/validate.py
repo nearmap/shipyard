@@ -399,22 +399,26 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
         # line's tool.
         declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
         value = declared.group(1).strip() if declared else ""
-        if declared and not value and _frontmatter_field(text, "tools").strip():
-            # `tools:` names nothing on its own line, but a block list or flow sequence follows -- on the next
-            # line, after a blank line, or after a comment line -- so it reads exactly like an absent or
-            # valueless field and every check below would be skipped, for a non-ship agent silently, allowlist
-            # and all. `_frontmatter_field` already joins that continuation correctly (it reads spec-gate's own
-            # tools: pin the same way); reuse it here rather than re-detect the shape by hand a second time,
-            # which is what missed the blank-line/comment-preceded cases in the first place. Refuse the shape
-            # rather than parse it -- as with the unrecognised glob shapes further down -- since every real
-            # agent already uses the single-line comma form.
-            fail(
-                f"{p.relative_to(ROOT)}: tools: is a YAML block list or flow sequence rather than the "
-                "single-line comma-separated form every allowlist check below expects; rewrite it as "
-                "`tools: item, item, ...` on one line",
-                errors,
-            )
-            continue
+        if declared and not value:
+            # A valueless `tools:` is genuinely empty only when nothing follows it in the frontmatter block, or
+            # the next real content is a sibling key at column 0 -- two bounded, recognisable shapes. Anything
+            # else following it is an explicit allowlist the same-line-only pattern above cannot see, so every
+            # check below would be skipped, for a non-ship agent silently, allowlist and all. Recognise the
+            # narrow *empty* shape and refuse whatever else follows: enumerating the non-empty continuations
+            # instead (block list, then blank-line-preceded, then comment-preceded, then flow sequence, then a
+            # column-0 comment) turned up one more sibling every review round, because that set is open-ended
+            # and this one is closed. Refusing rather than parsing matches the unrecognised glob shapes further
+            # down, and every real agent already uses the single-line comma form.
+            tail = block[declared.end():].splitlines()[1:]
+            next_real = next((ln for ln in tail if ln.strip() and not ln.lstrip().startswith("#")), None)
+            if next_real is not None and not re.match(r"[\w-]+:", next_real):
+                fail(
+                    f"{p.relative_to(ROOT)}: tools: names nothing on its own line but is not genuinely empty "
+                    f"either ({next_real.strip()!r} follows it); rewrite it as the single-line comma-separated "
+                    "form `tools: item, item, ...` so the allowlist checks below can read it",
+                    errors,
+                )
+                continue
         if not value:
             if p.stem in SHIP_WORKER_AGENTS:
                 fail(

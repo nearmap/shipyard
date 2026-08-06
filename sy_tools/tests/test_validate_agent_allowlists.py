@@ -26,13 +26,15 @@ def _check(
     tools_line: str | None,
     monkeypatch: pytest.MonkeyPatch,
     name: str = "probe",
+    trailing: str = "model: sonnet\n",
 ) -> list[str]:
     agents = tmp_path / "agents"
     agents.mkdir()
     tools = f"tools: {tools_line}\n" if tools_line is not None else ""
     # `model:` trails tools: because that is the layout a valueless `tools:` is mis-read as an allowlist
     # in: a pattern whose whitespace class crosses the newline captures the following frontmatter line.
-    fields = f"{tools}model: sonnet\n"
+    # `trailing=""` puts tools: last in the block instead, with nothing at all after it.
+    fields = f"{tools}{trailing}"
     (agents / f"{name}.md").write_text(
         f"---\nname: {name}\ndescription: test\n{fields}---\nbody\n", encoding="utf-8",
     )
@@ -124,18 +126,39 @@ _BLOCK_LIST = "".join(f"  - {tool}\n" for tool in _CHECK_ENV_TWINS).rstrip("\n")
     f"\n{_BLOCK_LIST}",
     f"\n\n{_BLOCK_LIST}",
     f"\n  # both deployment prefixes\n{_BLOCK_LIST}",
+    f"\n# both deployment prefixes\n{_BLOCK_LIST}",
     f"\n  [{', '.join(_CHECK_ENV_TWINS)}]",
-], ids=["block list", "blank line then block list", "comment then block list", "flow sequence"])
+], ids=[
+    "block list", "blank line then block list", "indented comment then block list",
+    "column-0 comment then block list", "flow sequence",
+])
 def test_a_multi_line_tools_value_is_refused_by_shape(tmp_path, monkeypatch, agent, continuation):
     """Every one of these puts nothing after `tools:` on its own line, so it reads as an absent field and every
-    check below is skipped -- for a non-ship agent silently, however wrong the allowlist it hides. The blank-line,
-    comment-preceded, and flow-sequence siblings each bypassed a guard that only looked at the very next line.
+    check below is skipped -- for a non-ship agent silently, however wrong the allowlist it hides. Each sibling
+    here bypassed an earlier guard in turn, which is why the guard now recognises the one shape that means
+    genuinely empty rather than enumerating the shapes that do not.
 
     check_env rides along under both prefixes so the form itself is the only thing left to refuse.
     """
     errors = _check(tmp_path, continuation, monkeypatch, name=agent)
-    assert any("block list" in error for error in errors), \
+    assert any("not genuinely empty" in error for error in errors), \
         f"{agent}'s multi-line tools: must be refused naming the shape: {errors}"
+
+
+@pytest.mark.parametrize("continuation", ["", "\n  # inherited on purpose", "\n# inherited on purpose"],
+                         ids=["bare", "indented comment", "column-0 comment"])
+def test_a_genuinely_empty_tools_value_before_a_sibling_key_is_not_refused(tmp_path, monkeypatch, continuation):
+    """Nothing follows `tools:` but comments and the next frontmatter key, so a non-ship agent inherits the
+    default tool set as it always could; refusing this would report a block list that is not there."""
+    errors = _check(tmp_path, continuation, monkeypatch, name="sweep")
+    assert not errors, f"a genuinely empty tools: must not be read as a hidden allowlist: {errors}"
+
+
+def test_a_genuinely_empty_tools_value_as_the_last_frontmatter_field_is_not_refused(tmp_path, monkeypatch):
+    """With nothing at all after it there is no continuation to find, so the scan must run off the end clean
+    rather than treat the block's closing delimiter as content."""
+    errors = _check(tmp_path, "", monkeypatch, name="sweep", trailing="")
+    assert not errors, f"a trailing empty tools: must not be read as a hidden allowlist: {errors}"
 
 
 def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):

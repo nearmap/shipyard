@@ -31,14 +31,16 @@
     "max_active_tasks": 4
   },
   "spec": {
-    "light_tier_max_files": 3
+    "light_tier_max_files": 3,
+    "max_spec_gate_rounds": 5
   },
   "ship": {
     "request_ci_reviewer": true,
     "merge_strategy": "squash",
     "escalation": {
       "max_needs_decision": 3,
-      "max_needs_trace": 2
+      "max_needs_trace": 2,
+      "max_gate_rounds": 5
     }
   },
   "transcript": {

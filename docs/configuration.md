@@ -58,10 +58,12 @@ show_config {}
 | `limits.max_depth_agents` | no | Cross-cutting cap on simultaneous depth-investigation subagents (`sy:trace`/`sy:hunt`/etc.) in flight per phase — `/sy:ship`, `/sy:spec`, `/sy:spike`, and `sy:gate` all read this one key. |
 | `plan.max_active_tasks` | no | Cap on `/sy:spec`-ready Tasks a roadmap keeps active under one Epic at once. |
 | `spec.light_tier_max_files` | no | File-count proxy for "small": the `light` process tier is allowed only when the plan's declared file set is at most this many files and no risk lenses are activated. Tune per repo. |
+| `spec.max_spec_gate_rounds` | no | How many times `/sy:spec` may dispatch `sy:spec-gate` for the same session before the guard denies a further dispatch and the session must stop and ask you how to proceed. Per session, not per plan — a session that runs `/sy:spec` on two tickets in a row shares one budget. A dispatch consumes a round even if later aborted. |
 | `ship.request_ci_reviewer` | no | Whether GATE requests an automated code-review bot (e.g. Copilot) on the PR, on top of `sy:gate`'s own independent review. Safe to disable: `sy:gate` remains the non-negotiable floor either way, this is an additive second opinion. |
 | `ship.merge_strategy` | no | `squash`, `merge`, or `rebase`, passed to `gh pr merge`. Only `squash` composes a subject/body from the PR description. |
 | `ship.escalation.max_needs_decision` | no | A ship phase exceeding this many `needs-decision` returns without reaching `done` escalates to `/sy:spec` as underspecified. |
 | `ship.escalation.max_needs_trace` | no | A ship phase exceeding this many `needs-trace` returns without reaching `done` escalates to `/sy:spec` as missing evidence, on its own separate count. |
+| `ship.escalation.max_gate_rounds` | no | A GATE phase exceeding this many rounds over the current head without converging returns `needs-decision` (tagged `max_gate_rounds`) rather than continuing. |
 | `transcript.attach` | no | Whether `/sy:plan`, `/sy:spec`, and (full-tier) `/sy:ship` render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself. |
 | `transcript.truncation_limits.tool_input` | no | Character limit per tool-input block when `sy_tools/usage.py` renders a readable transcript. |
 | `transcript.truncation_limits.tool_result` | no | Character limit per tool-result block. |

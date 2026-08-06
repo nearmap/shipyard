@@ -42,28 +42,37 @@ def _check(
     return errors
 
 
+def _twins(*tools: str) -> str:
+    """Render `tools` as a `tools:` value naming each under both deployment prefixes."""
+    return ", ".join(f"mcp__{prefix}__{tool}" for tool in tools for prefix in ("sy", "plugin_sy_sy"))
+
+
 @pytest.mark.parametrize(
     "tools_line",
     ["mcp__sy, mcp__plugin_sy_sy", "mcp__sy__*, mcp__plugin_sy_sy__*", "mcp__sy__set_*, mcp__plugin_sy_sy__set_*"],
 )
 def test_a_server_level_or_tool_name_glob_is_refused(tmp_path, monkeypatch, tools_line):
-    errors = _check(tmp_path, tools_line, monkeypatch)
+    # check_env twins ride along here and in the twin case below so the only rule left to break is the
+    # one each case is about; without them every case would also trip the check_env-reachability check
+    # and pass on that error instead.
+    errors = _check(tmp_path, f"{tools_line}, {_twins('check_env')}", monkeypatch)
     assert errors, f"{tools_line!r} must be refused"
 
 
 def test_a_glob_missing_the_double_underscore_is_also_refused(tmp_path, monkeypatch):
-    errors = _check(tmp_path, "mcp__sy*, mcp__plugin_sy_sy*", monkeypatch)
+    errors = _check(tmp_path, f"mcp__sy*, mcp__plugin_sy_sy*, {_twins('check_env')}", monkeypatch)
     assert errors, "a glob shape that skips the documented `__` separator must still be refused"
 
 
 def test_named_tools_with_both_deployment_twins_pass_clean(tmp_path, monkeypatch):
-    errors = _check(tmp_path, "mcp__sy__set_status, mcp__plugin_sy_sy__set_status", monkeypatch)
+    errors = _check(tmp_path, _twins("set_status", "check_env"), monkeypatch)
     assert not errors, f"a legitimate named-tool twin pair must not be refused: {errors}"
 
 
 def test_a_missing_twin_is_refused(tmp_path, monkeypatch):
-    errors = _check(tmp_path, "mcp__sy__set_status", monkeypatch)
-    assert errors, "an entry with no other-deployment twin listed must be refused"
+    errors = _check(tmp_path, f"mcp__sy__set_status, {_twins('check_env')}", monkeypatch)
+    assert any("twin" in error for error in errors), \
+        f"an entry with no other-deployment twin listed must be refused: {errors}"
 
 
 @pytest.mark.parametrize("tools_line", [
@@ -113,7 +122,49 @@ def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch)
 
 def test_a_ship_worker_keeps_the_memory_read_tools(tmp_path, monkeypatch):
     """START reads memory back, so the guard must pin the write verbs alone, not the whole tool family."""
-    tools = ", ".join(
-        f"mcp__{prefix}__{tool}" for tool in ("memory_list", "memory_search") for prefix in ("sy", "plugin_sy_sy")
-    )
+    tools = _twins("memory_list", "memory_search", "set-status", "assign", "check_env")
     assert not _check(tmp_path, tools, monkeypatch, name="ship-start"), "the read side must stay allowed"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+def test_a_ship_worker_granted_exactly_its_declared_tracker_verbs_passes(tmp_path, monkeypatch, agent):
+    verbs = sorted(validate.SHIP_WORKER_TRACKER_VERBS[agent])
+    errors = _check(tmp_path, _twins("check_env", *verbs), monkeypatch, name=agent)
+    assert not errors, f"{agent}'s own declared verb set must pass clean: {errors}"
+
+
+@pytest.mark.parametrize("agent, dropped", [
+    ("ship-start", "set-status"), ("ship-start", "assign"), ("ship-gate", "set-status"),
+])
+def test_a_ship_worker_short_a_declared_tracker_verb_is_refused(tmp_path, monkeypatch, agent, dropped):
+    """An under-grant fails loudly rather than at the worker's first write, and names the verb."""
+    verbs = sorted(validate.SHIP_WORKER_TRACKER_VERBS[agent] - {dropped})
+    errors = _check(tmp_path, _twins("check_env", *verbs), monkeypatch, name=agent)
+    assert any("missing" in error and dropped in error for error in errors), \
+        f"{agent} short {dropped} must be refused naming it: {errors}"
+
+
+@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
+def test_a_ship_worker_granted_a_tracker_verb_outside_its_set_is_refused(tmp_path, monkeypatch, agent):
+    """An over-grant cannot ride in on an unrelated edit; the set is exact, not a floor."""
+    verbs = [*sorted(validate.SHIP_WORKER_TRACKER_VERBS[agent]), "post-comment"]
+    errors = _check(tmp_path, _twins("check_env", *verbs), monkeypatch, name=agent)
+    assert any("extra" in error and "post-comment" in error for error in errors), \
+        f"{agent} must not silently gain post-comment: {errors}"
+
+
+def test_an_underscore_spelled_tracker_verb_does_not_satisfy_the_canonical_one(tmp_path, monkeypatch):
+    """Tool names are exact: `set_status` reaches no tool, so it must read as the verb still missing."""
+    errors = _check(tmp_path, _twins("check_env", "set_status", "assign"), monkeypatch, name="ship-start")
+    assert any("missing" in error and "set-status" in error for error in errors), \
+        f"an underscore spelling must not count as the hyphenated canonical verb: {errors}"
+
+
+def test_an_explicit_allowlist_without_check_env_is_refused(tmp_path, monkeypatch):
+    """Without it an agent asked about a credential shells out and leaks the value into the transcript."""
+    errors = _check(tmp_path, "Read, Grep, Bash", monkeypatch)
+    assert any("check_env" in error for error in errors), f"a check_env-less allowlist must be refused: {errors}"
+
+
+def test_an_explicit_allowlist_with_check_env_twins_passes(tmp_path, monkeypatch):
+    assert not _check(tmp_path, _twins("check_env"), monkeypatch), "check_env under both prefixes is the fix"

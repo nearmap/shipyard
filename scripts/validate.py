@@ -47,7 +47,19 @@ LEGACY_CONFIG_ENV = {
 # deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
 SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
 MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
-SHIP_WORKER_AGENTS = {"ship-start", "ship-build", "ship-gate"}
+# Exactly the tracker-mutation verbs each `/sy:ship` worker's own procedure names: `start-resume.md`
+# step 7 sets status and self-assigns, `immutable-gate.md`'s promote step sets status, and
+# `implementation.md` names no tracker verb at all. Exact sets, not floors — a worker gaining or
+# losing one has to touch this line and the test that pins it.
+SHIP_WORKER_TRACKER_VERBS = {
+    "ship-start": {"set-status", "assign"},
+    "ship-build": set(),
+    "ship-gate": {"set-status"},
+}
+SHIP_WORKER_AGENTS = frozenset(SHIP_WORKER_TRACKER_VERBS)
+# Every agent must be able to ask whether a credential is present without ever reading its value;
+# `sy_tools/guards/secret_guard.py` names this tool as the remedy it steers shell probes toward.
+CHECK_ENV_TOOL = "check_env"
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -364,8 +376,9 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
 
 
 def check_agent_mcp_allowlists(errors: list[str]) -> None:
-    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, never by wildcard, and
-    never gives a `/sy:ship` worker a durable-memory write."""
+    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, never by wildcard, always
+    reaches `check_env`, never gives a `/sy:ship` worker a durable-memory write, and gives a `/sy:ship` worker
+    exactly the tracker-mutation verbs its own procedure names."""
     for p in sorted((ROOT / "agents").glob("*.md")):
         text = p.read_text(encoding="utf-8")
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
@@ -393,6 +406,14 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                 errors,
             )
             named = [entry for entry in named if entry]
+        granted = {entry.rpartition("__")[2] for entry in named}
+        if CHECK_ENV_TOOL not in granted:
+            fail(
+                f"{p.relative_to(ROOT)}: tools is an explicit allowlist naming no {CHECK_ENV_TOOL!r}, so this "
+                "agent cannot ask whether a credential is present without shelling out and leaking its value "
+                "into the transcript; name it under both deployment prefixes",
+                errors,
+            )
         if p.stem in SHIP_WORKER_AGENTS:
             for entry in named:
                 if entry.rpartition("__")[2] in MEMORY_WRITE_TOOLS:
@@ -401,6 +422,19 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                         "user-global memory store; a worker relays a MEMORY_REFUTE candidate instead",
                         errors,
                     )
+            declared_verbs = SHIP_WORKER_TRACKER_VERBS[p.stem]
+            granted_verbs = granted & CANONICAL_VERBS
+            if granted_verbs != declared_verbs:
+                missing = sorted(declared_verbs - granted_verbs)
+                extra = sorted(granted_verbs - declared_verbs)
+                fail(
+                    f"{p.relative_to(ROOT)}: this /sy:ship worker's procedure names exactly the tracker verbs "
+                    f"[{', '.join(sorted(declared_verbs)) or 'none'}], but tools grants "
+                    f"[{', '.join(sorted(granted_verbs)) or 'none'}]"
+                    + (f"; missing {missing} (canonical spelling is hyphenated)" if missing else "")
+                    + (f"; extra {extra}" if extra else ""),
+                    errors,
+                )
         for entry in named:
             # Both spellings, because Claude Code documents `mcp__<server>__*` as granting every tool
             # from that server exactly as the bare server name does — and the pair

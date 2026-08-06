@@ -3,7 +3,7 @@ name: debater
 description: >-
   One side of a proposer/adversary debate for `sy:debate`. Argues for or against
   a stated premise/approach using gathered evidence. Read-only.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

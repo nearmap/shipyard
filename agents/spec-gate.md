@@ -4,7 +4,7 @@ description: >-
   Independent pre-sign-off review of one fully drafted /sy:spec plan against the six-axis
   spec-gate checklist. Reports plan defects, never re-argues the core decision the debate
   pass already settled. Read-only.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---

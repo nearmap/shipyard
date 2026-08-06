@@ -79,7 +79,7 @@ sibling_scan: <step-2 scan result: branches, open PRs, worktrees>
 agents_used: []
 ```
 
-7. set the Task `in-progress` via the `tracker` skill, self-assign, and ensure the parent Epic is `in-progress`.
+7. set the Task `in-progress` via the `tracker` skill, self-assign, and ensure the parent Epic is `in-progress`. The tracker skill's own `validate_config`/`preflight` preamble is already discharged for this run by the parent's pre-dispatch tracker preflight (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Invariants), so call `set-status` and `assign` directly rather than re-running that preamble — those two verbs are the whole of this worker's granted tracker access.
 
 Each phase's `*_model_requested` is written when that phase is dispatched and its `*_model_observed` only once the usage transcript confirms what ran, so the `build_model_*` pair stays `null` until the parent dispatches BUILD and the `review_model_*` pair stays `null` until GATE. `pregate_checkpoint_channel` is stamped once here too, taken from the plan's `pre-gate checkpoint` field in the normalized form the block above shows (`draft-pr` / `running-preview`) and left `null` when the plan declares none; `pregate_checkpoint_gate_dispatched` starts `false` and `pregate_checkpoint_request_text` starts `null` alongside it, stamped once here for the same reason the rest are; `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint owns how the rest are later set and re-checked.
 

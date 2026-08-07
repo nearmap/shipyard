@@ -17,6 +17,13 @@ import httpx2
 import pytest
 
 from sy_tools.server import _AGENT_DETAIL_CLOSE, _AGENT_DETAIL_OPEN, _agent_half
+from sy_tools.tests.test_server import (
+    PLAN_AGENT,
+    PLAN_AGENT_READ_BACK,
+    PLAN_HUMAN,
+    PLAN_HUMAN_READ_BACK,
+    SUPERSEDED_READ_BACK,
+)
 from sy_tools.tracker import TIMEOUT_SECONDS, TrackerError
 from sy_tools.tracker.jira import adapter, adf
 
@@ -1799,4 +1806,36 @@ def test_the_collapsed_section_survives_a_read_and_a_write_back():
     # surviving here and the extractor still finding it are one fact, asserted in one place.
     assert _agent_half(read_back) == "HEAD 6144373", (
         f"the agent half is no longer recoverable from a read-back body: {read_back!r}"
+    )
+
+
+def test_a_plan_comment_reads_back_as_the_shape_the_core_tests_fixture_on():
+    """`plan_file`'s own tests fixture on hand-written read-back literals; this is what pins them.
+
+    They cannot compute the shape themselves: `sy_tools/tests/test_tracker_seam.py` keeps every concrete
+    tracker — this converter included — inside `sy_tools/tracker/` and its own tests, and a core test
+    importing it would be the seam breach that rule exists to catch. So the literals live beside the
+    tool and their truth is asserted here, where naming the converter is legal. A conversion change that
+    alters the escaping fails here, naming the new shape, instead of leaving those fixtures quietly
+    describing a transformation that no longer happens.
+
+    Both halves, not just the agent one: the human half's read-back shape is what the version and status
+    selection is applied to, and its status line stops being a line of its own on the way through.
+    """
+    posted = PLAN_HUMAN.strip() + _AGENT_DETAIL_OPEN + PLAN_AGENT.strip() + _AGENT_DETAIL_CLOSE
+    read_back = adf.adf_to_markdown(adf.markdown_to_adf(posted))
+    assert read_back.startswith(PLAN_HUMAN_READ_BACK), (
+        f"the human half no longer reads back as the core fixture says:\n  fixture: {PLAN_HUMAN_READ_BACK!r}\n"
+        f"  actual:  {read_back!r}"
+    )
+    assert _agent_half(read_back) == PLAN_AGENT_READ_BACK, (
+        f"the agent half no longer reads back as the core fixture says:\n  fixture: {PLAN_AGENT_READ_BACK!r}\n"
+        f"  actual:  {_agent_half(read_back)!r}"
+    )
+    assert "_" in PLAN_AGENT and "\\_" in PLAN_AGENT_READ_BACK, (
+        "the fixture must carry an un-backticked underscore and its escaped form, or this pins nothing"
+    )
+    assert adf.adf_to_markdown(adf.markdown_to_adf(SUPERSEDED_READ_BACK)) .strip() == SUPERSEDED_READ_BACK, (
+        "the superseded-plan fixture must already be at the conversion's fixed point, or it is not a "
+        "read-back shape at all"
     )

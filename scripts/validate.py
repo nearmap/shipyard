@@ -596,6 +596,8 @@ def check_invariants(errors: list[str]) -> None:
     gate = read("agents/gate.md")
     spec = read("skills/spec/SKILL.md")
     start = read("skills/ship/references/start-resume.md")
+    ship_start_agent = read("agents/ship-start.md")
+    ship_build_agent = read("agents/ship-build.md")
     gate_ref = read("skills/ship/references/immutable-gate.md")
     contract = read("skills/tracker/CONTRACT.md")
     impl = read("skills/ship/references/implementation.md")
@@ -647,13 +649,62 @@ def check_invariants(errors: list[str]) -> None:
             "START cannot be checked before a later GATE dispatch",
             errors,
         )
-    dispatch_fields = ("phase_active", "gate_rounds_total", "gate_rounds_budget_base")
-    if any(field not in start for field in dispatch_fields):
+    dispatch_fields = (
+        "phase_active",
+        "gate_rounds_total",
+        "gate_rounds_budget_base",
+        # The plan pin joins the same check for the same reason: written once at START, read at resume.
+        "plan_path",
+        "plan_comment_id",
+        "plan_version",
+    )
+    # Scoped to the state block itself, not the whole file: every one of these six is also discussed in the
+    # prose below it, so a file-wide check stays green on a field that fell out of the block a START run
+    # actually writes — which is the only place "stamped at START" is true or false.
+    start_state_block = start.partition("```yaml")[2].partition("```")[0]
+    if any(field not in start_state_block for field in dispatch_fields):
         fail(
-            "ship start/resume must stamp all three per-dispatch fields (the parent's own phase_active, plus GATE's "
-            "gate_rounds_total and gate_rounds_budget_base) at START; a field never written at START is absent at "
-            "resume, leaving a session that died mid-phase and a spent fix-cycle round budget indistinguishable "
-            "from a clean start",
+            "ship start/resume's state block must stamp every per-dispatch field at START (the parent's own "
+            "phase_active, GATE's gate_rounds_total and gate_rounds_budget_base, and the plan pin the plan_file call "
+            "reported: plan_path, plan_comment_id, plan_version); a field never written at START is absent at "
+            "resume, leaving a session that died mid-phase, a spent fix-cycle round budget, or a plan revised "
+            "mid-run indistinguishable from a clean start",
+            errors,
+        )
+    # Section-scoped: § Invariants names the tool too, and a file-wide check would stay green on that alone
+    # while § State router — the one place the per-session materialisation is procedure — quietly lost it.
+    ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
+    if "plan_file" not in ship_router:
+        fail(
+            "ship SKILL's § State router must name plan_file: materialising the plan runs there, once per session "
+            "ahead of any dispatch, because a resume routing straight to BUILD or GATE passes through no phase "
+            "procedure that could own it and no worker holds a tracker read",
+            errors,
+        )
+    if "plan_file" not in start:
+        fail(
+            "ship start/resume must name plan_file as where its plan comes from; without it, step 1 reads as a "
+            "tracker read this worker does not hold",
+            errors,
+        )
+    if "vN digest" in ship_start_agent:
+        fail(
+            "agents/ship-start.md still returns the plan as a `vN digest`; START now returns the plan file's path "
+            "and pin, and a digest is not something a later phase can read a plan out of",
+            errors,
+        )
+    for named, text in (("agents/ship-build.md", ship_build_agent), ("immutable-gate.md", gate_ref)):
+        if "plan file" not in text:
+            fail(
+                f"{named} must name the plan file as how the plan reaches this phase; neither BUILD nor GATE holds "
+                "a tracker read, so a phase told to consult 'the plan' with no file named has no way to",
+                errors,
+            )
+    stale_economy_claim = "which is the only phase that reads the ticket"
+    if stale_economy_claim in economy_ref:
+        fail(
+            f"context-economy.md still claims {stale_economy_claim!r}; no /sy:ship phase reads the ticket now — the "
+            "parent materialises the plan's ship half to a file and hands later phases its path",
             errors,
         )
     if "pregate_checkpoint_channel" not in ship:

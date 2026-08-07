@@ -54,7 +54,7 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `add-dependency` | Record that issue X is blocked by issue Y. |
 | `add-label` | Add a label, preserving existing labels. |
 | `type-convert` | Change an existing issue's canonical type in place. Best-effort; loud failure — see below. |
-| `post-comment` | Post a Markdown comment as two required parts: `human` (the TL;DR and the reasoning, leading) and `agent_detail` (pointers, SHAs, URLs, footers). The tool writes the boundary between them, so a caller never composes one. |
+| `post-comment` | Post a Markdown comment as two required parts: `human` (the TL;DR and the reasoning, leading) and `agent_detail` (pointers, SHAs, URLs, footers). The tool writes the boundary between them, so a caller never composes one. That boundary is not a flat separator: it wraps `agent_detail` in a captioned section both trackers render collapsed by default, so a human reader meets the leading half first and opens the rest only on demand. |
 | `post-log` | Post a **standalone** machine log comment from a `title` and a `payload` object, which the tool serialises and fences itself. It can carry nothing else — see below. |
 | `attach-artifact` | Attach a durable file (the session transcript) to the issue — see below. |
 | `attachment-download` | Fetch an artifact already attached to an issue to a local path, named by filename or the tracker-native id (the disambiguator when two attachments share a filename). |

@@ -16,6 +16,7 @@ from typing import Any
 import httpx2
 import pytest
 
+from sy_tools.server import _AGENT_DETAIL_CLOSE, _AGENT_DETAIL_OPEN
 from sy_tools.tracker import TIMEOUT_SECONDS, TrackerError
 from sy_tools.tracker.jira import adapter, adf
 
@@ -1734,3 +1735,63 @@ def test_a_document_the_converter_cannot_read_names_its_shape_only():
         adf.adf_to_markdown(broken)
     assert "sensitive body text" not in str(failure.value), "a failure message must not dump the document"
     assert "'doc'" in str(failure.value), f"the failure must name the shape it got: {failure.value}"
+
+
+# ---- core's collapsed agent-facing section ------------------------------------------------------
+#
+# Every body below is built from `sy_tools.server`'s constants rather than from a third copy of the
+# caption: `adf.py` holds its own byte-identical copy on purpose, and the drift these tests exist to
+# catch is the two copies parting company — which shows up here as a rewrite that stops firing.
+
+EXPAND_TITLE = _AGENT_DETAIL_OPEN.split("<summary>")[1].split("</summary>")[0]
+"""The caption Jira must render on the collapsed section, read off core's constant."""
+
+AGENT_SECTION_BODY = "TL;DR: the gate passed." + _AGENT_DETAIL_OPEN + "HEAD 6144373" + _AGENT_DETAIL_CLOSE
+"""A comment body assembled the way `post-comment` assembles one."""
+
+
+def _expands(doc: dict) -> list[dict]:
+    """The document's top-level expand nodes."""
+    return [node for node in doc["content"] if node.get("type") == "expand"]
+
+
+def test_the_agent_facing_section_becomes_a_titled_expand_node():
+    """Jira collapses an Expand node and nothing else, so the section has to arrive as one, titled."""
+    doc = adf.markdown_to_adf(AGENT_SECTION_BODY)
+    expands = _expands(doc)
+    assert len(expands) == 1, f"the section did not convert to one expand node: {json.dumps(doc)}"
+    assert expands[0]["attrs"]["title"] == EXPAND_TITLE, f"the expand lost its caption: {json.dumps(expands[0])}"
+    assert "HEAD 6144373" in json.dumps(expands[0]["content"]), f"the agent half fell out: {json.dumps(expands[0])}"
+
+
+UNTOUCHED_BODIES = [
+    ("plain prose", "TL;DR: the gate passed.\n\nHEAD 6144373\n"),
+    ("a hand-authored disclosure",
+     "Intro.\n\n<details>\n\n<summary>Raw command output</summary>\n\nls -la\n\n</details>\n"),
+    ("a near-miss caption", "Intro." + _AGENT_DETAIL_OPEN.replace("judgment", "review") + "HEAD 6144373"),
+]
+"""Bodies the rewrite must leave alone, the second one authored by hand in the same tag pair."""
+
+
+@pytest.mark.parametrize(("case", "body"), UNTOUCHED_BODIES, ids=[case for case, _ in UNTOUCHED_BODIES])
+def test_the_rewrite_fires_only_on_the_one_fixed_opening(case, body):
+    """A general `<details>` rule would silently reshape prose nobody asked it to touch.
+
+    Compared against the raw converter, so the assertion is that the replace was a no-op rather than
+    that its result happened to look familiar.
+    """
+    doc = adf.markdown_to_adf(body)
+    assert doc == adf.to_adf(body), f"{case} was rewritten before conversion: {json.dumps(doc)}"
+    assert _expands(doc) == [], f"{case} became a collapsed section: {json.dumps(doc)}"
+
+
+def test_the_collapsed_section_survives_a_read_and_a_write_back():
+    """Comments are read, edited and written back, so the second write must collapse like the first.
+
+    The read path normalises a real Expand node back to the bare tag pair, which is the whole reason
+    the rewrite matches again on the way out.
+    """
+    read_back = adf.adf_to_markdown(adf.markdown_to_adf(AGENT_SECTION_BODY), plain=True)
+    expands = _expands(adf.markdown_to_adf(read_back))
+    assert len(expands) == 1, f"the section flattened on its way back through: {read_back!r}"
+    assert expands[0]["attrs"]["title"] == EXPAND_TITLE, f"the expand lost its caption: {read_back!r}"

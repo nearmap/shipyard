@@ -23,7 +23,7 @@ ADAPTER_TESTS = MCP_ROOT / "tests" / "tracker"
 TRACKER_TOKENS = [
     re.compile(p, f) for p, f in [
         (r"\bjira\b", re.I), (r"\bacli\b", re.I), (r"\batlassian\b", re.I),
-        (r"\.atlassian\.net", 0), (r"\bADF\b", 0),
+        (r"\.atlassian\.net", 0), (r"\bADF\b", re.I),
         (r"\bgithub\b", re.I), (r"\bgh\b", re.I), (r"\bgist\b", re.I),
         (r"\bissueType\b", 0), (r"\bsubtask\b", re.I),
     ]

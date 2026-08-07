@@ -1835,7 +1835,7 @@ def test_a_plan_comment_reads_back_as_the_shape_the_core_tests_fixture_on():
     assert "_" in PLAN_AGENT and "\\_" in PLAN_AGENT_READ_BACK, (
         "the fixture must carry an un-backticked underscore and its escaped form, or this pins nothing"
     )
-    assert adf.adf_to_markdown(adf.markdown_to_adf(SUPERSEDED_READ_BACK)) .strip() == SUPERSEDED_READ_BACK, (
+    assert adf.adf_to_markdown(adf.markdown_to_adf(SUPERSEDED_READ_BACK)).strip() == SUPERSEDED_READ_BACK, (
         "the superseded-plan fixture must already be at the conversion's fixed point, or it is not a "
         "read-back shape at all"
     )

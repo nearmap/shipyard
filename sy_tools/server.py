@@ -514,8 +514,9 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     text = (
         f"<!-- Written by the `sy` server's `plan_file` tool: Execution Plan v{version}, the "
         f"agent-facing half of comment {comment_id} on {issue}. The plan comment is the record of truth. -->\n"
-        "<!-- Read back through the tracker's rich-text conversion, which escapes un-backticked Markdown "
-        "punctuation (`_` arrives as `\\_`) and wraps a link target in `<>`; backticked spans are verbatim. -->\n\n"
+        "<!-- Read back exactly as the tracker returned it: a rich-text tracker's conversion escapes "
+        "un-backticked Markdown punctuation (`_` arrives as `\\_`) and wraps a link target in `<>`, leaving "
+        "backticked spans verbatim; a plain-Markdown tracker returns it unchanged. -->\n\n"
         + _agent_half(body)
         + "\n"
     )

@@ -674,14 +674,15 @@ def check_invariants(errors: list[str]) -> None:
     # Section-scoped: § Invariants names the tool too, and a file-wide check would stay green on that alone
     # while § State router — the one place the per-session materialisation is procedure — quietly lost it.
     ship_router = ship.partition("## State router")[2].partition("## Completion bar")[0]
-    if "plan_file" not in ship_router:
+    if "calls `plan_file` on the Task" not in ship_router:
         fail(
             "ship SKILL's § State router must name plan_file: materialising the plan runs there, once per session "
             "ahead of any dispatch, because a resume routing straight to BUILD or GATE passes through no phase "
             "procedure that could own it and no worker holds a tracker read",
             errors,
         )
-    if "plan_file" not in start:
+    start_procedure = start.partition("## Resolve start model")[0]
+    if "plan_file" not in start_procedure:
         fail(
             "ship start/resume must name plan_file as where its plan comes from; without it, step 1 reads as a "
             "tracker read this worker does not hold",
@@ -693,11 +694,19 @@ def check_invariants(errors: list[str]) -> None:
             "and pin, and a digest is not something a later phase can read a plan out of",
             errors,
         )
+    if "PLAN v<N> @<comment id>; FILE <path>" not in ship_start_agent:
+        fail(
+            "agents/ship-start.md must return the plan's pin (comment id + version) and file path in its DONE "
+            "line; a later phase resuming from this worker's return alone needs both to re-materialise or "
+            "compare against state, and a return that only names a digest gives it neither",
+            errors,
+        )
     for named, text in (("agents/ship-build.md", ship_build_agent), ("immutable-gate.md", gate_ref)):
-        if "plan file" not in text:
+        if "the plan file the state brief names" not in text:
             fail(
-                f"{named} must name the plan file as how the plan reaches this phase; neither BUILD nor GATE holds "
-                "a tracker read, so a phase told to consult 'the plan' with no file named has no way to",
+                f"{named} must name the plan file the state brief names as how the plan reaches this phase; "
+                "neither BUILD nor GATE holds a tracker read, so a phase told to consult 'the plan' with no file "
+                "named has no way to",
                 errors,
             )
     stale_economy_claim = "which is the only phase that reads the ticket"

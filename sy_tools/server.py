@@ -418,7 +418,7 @@ form it was written with, and a tracker read of one has to resolve rather than r
 it. Measured, not assumed: this literal survives the rich-text round trip byte for byte, so the read
 path matches it as written."""
 
-_PLAN_HEADING = re.compile(r"#[ \t]+Execution Plan v(\d+)[ \t]*$", re.MULTILINE)
+_PLAN_HEADING = re.compile(r"#[ \t]+Execution Plan v(\d+)[ \t]*\r?$", re.MULTILINE)
 """The heading an execution plan comment opens with, and the version number in it.
 
 Matched against the body's start, never searched for: a comment *quoting* a plan heading mid-body is
@@ -439,13 +439,23 @@ def _agent_half(body: str) -> str:
     """The agent-facing half of a two-part comment body, under whichever boundary form wrote it.
 
     Derived from `_AGENT_DETAIL_TAG` rather than re-spelling the boundary, so the extractor cannot drift
-    from the writer. The trailing close is cut at the *last* one, because the half itself may legitimately
-    carry a nested disclosure block that `post-comment` let through.
+    from the writer. Cut at the exact closing literal `post-comment` appends, not at a bare `</details>`
+    substring: the half itself may legitimately carry a nested disclosure block, and cutting at any
+    `</details>` picks the nested one instead of the real end when the outer close is missing.
     """
     for boundary in (_AGENT_DETAIL_TAG, _LEGACY_AGENT_DETAIL_TAG):
         if boundary in body:
             half = body.split(boundary, 1)[1]
-            return (half.rsplit("</details>", 1)[0] if "</details>" in half else half).strip()
+            if _AGENT_DETAIL_CLOSE in half:
+                return half.rsplit(_AGENT_DETAIL_CLOSE, 1)[0].strip()
+            if "</details>" not in half:
+                return half.strip()
+            raise ToolError(
+                "the ACTIVE plan comment's agent-facing section carries a `</details>` that is not the outer "
+                "close `post-comment` appends: cutting at it would risk dropping content after a nested "
+                "disclosure block instead of at the section's real end. Repost the plan through `post-comment` "
+                "so the outer close lands last."
+            )
     raise ToolError(
         "the ACTIVE plan comment carries neither boundary this tool can split on: neither the collapsed "
         "agent-facing section `post-comment` writes nor the flat separator that preceded it. It was not "

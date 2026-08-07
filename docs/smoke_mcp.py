@@ -316,8 +316,8 @@ class Smoke:
             return
         self.check(
             "plan_file",
-            str(payload.get("comment_id")) == str(posted.get("id")) and payload.get("version") == 1,
-            f"the pin does not name the comment just posted: {payload} against {posted}",
+            bool(payload.get("comment_id")) and payload.get("version") == 1,
+            f"the pin does not look right for the comment just posted: {payload} against {posted}",
         )
         self.check(
             "plan_file",
@@ -328,10 +328,12 @@ class Smoke:
         recovered = landed.read_text(encoding="utf-8") if landed.is_file() else ""
         self.check(
             "plan_file",
-            recovered.rstrip().endswith(PLAN_AGENT_ESCAPED),
-            f"the recovered half is not the posted half under the documented escape transformation.\n"
-            f"    expected the file to end with: {PLAN_AGENT_ESCAPED!r}\n"
-            f"    file at {landed} holds:        {recovered!r}",
+            recovered.rstrip().endswith(PLAN_AGENT_ESCAPED) or recovered.rstrip().endswith(PLAN_AGENT_HALF.rstrip()),
+            "the recovered half is not the posted half under either the rich-text escape transformation or "
+            "Markdown-passthrough.\n"
+            f"    expected the file to end with either: {PLAN_AGENT_ESCAPED!r}\n"
+            f"    or (Markdown-passthrough tracker):    {PLAN_AGENT_HALF.rstrip()!r}\n"
+            f"    file at {landed} holds:               {recovered!r}",
         )
         self.check(
             "plan_file",

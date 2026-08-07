@@ -520,10 +520,10 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     comment_id, version, body = active[0]
     if not comment_id:
         raise ToolError(
-            f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id — the same "
-            '"(no id)" condition the zero-or-many refusal names above. A pin built on an empty comment_id '
-            "is unusable and would make a later resume's staleness comparison silently no-op instead of "
-            "detecting a superseded plan; refusing rather than handing one out."
+            f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id: the tracker "
+            "read back an empty id for its own comment, so the pin this tool returns could not reliably "
+            "detect a later revision at the same version. This is a tracker read fault, not a plan fault; "
+            "report it rather than reposting the plan."
         )
     text = (
         f"<!-- Written by the `sy` server's `plan_file` tool: Execution Plan v{version}, the "

@@ -23,7 +23,7 @@ An artifact with two labeled parts — a human half and an agent half, a sign-of
 
 Forensic detail — the trace that established a fact, the counts, the hypotheses ruled out — is evidence for a claim, not an instruction to anybody. It earns a place inline only where a reader acts on it; otherwise it belongs in a companion record that nothing depends on.
 
-In Shipyard that has a hard edge. A pointer to another tracker comment resolves to nothing for every phase after START, which is the only phase that reads the ticket. A fact a later phase needs is carried in that phase's own brief or it is not available at all — so "it's in the investigation comment" is not a way to keep detail without paying for it. Either the detail earns its place inline, or it goes in a companion comment the plan does not depend on.
+In Shipyard that has a hard edge. Exactly one tracker comment is carried forward, and only half of it: the `/sy:ship` parent materialises the sole ACTIVE plan's own `## For /sy:ship` half to a file once per session and hands later phases that file's path (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router), and no `/sy:ship` phase reads the ticket itself. Every *other* comment still resolves to nothing for every phase — so a fact a later phase needs is in the plan's ship half, or in that phase's own dispatch brief, or it is not available at all, and "it's in the investigation comment" is not a way to keep detail without paying for it. Either the detail earns its place in the plan's ship half, or it goes in a companion comment the plan does not depend on.
 
 ## The instance already in the tree
 

@@ -89,6 +89,9 @@ class GithubAdapter:
     """
 
     name = "github"
+    # Undocumented: GitHub publishes no body limit anywhere, and this figure is attested by nothing but
+    # the API's own error string on a write that goes over it.
+    body_limit: int = 65_536
 
     def __init__(self) -> None:
         self._boards: dict[str, dict[str, Any]] = {}

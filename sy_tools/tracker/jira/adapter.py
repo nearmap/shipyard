@@ -97,6 +97,11 @@ class JiraAdapter:
     """The canonical tracker verbs, implemented against the Jira Cloud REST API."""
 
     name = "jira"
+    # Characters. Atlassian's JCMA migration KB states the 32767 limit applies to both description and
+    # comments on Cloud (citing JRACLOUD-59124); the jira.text.field.character.limit property behind it
+    # is tunable in Data Center only (JRACLOUD-63007); JRACLOUD-68949 corroborates the
+    # description-field limit. Its unit is still undocumented under ADF.
+    body_limit: int = 32_767
 
     def __init__(self) -> None:
         self._account_id: str | None = None

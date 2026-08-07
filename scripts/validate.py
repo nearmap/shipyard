@@ -64,6 +64,9 @@ SHIP_WORKER_AGENTS = frozenset(SHIP_WORKER_TRACKER_VERBS)
 # Every agent must be able to ask whether a credential is present without ever reading its value;
 # `sy_tools/guards/secret_guard.py` names this tool as the remedy it steers shell probes toward.
 CHECK_ENV_TOOL = "check_env"
+# The lowest number an adapter's `body_limit` could plausibly be. Both real limits are 32k and 64k, and
+# no tracker documents anything near this floor, so a declaration under it is a typo, not a limit.
+BODY_LIMIT_FLOOR = 8_192
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -132,6 +135,7 @@ REQUIRED = {
     "skills/shared/references/model-dispatch.md",
     "skills/shared/references/config-values.md",
     "skills/shared/references/transcript-attach.md",
+    "skills/shared/references/context-economy.md",
     "skills/plan/references/new-objective.md",
     "skills/plan/references/reentry.md",
     "skills/plan/references/roadmap-shaping.md",
@@ -561,6 +565,31 @@ def check_invariants(errors: list[str]) -> None:
     def read(rel: str) -> str:
         return (ROOT / rel).read_text(encoding="utf-8")
 
+    # Read out of the source rather than imported: `python scripts/validate.py` puts `scripts/` on
+    # `sys.path`, not the repo root, so importing the adapters needs a `sys.path` shim this file has
+    # never needed for anything else. The comment block directly above the declaration comes back with
+    # it, because that block is a copy of the figure too and the same anchor already locates it.
+    # `None`, not a sentinel figure: a `0` here fell through into the floor leg and reported a second,
+    # fabricated fault ("this is a dropped digit") about a declaration that was never read.
+    def declared_body_limit(rel: str) -> tuple[int, str] | None:
+        match = re.search(r"((?:^ *#.*\n)*)^ {4}body_limit: int = ([\d_]+)$", read(rel), re.MULTILINE)
+        if match is None:
+            fail(f"{rel} must declare `body_limit: int = <literal>`; its ADAPTER.md figure cannot be checked", errors)
+            return None
+        return int(match.group(2)), match.group(1)
+
+    # Every grouped or ungrouped spelling of a four-digit-or-longer number in `target`. Used instead of
+    # substring containment, which a target satisfies for the wrong reason whenever the declared digits
+    # happen to appear inside some unrelated number in its prose.
+    #
+    # The boundaries are deliberately asymmetric: the lookbehind rejects a leading hyphen so a citation
+    # id cannot be read as a figure, but the lookahead rejects a trailing hyphen only when a digit
+    # follows it. Making them symmetric loses `32,767-character`, which is how prose actually writes the
+    # figure, and a target stating only that reads as figure-free — so the staleness leg passes over
+    # stale provenance and the whole check goes quietly vacuous.
+    def numeric_tokens(target: str) -> set[str]:
+        return set(re.findall(r"(?<![\w-])\d[\d,_]{3,}(?!\w|-\d)", target))
+
     ship = read("skills/ship/SKILL.md")
     handoff = read("skills/ship/references/handoff-accounting.md")
     merge = read("skills/ship/references/merge-accounting.md")
@@ -582,6 +611,8 @@ def check_invariants(errors: list[str]) -> None:
     preflight_ref = read("skills/shared/references/preflight.md")
     debate_ref = read("skills/shared/references/debate.md")
     spec_gate_ref = read("skills/shared/references/spec-gate.md")
+    economy_ref = read("skills/shared/references/context-economy.md")
+    contributing = read("CONTRIBUTING.md")
     roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
     jira_adapter = read("skills/tracker/jira/ADAPTER.md")
@@ -812,6 +843,88 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec §7's Step 2 procedure must state it never writes the Task body", errors)
     if "Step 2 — after approval" not in spec:
         fail("spec must keep the staged reveal: full plan posted only in Step 2, after approval", errors)
+    # §7 Step 2's summary comment was removed: it restated, on the ticket, a summary the user had just
+    # read and approved. Both spellings are pinned because the instruction lived in two places — Step 2's
+    # numbered procedure and Step 1's auto-mode consent sentence — and a consent sentence still naming a
+    # write the run no longer performs states a false authorization.
+    if "post the Step-1 summary" in spec_s7:
+        fail("spec §7 must not post the Step-1 summary back as a second comment restating the plan", errors)
+    if "post this summary as a comment on the Task" in spec:
+        fail("spec's sign-off consent sentence names a summary-comment write §7 Step 2 no longer performs", errors)
+
+    # Context economy is a single copy: the two cut tests are phrased once, in the reference, and every
+    # authoring surface carries a pointer to it. A consumer that spells a cut test out has forked the rule.
+    cut_tests = (
+        "Does removing this sentence change what its reader does?",
+        "Would a pointer do the work this text is doing?",
+    )
+    for cut_test in cut_tests:
+        if cut_test not in economy_ref:
+            fail(f"context-economy.md must state the cut test {cut_test!r} verbatim", errors)
+    economy_consumers = (
+        ("spec", spec),
+        ("plan", plan),
+        ("pr", pr),
+        ("handoff-accounting", handoff),
+        ("CONTRIBUTING.md", contributing),
+    )
+    for name, text in economy_consumers:
+        if "context-economy.md" not in text:
+            fail(f"{name} authors an agent-facing artifact and must cite context-economy.md", errors)
+        for cut_test in cut_tests:
+            if cut_test in text:
+                fail(f"{name} restates a context-economy cut test; cite context-economy.md instead", errors)
+    economy_axis_phrase = "narrates what a cited anchor already shows"
+    if economy_axis_phrase not in spec_gate_ref:
+        fail(f"spec-gate reference's Simplicity axis must state the prose trigger {economy_axis_phrase!r}", errors)
+    if economy_axis_phrase in spec_gate:
+        fail("spec-gate agent restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
+    if economy_axis_phrase in spec:
+        fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
+
+    # Each adapter's body limit lives in the constant, again in the comment above it carrying that
+    # figure's provenance, and again in its agent-facing ADAPTER.md prose. The Protocol docstring is no
+    # longer a target: it states the contract and names no figure, because a core module may not name a
+    # concrete tracker (CONTRIBUTING.md) and a figure is worthless without its tracker-specific
+    # provenance. Both spellings count everywhere, because the prose groups thousands and the code does not.
+    for name, source, doc_rel, doc in (
+        ("jira", "sy_tools/tracker/jira/adapter.py", "skills/tracker/jira/ADAPTER.md", jira_adapter),
+        ("github", "sy_tools/tracker/github/adapter.py", "skills/tracker/github/ADAPTER.md", github_adapter),
+    ):
+        declared = declared_body_limit(source)
+        if declared is None:
+            continue
+        limit, note = declared
+        spellings = {str(limit), f"{limit:,}", f"{limit:_}"}
+        # A dropped leading digit used to survive substring containment by colliding with the grouped
+        # spelling it came from — `2_767` occurs inside every target stating `32,767` — cutting the limit
+        # tenfold with every doc stale. Whole-token matching closes that, and a floor closes the rest of
+        # the class without parsing prose: no tracker limit is anywhere near this low.
+        if limit < BODY_LIMIT_FLOOR:
+            fail(
+                f"{name} adapter's body_limit is {limit} ({source}), under the {BODY_LIMIT_FLOOR} floor; no "
+                "tracker limit is that low, so this is a dropped digit, not a limit",
+                errors,
+            )
+        if not spellings & numeric_tokens(doc):
+            fail(f"{name} adapter's body_limit is {limit} ({source}); {doc_rel} states no such figure", errors)
+        # The comment above the declaration is the copy the doc leg never reads, so it is checked for two
+        # faults. Detachment: the anchor only reaches a block sitting immediately above the declaration, so
+        # one blank line between them emptied `note` and left this leg passing on a stale figure. Staleness:
+        # every figure the block does state is the declared one.
+        if not note.strip():
+            fail(
+                f"{name} adapter's body_limit is {limit} ({source}) with no comment directly above it; the "
+                "provenance comment must sit on the lines immediately preceding the declaration",
+                errors,
+            )
+        stale = sorted(numeric_tokens(note) - spellings)
+        if stale:
+            fail(
+                f"{name} adapter's body_limit is {limit} ({source}); the comment above the declaration "
+                f"still states {stale[0]}",
+                errors,
+            )
 
     # `post-comment` takes `human` and `agent_detail`, both required, and assembles the boundary itself.
     # These are the highest-traffic call sites, so a reference still describing one hand-composed body

@@ -131,7 +131,12 @@ async def create_issue(
     # back out of a tracker's own history.
     (title, body), scrub = _scrub_texts(title, body)
     _validate_machine_log(body)
-    created = await tracker.adapter().create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
+    # Order is load-bearing at all four writers that run these two checks: the machine-log check must be
+    # able to refuse before `adapter()` is called at all, and the size limit is only readable off the
+    # adapter — so the lookup sits between them and is never hoisted above the first check.
+    adapter = tracker.adapter()
+    _validate_body_size(body, adapter.body_limit)
+    created = await adapter.create_issue(issue_type=issue_type, title=title, body=body, parent=parent)
     return {**created, "scrub": scrub}
 
 
@@ -165,7 +170,9 @@ async def update_issue(
     _required(issue=issue)
     (body,), scrub = _scrub_texts(body)
     _validate_machine_log(body)
-    updated = await tracker.adapter().update_issue(issue, body)
+    adapter = tracker.adapter()
+    _validate_body_size(body, adapter.body_limit)
+    updated = await adapter.update_issue(issue, body)
     return {**updated, "scrub": scrub}
 
 
@@ -339,7 +346,9 @@ async def post_comment(
     # Kept as a defensive backstop, not as routing: `post-log` assembles and validates its own body, and
     # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
     _validate_machine_log(body)
-    posted = await tracker.adapter().post_comment(issue, body)
+    adapter = tracker.adapter()
+    _validate_body_size(body, adapter.body_limit)
+    posted = await adapter.post_comment(issue, body)
     return {**posted, "scrub": scrub}
 
 
@@ -377,7 +386,9 @@ async def post_log(
     (title, payload_json), scrub = _scrub_texts(title, payload_json)
     body = f"# {title.strip()}\n\n```json\n{payload_json}\n```\n"
     _validate_machine_log(body)
-    posted = await tracker.adapter().post_comment(issue, body)
+    adapter = tracker.adapter()
+    _validate_body_size(body, adapter.body_limit)
+    posted = await adapter.post_comment(issue, body)
     return {**posted, "scrub": scrub}
 
 
@@ -501,6 +512,16 @@ def _claims_within(parsed: object) -> bool:
         elif isinstance(value, list):
             stack.extend(value)
     return False
+
+
+def _validate_body_size(body: str, limit: int) -> None:
+    if len(body) > limit:
+        raise ToolError(
+            f"this body is {len(body)} characters and the limit is {limit}, so it was refused: "
+            f"{len(body) - limit} over. The write was not attempted, because a tracker that refuses an "
+            "oversized body refuses it whole — nothing partial lands and nothing is truncated for you. "
+            "Split the content across writes, or shorten it and send the shorter body."
+        )
 
 
 def _validate_machine_log(body: str) -> None:

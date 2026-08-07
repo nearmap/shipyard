@@ -98,6 +98,9 @@ class _Recorder:
     """
 
     name = "recorder"
+    # A real attribute, not left to `__getattr__`: that returns an async callable for any name, so every
+    # write test below would compare a function to an int in the body-size check and raise TypeError.
+    body_limit = 32_767
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -390,6 +393,65 @@ async def test_post_log_refuses_a_title_that_spans_lines_before_the_adapter_is_t
             },
         )
     assert result.is_error is True, f"a multi-line title was posted: {result.content}"
+
+
+STUB_BODY_LIMIT = 400
+"""A small stand-in for the real per-adapter limit, so a case can be built out of a short string.
+
+Building a genuine 32,767-character body would pin this suite to one adapter's number and make every
+case here re-derive it; the guard's behaviour is the same at any limit.
+"""
+
+SIZE_WRITES = [
+    ("create-issue",
+     lambda filler: {"issue_type": "task", "title": "T", "body": filler},
+     lambda filler: filler),
+    ("update-issue",
+     lambda filler: {"issue": "PROJ-1", "body": filler},
+     lambda filler: filler),
+    ("post-comment",
+     lambda filler: {"issue": "PROJ-1", "human": "TL;DR: sized.", "agent_detail": filler},
+     lambda filler: "TL;DR: sized." + server._AGENT_DETAIL_OPEN + filler + server._AGENT_DETAIL_CLOSE),
+    ("post-log",
+     lambda filler: {"issue": "PROJ-1", "title": "Claude Code usage", "payload": {"note": filler}},
+     lambda filler: f'# Claude Code usage\n\n```json\n{json.dumps({"note": filler}, indent=2)}\n```\n'),
+]
+"""Each writer the size guard covers, its arguments for a filler string, and the body it assembles.
+
+The second lambda is what makes `post-comment` and `post-log` testable at a boundary at all: neither
+sends the string it was given, so a case sized against the argument would be sizing the wrong text.
+"""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("tool", "arguments", "assembled"), SIZE_WRITES, ids=[t for t, _a, _b in SIZE_WRITES])
+@pytest.mark.parametrize("overflow", [1, 0], ids=["one over the limit", "exactly at the limit"])
+async def test_a_body_over_the_adapters_limit_is_refused_whole_and_one_at_it_still_writes(
+    monkeypatch, tool, arguments, assembled, overflow
+):
+    """Both boundaries, on every writer, because either half alone is a guard that looks like it works.
+
+    Over the limit the tracker refuses the write outright, so the useful answer is a refusal here that
+    names the measured length — a caller with an oversized body has to know how much to cut, and a
+    length it can only guess at is what makes the retry a second failed write. At the limit is the half
+    that catches an off-by-one: a guard one character early silently costs every writer a character of
+    every body, and nothing else in this suite would notice.
+    """
+    recorder = _Recorder()
+    recorder.body_limit = STUB_BODY_LIMIT
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    filler = "x" * (STUB_BODY_LIMIT + overflow - len(assembled("")))
+    body = assembled(filler)
+    assert len(body) == STUB_BODY_LIMIT + overflow, f"the case built {len(body)} characters, not the length it tests"
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, arguments(filler))
+    if overflow:
+        assert result.is_error is True, f"{tool} wrote {len(body)} characters past a {STUB_BODY_LIMIT} limit"
+        assert str(len(body)) in _text(result), f"the refusal must name the measured length: {_text(result)}"
+        assert not recorder.calls, f"{tool} reached the adapter with an oversized body: {recorder.calls}"
+    else:
+        assert result.is_error is False, result.content
+        assert recorder.calls, f"{tool} refused a body that was exactly at the limit"
 
 
 @pytest.mark.anyio

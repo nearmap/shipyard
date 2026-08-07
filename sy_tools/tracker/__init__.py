@@ -117,6 +117,23 @@ class TrackerAdapter(Protocol):
         """Add `label` to `issue`, preserving the labels already on it, and return the resulting set."""
         ...
 
+    body_limit: int
+    """The largest body this tracker is believed to take, in characters of the Markdown body Shipyard
+    sends. Best-effort, not a guarantee.
+
+    Annotation only, with no value: a default here would put a non-verb into `vars()`, which is where
+    `sy_tools/tests/tracker/test_canonical.py` pins the canonical verb set.
+
+    It guards issue descriptions as well as comments, which is why it is not `comment_body_limit`.
+    No figure here is firm. Each adapter declares its own, and records that figure's provenance —
+    what attests it and how far that attestation reaches — in its own `ADAPTER.md`, since provenance
+    is inherently tracker-specific and this Protocol names no tracker.
+
+    So a body under the limit is one this tracker has not been observed to refuse, not one it promises
+    to accept. The point of the number is to turn the common overflow into a refusal a caller can act
+    on before the write, not to certify the boundary.
+    """
+
     async def post_comment(self, issue: str, body: str) -> dict:
         """Post `body` as a Markdown comment on `issue` and return the comment the write created."""
         ...

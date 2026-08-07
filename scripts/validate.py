@@ -569,12 +569,20 @@ def check_invariants(errors: list[str]) -> None:
     # `sys.path`, not the repo root, so importing the adapters needs a `sys.path` shim this file has
     # never needed for anything else. The comment block directly above the declaration comes back with
     # it, because that block is a copy of the figure too and the same anchor already locates it.
-    def declared_body_limit(rel: str) -> tuple[int, str]:
+    # `None`, not a sentinel figure: a `0` here fell through into the floor leg and reported a second,
+    # fabricated fault ("this is a dropped digit") about a declaration that was never read.
+    def declared_body_limit(rel: str) -> tuple[int, str] | None:
         match = re.search(r"((?:^ *#.*\n)*)^ {4}body_limit: int = ([\d_]+)$", read(rel), re.MULTILINE)
         if match is None:
             fail(f"{rel} must declare `body_limit: int = <literal>`; its ADAPTER.md figure cannot be checked", errors)
-            return 0, ""
+            return None
         return int(match.group(2)), match.group(1)
+
+    # Every grouped or ungrouped spelling of a four-digit-or-longer number in `target`. Used instead of
+    # substring containment, which a target satisfies for the wrong reason whenever the declared digits
+    # happen to appear inside some unrelated number in its prose.
+    def numeric_tokens(target: str) -> set[str]:
+        return set(re.findall(r"(?<![\w-])\d[\d,_]{3,}(?![\w-])", target))
 
     ship = read("skills/ship/SKILL.md")
     handoff = read("skills/ship/references/handoff-accounting.md")
@@ -868,35 +876,43 @@ def check_invariants(errors: list[str]) -> None:
     if economy_axis_phrase in spec:
         fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
 
-    # Each adapter's body limit lives in the constant, again in its agent-facing ADAPTER.md prose, again
-    # in the `body_limit` Protocol docstring that names both figures, and — for Jira — a fourth time in the
-    # comment above the declaration. Both spellings count in every place the figure is required, because
-    # the prose groups thousands and the code does not.
-    protocol_rel = "sy_tools/tracker/__init__.py"
-    protocol = read(protocol_rel)
+    # Each adapter's body limit lives in the constant, again in the comment above it carrying that
+    # figure's provenance, and again in its agent-facing ADAPTER.md prose. The Protocol docstring is no
+    # longer a target: it states the contract and names no figure, because a core module may not name a
+    # concrete tracker (CONTRIBUTING.md) and a figure is worthless without its tracker-specific
+    # provenance. Both spellings count everywhere, because the prose groups thousands and the code does not.
     for name, source, doc_rel, doc in (
         ("jira", "sy_tools/tracker/jira/adapter.py", "skills/tracker/jira/ADAPTER.md", jira_adapter),
         ("github", "sy_tools/tracker/github/adapter.py", "skills/tracker/github/ADAPTER.md", github_adapter),
     ):
-        limit, note = declared_body_limit(source)
-        # Containment is file-scoped substring, so a deleted leading digit collides with the grouped
-        # spelling it came from — `2_767` is found in every target stating `32,767`, and `5_536` in every
-        # target stating `65,536` — cutting the limit tenfold with every doc stale and this check green.
-        # A floor kills that whole class without parsing prose: no tracker limit is anywhere near this low.
+        declared = declared_body_limit(source)
+        if declared is None:
+            continue
+        limit, note = declared
+        spellings = {str(limit), f"{limit:,}", f"{limit:_}"}
+        # A dropped leading digit used to survive substring containment by colliding with the grouped
+        # spelling it came from — `2_767` occurs inside every target stating `32,767` — cutting the limit
+        # tenfold with every doc stale. Whole-token matching closes that, and a floor closes the rest of
+        # the class without parsing prose: no tracker limit is anywhere near this low.
         if limit < BODY_LIMIT_FLOOR:
             fail(
                 f"{name} adapter's body_limit is {limit} ({source}), under the {BODY_LIMIT_FLOOR} floor; no "
                 "tracker limit is that low, so this is a dropped digit, not a limit",
                 errors,
             )
-        for target_rel, target in ((doc_rel, doc), (protocol_rel, protocol)):
-            if str(limit) not in target and f"{limit:,}" not in target:
-                fail(f"{name} adapter's body_limit is {limit} ({source}); {target_rel} states no such figure", errors)
-        # The comment above the declaration is a fourth copy in one adapter and names no figure in the
-        # other. Presence cannot be required of a comment, so the check is staleness: the figure it states,
-        # if it states one, is the declared one. It is the only copy the doc legs above never read.
-        spellings = (str(limit), f"{limit:,}", f"{limit:_}")
-        stale = [fig for fig in re.findall(r"(?<![\w-])\d[\d,_]{3,}(?![\w-])", note) if fig not in spellings]
+        if not spellings & numeric_tokens(doc):
+            fail(f"{name} adapter's body_limit is {limit} ({source}); {doc_rel} states no such figure", errors)
+        # The comment above the declaration is the copy the doc leg never reads, so it is checked for two
+        # faults. Detachment: the anchor only reaches a block sitting immediately above the declaration, so
+        # one blank line between them emptied `note` and left this leg passing on a stale figure. Staleness:
+        # every figure the block does state is the declared one.
+        if not note.strip():
+            fail(
+                f"{name} adapter's body_limit is {limit} ({source}) with no comment directly above it; the "
+                "provenance comment must sit on the lines immediately preceding the declaration",
+                errors,
+            )
+        stale = sorted(numeric_tokens(note) - spellings)
         if stale:
             fail(
                 f"{name} adapter's body_limit is {limit} ({source}); the comment above the declaration "

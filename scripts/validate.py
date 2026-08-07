@@ -582,7 +582,7 @@ def check_invariants(errors: list[str]) -> None:
     # substring containment, which a target satisfies for the wrong reason whenever the declared digits
     # happen to appear inside some unrelated number in its prose.
     def numeric_tokens(target: str) -> set[str]:
-        return set(re.findall(r"(?<![\w-])\d[\d,_]{3,}(?![\w-])", target))
+        return set(re.findall(r"(?<![\w-])\d[\d,_]{3,}(?!\w|-\d)", target))
 
     ship = read("skills/ship/SKILL.md")
     handoff = read("skills/ship/references/handoff-accounting.md")

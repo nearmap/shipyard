@@ -127,7 +127,7 @@ class TrackerAdapter(Protocol):
     It guards issue descriptions as well as comments, which is why it is not `comment_body_limit`.
     No figure here is firm. Each adapter declares its own, and records that figure's provenance —
     what attests it and how far that attestation reaches — in its own `ADAPTER.md`, since provenance
-    is inherently tracker-specific and this module names no tracker.
+    is inherently tracker-specific and this Protocol names no tracker.
 
     So a body under the limit is one this tracker has not been observed to refuse, not one it promises
     to accept. The point of the number is to turn the common overflow into a refusal a caller can act

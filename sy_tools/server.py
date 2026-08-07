@@ -410,6 +410,146 @@ Derived from the constant rather than written out again, so it cannot be the cop
 carrying it twice is a section nested in a section, and a tracker is free to render that by dropping
 the inner content — silently, and only in durable state — so the second one is refused at the door."""
 
+_LEGACY_AGENT_DETAIL_TAG = "\n\n---\n\n*Below this line: for a future agent session, not for your judgment.*\n\n"
+"""The flat separator `post-comment` wrote before the collapsed section replaced it.
+
+Kept only so `plan_file` can still read a plan comment posted under it — a plan outlives the boundary
+form it was written with, and a tracker read of one has to resolve rather than refuse. Nothing writes
+it. Measured, not assumed: this literal survives the rich-text round trip byte for byte, so the read
+path matches it as written."""
+
+_PLAN_HEADING = re.compile(r"#[ \t]+Execution Plan v(\d+)[ \t]*\r?$", re.MULTILINE)
+"""The heading an execution plan comment opens with, and the version number in it.
+
+Matched against the body's start, never searched for: a comment *quoting* a plan heading mid-body is
+not a plan, and treating it as one is how "exactly one ACTIVE plan" starts picking the wrong comment."""
+
+_PLAN_STATUS = re.compile(r"^Status:[ \t]*(\S+)", re.MULTILINE)
+"""A plan's status field. The **first** occurrence after the heading is the plan's own status.
+
+First-match-wins rather than a body-wide search, and reading the value rather than testing containment:
+a SUPERSEDED plan whose prose later says the word ACTIVE must not read as active, and a plan's own field
+is the line the convention in `skills/spec/SKILL.md` §7 writes directly under the heading. The status
+line is not required to still be a line of its own by the time it is read back — the rich-text round
+trip merges it into one paragraph with a following `Supersedes:` — which is why the value is taken with
+`\\S+` off the field name rather than off a whole-line match."""
+
+
+def _agent_half(body: str) -> str:
+    """The agent-facing half of a two-part comment body, under whichever boundary form wrote it."""
+    if _AGENT_DETAIL_TAG in body:
+        half = body.split(_AGENT_DETAIL_TAG, 1)[1]
+        # Cut the close by suffix, never by searching for `</details>`: the half may legitimately carry its own
+        # nested block holding that exact literal, so only a true trailing suffix is the real outer close.
+        if half.endswith(_AGENT_DETAIL_CLOSE):
+            return half[: -len(_AGENT_DETAIL_CLOSE)].strip()
+        if "</details>" not in half:
+            return half.strip()
+        raise ToolError(
+            "the ACTIVE plan comment's agent-facing section carries a `</details>` that is not the outer "
+            "close `post-comment` appends: cutting at it would risk dropping content after a nested "
+            "disclosure block instead of at the section's real end. Repost the plan through `post-comment` "
+            "so the outer close lands last."
+        )
+    if _LEGACY_AGENT_DETAIL_TAG in body:
+        return body.split(_LEGACY_AGENT_DETAIL_TAG, 1)[1].strip()
+    raise ToolError(
+        "the ACTIVE plan comment carries neither boundary this tool can split on: neither the collapsed "
+        "agent-facing section `post-comment` writes nor the flat separator that preceded it. It was not "
+        "posted as a two-part comment, so it has no `## For /sy:ship` half to hand a later phase; repost "
+        "the plan through `post-comment` with the two parts passed separately."
+    )
+
+
+@mcp.tool(name="plan_file")
+async def plan_file(issue: IssueId) -> dict[str, Any]:
+    """Write the sole ACTIVE execution plan's agent-facing half to a file, and report where it landed.
+
+    The way a `/sy:ship` phase after START gets the plan. It reads the issue, selects the one comment
+    that opens `# Execution Plan v<N>` and carries `Status: ACTIVE`, and materialises that comment's
+    agent-facing half — the `## For /sy:ship` part — under the issue's own scratch directory. The plan
+    text is never part of the result: a caller gets a path plus the pin (`comment_id`, `version`) and
+    hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
+    detectable by comparing the pin rather than by re-reading prose.
+
+    Zero or more than one ACTIVE plan is refused, naming the count and the comment ids: that convention
+    (`skills/tracker/CONTRACT.md` § Exactly one ACTIVE plan) is what makes "the plan" unambiguous, and
+    picking one of several would ship against a plan nobody approved. `comments_truncated` says whether
+    the issue's comment page left anything out — on zero found, the ACTIVE plan may simply be past the
+    newest page rather than absent.
+
+    What lands on disk is the plan half **as the tracker gives it back**, not as it was posted: a
+    rich-text tracker escapes un-backticked Markdown punctuation on the way through, so `some_name`
+    written without backticks reads back as `some\\_name` and a link target arrives inside `<>`. A
+    two-line header the tool writes records the version, the comment id and that transformation, so a
+    reader of the file knows which text is authoritative. Nothing is scrubbed on this path: it is a read
+    whose output stays on the machine that ran it, and a silent redaction inside a file a later phase
+    treats as the plan would be a change to the plan with no signal that it happened.
+    """
+    _required(issue=issue)
+    read = await tracker.adapter().get_issue(issue)
+    # `.get` with a default, not `[...]`: only one adapter reports the flag, and an adapter that cannot
+    # tell must read as "nothing known to be cut off" rather than making this tool unusable there.
+    truncated = bool(read.get("comments_truncated", False))
+    active: list[tuple[str, int, str]] = []
+    for comment in read.get("comments") or []:
+        if not isinstance(comment, dict):
+            continue
+        body = str(comment.get("body") or "").lstrip()
+        heading = _PLAN_HEADING.match(body)
+        if heading is None:
+            continue
+        status = _PLAN_STATUS.search(body, heading.end())
+        if status is None or status.group(1) != "ACTIVE":
+            continue
+        active.append((str(comment.get("id") or ""), int(heading.group(1)), body))
+    if len(active) != 1:
+        ids = ", ".join(f"{comment_id or '(no id)'} (v{version})" for comment_id, version, _ in active)
+        raise ToolError(
+            f"{issue} has {len(active)} ACTIVE execution plans, not one"
+            + (f": {ids}. " if ids else ". ")
+            + (
+                "The ACTIVE plan may also be past the newest page of comments this read returned "
+                "(comments_truncated is true), so treat it as unresolved rather than absent. "
+                if not active and truncated
+                else ""
+            )
+            + "Exactly one plan is ACTIVE by convention and superseding is explicit; resolve it in "
+            "/sy:spec rather than picking one here."
+        )
+    comment_id, version, body = active[0]
+    if not comment_id:
+        raise ToolError(
+            f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id: the tracker "
+            "read back an empty id for its own comment, so the pin this tool returns could not reliably "
+            "detect a later revision at the same version. This is a tracker read fault, not a plan fault; "
+            "report it rather than reposting the plan."
+        )
+    text = (
+        f"<!-- Written by the `sy` server's `plan_file` tool: Execution Plan v{version}, the "
+        f"agent-facing half of comment {comment_id} on {issue}. The plan comment is the record of truth. -->\n"
+        "<!-- Read back exactly as the tracker returned it: a rich-text tracker's conversion escapes "
+        "un-backticked Markdown punctuation (`_` arrives as `\\_`) and wraps a link target in `<>`, leaving "
+        "backticked spans verbatim; a plain-Markdown tracker returns it unchanged. -->\n\n"
+        + _agent_half(body)
+        + "\n"
+    )
+    try:
+        destination = config.scratch_dir(issue) / f"plan-v{version}.md"
+    except config.ConfigError as exc:
+        raise ToolError(str(exc)) from None
+    try:
+        destination.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(f"plan file could not be written to {destination}: {exc}") from None
+    return {
+        "path": str(destination),
+        "comment_id": comment_id,
+        "version": version,
+        "bytes": len(text.encode("utf-8")),
+        "comments_truncated": truncated,
+    }
+
 
 # Loose on purpose — markers are interchangeable and the counts need not match: looseness can only ever
 # *find* a block, and a block found is a block validated, where a block missed reaches the tracker unread.

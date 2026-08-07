@@ -131,6 +131,8 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 
+Backtick every identifier, path and URL in the `/sy:ship` half that contains a `_` or a `*`: `/sy:ship` reads this half back off the tracker with `plan_file`, and a rich-text tracker escapes un-backticked Markdown punctuation on the way through, so a bare `some_name` reaches the builder as `some\_name`.
+
 The docs-sync, visual-debug, and pre-gate-checkpoint fields are all required and all legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–6 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder; a `none` on the pre-gate checkpoint is the plan author's call, and is never second-guessed that way.
 
 End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.

@@ -13,6 +13,9 @@ Verbs exercised: preflight, create-issue, create-child, get-issue, update-issue,
   set-status, assign, link-parent, add-dependency, add-label, post-comment, post-log, link-pr,
   attach-artifact, type-convert, attachment-download, attachment-update.
 
+Also exercised, serving no canonical verb: `plan_file` — posted a two-part plan comment and recovered
+its agent-facing half off the live tracker, which is the only place that round trip is really proven.
+
 Cleanup: created issues are left in place unless SMOKE_CLEANUP=1 moves them to `done`; the canonical
 verb surface has no delete verb, so removal is manual. Nothing this run did not create is touched.
 
@@ -44,6 +47,33 @@ SMOKE_LABEL = "documentation"
 one would hide a typo in a real caller."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
+PLAN_HUMAN = "# Execution Plan v1\nStatus: ACTIVE\n\nTL;DR: smoke-test plan comment. Safe to delete."
+"""The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one."""
+
+PLAN_AGENT_HALF = (
+    "## For /sy:ship\n\n"
+    "Edit sy_tools/server.py and see [the contract](https://example.invalid/a_b) "
+    "before touching _AGENT_DETAIL_TAG.\n"
+)
+"""The agent-facing half `plan_file` has to recover. Deliberately carries un-backticked `_` and `[`.
+
+An escape-free half would read back byte-identical and the recovery assertion would prove nothing about
+the transformation that actually happens to a real plan."""
+
+PLAN_AGENT_ESCAPED = (
+    "## For /sy:ship\n\n"
+    "Edit sy\\_tools/server.py and see [the contract](<https://example.invalid/a_b>) "
+    "before touching \\_AGENT\\_DETAIL\\_TAG."
+)
+"""The same half as a rich-text tracker gives it back: un-backticked `_` escaped, the link target inside `<>`.
+
+Written out by hand rather than computed by calling the converter this script has no access to anyway.
+The live check accepts this OR the untransformed `PLAN_AGENT_HALF` (a Markdown-passthrough tracker),
+since this file names no tracker and cannot know upfront which applies — it reports which shape matched
+instead of assuming one. That means a rich-text tracker whose escaping regressed to a no-op would read
+as a legitimate Markdown-passthrough tracker rather than as a broken transformation; the transformation
+itself stays pinned only by the offline converter tests in `sy_tools/tests/tracker/test_jira.py`."""
+
 VERB_TOOLS: dict[str, str] = {
     "validate_config": "validate_config",
     "preflight": "preflight",
@@ -68,6 +98,19 @@ VERB_TOOLS: dict[str, str] = {
 """Canonical verb -> the tool that serves it. Two verbs share a tool with another by contract."""
 
 REQUIRED_TOOLS = frozenset(VERB_TOOLS.values())
+
+NON_VERB_SMOKED_TOOLS = frozenset({"plan_file"})
+"""Tools this scenario drives live that serve no canonical verb, so `VERB_TOOLS` cannot name them.
+
+Kept out of `REQUIRED_TOOLS`, whose length is the count of unique verb-serving tools: unioning one in
+would corrupt that figure and the self-test that pins it. It is unioned in only where the question is
+"is this tool present, and is it accounted for".
+
+`plan_file` is here rather than in `UNEXERCISED_TOOLS` because its whole contract is what a plan comment
+looks like after a real tracker's rich-text round trip, which no fixture can stand in for. Its live call
+does write a file — but under the *throwaway issue's* own scratch directory, keyed by an issue this run
+created, so it touches nothing of the operator's the way a live `scratch_dir`, `memory_add` or
+`reload_config` call would."""
 
 UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
@@ -127,28 +170,36 @@ class Smoke:
         """List the server's tools and report up front any the scenario needs and cannot find."""
         listed = await self.client.list_tools()
         self.available = {tool.name for tool in listed.tools}
-        missing = sorted(REQUIRED_TOOLS - self.available)
+        missing = sorted((REQUIRED_TOOLS | NON_VERB_SMOKED_TOOLS) - self.available)
         print(f"==> server exposes {len(self.available)} tools")
         if missing:
             print(f"==> MISSING: {', '.join(missing)} — every verb needing one of these FAILs below")
 
     async def call(self, verb: str, args: dict[str, Any]) -> dict[str, Any] | None:
         """Invoke the tool serving `verb`, print its own error text on failure, return its payload."""
-        tool = VERB_TOOLS[verb]
+        return await self.call_tool(verb, VERB_TOOLS[verb], args)
+
+    async def call_tool(self, label: str, tool: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        """Invoke `tool` and tally it under `label`; the path a non-verb tool is smoked through.
+
+        Split out of `call` rather than adding `plan_file` to `VERB_TOOLS`: that map's values are what
+        `REQUIRED_TOOLS` and its pinned count are derived from, so a non-verb tool in it would report as
+        a nineteenth verb-serving tool.
+        """
         if tool not in self.available:
-            self._fail(verb, f"the server exposes no tool named {tool!r}")
+            self._fail(label, f"the server exposes no tool named {tool!r}")
             return None
         result = await self.client.call_tool(tool, args)
         text = "".join(getattr(block, "text", "") for block in result.content)
         if result.is_error:
-            self._fail(verb, text or "the tool failed and said nothing")
+            self._fail(label, text or "the tool failed and said nothing")
             return None
         try:
             payload = json.loads(text) if text.strip() else {}
         except json.JSONDecodeError:
-            self._fail(verb, f"the tool returned a non-JSON success result: {text[:200]}")
+            self._fail(label, f"the tool returned a non-JSON success result: {text[:200]}")
             return None
-        self._pass(verb, tool)
+        self._pass(label, tool)
         return payload if isinstance(payload, dict) else {}
 
     def check(self, verb: str, ok: bool, detail: str) -> None:
@@ -242,6 +293,65 @@ class Smoke:
             "human": f"A delivery PR now exists for {run_tag}.",
             "agent_detail": PR_PLACEHOLDER,
         })
+
+        await self._plan_file(second)
+
+    async def _plan_file(self, issue: str) -> None:
+        """Post a real two-part plan comment, then prove `plan_file` recovers its agent-facing half.
+
+        The only place the round trip is actually proven. `sy_tools/tests/test_server.py` asserts the
+        same equality against the converter called in-process, which is a fixture standing in for the
+        tracker; this asserts it against the tracker, which is the thing whose fidelity is in question —
+        a stored ADF document, a real REST read, and whatever normalisation the site does in between.
+        Proves whichever of the two known transformations applies, and reports which one matched; it does
+        not by itself distinguish a rich-text tracker's escaping regressing to a no-op from a genuine
+        Markdown-passthrough tracker — see `PLAN_AGENT_ESCAPED`'s docstring.
+
+        On a *fresh* issue with no other plan on it, so the exactly-one-ACTIVE selection is unambiguous
+        without this run having to supersede anything.
+        """
+        posted = await self.call("post-comment", {
+            "issue": issue, "human": PLAN_HUMAN, "agent_detail": PLAN_AGENT_HALF,
+        })
+        if posted is None:
+            self.failures.append("plan_file: no plan comment to recover")
+            return
+
+        payload = await self.call_tool("plan_file", "plan_file", {"issue": issue})
+        if payload is None:
+            return
+        self.check(
+            "plan_file",
+            bool(payload.get("comment_id")) and payload.get("version") == 1,
+            f"the pin does not look right for the comment just posted: {payload} against {posted}",
+        )
+        self.check(
+            "plan_file",
+            "For /sy:ship" not in json.dumps(payload),
+            f"plan text reached the tool result instead of staying on disk: {payload}",
+        )
+        landed = Path(str(payload.get("path", "")))
+        recovered = landed.read_text(encoding="utf-8") if landed.is_file() else ""
+        shape = (
+            "escaped (rich-text tracker)" if recovered.rstrip().endswith(PLAN_AGENT_ESCAPED)
+            else "verbatim (Markdown-passthrough tracker)" if recovered.rstrip().endswith(PLAN_AGENT_HALF.rstrip())
+            else "neither"
+        )
+        print(f"==> plan_file escape shape: {shape}")
+        self.check(
+            "plan_file",
+            shape != "neither",
+            "the recovered half is not the posted half under either the rich-text escape transformation or "
+            "Markdown-passthrough.\n"
+            f"    expected the file to end with either: {PLAN_AGENT_ESCAPED!r}\n"
+            f"    or (Markdown-passthrough tracker):    {PLAN_AGENT_HALF.rstrip()!r}\n"
+            f"    file at {landed} holds:               {recovered!r}",
+        )
+        self.check(
+            "plan_file",
+            "TL;DR" not in recovered,
+            f"the human half leaked into the plan file: {recovered!r}",
+        )
 
     async def _attachments(self, run_tag: str, tmp: Path, issue: str) -> None:
         """Attach a scrubbed artifact, then round-trip it through download and update."""
@@ -358,12 +468,18 @@ def _self_test() -> None:
 
     registered = _registered_tools()
     assert registered, f"no @mcp.tool registration was found in {SERVER_SOURCE}; the scan is broken"
-    assert registered == REQUIRED_TOOLS | UNEXERCISED_TOOLS, (
+    accounted = REQUIRED_TOOLS | NON_VERB_SMOKED_TOOLS | UNEXERCISED_TOOLS
+    assert registered == accounted, (
         "the scenario and the server disagree about the tool surface. Only the scenario names: "
-        f"{sorted(REQUIRED_TOOLS - registered)}; only the server registers: "
-        f"{sorted(registered - REQUIRED_TOOLS - UNEXERCISED_TOOLS)}"
+        f"{sorted(accounted - registered)}; only the server registers: {sorted(registered - accounted)}"
     )
+    # Unique verb-serving tools, so `NON_VERB_SMOKED_TOOLS` is deliberately not folded in: a tool that
+    # serves no verb is not a nineteenth verb-serving one, and unioning it here would corrupt the figure.
     assert len(REQUIRED_TOOLS) == 17, sorted(REQUIRED_TOOLS)
+    assert not (REQUIRED_TOOLS | UNEXERCISED_TOOLS) & NON_VERB_SMOKED_TOOLS, (
+        "a non-verb smoked tool is also named as verb-serving or as unexercised; the three sets partition "
+        f"the surface: {sorted((REQUIRED_TOOLS | UNEXERCISED_TOOLS) & NON_VERB_SMOKED_TOOLS)}"
+    )
     assert all(tool and tool == tool.strip() for tool in REQUIRED_TOOLS), sorted(REQUIRED_TOOLS)
     assert VERB_TOOLS["create-child"] == VERB_TOOLS["create-issue"], "a child is the create-issue write"
     assert VERB_TOOLS["link-pr"] == VERB_TOOLS["post-comment"], "a PR link's durable half is a comment"

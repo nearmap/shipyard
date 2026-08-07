@@ -129,7 +129,7 @@ Generate usage from the on-disk transcript tree with the `usage_summarize` tool 
 
 ## Exactly one ACTIVE plan
 
-A `task`/`bug` carries at most one execution plan whose status is ACTIVE. Superseding is explicit: mark the old plan comment SUPERSEDED and the new one ACTIVE, then re-read to confirm exactly one ACTIVE. Never use a "latest-looking comment wins" heuristic. This is a core convention; the adapter only provides `post-comment`/`get-issue`.
+A `task`/`bug` carries at most one execution plan whose status is ACTIVE. Superseding is explicit: mark the old plan comment SUPERSEDED and the new one ACTIVE, then re-read to confirm exactly one ACTIVE. Never use a "latest-looking comment wins" heuristic. This is a core convention; the adapter only provides `post-comment`/`get-issue`. For `/sy:ship` it is not left to the caller to uphold: the `plan_file` tool is what enforces it, refusing zero or several ACTIVE plans by count and comment id rather than picking one, so no run ships against a plan nobody approved.
 
 ## Configuration
 

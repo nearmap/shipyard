@@ -14,7 +14,7 @@ $ARGUMENTS
 ## Invariants
 
 - Before classifying state or dispatching any worker, the parent runs the tracker preflight (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`); a failure stops here with its single `## Action needed` block — no worker starts against an unusable tracker.
-- Exactly one `# Execution Plan vN` is ACTIVE; otherwise stop for `/sy:spec`.
+- Exactly one `# Execution Plan vN` is ACTIVE — enforced by the `plan_file` tool, which refuses zero or several by count and comment id rather than picking one; otherwise stop for `/sy:spec`.
 - Check plan-base freshness before building: material drift between `PLAN_BASE_SHA` and the ship base returns to `/sy:spec`.
 - Resolve standards before code.
 - The process tier (`full|light`) scales accounting records, never CI/review coverage.
@@ -76,6 +76,10 @@ GATE itself never re-enters this section once dispatched, and this is now mechan
 ## State router
 
 Preflight (above) runs once, first, ahead of this classification — including on resume, since a checkpoint can route straight to BUILD or GATE without ever passing through START.
+
+The plan is materialised in that same step, for the same reason, on every session alike — fresh and resume: the parent calls `plan_file` on the Task, which resolves the sole ACTIVE plan and writes that comment's `## For /sy:ship` half to a file, and the parent then names that file's absolute path in whichever worker's dispatch prompt it goes on to send. It belongs here rather than in any phase procedure because a resume routing straight to BUILD or GATE passes through none of them, and because no worker after the parent holds a tracker read at all — so a materialisation left to a phase would simply not happen on that path. The parent's own context never takes on the plan text: the tool returns a path and the pin, never the body.
+
+The pin comparison against recorded state is the resume-only half of that same call. On a fresh run there is nothing recorded to compare against and the returned `path`/`comment_id`/`version` are simply stamped into state as `plan_path`/`plan_comment_id`/`plan_version` (`references/start-resume.md`). On a resume the parent compares what `plan_file` just returned against what state already carries: unchanged, dispatch as the classification below decides; changed, the plan was revised mid-run and it is handled exactly as any `bail-to-spec` (§ Worker contract) — never resumed against a `phase_checkpoint` built from the plan that got superseded. State carrying none of the three fields is a file written before they existed and reads as `null`, which is nothing recorded rather than a mismatch: there is nothing to compare, and this step supplies them.
 
 On resume the parent also loads `ship-state.yaml` here and drains it before dispatching whichever phase the classification lands on: any `memory_refutations` still listed are pending, not history, so the parent applies each via `memory_refute` and clears the list from state — the same drain rule as an in-flight worker return (§ Worker contract). It belongs in this pre-dispatch step because a resume routing straight to BUILD or GATE passes through no phase procedure that could own it, and the HANDOFF retro deliberately does not backstop it; an undrained list means the refuted anchor is still read back as if it held.
 

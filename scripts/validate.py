@@ -681,6 +681,13 @@ def check_invariants(errors: list[str]) -> None:
             "procedure that could own it and no worker holds a tracker read",
             errors,
         )
+    if "## Resolve start model" not in start:
+        fail(
+            "ship start/resume must carry a '## Resolve start model' heading; the plan_file mention check just "
+            "below is scoped to the procedure text before it, and a silently renamed or removed heading would "
+            "widen that scope to the whole file rather than catch anything",
+            errors,
+        )
     start_procedure = start.partition("## Resolve start model")[0]
     if "plan_file" not in start_procedure:
         fail(

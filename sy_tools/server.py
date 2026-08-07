@@ -439,23 +439,25 @@ def _agent_half(body: str) -> str:
     """The agent-facing half of a two-part comment body, under whichever boundary form wrote it.
 
     Derived from `_AGENT_DETAIL_TAG` rather than re-spelling the boundary, so the extractor cannot drift
-    from the writer. Cut at the exact closing literal `post-comment` appends, not at a bare `</details>`
-    substring: the half itself may legitimately carry a nested disclosure block, and cutting at any
-    `</details>` picks the nested one instead of the real end when the outer close is missing.
+    from the writer. The collapsed form's outer close is cut by suffix, not by searching for `</details>`:
+    the half may legitimately carry its own nested `<details>` block, which can itself contain the exact
+    closing literal, so only the body's true trailing suffix can be trusted to be the real outer close.
+    The legacy flat-separator form never carries a close at all, so it is handled separately.
     """
-    for boundary in (_AGENT_DETAIL_TAG, _LEGACY_AGENT_DETAIL_TAG):
-        if boundary in body:
-            half = body.split(boundary, 1)[1]
-            if _AGENT_DETAIL_CLOSE in half:
-                return half.rsplit(_AGENT_DETAIL_CLOSE, 1)[0].strip()
-            if "</details>" not in half:
-                return half.strip()
-            raise ToolError(
-                "the ACTIVE plan comment's agent-facing section carries a `</details>` that is not the outer "
-                "close `post-comment` appends: cutting at it would risk dropping content after a nested "
-                "disclosure block instead of at the section's real end. Repost the plan through `post-comment` "
-                "so the outer close lands last."
-            )
+    if _AGENT_DETAIL_TAG in body:
+        half = body.split(_AGENT_DETAIL_TAG, 1)[1]
+        if half.endswith(_AGENT_DETAIL_CLOSE):
+            return half[: -len(_AGENT_DETAIL_CLOSE)].strip()
+        if "</details>" not in half:
+            return half.strip()
+        raise ToolError(
+            "the ACTIVE plan comment's agent-facing section carries a `</details>` that is not the outer "
+            "close `post-comment` appends: cutting at it would risk dropping content after a nested "
+            "disclosure block instead of at the section's real end. Repost the plan through `post-comment` "
+            "so the outer close lands last."
+        )
+    if _LEGACY_AGENT_DETAIL_TAG in body:
+        return body.split(_LEGACY_AGENT_DETAIL_TAG, 1)[1].strip()
     raise ToolError(
         "the ACTIVE plan comment carries neither boundary this tool can split on: neither the collapsed "
         "agent-facing section `post-comment` writes nor the flat separator that preceded it. It was not "

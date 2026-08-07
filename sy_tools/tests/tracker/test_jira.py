@@ -16,7 +16,7 @@ from typing import Any
 import httpx2
 import pytest
 
-from sy_tools.server import _AGENT_DETAIL_CLOSE, _AGENT_DETAIL_OPEN, _agent_half
+from sy_tools.server import _AGENT_DETAIL_CLOSE, _AGENT_DETAIL_OPEN, ToolError, _agent_half
 from sy_tools.tests.test_server import (
     PLAN_AGENT,
     PLAN_AGENT_READ_BACK,
@@ -1807,6 +1807,21 @@ def test_the_collapsed_section_survives_a_read_and_a_write_back():
     assert _agent_half(read_back) == "HEAD 6144373", (
         f"the agent half is no longer recoverable from a read-back body: {read_back!r}"
     )
+
+
+def test_a_nested_disclosure_block_does_not_end_the_agent_half_early():
+    """A nested `<details>` carries the exact outer-close literal, so a substring cut would truncate here."""
+    nested = "before\n\n<details>\n\n<summary>nested</summary>\n\ninner\n\n</details>\n\nafter"
+    half = _agent_half(_AGENT_DETAIL_OPEN + nested + _AGENT_DETAIL_CLOSE)
+    assert half == nested.strip(), f"the half was cut at the nested block instead of the outer close: {half!r}"
+    assert "after" in half, f"content past the nested disclosure block was dropped: {half!r}"
+
+
+def test_a_close_that_is_not_the_outer_suffix_is_refused_loudly():
+    """An unterminated section with a stray `</details>` has no trustworthy end, so guessing one is worse."""
+    body = _AGENT_DETAIL_OPEN + "plan text\nsome trailing text\n</details>\nmore text after"
+    with pytest.raises(ToolError, match="not the outer"):
+        _agent_half(body)
 
 
 def test_a_plan_comment_reads_back_as_the_shape_the_core_tests_fixture_on():

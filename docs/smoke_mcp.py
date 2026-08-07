@@ -65,11 +65,14 @@ PLAN_AGENT_ESCAPED = (
     "Edit sy\\_tools/server.py and see [the contract](<https://example.invalid/a_b>) "
     "before touching \\_AGENT\\_DETAIL\\_TAG."
 )
-"""The same half as the tracker gives it back: un-backticked `_` escaped, the link target inside `<>`.
+"""The same half as a rich-text tracker gives it back: un-backticked `_` escaped, the link target inside `<>`.
 
 Written out by hand rather than computed by calling the converter this script has no access to anyway.
-That is the point: the expectation is independent of the code under test, so a converter change that
-alters the transformation fails here instead of quietly redefining what "recovered" means."""
+The live check accepts this OR the untransformed `PLAN_AGENT_HALF` (a Markdown-passthrough tracker),
+since this file names no tracker and cannot know upfront which applies — it reports which shape matched
+instead of assuming one. That means a rich-text tracker whose escaping regressed to a no-op would read
+as a legitimate Markdown-passthrough tracker rather than as a broken transformation; the transformation
+itself stays pinned only by the offline converter tests in `sy_tools/tests/tracker/test_jira.py`."""
 
 VERB_TOOLS: dict[str, str] = {
     "validate_config": "validate_config",
@@ -300,6 +303,9 @@ class Smoke:
         same equality against the converter called in-process, which is a fixture standing in for the
         tracker; this asserts it against the tracker, which is the thing whose fidelity is in question —
         a stored ADF document, a real REST read, and whatever normalisation the site does in between.
+        Proves whichever of the two known transformations applies, and reports which one matched; it does
+        not by itself distinguish a rich-text tracker's escaping regressing to a no-op from a genuine
+        Markdown-passthrough tracker — see `PLAN_AGENT_ESCAPED`'s docstring.
 
         On a *fresh* issue with no other plan on it, so the exactly-one-ACTIVE selection is unambiguous
         without this run having to supersede anything.
@@ -326,6 +332,12 @@ class Smoke:
         )
         landed = Path(str(payload.get("path", "")))
         recovered = landed.read_text(encoding="utf-8") if landed.is_file() else ""
+        shape = (
+            "escaped (rich-text tracker)" if recovered.rstrip().endswith(PLAN_AGENT_ESCAPED)
+            else "verbatim (Markdown-passthrough tracker)" if recovered.rstrip().endswith(PLAN_AGENT_HALF.rstrip())
+            else "neither"
+        )
+        print(f"==> plan_file escape shape: {shape}")
         self.check(
             "plan_file",
             recovered.rstrip().endswith(PLAN_AGENT_ESCAPED) or recovered.rstrip().endswith(PLAN_AGENT_HALF.rstrip()),

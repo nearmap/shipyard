@@ -1899,6 +1899,20 @@ async def test_plan_file_reports_a_pin_that_a_revised_plan_moves(monkeypatch, sc
 
 
 @pytest.mark.anyio
+async def test_plan_file_refuses_an_active_plan_whose_comment_id_reads_back_empty(monkeypatch, scratch_root):
+    """An empty comment_id would hand out an unusable pin, silently defeating the staleness comparison."""
+    thread = _thread(_plan_comment())
+    thread["comments"][0]["id"] = ""
+    recorder = _Recorder(thread)
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    assert result.is_error is True, result.content
+    assert "no readable comment id" in _text(result), _text(result)
+    assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
+
+
+@pytest.mark.anyio
 async def test_plan_file_refuses_a_plan_carrying_neither_boundary(monkeypatch, scratch_root):
     """A one-blob plan comment has no agent-facing half to hand on, and must not yield the whole body."""
     recorder = _Recorder(_thread(PLAN_HUMAN_READ_BACK + "\n\n" + PLAN_AGENT_READ_BACK))

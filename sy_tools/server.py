@@ -518,6 +518,13 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             "/sy:spec rather than picking one here."
         )
     comment_id, version, body = active[0]
+    if not comment_id:
+        raise ToolError(
+            f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id — the same "
+            '"(no id)" condition the zero-or-many refusal names above. A pin built on an empty comment_id '
+            "is unusable and would make a later resume's staleness comparison silently no-op instead of "
+            "detecting a superseded plan; refusing rather than handing one out."
+        )
     text = (
         f"<!-- Written by the `sy` server's `plan_file` tool: Execution Plan v{version}, the "
         f"agent-facing half of comment {comment_id} on {issue}. The plan comment is the record of truth. -->\n"

@@ -340,7 +340,7 @@ class Smoke:
         print(f"==> plan_file escape shape: {shape}")
         self.check(
             "plan_file",
-            recovered.rstrip().endswith(PLAN_AGENT_ESCAPED) or recovered.rstrip().endswith(PLAN_AGENT_HALF.rstrip()),
+            shape != "neither",
             "the recovered half is not the posted half under either the rich-text escape transformation or "
             "Markdown-passthrough.\n"
             f"    expected the file to end with either: {PLAN_AGENT_ESCAPED!r}\n"

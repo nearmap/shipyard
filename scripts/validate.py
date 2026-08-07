@@ -681,15 +681,15 @@ def check_invariants(errors: list[str]) -> None:
             "procedure that could own it and no worker holds a tracker read",
             errors,
         )
-    if "## Resolve start model" not in start:
+    heading_match = re.search(r"^## Resolve start model$", start, re.MULTILINE)
+    if heading_match is None:
         fail(
-            "ship start/resume must carry a '## Resolve start model' heading; the plan_file mention check just "
-            "below is scoped to the procedure text before it, and a silently renamed or removed heading would "
-            "widen that scope to the whole file rather than catch anything",
+            "ship start/resume must carry a '## Resolve start model' heading (as its own line, not just "
+            "mentioned in prose); the plan_file mention check below is scoped to the procedure text before it, "
+            "and a missing or renamed heading leaves nothing correct to scope against",
             errors,
         )
-    start_procedure = start.partition("## Resolve start model")[0]
-    if "plan_file" not in start_procedure:
+    elif "plan_file" not in start[: heading_match.start()]:
         fail(
             "ship start/resume must name plan_file as where its plan comes from; without it, step 1 reads as a "
             "tracker read this worker does not hold",

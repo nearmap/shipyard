@@ -1819,6 +1819,29 @@ async def test_plan_file_resolves_a_plan_posted_under_the_separator_that_precede
     assert "TL;DR" not in written, f"the human half leaked past the legacy separator: {written!r}"
 
 
+NESTED_HALF = "before\n\n<details>\n\n<summary>nested</summary>\n\ninner\n\n</details>\n\nafter"
+"""An agent half carrying its own disclosure block, whose close is byte-identical to the outer one."""
+
+
+def test_a_nested_block_with_no_outer_close_is_refused_not_silently_truncated():
+    """A close-shaped literal that is not the suffix once cut the half short at it, losing everything after."""
+    body = server._AGENT_DETAIL_OPEN + NESTED_HALF
+    with pytest.raises(server.ToolError, match="not the outer"):
+        server._agent_half(body)
+
+
+def test_a_nested_block_under_a_real_outer_close_keeps_everything_up_to_that_close():
+    """Cutting at the nested close instead of the outer one would drop the half's trailing content."""
+    half = server._agent_half(server._AGENT_DETAIL_OPEN + NESTED_HALF + server._AGENT_DETAIL_CLOSE)
+    assert half == NESTED_HALF, f"the half was cut at the nested block instead of the outer close: {half!r}"
+
+
+def test_the_legacy_separator_returns_a_nested_shaped_half_whole():
+    """The flat separator never carried a close, so close handling must not reach it and refuse a valid plan."""
+    half = server._agent_half(server._LEGACY_AGENT_DETAIL_TAG + NESTED_HALF)
+    assert half == NESTED_HALF, f"the legacy half was cut at its own disclosure block: {half!r}"
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("case", "bodies", "truncated", "expected"),

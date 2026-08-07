@@ -436,16 +436,11 @@ trip merges it into one paragraph with a following `Supersedes:` — which is wh
 
 
 def _agent_half(body: str) -> str:
-    """The agent-facing half of a two-part comment body, under whichever boundary form wrote it.
-
-    Derived from `_AGENT_DETAIL_TAG` rather than re-spelling the boundary, so the extractor cannot drift
-    from the writer. The collapsed form's outer close is cut by suffix, not by searching for `</details>`:
-    the half may legitimately carry its own nested `<details>` block, which can itself contain the exact
-    closing literal, so only the body's true trailing suffix can be trusted to be the real outer close.
-    The legacy flat-separator form never carries a close at all, so it is handled separately.
-    """
+    """The agent-facing half of a two-part comment body, under whichever boundary form wrote it."""
     if _AGENT_DETAIL_TAG in body:
         half = body.split(_AGENT_DETAIL_TAG, 1)[1]
+        # Cut the close by suffix, never by searching for `</details>`: the half may legitimately carry its own
+        # nested block holding that exact literal, so only a true trailing suffix is the real outer close.
         if half.endswith(_AGENT_DETAIL_CLOSE):
             return half[: -len(_AGENT_DETAIL_CLOSE)].strip()
         if "</details>" not in half:

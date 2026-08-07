@@ -16,7 +16,7 @@ from typing import Any
 import httpx2
 import pytest
 
-from sy_tools.server import _AGENT_DETAIL_CLOSE, _AGENT_DETAIL_OPEN
+from sy_tools.server import _AGENT_DETAIL_CLOSE, _AGENT_DETAIL_OPEN, _agent_half
 from sy_tools.tracker import TIMEOUT_SECONDS, TrackerError
 from sy_tools.tracker.jira import adapter, adf
 
@@ -1795,3 +1795,8 @@ def test_the_collapsed_section_survives_a_read_and_a_write_back():
     expands = _expands(adf.markdown_to_adf(read_back))
     assert len(expands) == 1, f"the section flattened on its way back through: {read_back!r}"
     assert expands[0]["attrs"]["title"] == EXPAND_TITLE, f"the expand lost its caption: {read_back!r}"
+    # The same normalisation is what `plan_file` splits a read-back plan comment on, so the boundary
+    # surviving here and the extractor still finding it are one fact, asserted in one place.
+    assert _agent_half(read_back) == "HEAD 6144373", (
+        f"the agent half is no longer recoverable from a read-back body: {read_back!r}"
+    )

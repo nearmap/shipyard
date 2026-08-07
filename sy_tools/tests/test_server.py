@@ -21,6 +21,7 @@ import pytest
 
 from sy_tools import SERVER_NAME, server
 from sy_tools.ship_metrics import SCHEMA_ID
+from sy_tools.tracker.jira import adf
 
 TOOL_NAMES = {
     "add-dependency",
@@ -42,6 +43,7 @@ TOOL_NAMES = {
     "memory_list",
     "memory_refute",
     "memory_search",
+    "plan_file",
     "post-comment",
     "post-log",
     "preflight",
@@ -102,8 +104,19 @@ class _Recorder:
     # write test below would compare a function to an int in the body-size check and raise TypeError.
     body_limit = 32_767
 
-    def __init__(self) -> None:
+    def __init__(self, issue: dict | None = None) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
+        self.issue = issue
+
+    async def get_issue(self, issue: str) -> dict:
+        """A real method, not `__getattr__`'s stub: `plan_file` reads the thread this returns.
+
+        Still recorded, so the wiring assertion above keeps covering `get-issue` unchanged. `issue`
+        unset falls back to that stub's answer rather than to an empty thread, which would make a
+        `plan_file` test pass for having found no plan when the fixture simply was not wired.
+        """
+        self.calls.append(("get_issue", (issue,), {}))
+        return self.issue if self.issue is not None else {"verb": "get_issue"}
 
     def __getattr__(self, verb: str):
         async def record(*args: Any, **kwargs: Any) -> dict:
@@ -1687,3 +1700,140 @@ async def test_the_transcript_tools_take_exactly_one_source(tool, arguments):
         result = await client.call_tool(tool, arguments)
     assert result.is_error is True, result.content
     assert "not both and not neither" in _text(result), _text(result)
+
+
+# ---- plan_file --------------------------------------------------------------------------------
+#
+# The fixture halves carry an un-backticked `_` and `[` on purpose. A rich-text tracker escapes those
+# on the way through, so an escape-free fixture would let a recovery assertion pass while proving
+# nothing about what a real plan comment reads back as — which is the one thing this tool has to get
+# right, and the reason `docs/smoke_mcp.py` also proves it live.
+
+PLAN_HUMAN = "# Execution Plan v3\nStatus: ACTIVE\nSupersedes: v2\n\nTL;DR: ship the plan-file tool."
+PLAN_AGENT = (
+    "## For /sy:ship\n\n"
+    "1. add `plan_file` to sy_tools/server.py, deriving the boundary from _AGENT_DETAIL_TAG.\n"
+    "2. see [the contract](https://example.invalid/a_b#exactly_one) for the exactly-one rule.\n"
+)
+SUPERSEDED_PLAN = "# Execution Plan v2\nStatus: SUPERSEDED\nSuperseded by: v3\n\nStatus: ACTIVE is prose here."
+"""A superseded plan whose prose says the words a body-wide containment check would match."""
+
+
+def _posted(human: str, agent: str, *, boundary: str | None = None) -> str:
+    """One two-part comment body assembled the way `post-comment` assembles one."""
+    if boundary is not None:
+        return human.strip() + boundary + agent.strip()
+    return human.strip() + server._AGENT_DETAIL_OPEN + agent.strip() + server._AGENT_DETAIL_CLOSE
+
+
+def _thread(*bodies: str, truncated: bool = False) -> dict:
+    """A `get_issue` payload whose comments carry `bodies` as the tracker would give them back."""
+    comments = [
+        {"id": f"c{index}", "author": "a", "created": "2026-01-01", "body": adf.adf_to_markdown(adf.markdown_to_adf(body))}
+        for index, body in enumerate(bodies, start=1)
+    ]
+    return {"id": "PROJ-1", "comments": comments, "comments_truncated": truncated}
+
+
+@pytest.fixture
+def scratch_root(tmp_path, monkeypatch) -> Path:
+    """Point the resolver's scratch root at a throwaway directory, leaving the real one alone.
+
+    `config.get` is patched rather than `config.scratch_dir`, so the containment and creation logic
+    under test is the shipped one; any other key read on this path fails the test rather than silently
+    resolving against the operator's own configuration.
+    """
+    root = tmp_path / "scratch"
+    root.mkdir()
+
+    def only_scratch(key: str, *_a: Any, **_k: Any) -> str:
+        assert key == "scratch.dir", f"plan_file read config key {key!r}, which this fixture does not stub"
+        return str(root)
+
+    monkeypatch.setattr(server.config, "get", only_scratch)
+    return root
+
+
+@pytest.mark.anyio
+async def test_plan_file_writes_the_recovered_agent_half_and_returns_a_pointer_never_the_text(
+    monkeypatch, scratch_root
+):
+    """The whole contract in one call: the right half on disk, a path and a pin back, no plan text.
+
+    The recovery expectation is the round trip applied to the posted half on its own — not the posted
+    half itself — because that is what a rich-text tracker actually stores and gives back, escapes and
+    all. Asserting against the posted half would be asserting the tracker is lossless, which it is not.
+    """
+    recorder = _Recorder(_thread(SUPERSEDED_PLAN, _posted(PLAN_HUMAN, PLAN_AGENT)))
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    assert result.is_error is False, result.content
+
+    written = (scratch_root / "PROJ-1" / "plan-v3.md").read_text(encoding="utf-8")
+    expected = adf.adf_to_markdown(adf.markdown_to_adf(PLAN_AGENT)).strip()
+    assert "\\_" in expected, "the fixture must carry an escape, or this asserts nothing about the read back"
+    assert written.endswith(expected + "\n"), f"the recovered half is not what the tracker gives back: {written!r}"
+    assert "TL;DR" not in written, f"the human half leaked into the plan file: {written!r}"
+    header = written[: written.index(expected)]
+    assert len(header.strip().splitlines()) == 2, f"the provenance header must be two lines: {header!r}"
+    for pin in ("v3", "c2", "PROJ-1", "\\_"):
+        assert pin in header, f"the provenance header must name {pin!r}: {header!r}"
+
+    payload = _payload(result)
+    assert set(payload) == {"path", "comment_id", "version", "bytes", "comments_truncated"}, payload
+    assert payload["path"] == str(scratch_root / "PROJ-1" / "plan-v3.md"), payload
+    assert (payload["comment_id"], payload["version"]) == ("c2", 3), payload
+    assert payload["bytes"] == len(written.encode("utf-8")), payload
+    assert payload["comments_truncated"] is False, payload
+    assert "For /sy:ship" not in str(result), f"plan text reached the tool result: {result}"
+
+
+@pytest.mark.anyio
+async def test_plan_file_resolves_a_plan_posted_under_the_separator_that_preceded_the_section(
+    monkeypatch, scratch_root
+):
+    """A plan outlives the boundary form it was written with, so the older one still has to resolve."""
+    recorder = _Recorder(_thread(_posted(PLAN_HUMAN, PLAN_AGENT, boundary=server._LEGACY_AGENT_DETAIL_TAG)))
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    assert result.is_error is False, _text(result)
+    written = Path(_payload(result)["path"]).read_text(encoding="utf-8")
+    assert written.rstrip().endswith(adf.adf_to_markdown(adf.markdown_to_adf(PLAN_AGENT)).strip()), written
+    assert "TL;DR" not in written, f"the human half leaked past the legacy separator: {written!r}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("case", "bodies", "truncated", "expected"),
+    [
+        ("none", (SUPERSEDED_PLAN,), False, "has 0 ACTIVE execution plans"),
+        ("none-truncated", (), True, "comments_truncated is true"),
+        ("two", (_posted(PLAN_HUMAN, PLAN_AGENT), _posted(PLAN_HUMAN, PLAN_AGENT)), False, "c1 (v3), c2 (v3)"),
+    ],
+    ids=["none", "none-past-the-page", "two"],
+)
+async def test_plan_file_refuses_anything_but_exactly_one_active_plan(
+    monkeypatch, scratch_root, case, bodies, truncated, expected
+):
+    """Picking one of several would ship against a plan nobody approved, so both counts refuse loudly."""
+    recorder = _Recorder(_thread(*bodies, truncated=truncated))
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    assert result.is_error is True, result.content
+    assert expected in _text(result), _text(result)
+    assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
+
+
+@pytest.mark.anyio
+async def test_plan_file_refuses_a_plan_carrying_neither_boundary(monkeypatch, scratch_root):
+    """A one-blob plan comment has no agent-facing half to hand on, and must not yield the whole body."""
+    recorder = _Recorder(_thread(PLAN_HUMAN + "\n\n" + PLAN_AGENT))
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    assert result.is_error is True, result.content
+    assert "neither boundary" in _text(result), _text(result)
+    assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"

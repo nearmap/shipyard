@@ -64,6 +64,9 @@ SHIP_WORKER_AGENTS = frozenset(SHIP_WORKER_TRACKER_VERBS)
 # Every agent must be able to ask whether a credential is present without ever reading its value;
 # `sy_tools/guards/secret_guard.py` names this tool as the remedy it steers shell probes toward.
 CHECK_ENV_TOOL = "check_env"
+# The lowest number an adapter's `body_limit` could plausibly be. Both real limits are 32k and 64k, and
+# no tracker documents anything near this floor, so a declaration under it is a typo, not a limit.
+BODY_LIMIT_FLOOR = 8_192
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -564,13 +567,14 @@ def check_invariants(errors: list[str]) -> None:
 
     # Read out of the source rather than imported: `python scripts/validate.py` puts `scripts/` on
     # `sys.path`, not the repo root, so importing the adapters needs a `sys.path` shim this file has
-    # never needed for anything else.
-    def declared_body_limit(rel: str) -> int:
-        match = re.search(r"^ {4}body_limit: int = ([\d_]+)$", read(rel), re.MULTILINE)
+    # never needed for anything else. The comment block directly above the declaration comes back with
+    # it, because that block is a copy of the figure too and the same anchor already locates it.
+    def declared_body_limit(rel: str) -> tuple[int, str]:
+        match = re.search(r"((?:^ *#.*\n)*)^ {4}body_limit: int = ([\d_]+)$", read(rel), re.MULTILINE)
         if match is None:
             fail(f"{rel} must declare `body_limit: int = <literal>`; its ADAPTER.md figure cannot be checked", errors)
-            return 0
-        return int(match.group(1))
+            return 0, ""
+        return int(match.group(2)), match.group(1)
 
     ship = read("skills/ship/SKILL.md")
     handoff = read("skills/ship/references/handoff-accounting.md")
@@ -864,19 +868,41 @@ def check_invariants(errors: list[str]) -> None:
     if economy_axis_phrase in spec:
         fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
 
-    # Each adapter's body limit lives in the constant, again in its agent-facing ADAPTER.md prose, and
-    # again in the `body_limit` Protocol docstring that names both figures. Both spellings count in every
-    # place, because the prose groups thousands and the code does not.
+    # Each adapter's body limit lives in the constant, again in its agent-facing ADAPTER.md prose, again
+    # in the `body_limit` Protocol docstring that names both figures, and — for Jira — a fourth time in the
+    # comment above the declaration. Both spellings count in every place the figure is required, because
+    # the prose groups thousands and the code does not.
     protocol_rel = "sy_tools/tracker/__init__.py"
     protocol = read(protocol_rel)
     for name, source, doc_rel, doc in (
         ("jira", "sy_tools/tracker/jira/adapter.py", "skills/tracker/jira/ADAPTER.md", jira_adapter),
         ("github", "sy_tools/tracker/github/adapter.py", "skills/tracker/github/ADAPTER.md", github_adapter),
     ):
-        limit = declared_body_limit(source)
+        limit, note = declared_body_limit(source)
+        # Containment is file-scoped substring, so a deleted leading digit collides with the grouped
+        # spelling it came from — `2_767` is found in every target stating `32,767`, and `5_536` in every
+        # target stating `65,536` — cutting the limit tenfold with every doc stale and this check green.
+        # A floor kills that whole class without parsing prose: no tracker limit is anywhere near this low.
+        if limit < BODY_LIMIT_FLOOR:
+            fail(
+                f"{name} adapter's body_limit is {limit} ({source}), under the {BODY_LIMIT_FLOOR} floor; no "
+                "tracker limit is that low, so this is a dropped digit, not a limit",
+                errors,
+            )
         for target_rel, target in ((doc_rel, doc), (protocol_rel, protocol)):
             if str(limit) not in target and f"{limit:,}" not in target:
                 fail(f"{name} adapter's body_limit is {limit} ({source}); {target_rel} states no such figure", errors)
+        # The comment above the declaration is a fourth copy in one adapter and names no figure in the
+        # other. Presence cannot be required of a comment, so the check is staleness: the figure it states,
+        # if it states one, is the declared one. It is the only copy the doc legs above never read.
+        spellings = (str(limit), f"{limit:,}", f"{limit:_}")
+        stale = [fig for fig in re.findall(r"(?<![\w-])\d[\d,_]{3,}(?![\w-])", note) if fig not in spellings]
+        if stale:
+            fail(
+                f"{name} adapter's body_limit is {limit} ({source}); the comment above the declaration "
+                f"still states {stale[0]}",
+                errors,
+            )
 
     # `post-comment` takes `human` and `agent_detail`, both required, and assembles the boundary itself.
     # These are the highest-traffic call sites, so a reference still describing one hand-composed body

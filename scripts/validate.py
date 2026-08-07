@@ -581,6 +581,12 @@ def check_invariants(errors: list[str]) -> None:
     # Every grouped or ungrouped spelling of a four-digit-or-longer number in `target`. Used instead of
     # substring containment, which a target satisfies for the wrong reason whenever the declared digits
     # happen to appear inside some unrelated number in its prose.
+    #
+    # The boundaries are deliberately asymmetric: the lookbehind rejects a leading hyphen so a citation
+    # id cannot be read as a figure, but the lookahead rejects a trailing hyphen only when a digit
+    # follows it. Making them symmetric loses `32,767-character`, which is how prose actually writes the
+    # figure, and a target stating only that reads as figure-free — so the staleness leg passes over
+    # stale provenance and the whole check goes quietly vacuous.
     def numeric_tokens(target: str) -> set[str]:
         return set(re.findall(r"(?<![\w-])\d[\d,_]{3,}(?!\w|-\d)", target))
 

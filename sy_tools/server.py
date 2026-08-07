@@ -531,7 +531,10 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
         destination = config.scratch_dir(issue) / f"plan-v{version}.md"
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
-    destination.write_text(text, encoding="utf-8")
+    try:
+        destination.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(f"plan file could not be written to {destination}: {exc}") from None
     return {
         "path": str(destination),
         "comment_id": comment_id,

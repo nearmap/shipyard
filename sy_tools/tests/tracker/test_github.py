@@ -381,6 +381,28 @@ async def test_a_filename_the_artifact_index_cannot_hold_is_refused_before_the_u
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("verb", ["attach_artifact", "attachment_update"])
+async def test_a_payload_the_artifact_store_cannot_hold_is_refused_before_the_upload(
+    tmp_path, monkeypatch, board, verb
+):
+    """A gist holds text, so bytes that do not decode have no representation there for either verb to write.
+
+    `attachment_update` has to decode the file anyway to compare it against the read-back, and while that
+    decode was the only refusal, `attach_artifact` was free to hand the same bytes to `gh gist create` and
+    link whatever came back: an upload reporting success over an artifact no later read can reproduce. The
+    check belongs to `_checked_artifact` for that reason, and both verbs must fail before any `gh` call.
+    """
+    payload = tmp_path / ARTIFACT_NAME
+    payload.write_bytes(b"\x89\xff")
+    fake = _install(monkeypatch)
+
+    with pytest.raises(TrackerError, match="not UTF-8 text"):
+        await getattr(adapter.GithubAdapter(), verb)("7", payload)
+
+    assert fake.calls == [], f"the payload must be refused before anything is uploaded or commented: {fake.calls}"
+
+
+@pytest.mark.anyio
 async def test_a_credential_in_command_output_never_reaches_the_error_message(tmp_path, monkeypatch):
     monkeypatch.setenv("SHIPYARD_TEST_TOKEN", "s3cr3t-value-not-for-logs")
     _install(monkeypatch, (1, "", "bad credentials: s3cr3t-value-not-for-logs"))

@@ -102,7 +102,7 @@ def test_sanitize_runs_the_scanner_pass_too(planted, monkeypatch):
 def test_an_artifact_neither_pass_can_read_is_refused_unless_the_caller_declares_it(opaque):
     with pytest.raises(secrets.SanitizeError) as raised:
         secrets.sanitize(opaque, require=(FAKE_VAR,))
-    assert "not UTF-8 text" in str(raised.value), "the refusal must name why neither pass could run"
+    assert "not UTF-8 text" in str(raised.value), "the refusal must name why the scrub could not run"
     assert "allow_opaque" in str(raised.value), "a refusal with no named way forward is a dead end"
     assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
 

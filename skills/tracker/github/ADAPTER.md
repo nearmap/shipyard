@@ -70,9 +70,11 @@ This adapter's body limit is **65,536 characters**, applied by the shared whole-
 
 ### `attach-artifact` and the attachment lifecycle — gist + link (deliberate asymmetry)
 
-GitHub issues have no CLI-scriptable file attachment, so the artifact is uploaded as a **secret** (private) gist and linked from a comment on the issue. Hand the rendered path to the `attach-artifact` tool: it checks the gate and runs both sanitisation passes — the same ones, in the same order, as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter. Privacy is verified by reading the created gist back rather than assumed from the flags passed: a public gist would publish a transcript irrevocably.
+GitHub issues have no CLI-scriptable file attachment, so the artifact is uploaded as a **secret** (private) gist and linked from a comment on the issue. Hand the rendered path to the `attach-artifact` tool: it checks the gate and sanitises on the rule `../CONTRACT.md` states — the same rule, in the same order, as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter. Privacy is verified by reading the created gist back rather than assumed from the flags passed: a public gist would publish a transcript irrevocably.
 
-`attachment-update` is the other uploading verb and runs the identical gate and both passes before it writes. There is no unscanned upload path.
+**A gist holds text, so this adapter accepts text only.** A payload that is not UTF-8 text is refused before any gist exists, on both uploading verbs and whatever `allow_opaque` says: the declaration governs only whether the known-value scrub is owed, and this store still has nothing that could hold the bytes however the scan comes back. Attach a text rendering instead. Jira, whose attachments are bytes, takes such a payload once it is declared — that asymmetry is real and lives here.
+
+`attachment-update` is the other uploading verb and runs the identical gate and the identical sanitisation before it writes, and inherits the same refusal.
 
 The lifecycle verbs — `attachment-download` and `attachment-update` — act on that gist, which they locate from the link comment `attach-artifact` posted. `attachment-download` resolves by artifact filename, taking a gist id instead to disambiguate; an ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 
@@ -85,6 +87,7 @@ Reference the returned gist URL from the `# Claude Code ship metrics` comment (`
 - **Type and status live on the Projects v2 board, not the issue.** An issue must be a board item to carry a Type/Status; Shipyard adds it on create. This is what lets one adapter serve both personal and org projects with no native issue types.
 - **Done transition** is driven by native Projects automation (issue close / PR merge → Done); the ship/gate path still calls `set-status done` for parity.
 - **Transcript attachment** is a private gist link, not a native file attachment.
+- **A non-text payload is refused outright.** This adapter's gist can only hold UTF-8 text, so a payload that is not text is refused on both uploading verbs regardless of `allow_opaque`, where Jira's byte-capable attachments take such a payload once the caller declares it.
 
 ## References
 

@@ -732,6 +732,75 @@ async def test_replacing_an_attachment_scrubs_before_it_uploads_and_honours_the_
     }
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("verb", ["attach_artifact", "attachment_update"])
+async def test_an_opaque_payload_reaches_an_upload_only_on_the_declaration_the_caller_passed(
+    monkeypatch, tmp_path, verb
+):
+    """Both uploading verbs owe the same answer for a payload the known-value scrub cannot decode.
+
+    The tool classifies nothing itself: it hands the caller's declaration to `sanitize` and stays
+    ordered behind it, so an undeclared opaque payload leaves the upload unreached on either verb
+    rather than merely unreported — and a verb that dropped the argument would refuse forever, or
+    upload silently, depending on which default it lost.
+    """
+    path = tmp_path / "PROJ-1-ship-transcript.bin"
+    path.write_bytes(b"\x89\xff")
+    calls: list[str] = []
+    declared: list[object] = []
+
+    class _Backend:
+        async def attach_artifact(self, issue: str, artifact) -> dict:
+            calls.append("upload")
+            return {"id": f"{issue}-1", "name": artifact.name}
+
+        async def attachment_update(self, issue: str, artifact) -> dict:
+            calls.append("upload")
+            return {"issue": issue, "filename": artifact.name, "replaced": 1}
+
+    def _sanitize(_artifact, **kwargs: Any) -> dict:
+        declared.append(kwargs.get("allow_opaque"))
+        calls.append("sanitize")
+        if not kwargs.get("allow_opaque"):
+            raise server.secrets.SanitizeError("not UTF-8 text; pass allow_opaque to declare it")
+        return {"opaque": True, "skipped_reason": "not UTF-8 text"}
+
+    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    monkeypatch.setattr(server.config, "extra_secret_words", lambda: ())
+    monkeypatch.setattr(server.tracker, "adapter", lambda *_a, **_k: _Backend())
+    monkeypatch.setattr(server.secrets, "sanitize", _sanitize)
+    tool = getattr(server, verb)
+
+    with pytest.raises(server.secrets.SanitizeError, match="allow_opaque"):
+        await tool(issue="PROJ-1", path=str(path))
+    assert calls == ["sanitize"], f"an undeclared opaque payload must not be uploaded: {calls}"
+    assert declared == [False], f"the refusing default must be what an unset flag reaches sanitize as: {declared}"
+
+    calls.clear()
+    result = await tool(issue="PROJ-1", path=str(path), allow_opaque=True)
+    assert calls == ["sanitize", "upload"], f"the declaration must not reorder gate, sanitise and upload: {calls}"
+    assert declared[-1] is True, "the declaration must reach sanitize rather than be dropped by the tool"
+    assert result["sanitize"] == {"opaque": True, "skipped_reason": "not UTF-8 text"}, (
+        f"the caller must see the unscanned upload declared in the result: {result}"
+    )
+
+
+@pytest.mark.anyio
+async def test_neither_uploading_verb_offers_the_unscanned_path_by_default():
+    """The flag is the one way past both passes, so its schema default is the whole trust boundary."""
+    async with mcp.Client(server.mcp) as client:
+        schemas = {t.name: t.input_schema for t in (await client.list_tools()).tools}
+    for name in ("attach-artifact", "attachment-update"):
+        schema = schemas[name]
+        assert schema["properties"]["allow_opaque"]["default"] is False, (
+            f"{name} would skip both sanitisation passes for a caller that never asked: {schema}"
+        )
+        assert "allow_opaque" not in schema.get("required", []), (
+            f"{name} must not make every caller answer for an exception it does not need: {schema}"
+        )
+
+
 @pytest.mark.parametrize(
     ("kind", "caller", "tier", "expected_skip"),
     [

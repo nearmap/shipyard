@@ -800,13 +800,30 @@ async def attach_artifact(
     caller: Annotated[
         str, Field(description="Workflow asking for the attachment, e.g. ship, spec, plan.")
     ] = "",
+    allow_opaque: Annotated[
+        bool,
+        Field(
+            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
+            "The pattern scanner still runs as a best-effort check and a finding still blocks the "
+            "upload, but some binary content is invisible to it, so use this only for an artifact "
+            "you have separately established carries no credential."
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Sanitise a local file and attach it to a tracker issue as a durable artifact.
 
-    Canonical verb `attach-artifact`. Runs the known-value scrub and the pattern scanner, in that
-    order, before anything leaves the machine. Gated by the `transcript.attach` config key; for
+    Canonical verb `attach-artifact`. Runs the known-value scrub and then the pattern scanner over a
+    text payload, in that order, before anything leaves the machine. Gated by the `transcript.attach` config key; for
     `ship` callers the `full` process tier is required on top of it. When the gate is off the call
     is a no-op skip: nothing is read, scrubbed, scanned, or uploaded.
+
+    `allow_opaque` is the one exception, and it is a declaration rather than a permission: a payload
+    that is not UTF-8 text will not be scrubbed, since the scrub needs a decode it does not have, but
+    the pattern scanner still runs over it as a best-effort check and a genuine finding still blocks
+    the upload. The result never credits that scan with a clean result, since some binary content is
+    invisible to the scanner too; it reports only the declaration, exactly as if neither pass had run.
+    Without it such a payload is refused outright. Set it only for an artifact you have separately
+    established carries no credential.
     """
     _required(issue=issue)
 
@@ -822,7 +839,9 @@ async def attach_artifact(
     required = tuple(config.adapter_map().get("secret_env", []))
     # Synchronous inside the async tool on purpose: the scrub must strictly precede the upload, and making
     # it awaitable would buy nothing while adding a way to interleave the two.
-    report = secrets.sanitize(artifact, require=required, extra_words=config.extra_secret_words())
+    report = secrets.sanitize(
+        artifact, require=required, extra_words=config.extra_secret_words(), allow_opaque=allow_opaque
+    )
     evidence = await backend.attach_artifact(issue, artifact)
     return {"attached": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
 
@@ -892,6 +911,15 @@ async def attachment_update(
     caller: Annotated[
         str, Field(description="Workflow asking for the replacement, e.g. ship, spec, plan.")
     ] = "",
+    allow_opaque: Annotated[
+        bool,
+        Field(
+            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
+            "The pattern scanner still runs as a best-effort check and a finding still blocks the "
+            "upload, but some binary content is invisible to it, so use this only for an artifact "
+            "you have separately established carries no credential."
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Replace an issue's attachment of the same filename, sanitising the replacement first.
 
@@ -899,7 +927,11 @@ async def attachment_update(
     already matches `path`'s filename is a plain upload, and where more than one existing attachment
     shares that filename what happens is adapter-specific (see the tracker's own `ADAPTER.md`), since the
     trackers offer no common primitive for "replace all of these". It runs
-    the same gate and the same two sanitisation passes, in the same order, as `attach-artifact`.
+    the same gate and the same sanitisation, in the same order, as `attach-artifact`, `allow_opaque`
+    included: with it set, a payload that is not UTF-8 text replaces the existing artifact having
+    skipped only the scrub -- the pattern scan still runs and a finding still blocks it -- and the
+    result declares the skip rather than crediting either pass with a clean result it cannot stand
+    behind.
 
     Destructive: the artifact it replaces is irrecoverable once the replacement lands and there is no
     undo, so confirm the target first.
@@ -917,7 +949,9 @@ async def attachment_update(
     backend = tracker.adapter()
     required = tuple(config.adapter_map().get("secret_env", []))
     # Synchronous before the await for the same reason as `attach-artifact`: scrub, then upload.
-    report = secrets.sanitize(artifact, require=required, extra_words=config.extra_secret_words())
+    report = secrets.sanitize(
+        artifact, require=required, extra_words=config.extra_secret_words(), allow_opaque=allow_opaque
+    )
     evidence = await backend.attachment_update(issue, artifact)
     return {"updated": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
 

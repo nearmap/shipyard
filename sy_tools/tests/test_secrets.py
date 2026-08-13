@@ -27,6 +27,20 @@ def planted(tmp_path, monkeypatch) -> Path:
     return path
 
 
+@pytest.fixture
+def opaque(tmp_path, monkeypatch) -> Path:
+    """An artifact no codec can read that still holds the fake credential, with that value in the environment.
+
+    `planted` can never reach the opaque branch — it is valid UTF-8 by construction — so the one
+    trailing invalid byte is what makes the payload undecodable while it still carries a value the
+    refusal and the report both have to keep to themselves.
+    """
+    monkeypatch.setenv(FAKE_VAR, FAKE_TOKEN)
+    path = tmp_path / "PROJ-1-ship-transcript.bin"
+    path.write_bytes(FAKE_TOKEN.encode() + b"\xff")
+    return path
+
+
 def test_name_heuristic_is_word_based():
     assert secrets.looks_like_secret_name("A_TOKEN")
     assert secrets.looks_like_secret_name("AWS_SECRET_ACCESS_KEY")
@@ -83,6 +97,89 @@ def test_sanitize_runs_the_scanner_pass_too(planted, monkeypatch):
     monkeypatch.setattr(secrets, "scan_file", lambda p: calls.append(p) or [])
     secrets.sanitize(planted, require=(FAKE_VAR,))
     assert calls == [planted], "the scanner must run on the already-scrubbed file, every time"
+
+
+def test_an_artifact_neither_pass_can_read_is_refused_unless_the_caller_declares_it(opaque):
+    with pytest.raises(secrets.SanitizeError) as raised:
+        secrets.sanitize(opaque, require=(FAKE_VAR,))
+    assert "not UTF-8 text" in str(raised.value), "the refusal must name why the scrub could not run"
+    assert "allow_opaque" in str(raised.value), "a refusal with no named way forward is a dead end"
+    assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
+
+
+def test_a_declared_opaque_artifact_still_runs_the_scanner_but_reports_no_pass(opaque, monkeypatch):
+    """`allow_opaque` skips only the known-value scrub -- the scrub needs a decode this payload lacks.
+
+    The pattern scanner still runs, as a best-effort check, but its coverage of non-text content is
+    unverifiable (some binary formats are silently skipped by the scanner itself), so the report never
+    credits it with a clean result -- it carries only the declaration, exactly as if neither pass ran.
+    """
+    calls: list[Path] = []
+    monkeypatch.setattr(secrets, "scan_file", lambda p: calls.append(p) or [])
+    report = secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
+    assert calls == [opaque], "the scanner must still run over a declared-opaque payload"
+    assert report == {
+        "opaque": True,
+        "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
+    }, f"the report must not credit either pass with a result it cannot stand behind: {report}"
+    assert FAKE_TOKEN not in json.dumps(report), "the report must carry names and counts, never a value"
+    assert opaque.read_bytes() == FAKE_TOKEN.encode() + b"\xff", (
+        "a payload the scrub could not act on must be left byte-identical, not half-written"
+    )
+
+
+def test_a_declared_opaque_text_payload_with_a_real_finding_is_still_blocked(tmp_path, monkeypatch):
+    """Integration, no stub: the scanner itself must catch this, proving the round-trip defence is real.
+
+    A payload one byte short of valid UTF-8 is still handed to real gitleaks when declared opaque.
+    """
+    monkeypatch.delenv(FAKE_VAR, raising=False)
+    path = tmp_path / "leak.txt"
+    # High-entropy on purpose — the rule has an entropy floor a repeated-character body never clears —
+    # and split across two literals so this source file is not itself a match for the rule it plants.
+    path.write_bytes(b'api_key = "u8jzPde0IgxLd6Gnc' + b'fBAepfJBd0Kh8oOOL8d"\n\xff')
+    with pytest.raises(secrets.SanitizeError) as raised:
+        secrets.sanitize(path, allow_opaque=True)
+    assert "generic-api-key" in str(raised.value), (
+        "a real scanner finding must still block a declared-opaque upload"
+    )
+
+
+def test_a_declared_opaque_binary_payload_is_not_falsely_reported_clean(tmp_path):
+    """The identical payload the test above proves gitleaks catches in `.txt` is silently skipped in
+    `.bin` by gitleaks' own default allowlist -- exactly why the report must never claim a clean
+    scanner result for a declared-opaque payload, only the bare declaration.
+    """
+    path = tmp_path / "leak.bin"
+    path.write_bytes(b'api_key = "u8jzPde0IgxLd6Gnc' + b'fBAepfJBd0Kh8oOOL8d"\n\xff')
+    report = secrets.sanitize(path, allow_opaque=True)
+    assert report == {
+        "opaque": True,
+        "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
+    }, f"the report must not credit either pass with a result it cannot stand behind: {report}"
+
+
+def test_a_declared_opaque_artifact_with_a_scanner_finding_is_still_refused(opaque, monkeypatch):
+    """`allow_opaque` opts out of the scrub, never out of the scanner: a live finding still blocks."""
+    monkeypatch.setattr(secrets, "scan_file", lambda _p: [{"RuleID": "fake-rule-id"}])
+    with pytest.raises(secrets.SanitizeError) as raised:
+        secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
+    assert "fake-rule-id" in str(raised.value)
+    assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
+
+
+def test_a_scanner_report_that_will_not_decode_is_not_read_as_an_opaque_payload(planted, monkeypatch):
+    """`scan_file` decodes the scanner's own report, so a codec failure there is a scanner fault.
+
+    Inside the same `try` as the scrub it would present as an opaque *payload* and, with the flag set,
+    report a perfectly readable artifact as deliberately unscanned when nothing had scanned it.
+    """
+    def undecodable_report(_path: Path) -> list[dict]:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(secrets, "scan_file", undecodable_report)
+    with pytest.raises(UnicodeDecodeError):
+        secrets.sanitize(planted, require=(FAKE_VAR,), allow_opaque=True)
 
 
 def test_a_scanner_finding_after_the_scrub_refuses_the_upload(planted, monkeypatch):

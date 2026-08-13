@@ -1,9 +1,13 @@
 """Two-pass artifact sanitisation: known-value scrub first, then a pattern scanner.
 
-The order is load-bearing and there is no way to run one pass without the other: the scrub catches a
-credential this process actually holds, verbatim, whatever shape it has; the scanner catches a shape
-it recognises whether or not this process ever held the value. `skills/tracker/CONTRACT.md` states
-the same contract for the two verbs that upload through it.
+The order is load-bearing, and over a text artifact there is no way to run one pass without the
+other: the scrub catches a credential this process actually holds, verbatim, whatever shape it has;
+the scanner catches a shape it recognises whether or not this process ever held the value. A payload
+that is not UTF-8 text is refused outright unless the caller declares it opaque, and then the scrub
+alone is skipped — it is the pass that needs the decode — while the scanner still runs behind the
+scenes and a genuine finding still blocks the upload, but its result is never credited in the report,
+because some binary content is silently invisible to it too. `skills/tracker/CONTRACT.md` states the
+same contract for the two verbs that upload through it.
 
 Nothing here returns, logs, or embeds a credential value — only variable names and occurrence counts.
 """
@@ -69,7 +73,11 @@ def scrub_text(text: str, secrets: dict[str, str]) -> tuple[str, dict[str, int]]
 
 
 def scrub_file(path: Path, secrets: dict[str, str]) -> dict[str, int]:
-    """Rewrite `path` in place with every known secret value redacted. Returns per-name counts."""
+    """Rewrite `path` in place with every known secret value redacted. Returns per-name counts.
+
+    Raises `UnicodeDecodeError` on a payload that is not UTF-8 text; `sanitize` depends on that as the
+    signal that the known-value scrub cannot act on the artifact.
+    """
     scrubbed, counts = scrub_text(path.read_text(encoding="utf-8"), secrets)
     if counts:
         path.write_text(scrubbed, encoding="utf-8")
@@ -123,11 +131,16 @@ def scan_file(path: Path) -> list[dict]:
 
 def sanitize(
     path: Path, *, require: tuple[str, ...] = (), extra_words: frozenset[str] = frozenset(),
+    allow_opaque: bool = False,
 ) -> dict:
-    """Both passes, in order, over `path` in place. Raises rather than returning an unsafe file.
+    """Both passes, in order, over a text `path` in place; the scanner alone over a declared opaque one.
 
-    `require` names variables that must resolve to a scrubbable value in this process's environment;
-    an absent one is a loud failure rather than a clean zero-redaction run.
+    Raises rather than returning an unsafe file. `require` names variables that must resolve to a
+    scrubbable value in this process's environment; an absent one is a loud failure rather than a
+    clean zero-redaction run. `allow_opaque` turns a payload the known-value scrub cannot decode from
+    a refusal into a still-scanned passthrough: the pattern scanner needs no decode and still runs, and
+    a genuine finding still blocks the upload, but the report never credits it with a clean result --
+    only the declaration is returned, exactly as if neither pass had looked.
     """
     if not path.is_file():
         raise SanitizeError(f"artifact not found: {path}")
@@ -138,14 +151,39 @@ def sanitize(
             "required credential(s) not present in this process's environment, so nothing would "
             f"be scrubbed for them: {', '.join(missing)}"
         )
-    redactions = scrub_file(path, secrets)
+    # Exactly one statement inside the `try`: `scan_file` decodes the scanner's own report, so a wider
+    # span would read a corrupt report as an opaque payload and claim nothing needed scanning.
+    try:
+        redactions: dict[str, int] | None = scrub_file(path, secrets)
+    except UnicodeDecodeError as exc:
+        if not allow_opaque:
+            raise SanitizeError(
+                f"{path.name} is not UTF-8 text -- even one byte outside a valid UTF-8 sequence trips "
+                "this -- so the known-value scrub cannot act on it; refusing to upload it unscrubbed. "
+                "Pass allow_opaque only for an artifact you have separately established carries no "
+                "credential: it declares that and still runs the pattern scanner alone before "
+                "uploading it un-scrubbed."
+            ) from exc
+        redactions = None
     findings = scan_file(path)
     if findings:
         rules = sorted({str(f.get("RuleID") or f.get("Description") or "unknown") for f in findings})
+        scrub_clause = "" if redactions is None else " after the known-value scrub"
         raise SanitizeError(
-            f"{SCANNER} still reports {len(findings)} finding(s) after the known-value scrub "
-            f"({', '.join(rules)}); refusing to upload."
+            f"{SCANNER} reports {len(findings)} finding(s){scrub_clause} ({', '.join(rules)}); "
+            "refusing to upload."
         )
+    if redactions is None:
+        # The scanner still ran, above, as a best-effort check -- a real finding would already have
+        # raised -- but some binary content is silently invisible to it too: its own default allowlist
+        # skips many binary extensions, it skips any archive outright at the default archive depth, and
+        # its reader skips any file whose leading bytes sniff as application/*. A `0` here would not be
+        # a fact the report could stand behind, so only the declaration is returned, exactly as if
+        # neither pass had looked.
+        return {
+            "opaque": True,
+            "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
+        }
     return {
         "scrubbed_vars": sorted(redactions),  # names only, never a value
         "redactions": sum(redactions.values()),

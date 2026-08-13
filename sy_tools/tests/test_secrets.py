@@ -27,6 +27,20 @@ def planted(tmp_path, monkeypatch) -> Path:
     return path
 
 
+@pytest.fixture
+def opaque(tmp_path, monkeypatch) -> Path:
+    """An artifact no codec can read that still holds the fake credential, with that value in the environment.
+
+    `planted` can never reach the opaque branch — it is valid UTF-8 by construction — so the one
+    trailing invalid byte is what makes the payload undecodable while it still carries a value the
+    refusal and the report both have to keep to themselves.
+    """
+    monkeypatch.setenv(FAKE_VAR, FAKE_TOKEN)
+    path = tmp_path / "PROJ-1-ship-transcript.bin"
+    path.write_bytes(FAKE_TOKEN.encode() + b"\xff")
+    return path
+
+
 def test_name_heuristic_is_word_based():
     assert secrets.looks_like_secret_name("A_TOKEN")
     assert secrets.looks_like_secret_name("AWS_SECRET_ACCESS_KEY")
@@ -83,6 +97,45 @@ def test_sanitize_runs_the_scanner_pass_too(planted, monkeypatch):
     monkeypatch.setattr(secrets, "scan_file", lambda p: calls.append(p) or [])
     secrets.sanitize(planted, require=(FAKE_VAR,))
     assert calls == [planted], "the scanner must run on the already-scrubbed file, every time"
+
+
+def test_an_artifact_neither_pass_can_read_is_refused_unless_the_caller_declares_it(opaque):
+    with pytest.raises(secrets.SanitizeError) as raised:
+        secrets.sanitize(opaque, require=(FAKE_VAR,))
+    assert "not UTF-8 text" in str(raised.value), "the refusal must name why neither pass could run"
+    assert "allow_opaque" in str(raised.value), "a refusal with no named way forward is a dead end"
+    assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
+
+
+def test_a_declared_opaque_artifact_reports_no_pass_that_did_not_run(opaque, monkeypatch):
+    """A `0` or an empty list in any pass-result key reads as a clean pass over a file nothing opened."""
+    monkeypatch.setattr(
+        secrets, "scan_file", lambda _p: pytest.fail("the scanner must not run on a payload it cannot read")
+    )
+    report = secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
+    assert report["opaque"] is True, f"an unscanned upload must declare itself: {report}"
+    assert report["skipped_reason"], "the declaration must carry its reason, not only a flag"
+    assert not {"scrubbed_vars", "redactions", "scanner", "scanner_findings"} & set(report), (
+        f"the report claims a pass that never ran: {sorted(report)}"
+    )
+    assert FAKE_TOKEN not in json.dumps(report), "the report must carry names and counts, never a value"
+    assert opaque.read_bytes() == FAKE_TOKEN.encode() + b"\xff", (
+        "a payload no pass could act on must be left byte-identical, not half-written"
+    )
+
+
+def test_a_scanner_report_that_will_not_decode_is_not_read_as_an_opaque_payload(planted, monkeypatch):
+    """`scan_file` decodes the scanner's own report, so a codec failure there is a scanner fault.
+
+    Inside the same `try` as the scrub it would present as an opaque *payload* and, with the flag set,
+    report a perfectly readable artifact as deliberately unscanned when nothing had scanned it.
+    """
+    def undecodable_report(_path: Path) -> list[dict]:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(secrets, "scan_file", undecodable_report)
+    with pytest.raises(UnicodeDecodeError):
+        secrets.sanitize(planted, require=(FAKE_VAR,), allow_opaque=True)
 
 
 def test_a_scanner_finding_after_the_scrub_refuses_the_upload(planted, monkeypatch):

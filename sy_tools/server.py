@@ -803,9 +803,10 @@ async def attach_artifact(
     allow_opaque: Annotated[
         bool,
         Field(
-            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode "
-            "it, but the pattern scanner still runs. Only for an artifact you have separately "
-            "established carries no credential."
+            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
+            "The pattern scanner still runs as a best-effort check and a finding still blocks the "
+            "upload, but some binary content is invisible to it, so use this only for an artifact "
+            "you have separately established carries no credential."
         ),
     ] = False,
 ) -> dict[str, Any]:
@@ -818,9 +819,11 @@ async def attach_artifact(
 
     `allow_opaque` is the one exception, and it is a declaration rather than a permission: a payload
     that is not UTF-8 text will not be scrubbed, since the scrub needs a decode it does not have, but
-    the pattern scanner still runs over it and can still refuse the upload; the result reports which
-    pass ran rather than claiming a clean pass. Without it such a payload is refused outright. Set it
-    only for an artifact you have separately established carries no credential.
+    the pattern scanner still runs over it as a best-effort check and a genuine finding still blocks
+    the upload. The result never credits that scan with a clean result, since some binary content is
+    invisible to the scanner too; it reports only the declaration, exactly as if neither pass had run.
+    Without it such a payload is refused outright. Set it only for an artifact you have separately
+    established carries no credential.
     """
     _required(issue=issue)
 
@@ -911,9 +914,10 @@ async def attachment_update(
     allow_opaque: Annotated[
         bool,
         Field(
-            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode "
-            "it, but the pattern scanner still runs. Only for an artifact you have separately "
-            "established carries no credential."
+            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
+            "The pattern scanner still runs as a best-effort check and a finding still blocks the "
+            "upload, but some binary content is invisible to it, so use this only for an artifact "
+            "you have separately established carries no credential."
         ),
     ] = False,
 ) -> dict[str, Any]:
@@ -925,8 +929,9 @@ async def attachment_update(
     trackers offer no common primitive for "replace all of these". It runs
     the same gate and the same sanitisation, in the same order, as `attach-artifact`, `allow_opaque`
     included: with it set, a payload that is not UTF-8 text replaces the existing artifact having
-    skipped only the scrub, not the pattern scan, which the result declares rather than reports as a
-    clean pass over nothing.
+    skipped only the scrub -- the pattern scan still runs and a finding still blocks it -- and the
+    result declares the skip rather than crediting either pass with a clean result it cannot stand
+    behind.
 
     Destructive: the artifact it replaces is irrecoverable once the replacement lands and there is no
     undo, so confirm the target first.

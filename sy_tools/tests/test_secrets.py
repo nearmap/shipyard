@@ -107,26 +107,51 @@ def test_an_artifact_neither_pass_can_read_is_refused_unless_the_caller_declares
     assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
 
 
-def test_a_declared_opaque_artifact_still_runs_the_scanner(opaque, monkeypatch):
+def test_a_declared_opaque_artifact_still_runs_the_scanner_but_reports_no_pass(opaque, monkeypatch):
     """`allow_opaque` skips only the known-value scrub -- the scrub needs a decode this payload lacks.
 
-    The pattern scanner needs no decode and must still run and still be reported, not read as skipped.
+    The pattern scanner still runs, as a best-effort check, but its coverage of non-text content is
+    unverifiable (some binary formats are silently skipped by the scanner itself), so the report never
+    credits it with a clean result -- it carries only the declaration, exactly as if neither pass ran.
     """
     calls: list[Path] = []
     monkeypatch.setattr(secrets, "scan_file", lambda p: calls.append(p) or [])
     report = secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
     assert calls == [opaque], "the scanner must still run over a declared-opaque payload"
-    assert report["opaque"] is True, f"an unscrubbed upload must declare itself: {report}"
-    assert report["skipped_reason"], "the declaration must carry its reason, not only a flag"
-    assert report["scanner"] == secrets.SCANNER
-    assert report["scanner_findings"] == 0
-    assert not {"scrubbed_vars", "redactions"} & set(report), (
-        f"the report claims a scrub pass that never ran: {sorted(report)}"
-    )
+    assert report == {
+        "opaque": True,
+        "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
+    }, f"the report must not credit either pass with a result it cannot stand behind: {report}"
     assert FAKE_TOKEN not in json.dumps(report), "the report must carry names and counts, never a value"
     assert opaque.read_bytes() == FAKE_TOKEN.encode() + b"\xff", (
         "a payload the scrub could not act on must be left byte-identical, not half-written"
     )
+
+
+def test_a_declared_opaque_text_payload_with_a_real_finding_is_still_blocked(tmp_path, monkeypatch):
+    """Integration, no stub: the scanner itself must catch this, proving the round-trip defence is real.
+
+    A payload one byte short of valid UTF-8 is still handed to real gitleaks when declared opaque.
+    """
+    monkeypatch.delenv(FAKE_VAR, raising=False)
+    path = tmp_path / "leak.txt"
+    # High-entropy on purpose — the rule has an entropy floor a repeated-character body never clears —
+    # and split across two literals so this source file is not itself a match for the rule it plants.
+    path.write_bytes(b'api_key = "u8jzPde0IgxLd6Gnc' + b'fBAepfJBd0Kh8oOOL8d"\n\xff')
+    with pytest.raises(secrets.SanitizeError) as raised:
+        secrets.sanitize(path, allow_opaque=True)
+    assert "generic-api-key" in str(raised.value)
+
+
+def test_a_declared_opaque_binary_payload_is_not_falsely_reported_clean(opaque):
+    """Real gitleaks silently skips binary content by extension -- exactly why the report must never
+    claim a clean scanner result for a declared-opaque payload, only the bare declaration.
+    """
+    report = secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
+    assert report == {
+        "opaque": True,
+        "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
+    }
 
 
 def test_a_declared_opaque_artifact_with_a_scanner_finding_is_still_refused(opaque, monkeypatch):

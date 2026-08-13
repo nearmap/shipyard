@@ -3,10 +3,11 @@
 The order is load-bearing, and over a text artifact there is no way to run one pass without the
 other: the scrub catches a credential this process actually holds, verbatim, whatever shape it has;
 the scanner catches a shape it recognises whether or not this process ever held the value. A payload
-that is not UTF-8 text is refused outright unless the caller declares it opaque, and then only the
-scrub is skipped — it is the pass that needs the decode — while the scanner still runs and can still
-block the upload, and the report says which pass ran. `skills/tracker/CONTRACT.md` states the same
-contract for the two verbs that upload through it.
+that is not UTF-8 text is refused outright unless the caller declares it opaque, and then the scrub
+alone is skipped — it is the pass that needs the decode — while the scanner still runs behind the
+scenes and a genuine finding still blocks the upload, but its result is never credited in the report,
+because some binary content is silently invisible to it too. `skills/tracker/CONTRACT.md` states the
+same contract for the two verbs that upload through it.
 
 Nothing here returns, logs, or embeds a credential value — only variable names and occurrence counts.
 """
@@ -137,8 +138,10 @@ def sanitize(
     Raises rather than returning an unsafe file. `require` names variables that must resolve to a
     scrubbable value in this process's environment; an absent one is a loud failure rather than a
     clean zero-redaction run. `allow_opaque` turns a payload the known-value scrub cannot decode from
-    a refusal into a still-scanned, reported passthrough: the pattern scanner needs no decode and
-    still runs and can still block the upload; only the scrub result is ever omitted from the report.
+    a refusal into a still-scanned passthrough: the pattern scanner needs no decode and still runs, and
+    a genuine finding still blocks the upload, but the report never credits it with a clean result --
+    some binary content is silently invisible to the scanner too -- so only the declaration is
+    returned, exactly as if neither pass had looked.
     """
     if not path.is_file():
         raise SanitizeError(f"artifact not found: {path}")
@@ -172,14 +175,14 @@ def sanitize(
             "refusing to upload."
         )
     if redactions is None:
-        # The known-value scrub is the one pass omitted here: it needs a UTF-8 decode this payload
-        # does not have. The pattern scanner needs no decode and just ran against it, so `0` reflects
-        # a pass that ran and found nothing, not one that never looked.
+        # The scanner still ran, above, as a best-effort check -- a real finding would already have
+        # raised -- but some binary content is silently invisible to it too (its own default allowlist
+        # skips many binary extensions and any MIME-binary payload outright), so a `0` here would not
+        # be a fact the report could stand behind. Only the declaration is reported, exactly as if
+        # neither pass had looked.
         return {
             "opaque": True,
             "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
-            "scanner": SCANNER,
-            "scanner_findings": 0,
         }
     return {
         "scrubbed_vars": sorted(redactions),  # names only, never a value

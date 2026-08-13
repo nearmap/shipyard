@@ -140,8 +140,7 @@ def sanitize(
     clean zero-redaction run. `allow_opaque` turns a payload the known-value scrub cannot decode from
     a refusal into a still-scanned passthrough: the pattern scanner needs no decode and still runs, and
     a genuine finding still blocks the upload, but the report never credits it with a clean result --
-    some binary content is silently invisible to the scanner too -- so only the declaration is
-    returned, exactly as if neither pass had looked.
+    only the declaration is returned, exactly as if neither pass had looked.
     """
     if not path.is_file():
         raise SanitizeError(f"artifact not found: {path}")
@@ -176,9 +175,10 @@ def sanitize(
         )
     if redactions is None:
         # The scanner still ran, above, as a best-effort check -- a real finding would already have
-        # raised -- but some binary content is silently invisible to it too (its own default allowlist
-        # skips many binary extensions and any MIME-binary payload outright), so a `0` here would not
-        # be a fact the report could stand behind. Only the declaration is reported, exactly as if
+        # raised -- but some binary content is silently invisible to it too: its own default allowlist
+        # skips many binary extensions, it skips any archive outright at the default archive depth, and
+        # its reader skips any file whose leading bytes sniff as application/*. A `0` here would not be
+        # a fact the report could stand behind, so only the declaration is returned, exactly as if
         # neither pass had looked.
         return {
             "opaque": True,

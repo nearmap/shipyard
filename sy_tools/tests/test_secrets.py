@@ -140,18 +140,23 @@ def test_a_declared_opaque_text_payload_with_a_real_finding_is_still_blocked(tmp
     path.write_bytes(b'api_key = "u8jzPde0IgxLd6Gnc' + b'fBAepfJBd0Kh8oOOL8d"\n\xff')
     with pytest.raises(secrets.SanitizeError) as raised:
         secrets.sanitize(path, allow_opaque=True)
-    assert "generic-api-key" in str(raised.value)
+    assert "generic-api-key" in str(raised.value), (
+        "a real scanner finding must still block a declared-opaque upload"
+    )
 
 
-def test_a_declared_opaque_binary_payload_is_not_falsely_reported_clean(opaque):
-    """Real gitleaks silently skips binary content by extension -- exactly why the report must never
-    claim a clean scanner result for a declared-opaque payload, only the bare declaration.
+def test_a_declared_opaque_binary_payload_is_not_falsely_reported_clean(tmp_path):
+    """The identical payload the test above proves gitleaks catches in `.txt` is silently skipped in
+    `.bin` by gitleaks' own default allowlist -- exactly why the report must never claim a clean
+    scanner result for a declared-opaque payload, only the bare declaration.
     """
-    report = secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
+    path = tmp_path / "leak.bin"
+    path.write_bytes(b'api_key = "u8jzPde0IgxLd6Gnc' + b'fBAepfJBd0Kh8oOOL8d"\n\xff')
+    report = secrets.sanitize(path, allow_opaque=True)
     assert report == {
         "opaque": True,
         "skipped_reason": "not UTF-8 text: the known-value scrub cannot act on it",
-    }
+    }, f"the report must not credit either pass with a result it cannot stand behind: {report}"
 
 
 def test_a_declared_opaque_artifact_with_a_scanner_finding_is_still_refused(opaque, monkeypatch):

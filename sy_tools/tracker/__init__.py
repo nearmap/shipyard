@@ -139,7 +139,7 @@ class TrackerAdapter(Protocol):
         ...
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
-        """Upload an already-sanitised artifact to `issue` and return verified response evidence."""
+        """Upload an artifact the caller sanitised, or declared opaque, to `issue`; returns its evidence."""
         ...
 
     async def type_convert(self, issue: str, issue_type: str) -> dict:

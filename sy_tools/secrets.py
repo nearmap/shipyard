@@ -1,9 +1,11 @@
 """Two-pass artifact sanitisation: known-value scrub first, then a pattern scanner.
 
-The order is load-bearing and there is no way to run one pass without the other: the scrub catches a
-credential this process actually holds, verbatim, whatever shape it has; the scanner catches a shape
-it recognises whether or not this process ever held the value. `skills/tracker/CONTRACT.md` states
-the same contract for the two verbs that upload through it.
+The order is load-bearing, and over a text artifact there is no way to run one pass without the
+other: the scrub catches a credential this process actually holds, verbatim, whatever shape it has;
+the scanner catches a shape it recognises whether or not this process ever held the value. A payload
+that is not UTF-8 text is refused outright unless the caller declares it opaque, and then neither
+pass runs and the report says so. `skills/tracker/CONTRACT.md` states the same contract for the two
+verbs that upload through it.
 
 Nothing here returns, logs, or embeds a credential value — only variable names and occurrence counts.
 """
@@ -69,7 +71,11 @@ def scrub_text(text: str, secrets: dict[str, str]) -> tuple[str, dict[str, int]]
 
 
 def scrub_file(path: Path, secrets: dict[str, str]) -> dict[str, int]:
-    """Rewrite `path` in place with every known secret value redacted. Returns per-name counts."""
+    """Rewrite `path` in place with every known secret value redacted. Returns per-name counts.
+
+    Raises `UnicodeDecodeError` on a payload that is not UTF-8 text; `sanitize` depends on that as the
+    one signal that neither pass can act on the artifact.
+    """
     scrubbed, counts = scrub_text(path.read_text(encoding="utf-8"), secrets)
     if counts:
         path.write_text(scrubbed, encoding="utf-8")
@@ -123,11 +129,14 @@ def scan_file(path: Path) -> list[dict]:
 
 def sanitize(
     path: Path, *, require: tuple[str, ...] = (), extra_words: frozenset[str] = frozenset(),
+    allow_opaque: bool = False,
 ) -> dict:
-    """Both passes, in order, over `path` in place. Raises rather than returning an unsafe file.
+    """Both passes, in order, over a text `path` in place, or neither over a declared opaque one.
 
-    `require` names variables that must resolve to a scrubbable value in this process's environment;
-    an absent one is a loud failure rather than a clean zero-redaction run.
+    Raises rather than returning an unsafe file. `require` names variables that must resolve to a
+    scrubbable value in this process's environment; an absent one is a loud failure rather than a
+    clean zero-redaction run. `allow_opaque` is what turns a payload neither pass can read from a
+    refusal into a reported, unsanitised passthrough; the report then carries no pass result at all.
     """
     if not path.is_file():
         raise SanitizeError(f"artifact not found: {path}")
@@ -138,7 +147,20 @@ def sanitize(
             "required credential(s) not present in this process's environment, so nothing would "
             f"be scrubbed for them: {', '.join(missing)}"
         )
-    redactions = scrub_file(path, secrets)
+    # Exactly one statement inside the `try`: `scan_file` decodes the scanner's own report, so a wider
+    # span would read a corrupt report as an opaque payload and claim nothing needed scanning.
+    try:
+        redactions = scrub_file(path, secrets)
+    except UnicodeDecodeError as exc:
+        if not allow_opaque:
+            raise SanitizeError(
+                f"{path.name} is not UTF-8 text, so neither the known-value scrub nor the pattern "
+                "scanner can act on it; refusing to upload it unsanitised. Pass allow_opaque to "
+                "declare that and upload it with neither pass having run."
+            ) from exc
+        # Every pass-result key is omitted rather than zeroed: a `0` or an empty list here would read
+        # as a clean pass over an artifact nothing has looked at.
+        return {"opaque": True, "skipped_reason": "not UTF-8 text: neither sanitisation pass can act on it"}
     findings = scan_file(path)
     if findings:
         rules = sorted({str(f.get("RuleID") or f.get("Description") or "unknown") for f in findings})

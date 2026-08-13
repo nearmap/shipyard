@@ -634,13 +634,9 @@ class GithubAdapter:
         """
         issue = _checked_ref(issue)
         _checked_artifact(path)
-        try:
-            intended = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            raise TrackerError(
-                f"{path.name} is not UTF-8 text, and a gist holds text: this tracker has no binary "
-                "attachment, so there is nothing to replace it with. Attach the artifact as text."
-            ) from None
+        # Decodes here without its own refusal: `_checked_artifact` above already refused a payload this
+        # store cannot hold, for both verbs rather than this one.
+        intended = path.read_text(encoding="utf-8")
         found = _find_gist(issue, path.name)
         if found is None:
             fresh = self._sync_attach_artifact(issue, path)
@@ -718,9 +714,9 @@ def _checked_ref(issue: str) -> str:
 
 
 def _checked_artifact(path: Path) -> str:
-    """`path.name`, refusing before any upload the two faults an artifact's own name cannot recover from.
+    """`path.name`, refusing before any upload the faults an artifact this tracker cannot hold presents.
 
-    The name is checked, not escaped — see `FORBIDDEN_IN_FILENAME` — and both checks are shared by the two
+    The name is checked, not escaped — see `FORBIDDEN_IN_FILENAME` — and every check is shared by the two
     uploading verbs rather than repeated, because on this tracker a first `attachment-update` *is* an
     upload: a check only one of them made would be a check the other could write past.
     """
@@ -732,6 +728,13 @@ def _checked_artifact(path: Path) -> str:
         )
     if not path.is_file():
         raise TrackerError(f"artifact not found: {path}")
+    try:
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise TrackerError(
+            f"{path.name} is not UTF-8 text, and this tracker's artifact store holds text only, so it "
+            "cannot hold this artifact at all. Attach a text rendering of it instead."
+        ) from None
     return path.name
 
 

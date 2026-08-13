@@ -803,8 +803,9 @@ async def attach_artifact(
     allow_opaque: Annotated[
         bool,
         Field(
-            description="Upload a payload that is not UTF-8 text — neither sanitisation pass can read "
-            "it, so neither runs."
+            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode "
+            "it, but the pattern scanner still runs. Only for an artifact you have separately "
+            "established carries no credential."
         ),
     ] = False,
 ) -> dict[str, Any]:
@@ -816,9 +817,10 @@ async def attach_artifact(
     is a no-op skip: nothing is read, scrubbed, scanned, or uploaded.
 
     `allow_opaque` is the one exception, and it is a declaration rather than a permission: a payload
-    that is not UTF-8 text will be neither scrubbed nor pattern-scanned, so nothing has looked at what
-    leaves the machine, and the result says so instead of reporting a clean pass. Without it such a
-    payload is refused. Set it only for an artifact you have established carries no credential.
+    that is not UTF-8 text will not be scrubbed, since the scrub needs a decode it does not have, but
+    the pattern scanner still runs over it and can still refuse the upload; the result reports which
+    pass ran rather than claiming a clean pass. Without it such a payload is refused outright. Set it
+    only for an artifact you have separately established carries no credential.
     """
     _required(issue=issue)
 
@@ -909,8 +911,9 @@ async def attachment_update(
     allow_opaque: Annotated[
         bool,
         Field(
-            description="Upload a payload that is not UTF-8 text — neither sanitisation pass can read "
-            "it, so neither runs."
+            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode "
+            "it, but the pattern scanner still runs. Only for an artifact you have separately "
+            "established carries no credential."
         ),
     ] = False,
 ) -> dict[str, Any]:
@@ -921,8 +924,9 @@ async def attachment_update(
     shares that filename what happens is adapter-specific (see the tracker's own `ADAPTER.md`), since the
     trackers offer no common primitive for "replace all of these". It runs
     the same gate and the same sanitisation, in the same order, as `attach-artifact`, `allow_opaque`
-    included: with it set, a payload that is not UTF-8 text replaces the existing artifact having been
-    neither scrubbed nor pattern-scanned, which the result declares rather than reports as clean.
+    included: with it set, a payload that is not UTF-8 text replaces the existing artifact having
+    skipped only the scrub, not the pattern scan, which the result declares rather than reports as a
+    clean pass over nothing.
 
     Destructive: the artifact it replaces is irrecoverable once the replacement lands and there is no
     undo, so confirm the target first.

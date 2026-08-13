@@ -737,7 +737,7 @@ async def test_replacing_an_attachment_scrubs_before_it_uploads_and_honours_the_
 async def test_an_opaque_payload_reaches_an_upload_only_on_the_declaration_the_caller_passed(
     monkeypatch, tmp_path, verb
 ):
-    """Both uploading verbs owe the same answer for a payload neither sanitisation pass can read.
+    """Both uploading verbs owe the same answer for a payload the known-value scrub cannot decode.
 
     The tool classifies nothing itself: it hands the caller's declaration to `sanitize` and stays
     ordered behind it, so an undeclared opaque payload leaves the upload unreached on either verb

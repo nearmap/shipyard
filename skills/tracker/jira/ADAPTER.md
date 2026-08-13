@@ -66,9 +66,9 @@ Deleting a dependency link is not a contract verb: no workflow drives it, so it 
 
 ## `attach-artifact` and the attachment lifecycle
 
-Jira supports native work-item attachments. Render the artifact, then hand the path to the `attach-artifact` tool: it checks the gate, sanitises on the rule `../CONTRACT.md` states, and uploads over this adapter's REST path, so no pass can be skipped at the call site and `ACLI_TOKEN` never reaches argv or stdout. This adapter uploads bytes, so a payload neither pass can read reaches it as far as the transport is concerned; whether it may is the caller's declaration, not this adapter's. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
+Jira supports native work-item attachments. Render the artifact, then hand the path to the `attach-artifact` tool: it checks the gate, sanitises on the rule `../CONTRACT.md` states, and uploads over this adapter's REST path, so no pass can be skipped at the call site and `ACLI_TOKEN` never reaches argv or stdout. This adapter uploads bytes, so a payload the scrub cannot read reaches it as far as the transport is concerned; whether it may is the caller's declaration, not this adapter's. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
 
-`attachment-update` is the other uploading verb and runs the identical gate and the identical sanitisation before it writes. The only upload neither pass has looked at is one the caller declared with `allow_opaque`, and the result says so.
+`attachment-update` is the other uploading verb and runs the identical gate and the identical sanitisation before it writes. The only upload the scrub has not looked at is one the caller declared with `allow_opaque` on a payload it cannot decode; the pattern scanner still runs on that payload, and the result says which pass ran.
 
 `attachment-download` resolves the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 

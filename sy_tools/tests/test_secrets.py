@@ -107,21 +107,35 @@ def test_an_artifact_neither_pass_can_read_is_refused_unless_the_caller_declares
     assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
 
 
-def test_a_declared_opaque_artifact_reports_no_pass_that_did_not_run(opaque, monkeypatch):
-    """A `0` or an empty list in any pass-result key reads as a clean pass over a file nothing opened."""
-    monkeypatch.setattr(
-        secrets, "scan_file", lambda _p: pytest.fail("the scanner must not run on a payload it cannot read")
-    )
+def test_a_declared_opaque_artifact_still_runs_the_scanner(opaque, monkeypatch):
+    """`allow_opaque` skips only the known-value scrub -- the scrub needs a decode this payload lacks.
+
+    The pattern scanner needs no decode and must still run and still be reported, not read as skipped.
+    """
+    calls: list[Path] = []
+    monkeypatch.setattr(secrets, "scan_file", lambda p: calls.append(p) or [])
     report = secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
-    assert report["opaque"] is True, f"an unscanned upload must declare itself: {report}"
+    assert calls == [opaque], "the scanner must still run over a declared-opaque payload"
+    assert report["opaque"] is True, f"an unscrubbed upload must declare itself: {report}"
     assert report["skipped_reason"], "the declaration must carry its reason, not only a flag"
-    assert not {"scrubbed_vars", "redactions", "scanner", "scanner_findings"} & set(report), (
-        f"the report claims a pass that never ran: {sorted(report)}"
+    assert report["scanner"] == secrets.SCANNER
+    assert report["scanner_findings"] == 0
+    assert not {"scrubbed_vars", "redactions"} & set(report), (
+        f"the report claims a scrub pass that never ran: {sorted(report)}"
     )
     assert FAKE_TOKEN not in json.dumps(report), "the report must carry names and counts, never a value"
     assert opaque.read_bytes() == FAKE_TOKEN.encode() + b"\xff", (
-        "a payload no pass could act on must be left byte-identical, not half-written"
+        "a payload the scrub could not act on must be left byte-identical, not half-written"
     )
+
+
+def test_a_declared_opaque_artifact_with_a_scanner_finding_is_still_refused(opaque, monkeypatch):
+    """`allow_opaque` opts out of the scrub, never out of the scanner: a live finding still blocks."""
+    monkeypatch.setattr(secrets, "scan_file", lambda _p: [{"RuleID": "fake-rule-id"}])
+    with pytest.raises(secrets.SanitizeError) as raised:
+        secrets.sanitize(opaque, require=(FAKE_VAR,), allow_opaque=True)
+    assert "fake-rule-id" in str(raised.value)
+    assert FAKE_TOKEN not in str(raised.value), "a message must never carry the value it could not scrub"
 
 
 def test_a_scanner_report_that_will_not_decode_is_not_read_as_an_opaque_payload(planted, monkeypatch):

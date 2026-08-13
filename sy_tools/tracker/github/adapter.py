@@ -633,10 +633,7 @@ class GithubAdapter:
         caller tells a supersede from an upload.
         """
         issue = _checked_ref(issue)
-        _checked_artifact(path)
-        # Decodes here without its own refusal: `_checked_artifact` above already refused a payload this
-        # store cannot hold, for both verbs rather than this one.
-        intended = path.read_text(encoding="utf-8")
+        intended = _checked_artifact(path)
         found = _find_gist(issue, path.name)
         if found is None:
             fresh = self._sync_attach_artifact(issue, path)
@@ -714,11 +711,14 @@ def _checked_ref(issue: str) -> str:
 
 
 def _checked_artifact(path: Path) -> str:
-    """`path.name`, refusing before any upload the faults an artifact this tracker cannot hold presents.
+    """`path`'s decoded text, refusing before any upload the faults an artifact this tracker cannot hold presents.
 
-    The name is checked, not escaped — see `FORBIDDEN_IN_FILENAME` — and every check is shared by the two
-    uploading verbs rather than repeated, because on this tracker a first `attachment-update` *is* an
-    upload: a check only one of them made would be a check the other could write past.
+    Returning the decode rather than just `path.name` means a caller that needs the text (`attachment-
+    update`'s read-back comparison) never re-reads the file: a second read would open a TOCTOU window a
+    caller that only needed the refusal has no reason to reintroduce. The name is checked, not escaped —
+    see `FORBIDDEN_IN_FILENAME` — and every check is shared by the two uploading verbs rather than
+    repeated, because on this tracker a first `attachment-update` *is* an upload: a check only one of
+    them made would be a check the other could write past.
     """
     if any(character in path.name for character in FORBIDDEN_IN_FILENAME):
         raise TrackerError(
@@ -729,13 +729,12 @@ def _checked_artifact(path: Path) -> str:
     if not path.is_file():
         raise TrackerError(f"artifact not found: {path}")
     try:
-        path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         raise TrackerError(
             f"{path.name} is not UTF-8 text, and this tracker's artifact store holds text only, so it "
             "cannot hold this artifact at all. Attach a text rendering of it instead."
         ) from None
-    return path.name
 
 
 def _edit(issue: str, flag: str, value: str) -> str:

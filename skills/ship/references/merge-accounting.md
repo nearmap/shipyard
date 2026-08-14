@@ -21,7 +21,7 @@ When revalidation or the authorizing user surfaces one small bounded fix (a typo
 
 1. apply the fix in the recorded build worktree and push;
 2. dispatch a focused delta `sy:gate` with `REVIEW_BASE_SHA` = the prior `REV_REVIEWED_SHA` and `REVIEWED_SHA` = the new head — valid only when the prior reviewed head is the immutable base and the new head is the immutable head; a rebase or base change voids the delta and re-enters GATE for full coverage;
-3. wait for CI on the new head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr>`, run in the background), then merge against the new verified head.
+3. wait for CI on the new head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <base repo> --head <the SHA just pushed>`, run in the background; `<pr>` stays first, `--repo` is the PR's base repository from `gh repo view --json parent` and never a fork's own origin, which `gh` cannot resolve the PR against, and `--head` keeps a stale or empty check set from reading green), then merge against the new verified head.
 
 The delta gate runs at the same resolved frontier review model and max effort as any other review scope: this sub-flow bounds the scope reviewed, never the reviewer.
 

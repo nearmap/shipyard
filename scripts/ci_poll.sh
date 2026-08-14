@@ -69,8 +69,8 @@ poll() {
             *)
                 case "$positionals" in
                     0) pr="$1" ;;
-                    1) interval="$1" ;;
-                    2) timeout="$1" ;;
+                    1) [[ "$1" =~ ^[0-9]+$ ]] || { usage >&2; return 64; }; interval="$1" ;;
+                    2) [[ "$1" =~ ^[0-9]+$ ]] || { usage >&2; return 64; }; timeout="$1" ;;
                     *) usage >&2; return 64 ;;
                 esac
                 positionals=$(( positionals + 1 )); shift ;;
@@ -140,7 +140,7 @@ poll() {
             pending) failed_once=0; none_once=0 ;;
         esac
         if (( SECONDS - start >= timeout )); then
-            echo "ci_poll: timed out after ${timeout}s with checks still pending for $pr" >&2
+            echo "ci_poll: timed out after ${timeout}s for $pr (last observed check state: $state)" >&2
             return 2
         fi
         sleep "$interval"
@@ -259,6 +259,7 @@ exit 0' 'if (( n < 2 )); then echo "some checks are still pending"; exit 8; fi
 
     _fake_gh "$tmp/gh" "$head_a" "$empty"
     _assert "(d) an empty set on an expected head is not green" "$(_poll_rc "$tmp" 99 0 0 --head aaa111)" 2
+    _assert_has "(d) the timeout names the observed state" "$(cat "$tmp/err")" "last observed check state: none"
     _assert "(e) an empty set without --head keeps today's contract" "$(_poll_rc "$tmp" 99 0 60)" 0
     _assert "(e) --allow-no-checks without --head is a no-op" "$(_poll_rc "$tmp" 99 0 60 --allow-no-checks)" 0
     _assert "(e) that no-op returns on the first iteration" "$(cat "$tmp/state")" 1
@@ -286,6 +287,8 @@ if (( n > 1 )); then echo "some checks are still pending"; exit 8; fi
     _assert "(h) unknown flag" "$(_status bash "$shell" poll 12 --nope)" 64
     _assert "(h) --head at argv exhaustion" "$(_status bash "$shell" poll 12 --head)" 64
     _assert "(h) --head followed by a flag" "$(_status bash "$shell" poll 12 --head --allow-no-checks)" 64
+    _assert "(r) non-numeric interval is a usage error, not a later arithmetic crash" "$(_status bash "$shell" poll 12 abc 60)" 64
+    _assert "(r) non-numeric timeout is a usage error" "$(_status bash "$shell" poll 12 5 abc)" 64
 
     if ! command -v pgrep > /dev/null; then
         echo "ci_poll self-test: (j) needs pgrep, which is not on PATH" >&2

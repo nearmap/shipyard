@@ -15,7 +15,7 @@ This skill inherits caller model/effort. Raw logs never enter the calling contex
 
 - Detect branch/PR and current HEAD SHA.
 - Find checks/runs that actually cover that SHA; do not mistake an older green run for current-head coverage.
-- Pending ⇒ wait with the shared poller: launch `${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr>` as a single token-free `run_in_background` Bash call (it sleeps between checks and exits when nothing is pending); never hand-write a poller loop. Never poll once per reasoning turn and never self-resume a monitor at a turn-budget boundary; both bleed tokens on a large matrix. Its default 1800s timeout comes from `ci.poll_timeout` — raise it for repos/matrices whose CI routinely runs longer, so a single call spans the wait instead of timing out and bouncing to the parent.
+- Pending ⇒ wait with the shared poller: launch `${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <the PR's base repository, never a fork's own origin>` as a single token-free `run_in_background` Bash call (it sleeps between checks and exits when nothing is pending); add `--head <SHA>` whenever triage already knows the expected head, so a stale or empty check set cannot read as green. Never hand-write a poller loop. Never poll once per reasoning turn and never self-resume a monitor at a turn-budget boundary; both bleed tokens on a large matrix. Its default 1800s timeout comes from `ci.poll_timeout` — raise it for repos/matrices whose CI routinely runs longer, so a single call spans the wait instead of timing out and bouncing to the parent.
 
 ## Diagnose failure
 

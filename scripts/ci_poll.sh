@@ -26,9 +26,11 @@ ci_poll.sh — token-free CI poller.
   ci_poll.sh poll <pr-number-or-branch> [interval_s] [timeout_s] [--repo OWNER/REPO] [--head SHA] [--allow-no-checks]
   ci_poll.sh self-test
 
-<pr-number-or-branch> is the first positional; no flag precedes it. Omitted interval_s/timeout_s come from
-resolved config (ci.poll_interval, ci.poll_timeout); raise ci.poll_timeout where CI routinely outlasts it,
-so one poll call spans the whole wait.
+The parser accepts a flag before <pr-number-or-branch>, but callers must put it first anyway: the
+end-of-run hygiene check matches a live poller by argv shape (`pgrep -f "ci_poll.sh poll <pr>"`), so a
+flag ahead of the selector leaves it undetectable. Omitted interval_s/timeout_s come from resolved config
+(ci.poll_interval, ci.poll_timeout); raise ci.poll_timeout where CI routinely outlasts it, so one poll
+call spans the whole wait.
 
   --repo OWNER/REPO   the PR's base repository, not the current checkout's origin — from a fork these
                       differ and the PR will not resolve (`gh repo view --json parent` reports the base).

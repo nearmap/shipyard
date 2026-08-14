@@ -93,6 +93,15 @@ TRACKER_TOKENS = [
     ]
 ]
 
+# Files documenting a `ci_poll.sh poll` invocation or asserting on one; `check_poller_argv` reads them.
+POLLER_CALL_SITES = (
+    "agents/ship-gate.md",
+    "skills/ci/SKILL.md",
+    "skills/ship/references/immutable-gate.md",
+    "skills/ship/references/merge-accounting.md",
+    "skills/ship/references/handoff-accounting.md",
+)
+
 REQUIRED = {
     ".claude-plugin/plugin.json",
     "hooks/hooks.json",
@@ -1232,6 +1241,20 @@ def check_invariants(errors: list[str]) -> None:
         fail("config-values.md must forbid restating a shipped default as prose", errors)
 
 
+def check_poller_argv(errors: list[str]) -> None:
+    """Every documented poller invocation keeps the selector first, ahead of any flag."""
+    pattern = re.compile(r"ci_poll\.sh poll\s+(\S+)")
+    for rel in POLLER_CALL_SITES:
+        found = pattern.findall((ROOT / rel).read_text(encoding="utf-8", errors="replace"))
+        if not found:
+            fail(f"{rel}: documents the CI wait and must invoke the shared poller by name", errors)
+        for token in found:
+            if token.startswith("-"):
+                # the end-of-run hygiene assertions match `pgrep -f "ci_poll.sh poll <pr>"`, so a flag
+                # slipped in front of the selector leaves a live poller undetectable rather than failing
+                fail(f"{rel}: ci_poll.sh poll takes the selector first, not {token!r}", errors)
+
+
 def run_self_test(rel: str, errors: list[str]) -> None:
     script = ROOT / rel
     if not script.is_file():
@@ -1294,6 +1317,7 @@ def main() -> int:
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)
+    check_poller_argv(errors)
 
     # Here rather than in pytest because neither is reachable there: one is bash, and the other sits
     # outside the `sy_tools` tree pytest's `testpaths` collects.

@@ -958,6 +958,20 @@ def check_invariants(errors: list[str]) -> None:
     if economy_axis_phrase in spec:
         fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
 
+    # An oversized plan is shortened, never split: `plan_file` materialises one comment's one agent-facing
+    # half, so a plan spread over two comments is one no later phase can read back. The staleness leg is
+    # the load-bearing one — the superseded sentence offered splitting as the remedy for every writer.
+    if "Split oversized content across writes, or shorten it." in contract:
+        fail("contract still offers splitting first; the remedy is shortening, and a plan is never split", errors)
+    if "a plan comment is never split across comments" not in contract:
+        fail("contract must state that a plan comment is never split across comments", errors)
+    # Section-scoped for the same reason as the "never writes the Task body" pin above: the pass has to be
+    # Step 2's own first action, and the literal carries the ordering so neither the check's invocation nor
+    # its position before the SUPERSEDED edit can be deleted while the pass text survives.
+    density_pin = "The rewrite and `scripts/plan_density_check.py` both complete before any tracker mutation."
+    if density_pin not in spec_s7.partition("### Step 2")[2]:
+        fail("spec §7's Step 2 must run the density pass and its check before any tracker mutation", errors)
+
     # Each adapter's body limit lives in the constant, again in the comment above it carrying that
     # figure's provenance, and again in its agent-facing ADAPTER.md prose. The Protocol docstring is no
     # longer a target: it states the contract and names no figure, because a core module may not name a

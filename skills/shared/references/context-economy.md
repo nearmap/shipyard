@@ -15,9 +15,11 @@ Apply both to every paragraph before it ships:
 
 A settled decision is stated, not re-argued. Once the choice is made, the artifact tells its reader what to do; the reasoning that produced it belongs to the human-facing half of the record, or nowhere. Rationale in machine-facing text is the most common form of dilution here precisely because it reads as thoroughness — but an implementer cannot act on *why*, and every line of it displaces a line they could have acted on.
 
-## No cross-part restatement
+## No restatement, across the parts or within one
 
 An artifact with two labeled parts — a human half and an agent half, a sign-off summary and a mechanical plan — carries each fact in exactly one of them. Repetition across that boundary is not redundancy for safety; it is two copies that drift, and a reader of either half cannot tell which one is current. Cross-reference across the boundary instead of copying over it.
+
+The rule does not stop at that boundary; it holds *within* a half as well. A fact stated in one section of an agent half and again in another is the same pair of drifting copies, minus the labeled seam that made the duplication easy to see — and the second copy is paid for out of the same attention budget as the first. State it once, in the section whose reader acts on it, and point at that section from anywhere else that needs it.
 
 ## Evidence is not instruction
 

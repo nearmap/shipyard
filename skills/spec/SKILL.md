@@ -153,7 +153,18 @@ A `request changes` answer revises the draft and returns to this step; re-run `s
 
 Both labeled parts are revealed here, in full, rather than at Step 1. This step never writes the Task body — not for a pre-existing Task, and not even for one this run just created — so no existing body content is ever a target of this run's write. (A body edit during research, §2, is governed separately by that section, not by this rule.) Marking a superseded plan SUPERSEDED rather than leaving two ACTIVE is the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: an overruled record is corrected on its own surface, never left standing.
 
-1. if an older plan is ACTIVE, edit its comment to:
+1. run the density pass over the `/sy:ship` half. It runs on **every** plan, unconditionally — never only on one that looks long — and it rewrites that half alone. Its placement here, after sign-off, is deliberate: what Step 1 approved is the judgment carried in the human half, which this pass never touches, so the rewrite cannot invalidate the approval; and running it last means nothing added late escapes it. Cut four things, under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`:
+
+   - rationale a builder cannot act on;
+   - a fact already carried by another section of this same half;
+   - narration of how the plan reached its own conclusions;
+   - inside a verification obligation, the clause that restates its own ordered change. The obligation itself always stays, with its lens, its claim and its named evidence — this cut removes a sentence, never an obligation.
+
+   Splitting the half across comments is not the remedy for a long one, and is not available: a plan lives in exactly one comment (`${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`). Tightening is the remedy.
+
+   **Preservation contract.** The pass removes prose and never removes an anchor: every file path, symbol, config key, flag, SHA, job name, obligation, invariant and acceptance criterion present before the rewrite is present after it. That is enforced rather than trusted, because no human reads this half again after approval. Write the before and after halves to two files under the issue's own resolved scratch directory — `scratch_dir {"identifier": "<KEY>"}`, using the `path` it reports, never a repo-relative one — and run `python ${CLAUDE_PLUGIN_ROOT}/scripts/plan_density_check.py check <before> <after>`, which exits non-zero listing any backticked token the rewrite dropped. The rewrite and `scripts/plan_density_check.py` both complete before any tracker mutation. Not merely before the append: the SUPERSEDED edit below comes first, so a check landing between the two would strand the Task at zero ACTIVE plans on failure. On a non-zero exit, re-attempt the rewrite once; if it fails again, post the pre-rewrite half unchanged and say so. That half is the approved artifact, so posting it loses nothing, and no run is left holding an approved plan it may not post.
+
+2. if an older plan is ACTIVE, edit its comment to:
 
 ```text
 # Execution Plan v<N-1>
@@ -161,7 +172,7 @@ Status: SUPERSEDED
 Superseded by: v<N>
 ```
 
-2. append the new comment, carrying both labeled parts above in full. `post-comment`'s split is the plan's own split, so pass them as they are: `human` is this heading block plus **For your sign-off**, `agent_detail` is **For `/sy:ship`** — never one hand-composed body:
+3. append the new comment, carrying both labeled parts above in full. `post-comment`'s split is the plan's own split, so pass them as they are: `human` is this heading block plus **For your sign-off**, `agent_detail` is **For `/sy:ship`** — never one hand-composed body:
 
 ```text
 # Execution Plan v<N>
@@ -169,8 +180,8 @@ Status: ACTIVE
 Supersedes: v<N-1>   # omit for v1
 ```
 
-3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
-4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
+4. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
+5. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
 The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.
 

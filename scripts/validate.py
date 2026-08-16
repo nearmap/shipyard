@@ -113,6 +113,7 @@ REQUIRED = {
     "skills/tracker/jira/config-map.json",
     "skills/tracker/github/config-map.json",
     "scripts/ci_poll.sh",
+    "scripts/plan_density_check.py",
     "sy_tools/usage.py",
     "sy_tools/eval_events.py",
     "sy_tools/memory.py",
@@ -1333,10 +1334,11 @@ def main() -> int:
     check_invariants(errors)
     check_poller_argv(errors)
 
-    # Here rather than in pytest because neither is reachable there: one is bash, and the other sits
-    # outside the `sy_tools` tree pytest's `testpaths` collects.
+    # Here rather than in pytest because none of them is reachable there: one is bash, and the others
+    # sit outside the `sy_tools` tree pytest's `testpaths` collects.
     run_self_test("scripts/ci_poll.sh", errors)
     run_self_test("docs/smoke_mcp.py", errors)
+    run_self_test("scripts/plan_density_check.py", errors)
 
     if errors:
         print("Shipyard validation FAILED:", file=sys.stderr)

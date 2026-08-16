@@ -466,6 +466,39 @@ async def test_a_body_over_the_adapters_limit_is_refused_whole_and_one_at_it_sti
         assert recorder.calls, f"{tool} refused a body that was exactly at the limit"
 
 
+def test_the_size_refusal_names_shortening_before_splitting():
+    """Splitting is the answer that costs a reader a comment, so it must not be the first one offered."""
+    with pytest.raises(server.ToolError) as refusal:
+        server._validate_body_size("x" * (STUB_BODY_LIMIT + 1), STUB_BODY_LIMIT)
+    message = str(refusal.value)
+    assert message.index("horten") < message.index("plit"), f"splitting is offered before shortening: {message}"
+
+
+@pytest.mark.anyio
+async def test_an_oversized_plan_comment_is_refused_with_no_offer_to_split_it(monkeypatch):
+    """A plan split across comments reads back with a half missing, so the guard must not suggest it.
+
+    Driven through `post-comment` rather than the helper, because the convention that a plan comment is
+    one comment lives in the caller: a correct message the writer never asks for is no guard at all.
+    """
+    recorder = _Recorder()
+    recorder.body_limit = STUB_BODY_LIMIT
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    arguments = {
+        "issue": "PROJ-1",
+        "human": "# Execution Plan v1\nStatus: ACTIVE\n\nTL;DR: too long.",
+        "agent_detail": "## For /sy:ship\n\n" + "x" * STUB_BODY_LIMIT,
+    }
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", arguments)
+    message = _text(result)
+    assert result.is_error is True, f"an oversized plan comment reached the adapter: {recorder.calls}"
+    assert "never split across comments" in message, f"the plan refusal must rule splitting out: {message}"
+    assert "split the content across writes" not in message.lower(), f"a plan was offered a split: {message}"
+    assert "/sy:ship" in message, f"the plan refusal must say which half to tighten: {message}"
+    assert not recorder.calls, f"post-comment wrote an oversized plan body: {recorder.calls}"
+
+
 @pytest.mark.anyio
 async def test_a_tracker_failure_comes_back_as_a_tool_result(monkeypatch):
     """No per-tool try/except: the SDK already turns a raising tool into an `isError` result.
@@ -1979,6 +2012,66 @@ async def test_plan_file_refuses_an_active_plan_whose_comment_id_reads_back_empt
     assert result.is_error is True, result.content
     assert "no readable comment id" in _text(result), _text(result)
     assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
+
+
+def _plan_at(version: int, *, status: str = "ACTIVE") -> str:
+    """A whole plan comment at `version`, in the read-back shape, for the continuation cases below."""
+    return _comment_body(f"# Execution Plan v{version}\n\nStatus: {status}\n\nTL;DR: a plan.", PLAN_AGENT_READ_BACK)
+
+
+def _continuation(version: int, *, status: str = "ACTIVE", lead: str = "") -> str:
+    """The stub a plan split across two comments leaves behind: a heading that is not a plan heading."""
+    return f"{lead}# Execution Plan v{version} (continued)\n\nStatus: {status}\n\n...the rest of the half."
+
+
+QUOTING_PROSE = "# Ship retrospective\n\nThe plan comment was headed `# Execution Plan v1` and held.\n"
+"""A comment that names a plan heading below its own: prose about a plan, not a continuation of one."""
+
+CONTINUATION_CASES = [
+    ((_plan_at(1), _continuation(1)), "c2", None),
+    ((_plan_at(1), _continuation(1, lead="\n\n")), "c2", None),
+    ((_continuation(1, status="SUPERSEDED"), _plan_at(2)), None, 2),
+    ((_plan_at(1), QUOTING_PROSE), None, 1),
+    ((_plan_at(1), "## Execution Plan v1 (continued)\n\nStatus: ACTIVE\n\n...more."), None, 1),
+    ((_plan_at(1), _plan_at(1, status="SUPERSEDED").replace("v1\n", "v1  \n", 1)), None, 1),
+    ((_plan_at(1), _plan_at(1, status="SUPERSEDED").replace("v1\n", "v1\r\n", 1)), None, 1),
+    ((_plan_at(1), _continuation(10)), None, 1),
+]
+"""Each thread the detector sees, the comment id it must refuse on, and the version it must write."""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("bodies", "flagged", "version"), CONTINUATION_CASES, ids=[
+    "a same-version continuation",
+    "a continuation behind a leading blank line",
+    "a superseded stub under a newer plan",
+    "prose quoting a plan heading",
+    "a level-two heading",
+    "a strict heading with trailing spaces",
+    "a strict heading with a carriage return",
+    "a continuation at a two-digit version",
+])
+async def test_plan_file_refuses_only_a_continuation_stranded_at_the_active_plans_own_version(
+    monkeypatch, scratch_root, bodies, flagged, version
+):
+    """The detector has to fire on a split plan and stay silent on everything shaped a little like one.
+
+    A refusal here is permanent for the issue until a new plan version is posted, so the negatives are
+    the load-bearing half: a stub left by an old split, and prose that merely quotes a heading, both
+    outlive the plan they refer to and neither may make a live plan unreadable.
+    """
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Recorder(_thread(*bodies)))
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    if flagged is not None:
+        assert result.is_error is True, f"a plan split across two comments was materialised: {result.content}"
+        assert flagged in _text(result), f"the refusal must name the stranded comment: {_text(result)}"
+        assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
+        return
+    assert result.is_error is False, _text(result)
+    assert _payload(result)["version"] == version, _payload(result)
+    written = Path(_payload(result)["path"]).read_text(encoding="utf-8")
+    assert written.rstrip().endswith(PLAN_AGENT_READ_BACK), f"the wrong comment's half was written: {written!r}"
 
 
 @pytest.mark.anyio

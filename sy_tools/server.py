@@ -347,7 +347,7 @@ async def post_comment(
     # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
     _validate_machine_log(body)
     adapter = tracker.adapter()
-    _validate_body_size(body, adapter.body_limit)
+    _validate_body_size(body, adapter.body_limit, is_plan=_PLAN_HEADING.match(human.lstrip()) is not None)
     posted = await adapter.post_comment(issue, body)
     return {**posted, "scrub": scrub}
 
@@ -424,6 +424,13 @@ _PLAN_HEADING = re.compile(r"#[ \t]+Execution Plan v(\d+)[ \t]*\r?$", re.MULTILI
 Matched against the body's start, never searched for: a comment *quoting* a plan heading mid-body is
 not a plan, and treating it as one is how "exactly one ACTIVE plan" starts picking the wrong comment."""
 
+_PLAN_CONTINUATION = re.compile(r"#[ \t]+Execution Plan v(\d+)")
+"""A heading that opens like a plan's without being one — the `v3 (continued)` stub a split plan leaves.
+
+Matched against the body's start rather than searched for, exactly as `_PLAN_HEADING` is: a
+`# Ship retrospective` or `# SEAMS` comment quoting a plan heading further down its body is not a
+continuation of anything, and a search would flag every one of them and strand the issue."""
+
 _PLAN_STATUS = re.compile(r"^Status:[ \t]*(\S+)", re.MULTILINE)
 """A plan's status field. The **first** occurrence after the heading is the plan's own status.
 
@@ -472,6 +479,12 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
     detectable by comparing the pin rather than by re-reading prose.
 
+    A comment whose heading opens `# Execution Plan v<N>` without being a plan heading — a
+    `v<N> (continued)` stub — is refused too when its `<N>` is the ACTIVE plan's own version, naming that
+    comment: this tool hands on one comment's half, so a plan split across two comments would be
+    materialised with the second one's content silently missing. Post the whole plan as the next version,
+    which moves the ACTIVE version past the stranded comment and leaves it as history.
+
     Zero or more than one ACTIVE plan is refused, naming the count and the comment ids: that convention
     (`skills/tracker/CONTRACT.md` § Exactly one ACTIVE plan) is what makes "the plan" unambiguous, and
     picking one of several would ship against a plan nobody approved. `comments_truncated` says whether
@@ -518,6 +531,27 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             "/sy:spec rather than picking one here."
         )
     comment_id, version, body = active[0]
+    for comment in read.get("comments") or []:
+        if not isinstance(comment, dict):
+            continue
+        # lstripped like the selection loop above, or a leading blank line hides the heading from `.match`.
+        candidate = str(comment.get("body") or "").lstrip()
+        opener = _PLAN_CONTINUATION.match(candidate)
+        # A strict match is a plan comment, never a continuation — including the selected plan itself.
+        if opener is None or _PLAN_HEADING.match(candidate) is not None:
+            continue
+        # Only the ACTIVE version's own stub strands this issue: an older one is history that a later plan
+        # version has already moved past, and refusing on it would make the issue permanently unreadable.
+        if int(opener.group(1)) != version:
+            continue
+        raise ToolError(
+            f"{issue} carries comment {comment.get('id') or '(no id)'}, a continuation of Execution Plan "
+            f"v{version} rather than a plan comment of its own, and v{version} is the ACTIVE plan. This "
+            "tool hands on one comment's agent-facing half, so the plan would go to /sy:ship with that "
+            f"comment's content missing and nothing to say so. Post the whole plan as v{version + 1} "
+            "through `post-comment` — one comment, tightened to fit the body limit — which moves the "
+            "ACTIVE version past the stranded comment and leaves it as history."
+        )
     if not comment_id:
         raise ToolError(
             f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id: the tracker "
@@ -654,14 +688,26 @@ def _claims_within(parsed: object) -> bool:
     return False
 
 
-def _validate_body_size(body: str, limit: int) -> None:
-    if len(body) > limit:
+def _validate_body_size(body: str, limit: int, *, is_plan: bool = False) -> None:
+    """Refuse an oversized body before the write, telling the caller what to do about it.
+
+    `is_plan` withdraws the split option entirely rather than merely discouraging it: `plan_file`
+    materialises one comment's half, so a plan continued in a second comment is content nothing reads.
+    """
+    if len(body) <= limit:
+        return
+    measured = (
+        f"this body is {len(body)} characters and the limit is {limit}, so it was refused: "
+        f"{len(body) - limit} over. The write was not attempted, because a tracker that refuses an "
+        "oversized body refuses it whole — nothing partial lands and nothing is truncated for you. "
+    )
+    if is_plan:
         raise ToolError(
-            f"this body is {len(body)} characters and the limit is {limit}, so it was refused: "
-            f"{len(body) - limit} over. The write was not attempted, because a tracker that refuses an "
-            "oversized body refuses it whole — nothing partial lands and nothing is truncated for you. "
-            "Split the content across writes, or shorten it and send the shorter body."
+            measured + "Tighten the `## For /sy:ship` half and send the shorter body. A plan comment is "
+            "never split across comments: the tools that read a plan read one comment, so whatever is "
+            "parked in a second one is dropped without anyone being told."
         )
+    raise ToolError(measured + "Shorten it and send the shorter body, or split the content across writes.")
 
 
 def _validate_machine_log(body: str) -> None:

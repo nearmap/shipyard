@@ -178,13 +178,28 @@ def frontmatter(path: Path, errors: list[str]) -> None:
         fail(f"{path}: plugin-shipped agents/skills cannot declare hooks; move them to hooks/hooks.json", errors)
 
 
+def _frontmatter_block(text: str) -> str:
+    """Return the frontmatter block's body, or "" when the file opens or closes no such block.
+
+    Anchored on the `\\n---\\n` delimiter, never a split on the bare `---` substring: a `---` inside a
+    field's own value -- a `description: >-` block scalar carrying one, say -- moves a substring split's
+    boundary up into the block, so every key below it falls outside what a caller then reads as the whole
+    block and a containment pin sees an absence that is not there.
+
+    "" rather than raising: `frontmatter()` reports both delimiter failures against the path, and a raise
+    here would abort main() before it prints the collected list.
+    """
+    if not text.startswith("---\n"):
+        return ""
+    end = text.find("\n---\n", 4)
+    return "" if end == -1 else text[4:end]
+
+
 def _frontmatter_field(text: str, field: str) -> str:
     """Return a frontmatter field's value, joining an indented YAML block list into one string."""
-    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
-        # "" rather than raising: `frontmatter()` already reports both delimiter failures, and a raise
-        # here would abort main() before it prints the collected list.
+    block = _frontmatter_block(text)
+    if not block:
         return ""
-    block = text.split("---", 2)[1]
     match = re.search(rf"^{field}:(.*)$", block, re.M)
     if not match:
         return ""
@@ -976,6 +991,13 @@ def check_invariants(errors: list[str]) -> None:
     # docstring, which taught the read side to consult it; and the smoke fixture, which posts one for real.
     # The prose surfaces follow, because a sentence reintroducing the convention is enough to have a caller
     # write the field again.
+    #
+    # Matched by pattern, not by the two literal spellings: a reintroduction is a rewrite as often as a
+    # copy-paste, and `Status:ACTIVE`, a doubled space, a lowercased pair or a `**Status**:` each restore the
+    # convention while a containment check on the canonical literal stays green. Emphasis markers are
+    # tolerated between the label and its colon; the rest stays tight, so the bare word ACTIVE in unrelated
+    # prose is not a hit.
+    retired_status = re.compile(r"Status[*`_]{0,2}:\s*(?:ACTIVE|SUPERSEDED)", re.I)
     for name, text in (
         ("spec", spec),
         ("sy_tools/server.py", read("sy_tools/server.py")),
@@ -986,9 +1008,12 @@ def check_invariants(errors: list[str]) -> None:
         ("README.md", readme),
         ("agent-guide.md", agent_guide),
     ):
-        for literal in ("Status: ACTIVE", "Status: SUPERSEDED"):
-            if literal in text:
-                fail(f"{name} reintroduces the retired {literal!r} plan convention; the version alone selects", errors)
+        found = retired_status.search(text)
+        if found:
+            fail(
+                f"{name} reintroduces the retired plan status field as {found.group(0)!r}; "
+                "the version alone selects", errors,
+            )
     # Section-scoped for the same reason as the "never writes the Task body" pin above: the pass has to be
     # Step 2's own first action. Invocation and ordering are one literal on purpose — a pin matching only
     # `/sy:tighten` would stay green while the ordering clause, which is what keeps a half-run rewrite from
@@ -1006,8 +1031,7 @@ def check_invariants(errors: list[str]) -> None:
     # take effect, so scoping keeps the skill free to document in its body that it deliberately does not
     # declare it — while still catching the quoted-key spelling (`"disable-model-invocation": true`), which a
     # field read anchored on `^disable-model-invocation:` passes straight over.
-    frontmatter_block = tighten.split("---", 2)[1] if tighten.startswith("---\n") and "\n---\n" in tighten[4:] else ""
-    if "disable-model-invocation" in frontmatter_block:
+    if "disable-model-invocation" in _frontmatter_block(tighten):
         fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
     # Anchored to a heading line, not containment: the skill's own routing list names all three sections
     # to point at them, so a containment check stays green while the heading it points at is renamed away.

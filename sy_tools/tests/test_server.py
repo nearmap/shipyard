@@ -509,6 +509,26 @@ async def test_an_oversized_plan_comment_is_refused_with_no_offer_to_split_it(mo
 
 
 @pytest.mark.anyio
+async def test_an_oversized_comment_that_only_quotes_a_plan_heading_keeps_the_generic_remedy(monkeypatch):
+    """Prose naming a plan heading below its own is not a plan, so it keeps the remedy a plan is refused.
+
+    The classification reads the opening heading alone; matched anywhere in the body instead, the
+    `QUOTING_PROSE` shape the read-side cases use is refused as a plan, and its writer is handed a
+    never-split rule about a comment they may legitimately split.
+    """
+    recorder = _Recorder()
+    recorder.body_limit = STUB_BODY_LIMIT
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    arguments = {"issue": "PROJ-1", "human": QUOTING_PROSE, "agent_detail": "x" * STUB_BODY_LIMIT}
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("post-comment", arguments)
+    message = _text(result)
+    assert result.is_error is True, f"an oversized body reached the adapter: {recorder.calls}"
+    assert "split the content across writes" in message, f"prose about a plan must keep the generic remedy: {message}"
+    assert "never split across comments" not in message, f"prose about a plan got the plan refusal: {message}"
+
+
+@pytest.mark.anyio
 async def test_a_tracker_failure_comes_back_as_a_tool_result(monkeypatch):
     """No per-tool try/except: the SDK already turns a raising tool into an `isError` result.
 

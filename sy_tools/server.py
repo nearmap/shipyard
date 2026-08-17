@@ -121,7 +121,9 @@ async def create_issue(
     """Create an issue in the configured tracker and return its opaque id and URL.
 
     Canonical verb `create-issue`. Passing `parent` is also the canonical verb `create-child`: there
-    is deliberately no separate tool for a child, because it is this same write.
+    is deliberately no separate tool for a child, because it is this same write. `title` and `body`
+    are credential-scrubbed before the write and `scrub` names what it redacted, so a caller needing
+    the durable text verbatim must read it back.
     """
     _required(title=title)
     # The title is scrubbed with the body: every search result echoes it back, and it cannot be edited
@@ -160,7 +162,9 @@ async def update_issue(
     """Replace an issue's body with new Markdown.
 
     Canonical verb `update-issue`. Never an append: to keep any of the existing body, read it with
-    `get-issue` first and send it back inside `body`.
+    `get-issue` first and send it back inside `body`. `body` is credential-scrubbed before the write
+    and `scrub` names what it redacted, so a caller needing the durable text verbatim must read it
+    back.
     """
     _required(issue=issue)
     (body,), scrub = _scrub_texts(body)
@@ -271,7 +275,8 @@ async def add_label(
     """Add one label to an issue, keeping the labels already on it.
 
     Canonical verb `add-label`. Additive by contract, and the full resulting label set comes back so
-    the caller can confirm nothing was displaced.
+    the caller can confirm nothing was displaced. `label` is credential-scrubbed before the write and
+    `scrub` names what it redacted, so the label that lands may not be the one sent.
     """
     _required(issue=issue, label=label)
     # Scrubbed like a body: a caller-supplied string that lands in durable tracker state and in the
@@ -310,6 +315,9 @@ async def post_comment(
     The tool — not the caller — writes the boundary between the two halves, so every comment splits
     the same way and a reader always knows which half is theirs. Do not compose that boundary
     yourself, and do not fold the agent-facing pointers into `human` to fill the field.
+
+    Both halves are credential-scrubbed before the write and `scrub` names what it redacted, so a
+    caller needing the posted text verbatim must read it back.
     """
     _required(issue=issue, human=human, agent_detail=agent_detail)
     (human, agent_detail), scrub = _scrub_texts(human, agent_detail)
@@ -351,7 +359,9 @@ async def post_log(
     Canonical verb `post-log`. A machine log has no human-judgment half to pair with, which is why it
     is this tool and not `post-comment`. It takes the record as a native object and does the
     serialising and fencing itself, so the "a machine log is never appended to any other content"
-    rule holds by this signature rather than by a caller remembering it.
+    rule holds by this signature rather than by a caller remembering it. `title` and the serialised
+    `payload` are credential-scrubbed before the write and `scrub` names what it redacted, so a
+    caller needing the posted record verbatim must read it back.
     """
     _required(issue=issue, title=title)
     if len(title.strip().splitlines()) > 1:
@@ -452,8 +462,9 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     is a candidate and the highest `<N>` is the plan, since a posted comment is never edited. The plan
     text is never part of the result: a caller gets a path plus the pin (`comment_id`, `version`) and
     hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
-    detectable by comparing the pin rather than by re-reading prose. `comments_truncated` says whether
-    the issue's comment page left anything out.
+    detectable by comparing the pin rather than by re-reading prose. Several plan comments at
+    *different* versions are the normal steady state (`skills/tracker/CONTRACT.md`), not an error.
+    `comments_truncated` says whether the issue's comment page left anything out.
 
     What lands on disk is the plan half **as the tracker gives it back**, not as it was posted: a
     rich-text tracker escapes un-backticked Markdown punctuation on the way through, so `some_name`
@@ -788,10 +799,10 @@ async def preflight(
 
     Canonical verb `preflight`. Never echoes a secret value. Run it once up front so a credential
     problem surfaces there instead of as a half-finished workflow. A success is cached for `ttl_hours`
-    against the plugin build, the tracker, the resolved config and the secret variables the adapter declares,
-    any of which changing invalidates it by itself. `cached` says which happened: `false` means the
-    tracker was just read and the rest of the result is that read's report, `true` that a read inside
-    the window already succeeded and nothing touched the network.
+    against the plugin build, the tracker, the resolved config and the values of the secret variables
+    the adapter declares, any of which changing invalidates it by itself. `cached` says which
+    happened: `false` means the tracker was just read and the rest of the result is that read's
+    report, `true` that a read inside the window already succeeded and nothing touched the network.
     """
     ttl_hours = preflight_cache.DEFAULT_TTL_HOURS
     try:
@@ -811,6 +822,7 @@ async def preflight(
     return {**confirmed, "tracker": name, "cached": False, "ttl_hours": ttl_hours}
 
 
+# Declared once and shared, so both attachment writers describe this the same way.
 AllowOpaque = Annotated[
     bool,
     Field(
@@ -820,7 +832,6 @@ AllowOpaque = Annotated[
         "you have separately established carries no credential."
     ),
 ]
-"""The declaration both attachment writers take, described once so both tools describe it the same way."""
 
 
 @mcp.tool(name="attach-artifact")
@@ -1056,9 +1067,10 @@ def get_config(
 def show_config() -> dict[str, Any]:
     """Report every resolved configuration value together with the layer each one came from.
 
-    The whole resolved config at once, where `get_config` answers for one key. Refuses to report
-    anything at all when the resolved configuration carries a credential-shaped key, naming only the
-    key.
+    The whole resolved config at once, where `get_config` answers for one key. Also reports the
+    digest of the resolved values and the layer chain on disk with whether each file is present.
+    Refuses to report anything at all when the resolved configuration carries a credential-shaped
+    key, naming only the key.
     """
     try:
         return config.show()
@@ -1217,7 +1229,8 @@ def export_transcript(
 
     Replaces the manual `/export` step for the attachment flow: bulky tool output is truncated per
     `transcript.truncation_limits` and raw JSONL noise is dropped, so the result is audit-readable
-    rather than a machine dump. Run it as late as possible so the captured tail is maximal.
+    rather than a machine dump. Run it as late as possible so the captured tail is maximal; it reads
+    the on-disk transcript tree, so it also works on a resumed session.
 
     The rendered text is never part of the result: the transcript is meant to be scanned, redacted and
     attached by path without ever being read back into the caller's context.

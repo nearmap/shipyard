@@ -57,10 +57,14 @@ it got inverted in the first place. Instead take a link whose direction is known
 by hand in the Jira UI, say) and `GET /issue/<KEY>` on both ends: per `_linked`'s docstring below, the
 field a counterpart appears under (`inwardIssue`/`outwardIssue`) is that counterpart's own posted role,
 so whichever end the known blocker appears under is `BLOCKER_SIDE`. `linkedIssues("<KEY>","is blocked
-by")` versus `linkedIssues("<KEY>","blocks")` corroborates a link's direction, and each half does
-discriminate it — JQL matches a direction-specific link description, not the type name. Corroboration
-only, never the sole check, because both halves match admin-editable description prose rather than the
-API's own slot names, and prose is what this docstring refuses to depend on."""
+by")` versus `linkedIssues("<KEY>","blocks")` corroborates a link's direction — `linkedWorkItems` under
+Jira Cloud's current JQL docs. Measured on a live board, not derived: each half of that function does
+discriminate direction, matching a direction-specific link description without falling back to the type
+name. That does not carry over to the `issueLinkType` field, which searches a type's name and both its
+descriptions at once, so on the default `Blocks` type — whose name equals its own outward description
+"blocks" — that field cannot isolate direction at all. Corroboration only, never the sole check either
+way: both halves match admin-editable description prose rather than the API's own slot names, and prose
+is what this docstring refuses to depend on."""
 
 COMMENT_PAGE = 50
 """How many comments one read returns, newest first: a bound truncates the oldest rather than the

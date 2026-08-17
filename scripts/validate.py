@@ -20,7 +20,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config",
+    "config", "tighten",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -113,7 +113,6 @@ REQUIRED = {
     "skills/tracker/jira/config-map.json",
     "skills/tracker/github/config-map.json",
     "scripts/ci_poll.sh",
-    "scripts/plan_density_check.py",
     "sy_tools/usage.py",
     "sy_tools/eval_events.py",
     "sy_tools/memory.py",
@@ -624,6 +623,7 @@ def check_invariants(errors: list[str]) -> None:
     debate_ref = read("skills/shared/references/debate.md")
     spec_gate_ref = read("skills/shared/references/spec-gate.md")
     economy_ref = read("skills/shared/references/context-economy.md")
+    tighten = read("skills/tighten/SKILL.md")
     contributing = read("CONTRIBUTING.md")
     roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
@@ -944,6 +944,7 @@ def check_invariants(errors: list[str]) -> None:
         ("pr", pr),
         ("handoff-accounting", handoff),
         ("CONTRIBUTING.md", contributing),
+        ("tighten", tighten),
     )
     for name, text in economy_consumers:
         if "context-economy.md" not in text:
@@ -967,11 +968,25 @@ def check_invariants(errors: list[str]) -> None:
     if "a plan comment is never split across comments" not in contract:
         fail("contract must state that a plan comment is never split across comments", errors)
     # Section-scoped for the same reason as the "never writes the Task body" pin above: the pass has to be
-    # Step 2's own first action, and the literal carries the ordering so neither the check's invocation nor
-    # its position before the SUPERSEDED edit can be deleted while the pass text survives.
-    density_pin = "The rewrite and `scripts/plan_density_check.py` both complete before any tracker mutation."
+    # Step 2's own first action. Invocation and ordering are one literal on purpose — a pin matching only
+    # `/sy:tighten` would stay green while the ordering clause, which is what keeps a half-run rewrite from
+    # reaching the tracker, was deleted out from under it.
+    density_pin = "The `/sy:tighten` pass over the `/sy:ship` half completes before any tracker mutation."
     if density_pin not in spec_s7.partition("### Step 2")[2]:
-        fail("spec §7's Step 2 must run the density pass and its check before any tracker mutation", errors)
+        fail("spec §7's Step 2 must run /sy:tighten over the ship half before any tracker mutation", errors)
+    # The density rules live in one skill and every other surface points at it, so the skill's own three
+    # rule sections and its model-invocability are what the pointers are worth. `PROACTIVE` in the
+    # description and the *absence* of `disable-model-invocation` are the two halves of that: the skill is
+    # useless if a caller has to remember to type it.
+    if "PROACTIVE" not in _frontmatter_field(tighten, "description"):
+        fail("tighten's description must open PROACTIVE so the model reaches for it unprompted", errors)
+    if "disable-model-invocation" in tighten:
+        fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
+    for section in ("## Human-facing text", "## Agent-facing text", "## Protect"):
+        if section not in tighten:
+            fail(f"tighten must carry its {section} section; the density rules live nowhere else", errors)
+    if "/sy:tighten" not in user_interaction:
+        fail("user-interaction reference must name /sy:tighten as the pass a turn goes through", errors)
 
     # Each adapter's body limit lives in the constant, again in the comment above it carrying that
     # figure's provenance, and again in its agent-facing ADAPTER.md prose. The Protocol docstring is no
@@ -1334,11 +1349,10 @@ def main() -> int:
     check_invariants(errors)
     check_poller_argv(errors)
 
-    # Here rather than in pytest because none of them is reachable there: one is bash, and the others
-    # sit outside the `sy_tools` tree pytest's `testpaths` collects.
+    # Here rather than in pytest because neither is reachable there: one is bash, and the other sits
+    # outside the `sy_tools` tree pytest's `testpaths` collects.
     run_self_test("scripts/ci_poll.sh", errors)
     run_self_test("docs/smoke_mcp.py", errors)
-    run_self_test("scripts/plan_density_check.py", errors)
 
     if errors:
         print("Shipyard validation FAILED:", file=sys.stderr)

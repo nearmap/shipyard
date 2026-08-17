@@ -11,7 +11,7 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 4. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
 5. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 
-Keep prose (READMEs, roadmaps, docs) clear and unwrapped; keep machine-facing text (agent briefs, contracts, JSON logs) terse and structured. How hard to cut either, and the two tests to cut by, is `skills/shared/references/context-economy.md`.
+Keep prose (READMEs, roadmaps, docs) clear and unwrapped; keep machine-facing text (agent briefs, contracts, JSON logs) terse and structured. How hard to cut either, and the two tests to cut by, is `skills/shared/references/context-economy.md`; `/sy:tighten` is the pass that applies it to one drafted piece of either kind.
 
 ## Comments and docstrings
 

@@ -1,12 +1,12 @@
 # Write integrity
 
-Under auto-mode a skill executes mandated external writes — comments, metrics, attachments, status changes, merges — without a human watching each one. Two failure modes then stop being caught by the operator and have to be caught by the instructions instead: a record that was true when posted but is no longer, and a write that was denied but still finds a way through. This reference states both as standing invariants so every writing skill (`/sy:ship`, `/sy:pr`, `/sy:spec`, `/sy:plan`) shares one rule and `sy:gate` can protect them.
+Under auto-mode a skill executes mandated external writes — comments, metrics, attachments, status changes, merges — without a human watching each one. Two failure modes then have no operator to catch them, so the instructions must: a record that was true when posted but is no longer, and a write that was denied but still finds a way through. This reference states both as standing invariants so every writing skill (`/sy:ship`, `/sy:pr`, `/sy:spec`, `/sy:plan`) shares one rule and `sy:gate` can protect them.
 
 **Design invariant (standing; `sy:gate` protects it).** Both rules below hold for every mandated external write, interactive or auto-mode. They are tracker-agnostic: they constrain how a write is corrected or how a denial is honoured, never which tracker or CLI performs it.
 
 ## Retroactive honesty
 
-A record already posted to an external surface — a retrospective, a metrics or usage comment, a review reply, a coverage note, a plan or decomposition comment — that is later overruled, superseded, or found wrong is corrected on that same surface, not left standing. The correction is explicit and additive: post the record that carries the current truth, saying what it corrects and why. Silence is the failure. Leaving a stale claim in place because the run has moved on lets the external record drift from what actually happened, which is exactly the drift auto-mode makes invisible. A wrong number is corrected by the right one posted after it; a reversed decision is annotated on the record that reverses it; nothing is quietly abandoned.
+A record already posted to an external surface — a retrospective, a metrics or usage comment, a review reply, a coverage note, a plan or decomposition comment — that is later overruled, superseded, or found wrong is corrected on that same surface, not left standing. The correction is explicit and additive: post the record that carries the current truth, saying what it corrects and why. Silence is the failure: a wrong number is corrected by the right one posted after it, a reversed decision is annotated on the record that reverses it, and nothing is quietly abandoned because the run has moved on.
 
 This never means rewriting history to look cleaner. The honest move is additive — the original and its correction both remain legible — so the record shows the reversal, not a polished version that hides it.
 

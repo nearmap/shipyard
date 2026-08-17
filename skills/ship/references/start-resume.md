@@ -2,7 +2,7 @@
 
 This phase runs as the `sy:ship-start` worker: it initializes or resumes ownership, delegates standards resolution, and returns the state brief per the worker contract.
 
-1. The parent supplies the plan file's absolute path and its pin (`plan_comment_id`, `plan_version`) in this worker's dispatch prompt, having already materialised it with `plan_file` before dispatching anything (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router). Read `PLAN_BASE_SHA` and the `pre-gate checkpoint` channel out of that file. This worker holds no tracker read and never selects a plan itself — the selection, and the refusal when there is not exactly one ACTIVE, are the tool's.
+1. The parent supplies the plan file's absolute path and its pin (`plan_comment_id`, `plan_version`) in this worker's dispatch prompt, having already materialised it with `plan_file` before dispatching anything (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router). Read `PLAN_BASE_SHA` and the `pre-gate checkpoint` channel out of that file. This worker holds no tracker read and never selects a plan itself — the selection of the highest plan version, and the refusal when no comment or two comments claim it, are the tool's.
 2. Sibling interfaces and blockers off the parent Epic, when the parent's dispatch prompt states them, land here rather than via a fresh read: neither this worker nor `sy:sweep` holds a tracker read, so an instruction to go read the Epic here would be dead. Unlike `START_MODEL` (which `## Resolve start model` below pins as a genuine parent precondition), nothing currently obliges the parent to supply this — a dispatch that omits it simply leaves this worker with none, and that is not a resume failure.
 3. Ship profile (the plan's explicit per-phase models, plus effort and process tier) is a parent precondition verified before dispatch; if the parent's own running session is below plan it stops and asks via `AskUserQuestion` (raise the profile / proceed at plan floor / other) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. That check concerns the parent's own session tier only; how each phase's model reaches its worker is the separate dispatch mechanism in `## Resolve start model` below. The profile floors worker models (may raise, never lower, so BUILD keeps its opus tier) and sets worker effort to match the work; it never lowers review effort (`sy:gate` stays max). Do not prompt the user from the worker.
 4. Resolve standards in a delegate (subagent running `/sy:standards resolve <task scope>`, added to `agents_used`) that returns only the retained contract — authority, implementation contract, primitives, risk lenses; rule-file reads stay out of the ship context.
@@ -45,7 +45,7 @@ If START cannot run at the requested model, re-dispatch once at `START_MODEL_FAL
 task: TASK-123
 branch: task-123-example
 worktree: /abs/path
-plan_base_sha: <from ACTIVE plan>
+plan_base_sha: <from the highest plan version>
 plan_path: <absolute path the parent's `plan_file` call reported>
 plan_comment_id: <the comment id that call reported>
 plan_version: <the version that call reported>

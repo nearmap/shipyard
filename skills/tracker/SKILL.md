@@ -51,7 +51,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 ## Conventions that live here, not in an adapter
 
 - **Standalone machine logs.** `post-log` is its own tool, taking a single-line `title` (`Claude Code usage`, `Claude Code ship metrics`) and the record as a `payload` object it fences itself, so a log posted through it is its own comment by construction — its signature has no field a second block or a detached paragraph could ride in. Choosing that tool over `post-comment` is still yours. Generate usage from the transcript tree with the `usage_summarize` tool.
-- **Exactly one ACTIVE plan** per task/bug; supersede explicitly and re-read to confirm.
+- **The highest plan version is the plan** per task/bug. A posted comment is never edited, so superseding is additive: post the next version naming the one it replaces, then re-read to confirm it is the highest.
 - **Closure is not delivery.** Merged/delivered closure satisfies a dependency; decomposed or superseded closure does not — follow replacement links until delivered capability is reached.
 - **Canonical decomposition** when replacing one task with smaller ones:
   1. create/approve replacements as direct children of the same epic;
@@ -64,7 +64,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 
 ## Durable comment types
 
-- `# Execution Plan vN` — human-readable plan plus explicit ACTIVE/SUPERSEDED status.
+- `# Execution Plan vN` — human-readable plan; `N` selects it, and the highest `N` on the item is the plan.
 - `# SEAMS` — oversized-leaf evidence for `/sy:plan`.
 - `# Decomposition` — replacement IDs and terminal reason.
 - `# Ship retrospective` — human-readable shipped-vs-plan lessons.
@@ -75,7 +75,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 ## Loop mapping
 
 - `/sy:plan` ↔ epic roadmap + direct executable children created in `backlog`, max the resolved `plan.max_active_tasks` cap active (resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`).
-- `/sy:spec` ↔ task/bug + sole ACTIVE versioned plan; the approved plan moves the task to `ready`.
+- `/sy:spec` ↔ task/bug + a new highest-version plan comment; the approved plan moves the task to `ready`.
 - `/sy:ship` ↔ `in-progress` on build, `in-review` at a reviewable gated PR, `done` after merge;
   retrospective, standalone logs, and transcript live on the task.
 - `/sy:spike` ↔ task under the selected experiment epic; `in-progress` during, `done` at verdict.

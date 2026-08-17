@@ -10,6 +10,8 @@ A record already posted to an external surface — a retrospective, a metrics or
 
 This never means rewriting history to look cleaner. The honest move is additive — the original and its correction both remain legible — so the record shows the reversal, not a polished version that hides it.
 
+On the tracker the correction is additive by construction rather than by discipline: a posted comment is not edited, so a superseded record is corrected by the record that supersedes it naming what it replaces, and the superseded one stays posted in full. Emptying an overruled plan down to a two-line stub is the polished version this rule already forbids, not a correction of it.
+
 ## Denied-write boundary
 
 When an external write is denied — by the permission system, a ruleset, a missing credential, or an explicit refusal — that denial is final for that write. It is never rerouted through a different tool, path, or credential to force the same effect through. A delegation denied under auto-mode may fall back only to another path that is *itself* an authorized, documented route to the same write (for example, running a documented direct-Bash command inline when the subagent form of the identical, already-permitted operation is unavailable); it may never escalate to a route the denial was expressing a boundary against. If no authorized route remains, the write does not happen: surface the denial loudly — return `blocked` or close with an `## Action needed` block naming exactly what was denied and what would unblock it — rather than papering over it or silently skipping the write. A denied write that is quietly abandoned is as much a violation as one forced through: both hide the boundary from the operator.

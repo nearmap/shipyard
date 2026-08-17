@@ -332,3 +332,27 @@ def test_either_file_restating_a_context_economy_cut_test_is_refused(tmp_path, m
     errors = _gate_check(tmp_path, monkeypatch, files["gate_ref"], files["reviewer"])
     assert any("restates a context-economy cut test" in error for error in errors), \
         f"{restating} restating {cut_test!r} must be refused: {errors}"
+
+
+def test_a_carrier_phrase_broken_across_a_line_wrap_still_satisfies_the_pin(tmp_path, monkeypatch):
+    """Prose re-wraps on every edit. A containment pin on a mid-sentence phrase would go vacuous the first
+    time the line reflowed, while the sentence still said exactly what the pin exists to check."""
+    wrapped = "- **Carrier** --- the PR body, one\n  line per addition.\n"
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + wrapped, _CITATION)
+    assert not errors, f"a re-wrapped carrier phrase must still count as named: {errors}"
+
+
+def test_a_poller_invocation_wrapped_after_the_verb_is_reported_not_silently_matched(tmp_path, monkeypatch):
+    """A newline-crossing selector capture is worse than no match: the flag-order leg then passes on a token
+    picked out of the following line, so the argv rule reads clean against text it never checked."""
+    (tmp_path / "skills").mkdir()
+    site = "skills/probe.md"
+    (tmp_path / site).write_text(
+        "Wait with `ci_poll.sh poll\n--repo owner/name --head <sha>`.\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    monkeypatch.setattr(validate, "POLLER_CALL_SITES", (site,))
+    errors: list[str] = []
+    validate.check_poller_argv(errors)
+    assert any("must invoke the shared poller by name" in error for error in errors), \
+        f"a wrapped invocation must be reported as no invocation, not matched across the newline: {errors}"

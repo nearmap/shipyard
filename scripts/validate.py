@@ -318,8 +318,10 @@ def check_gate_justification(errors: list[str]) -> None:
             "added to an always-resident brief ships unjustified",
             errors,
         )
-    # An obligation with no named carrier is discharged by nobody.
-    if "one line per addition" not in gate_ref:
+    # An obligation with no named carrier is discharged by nobody. Whitespace-tolerant, unlike the
+    # containment pins around it: this phrase sits mid-sentence in wrapped prose, so a re-wrap between
+    # any two of its words would void the leg silently while the sentence still said the same thing.
+    if not re.search(r"one\s+line\s+per\s+addition", gate_ref):
         fail(
             f"{gate_ref_rel} must name the carrier ('one line per addition' in the PR body); an "
             "obligation with no place to land is discharged by nobody",
@@ -1399,7 +1401,11 @@ def check_invariants(errors: list[str]) -> None:
 
 def check_poller_argv(errors: list[str]) -> None:
     """Every documented poller invocation keeps the selector first, ahead of any flag."""
-    pattern = re.compile(r"ci_poll\.sh poll\s+(\S+)")
+    # Horizontal whitespace only: `\s+` crossed the newline of a wrapped invocation and captured the
+    # next line's first token as the selector, so the flag-order leg below read clean against a word it
+    # had picked up out of unrelated prose. `[ \t]+` instead makes a wrapped call site no match at all,
+    # which the missing-invocation leg reports rather than passing over.
+    pattern = re.compile(r"ci_poll\.sh poll[ \t]+(\S+)")
     for rel in POLLER_CALL_SITES:
         found = pattern.findall((ROOT / rel).read_text(encoding="utf-8", errors="replace"))
         if not found:

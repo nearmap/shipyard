@@ -473,15 +473,20 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     the pin rather than by re-reading prose.
 
     A comment whose heading opens `# Execution Plan v<N>` without being a plan heading — a
-    `v<N> (continued)` stub — is refused when its `<N>` is the selected plan's own version, naming that
-    comment: this tool hands on one comment's half, so a plan split across two comments would be
-    materialised with the second one's content silently missing. Post the whole plan as the next version,
-    which moves the selected version past the stranded comment and leaves it as history.
+    `v<N> (continued)` stub — is refused when its `<N>` is at or above the selected plan's own version,
+    naming that comment: this tool hands on one comment's half, so a plan split across two comments would
+    be materialised with the second one's content silently missing. At or above rather than equal to,
+    because a stub numbered *higher* than the selected version means a later version's second half is
+    stranded with its first half never posted, and this tool must not quietly fall back to an older
+    complete version as though the issue's newest plan did not exist. Only a stub strictly older than the
+    selected version is skipped, as history a later version has moved past. Post the whole plan as the
+    version after the stranded one, which moves the selected version past it and leaves it as history.
 
-    Only two things refuse: no plan comment at all, and two comments sharing the highest version — which
-    is genuinely ambiguous, since neither is the later revision of the other, and picking one would ship
-    against a plan nobody approved. Several plan comments at *different* versions are the normal steady
-    state (`skills/tracker/CONTRACT.md`), not an error. `comments_truncated` says whether the issue's
+    Three things refuse: no plan comment at all; two comments sharing the highest version — which is
+    genuinely ambiguous, since neither is the later revision of the other, and picking one would ship
+    against a plan nobody approved; and a stranded continuation stub at or above the selected version.
+    Several plan comments at *different* versions are the normal steady state
+    (`skills/tracker/CONTRACT.md`), not an error. `comments_truncated` says whether the issue's
     comment page left anything out — on none found, the plan may simply be past the newest page rather
     than absent.
 
@@ -538,16 +543,18 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
         # A strict match is a plan comment, never a continuation — including the selected plan itself.
         if opener is None or _PLAN_HEADING.match(candidate) is not None:
             continue
-        # Only the selected version's own stub strands this issue: an older one is history that a later
-        # plan version has already moved past, and refusing on it would make the issue permanently unreadable.
-        if int(opener.group(1)) != version:
+        stranded_version = int(opener.group(1))
+        if stranded_version < version:
+            # Only an older stub is history a later plan version has already moved past; refusing on
+            # it would make the issue permanently unreadable.
             continue
+        next_version = max(version, stranded_version) + 1
         raise ToolError(
             f"{issue} carries comment {comment.get('id') or '(no id)'}, a continuation of Execution Plan "
-            f"v{version} rather than a plan comment of its own, and v{version} is the highest plan version "
-            "on the issue. This tool hands on one comment's agent-facing half, so the plan would go to "
-            f"/sy:ship with that comment's content missing and nothing to say so. Post the whole plan as "
-            f"v{version + 1} through `post-comment` — one comment, tightened to fit the body limit — which "
+            f"v{stranded_version} rather than a plan comment of its own, and v{version} is the highest complete "
+            "plan version on the issue. This tool hands on one comment's agent-facing half, so the plan would go "
+            f"to /sy:ship with that comment's content missing and nothing to say so. Post the whole plan as "
+            f"v{next_version} through `post-comment` — one comment, tightened to fit the body limit — which "
             "moves the selected version past the stranded comment and leaves it as history."
         )
     if not comment_id:
@@ -701,8 +708,9 @@ def _validate_body_size(body: str, limit: int, *, is_plan: bool = False) -> None
     )
     if is_plan:
         raise ToolError(
-            measured + "Tighten the `## For /sy:ship` half and send the shorter body. A plan comment is "
-            "never split across comments: the tools that read a plan read one comment, so whatever is "
+            measured + "Tighten whichever half is largest (most often `## For /sy:ship`) and send the "
+            "shorter body. A plan comment is never split across comments: the tools that read a plan read "
+            "one comment, so whatever is "
             "parked in a second one is dropped without anyone being told."
         )
     raise ToolError(measured + "Shorten it and send the shorter body, or split the content across writes.")

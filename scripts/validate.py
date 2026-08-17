@@ -632,6 +632,8 @@ def check_invariants(errors: list[str]) -> None:
     init_repo = read("skills/init-repo/SKILL.md")
     checkpoint_handoff = read("skills/plan/references/checkpoint-handoff.md")
     jira_attachments = read("skills/tracker/jira/references/attachments.md")
+    readme = read("README.md")
+    agent_guide = read("agent-guide.md")
 
     if "--match-head-commit" not in merge:
         fail("merge path missing atomic head guard (--match-head-commit)", errors)
@@ -967,6 +969,20 @@ def check_invariants(errors: list[str]) -> None:
         fail("contract still offers splitting first; the remedy is shortening, and a plan is never split", errors)
     if "a plan comment is never split across comments" not in contract:
         fail("contract must state that a plan comment is never split across comments", errors)
+    # The `Status: ACTIVE`/`SUPERSEDED` field is gone: a posted comment is never edited, so the field on an
+    # older version was never updated and any reader consulting it picked the wrong plan. Only the version
+    # number selects. Pinned as absence on every surface that once taught the convention, because prose is
+    # where it would come back — one sentence reintroducing it is enough to have a caller write the field again.
+    for name, text in (
+        ("contract", contract),
+        ("ship", ship),
+        ("start-resume", start),
+        ("README.md", readme),
+        ("agent-guide.md", agent_guide),
+    ):
+        for literal in ("Status: ACTIVE", "Status: SUPERSEDED"):
+            if literal in text:
+                fail(f"{name} reintroduces the retired {literal!r} plan convention; the version alone selects", errors)
     # Section-scoped for the same reason as the "never writes the Task body" pin above: the pass has to be
     # Step 2's own first action. Invocation and ordering are one literal on purpose — a pin matching only
     # `/sy:tighten` would stay green while the ordering clause, which is what keeps a half-run rewrite from
@@ -980,15 +996,19 @@ def check_invariants(errors: list[str]) -> None:
     # useless if a caller has to remember to type it.
     if "PROACTIVE" not in _frontmatter_field(tighten, "description"):
         fail("tighten's description must open PROACTIVE so the model reaches for it unprompted", errors)
-    if "disable-model-invocation" in tighten:
+    # Frontmatter-scoped, not whole-file: the key is only load-bearing where it would take effect, and a
+    # containment check would stop the skill from documenting that it deliberately does not declare it.
+    if _frontmatter_field(tighten, "disable-model-invocation").strip():
         fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
     # Anchored to a heading line, not containment: the skill's own routing list names all three sections
     # to point at them, so a containment check stays green while the heading it points at is renamed away.
     for section in ("## Human-facing text", "## Agent-facing text", "## Protect"):
         if not re.search(rf"^{re.escape(section)}\s*$", tighten, re.M):
             fail(f"tighten must carry its `{section}` heading; the density rules live nowhere else", errors)
-    if "/sy:tighten" not in user_interaction:
-        fail("user-interaction reference must name /sy:tighten as the pass a turn goes through", errors)
+    # The whole clause, not the bare token: a mention of `/sy:tighten` anywhere in the file would keep this
+    # green while the sentence putting the pass *before* the turn is sent was deleted.
+    if "it goes through `/sy:tighten` before it is sent" not in user_interaction:
+        fail("user-interaction reference must state that a turn goes through /sy:tighten before it is sent", errors)
 
     # Each adapter's body limit lives in the constant, again in the comment above it carrying that
     # figure's provenance, and again in its agent-facing ADAPTER.md prose. The Protocol docstring is no

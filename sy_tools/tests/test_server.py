@@ -2077,7 +2077,7 @@ CONTINUATION_CASES = [
     ((_plan_at(1), "## Execution Plan v1 (continued)\n\nStatus: ACTIVE\n\n...more."), None, 1),
     ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2  \n", 1)), None, 2),
     ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2\r\n", 1)), None, 2),
-    ((_plan_at(1), _continuation(10)), None, 1),
+    ((_plan_at(1), _continuation(10)), "c2", None),
 ]
 """Each thread the detector sees, the comment id it must refuse on, and the version it must write."""
 
@@ -2091,19 +2091,21 @@ CONTINUATION_CASES = [
     "a level-two heading",
     "a strict heading with trailing spaces",
     "a strict heading with a carriage return",
-    "a continuation at a two-digit version",
+    "a continuation ahead of the selected plan's version",
 ])
-async def test_plan_file_refuses_only_a_continuation_stranded_at_the_selected_plans_own_version(
+async def test_plan_file_refuses_a_continuation_stranded_at_or_above_the_selected_plans_version(
     monkeypatch, scratch_root, bodies, flagged, version
 ):
     """The detector has to fire on a split plan and stay silent on everything shaped a little like one.
 
-    A refusal here is permanent for the issue until a new plan version is posted, so the negatives are
-    the load-bearing half: a stub left by an old split, and prose that merely quotes a heading, both
-    outlive the plan they refer to and neither may make a live plan unreadable. The whitespace cases put
-    the mutated heading on the *higher* version, so they pin both halves at once: the selection loop has
-    to match a heading carrying trailing spaces or a carriage return, and the detector still has to skip
-    it as a plan rather than flag it as a continuation.
+    A refusal here is permanent for the issue until a new plan version is posted, so the negatives carry
+    real weight: a stub left by an old split, and prose that merely quotes a heading, both outlive the
+    plan they refer to and neither may make a live plan unreadable. But a stub *ahead* of the selected
+    version is a positive, not a negative — a later version's second half posted without its first, where
+    silently handing back the older complete plan would ship against a version the issue has moved past.
+    The whitespace cases put the mutated heading on the *higher* version, so they pin both halves at once:
+    the selection loop has to match a heading carrying trailing spaces or a carriage return, and the
+    detector still has to skip it as a plan rather than flag it as a continuation.
     """
     monkeypatch.setattr(server.tracker, "adapter", lambda: _Recorder(_thread(*bodies)))
     async with mcp.Client(server.mcp) as client:

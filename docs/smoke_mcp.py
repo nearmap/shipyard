@@ -47,8 +47,12 @@ SMOKE_LABEL = "documentation"
 one would hide a typo in a real caller."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
-PLAN_HUMAN = "# Execution Plan v1\n\nTL;DR: smoke-test plan comment. Safe to delete."
-"""The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one."""
+PLAN_HUMAN = "# Execution Plan v2\n\nSupersedes: v1\n\nTL;DR: smoke-test plan comment. Safe to delete."
+"""The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one.
+
+A v2 with its `Supersedes:` line, not a bare v1: every plan past the first carries that line right under
+the heading, and it is one of the lines the tracker reflows on the way back — so a v1 fixture would leave
+the shape this smoke exists to prove untested."""
 
 PLAN_AGENT_HALF = (
     "## For /sy:ship\n\n"
@@ -322,7 +326,7 @@ class Smoke:
             return
         self.check(
             "plan_file",
-            bool(payload.get("comment_id")) and payload.get("version") == 1,
+            bool(payload.get("comment_id")) and payload.get("version") == 2,
             f"the pin does not look right for the comment just posted: {payload} against {posted}",
         )
         self.check(

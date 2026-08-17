@@ -14,7 +14,7 @@ $ARGUMENTS
 ## Invariants
 
 - Before classifying state or dispatching any worker, the parent runs the tracker preflight (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`); a failure stops here with its single `## Action needed` block — no worker starts against an unusable tracker.
-- The highest `# Execution Plan vN` on the Task is the plan — enforced by the `plan_file` tool, which refuses when there is no plan comment, and refuses by comment id rather than picking when two claim the same highest version; otherwise stop for `/sy:spec`.
+- The highest `# Execution Plan vN` on the Task is the plan — enforced by the `plan_file` tool, which refuses when there is no plan comment, refuses by comment id rather than picking when two claim the same highest version, and refuses when a `vN (continued)` stub sits at or above the selected version rather than falling back to an older complete plan; otherwise stop for `/sy:spec`.
 - Check plan-base freshness before building: material drift between `PLAN_BASE_SHA` and the ship base returns to `/sy:spec`.
 - Resolve standards before code.
 - The process tier (`full|light`) scales accounting records, never CI/review coverage.

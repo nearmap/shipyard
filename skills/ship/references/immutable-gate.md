@@ -1,6 +1,6 @@
 # Immutable CI and independent review
 
-This phase is a convergence loop owned by a lightweight controller. It owns the recorded build worktree; each iteration delegates the verdict to `sy:gate` (one verdict per review scope), CI triage to `/sy:ci`, automated-review threads to `/sy:pr`, and any non-trivial fix to `sy:slice`, then applies accepted fixes, re-pushes, and re-establishes the scope. It converges per § Stopping rule and returns per the worker contract.
+This phase is a convergence loop owned by a lightweight controller. It owns the recorded build worktree; each iteration delegates the verdict to `sy:gate` (one verdict per review scope), CI triage to `/sy:ci`, automated-review threads to `/sy:pr`, and any non-trivial fix to `sy:slice`, then applies accepted fixes, re-pushes, and re-establishes the scope. It loops until CI, the review verdict, and the automated reviewer's threads converge on one commit (the stopping rule in § Fix cycle), and returns per the worker contract.
 
 ## Resolve gate model
 

@@ -13,19 +13,19 @@ Apply both to every paragraph before it ships:
 
 ## Write to the actor
 
-A settled decision is stated, not re-argued. Once the choice is made, the artifact tells its reader what to do; the reasoning that produced it belongs to the human-facing half of the record, or nowhere. Rationale in machine-facing text is the most common form of dilution here precisely because it reads as thoroughness — but an implementer cannot act on *why*, and every line of it displaces a line they could have acted on.
+A settled decision is stated, not re-argued. Once the choice is made, the artifact tells its reader what to do; the reasoning that produced it belongs to the human-facing half of the record, or nowhere. Rationale in machine-facing text is the most common form of dilution here, precisely because it reads as thoroughness.
 
 ## No restatement, across the parts or within one
 
 An artifact with two labeled parts — a human half and an agent half, a sign-off summary and a mechanical plan — carries each fact in exactly one of them. Repetition across that boundary is not redundancy for safety; it is two copies that drift, and a reader of either half cannot tell which one is current. Cross-reference across the boundary instead of copying over it.
 
-The rule does not stop at that boundary; it holds *within* a half as well. A fact stated in one section of an agent half and again in another is the same pair of drifting copies, minus the labeled seam that made the duplication easy to see — and the second copy is paid for out of the same attention budget as the first. State it once, in the section whose reader acts on it, and point at that section from anywhere else that needs it.
+The rule does not stop at that boundary; it holds *within* a half as well. A fact stated in one section of an agent half and again in another is the same pair of drifting copies, minus the labeled seam that made the duplication easy to see. State it once, in the section whose reader acts on it, and point at that section from anywhere else that needs it.
 
 ## Evidence is not instruction
 
 Forensic detail — the trace that established a fact, the counts, the hypotheses ruled out — is evidence for a claim, not an instruction to anybody. It earns a place inline only where a reader acts on it; otherwise it belongs in a companion record that nothing depends on.
 
-In Shipyard that has a hard edge. Exactly one tracker comment is carried forward, and only half of it: the `/sy:ship` parent materialises the highest plan version's own `## For /sy:ship` half to a file once per session and hands later phases that file's path (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router), and no `/sy:ship` phase reads the ticket itself. Every *other* comment still resolves to nothing for every phase — so a fact a later phase needs is in the plan's ship half, or in that phase's own dispatch brief, or it is not available at all, and "it's in the investigation comment" is not a way to keep detail without paying for it. Either the detail earns its place in the ship half, or it goes in a companion comment the plan does not depend on.
+In Shipyard that has a hard edge. Exactly one tracker comment is carried forward, and only half of it: the `/sy:ship` parent materialises the highest plan version's own `## For /sy:ship` half to a file once per session and hands later phases that file's path (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router), and no `/sy:ship` phase reads the ticket itself. Every *other* comment still resolves to nothing for every phase — so a fact a later phase needs is in the plan's ship half, or in that phase's own dispatch brief, or it is not available at all, and "it's in the investigation comment" is not a way to keep detail without paying for it.
 
 ## The instance already in the tree
 

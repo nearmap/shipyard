@@ -19,11 +19,11 @@ Post `# Ship retrospective`. Its `human` part is clear prose:
 - a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — when this run surfaced a new team-process decision, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
 - follow-ups.
 
-Its `agent_detail` part is the receipts a later session needs and a reader does not: the PR URL, the coverage SHAs, the CI outcome, and the requested-plus-observed gate coverage. `link-pr`'s durable content lives here — the PR URL is recorded in this `agent_detail` rather than as an independent write.
+Its `agent_detail` part is the receipts a later session needs and a reader does not: the PR URL, the coverage SHAs, the CI outcome, and the requested-plus-observed gate coverage. `link-pr`'s durable content lives here rather than in an independent write.
 
 Do **not** embed token or metrics JSON in this comment.
 
-While writing the retro, distill any durable, cross-cutting, tool/skill-level lesson (not repo trivia) into cross-session memory — `memory_add` per the write bar in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`. A refutation this run already applied — drained as each phase returned, per the worker contract — is not redone here; this step is for a lesson the retro itself newly surfaces, or a genuinely new one.
+While writing the retro, distill any durable, cross-cutting, tool/skill-level lesson (not repo trivia) into cross-session memory — `memory_add` per the write bar in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`. A refutation this run already applied — drained as each phase returned, per the worker contract — is not redone here.
 
 ## 2. Standalone token-usage JSON comment
 
@@ -54,7 +54,7 @@ post-log {"issue": "$TASK_KEY", "title": "Claude Code usage",
           "payload": <the object in claude-usage-$TASK_KEY.json, as JSON>}
 ```
 
-Pass the native object: `payload` is not a string and the caller composes neither the heading nor the fenced block, which is what makes this log standalone by construction rather than by convention — the call carries no field it could be appended through. Post via the `tracker` skill (it renders the result to the tracker's native format).
+Pass the native object: `payload` is not a string, and the caller composes neither the heading nor the fenced block — the call carries no field this log could be appended through. Post via the `tracker` skill (it renders the result to the tracker's native format).
 
 ## 3. Standalone ship-metrics JSON comment
 
@@ -85,24 +85,24 @@ Post a second log the same way — `post-log` with `title` `Claude Code ship met
 }
 ```
 
-Use `null` for unknown values. Never infer metrics. This section is the **only** definition of the shape; `sy_tools/ship_metrics.py` is the same definition as code, and the `post-log` verb refuses a payload claiming this schema that does not match it — so a field name that drifts from the list below is a failed write, not a comment nobody notices is wrong.
+Use `null` for unknown values. Never infer metrics. This section is the **only** definition of the shape; `sy_tools/ship_metrics.py` is the same definition as code, and the `post-log` verb refuses a payload claiming this schema that does not match it, so a field name drifting from the list below is a failed write.
 
 ### What each field counts
 
 These are settled definitions, not restatements: several of them were being counted differently run to run, which made cross-run comparison worthless.
 
 - `plan_divergence_count` — `len(accepted_deviations) + count(plan_supersede_events)`, computed mechanically from the state file at handoff, never hand-incremented as the run goes. A deviation that was *considered and declined* is not a divergence; it belongs in `deviations_declined` so the two stop being conflated.
-- `deviations_declined` — proposed deviations rejected rather than applied. Kept separate precisely so `plan_divergence_count` measures what the branch actually did.
+- `deviations_declined` — proposed deviations rejected rather than applied.
 - `ci_fix_rounds` — CI-red states resolved by a landed code change, and only those. A gate or review round-trip is not a CI fix round even when CI reran, and a no-diff rerun (a flake, a retry, a re-request) is not one either.
 - `review_fix_rounds` — gate/review rounds with at least one accepted finding folded into a following commit. A round that produced only rejected or non-actionable findings does not count.
-- `gate_rounds_total` — **every** GATE pass of the run, including the passes that found nothing and the ones whose findings were all rejected. That is the difference from `review_fix_rounds`, which counts only the subset folded into a following commit: a run that ground through six clean-verdict-chasing rounds and changed nothing records six here and zero there. It only ever increases: it is never reset when a fix round pushes a new head, and never reset by a budget raise either (that stamps `gate_rounds_budget_base` instead), because under-counting it hides the runs that never converged.
+- `gate_rounds_total` — **every** GATE pass of the run, including the passes that found nothing and the ones whose findings were all rejected. That is the difference from `review_fix_rounds`, which counts only the subset folded into a following commit: a run that ground through six clean-verdict-chasing rounds and changed nothing records six here and zero there. It only ever increases: it is never reset when a fix round pushes a new head, and never reset by a budget raise either (that stamps `gate_rounds_budget_base` instead).
 - `gate_rounds_budget_base` — the `gate_rounds_total` a raise-budget disposition was taken at, or `0` for the run that never hit the cap. Never `null`. `gate_rounds_total - gate_rounds_budget_base` is the quantity `ship.escalation.max_gate_rounds` bounds, compared during the run against the live `ship-state.yaml` fields and never against this record, which lands only at handoff (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/immutable-gate.md` § Fix cycle). A non-zero value is the signal worth reading: this run asked for more rounds and got them.
 - `review_findings_accepted` / `review_findings_rejected` — individual findings, not rounds. A round can contribute to both.
 - `human_review_defects` — defaults to `0` and is **never** `null`: "no human found anything" is a real observation available at ship time, where `null` would make a clean run indistinguishable from an unfinished record. It counts more than defects — a human-directed scope or behaviour reversal after observing a run belongs here too, because the signal being tracked is "a human had to intervene on substance", not "a human found a bug".
 - `pregate_checkpoint_declared` — straight from the plan's `pre-gate checkpoint` field: whether one was declared at all. Never `null`; a plan that declared none records `false`.
 - `pregate_checkpoint_changes_requested` — how many times the checkpoint sent work back to BUILD before an eventual proceed. `0` either way — for a run that declared no checkpoint and for one that was waved straight through. Unlike `plan_divergence_count`, this one is genuinely incremented by the parent as the run goes (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint) — there is no state-file structure to compute it from instead.
 - `gate_false_pass` — unknowable at ship time: always post it as `null`, then set it post-hoc, correcting the same comment per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`, when a human or CI later finds a defect the gate passed. It is the shadow-run signal for whether the gate can be trusted without its human backstop; the backstop is retained until that record says otherwise.
-- `gate_false_pass_reason` — required whenever `gate_false_pass` is not `null`, and rejected as missing otherwise. A bare `true` records that the gate was wrong without recording what it missed, which is the half of the signal that could actually change the gate.
+- `gate_false_pass_reason` — required whenever `gate_false_pass` is not `null`, and rejected as missing otherwise.
 - `post_merge_defect` / `rollback` — also post-hoc, `null` at ship time, corrected the same way.
 - `lead_time_seconds` — merge timestamp (`gh pr view --json mergedAt`) minus `ship_session_started_at` from the state file. Wall-clock delivery time, deliberately **not** a transcript span or a sum of session durations: a run paused overnight took overnight.
 - `transcript_attachment` — the artifact's filename or URL, or `null`. `null` on the `light` tier and whenever `transcript.attach` is false; a skipped call means no artifact exists, so say so rather than inventing a reference.
@@ -111,7 +111,7 @@ These are settled definitions, not restatements: several of them were being coun
 
 This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true (`get_config {"key": "transcript.attach"}`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). Otherwise skip it exactly as `light` tier does — same `transcript_attachment: null` in the metrics JSON.
 
-When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders the whole tree — main plus every nested subagent — into one readable file straight from the on-disk session tree, so nothing session-bound and no by-hand `/export` is involved:
+When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders the whole tree — main plus every nested subagent — into one readable file straight from the on-disk session tree:
 
 ```
 export_transcript {"session_id": "$SHIP_SESSION_ID", "task": "$TASK_KEY",
@@ -124,4 +124,4 @@ Scan, redact, and upload exactly one attachment — and, when the delegation its
 
 ## Handoff
 
-Task stays `in-review` until merge. Before reporting, run this phase's end-of-run hygiene assertion: no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing), and this run's recorded worktrees all exist while nothing this run created is unrecorded (recorded build/review worktrees — under the resolved `worktree.root` — remain until an authorized merge cleans them; the primary checkout and any sibling run's worktrees are out of scope; a mismatch in this run's set is drift to fix loudly, not to report around). Report PR URL, tracker status, acceptance state, coverage SHAs/requested+observed gate, start, and build models, usage/metrics comment status, transcript attachment status, and owned-worktree/hygiene status as a status update, then close the turn with an isolated `## Action needed` block (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`) stating the PR is ready and merge awaits your explicit authorization. Name the follow-on mutations in that same block: on your go-ahead the run will merge the verified head, reply to any review thread that newly surfaces before merge (drafted and posted for you, never left for you to write), apply the proposed standards-doc edit above if the retro named one, attach the scanned transcript if `transcript.attach` resolves true, and set the task done. Under auto-mode this is the one consent point covering all of them, so it enumerates them rather than authorizing a bare "merge" — the three contingent ones included, so none is a surprise write if its trigger occurs.
+Task stays `in-review` until merge. Before reporting, run this phase's end-of-run hygiene assertion: no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing), and this run's recorded worktrees all exist while nothing this run created is unrecorded (recorded build/review worktrees — under the resolved `worktree.root` — remain until an authorized merge cleans them; the primary checkout and any sibling run's worktrees are out of scope; a mismatch in this run's set is drift to fix loudly, not to report around). Report PR URL, tracker status, acceptance state, coverage SHAs/requested+observed gate, start, and build models, usage/metrics comment status, transcript attachment status, and owned-worktree/hygiene status as a status update, then close the turn with an isolated `## Action needed` block (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`) stating the PR is ready and merge awaits your explicit authorization. Name the follow-on mutations in that same block: on your go-ahead the run will merge the verified head, reply to any review thread that newly surfaces before merge (drafted and posted for you, never left for you to write), apply the proposed standards-doc edit above if the retro named one, attach the scanned transcript if `transcript.attach` resolves true, and set the task done. Under auto-mode this is the one consent point covering all of them, so it enumerates them — the three contingent ones included — rather than authorizing a bare "merge".

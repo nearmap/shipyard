@@ -6,9 +6,11 @@ Under auto-mode a skill executes mandated external writes — comments, metrics,
 
 ## Retroactive honesty
 
-A record already posted to an external surface — a retrospective, a metrics or usage comment, a review reply, a coverage note, a plan or decomposition comment — that is later overruled, superseded, or found wrong is corrected on that same surface, not left standing. The correction is explicit: post a follow-up or edit the record so a reader sees the current truth, and say what changed and why. Silence is the failure. Leaving a stale claim in place because the run has moved on lets the external record drift from what actually happened, which is exactly the drift auto-mode makes invisible. A superseded record is marked superseded; a wrong number is corrected with the right one; a reversed decision is annotated, never quietly abandoned.
+A record already posted to an external surface — a retrospective, a metrics or usage comment, a review reply, a coverage note, a plan or decomposition comment — that is later overruled, superseded, or found wrong is corrected on that same surface, not left standing. The correction is explicit and additive: post the record that carries the current truth, saying what it corrects and why. Silence is the failure. Leaving a stale claim in place because the run has moved on lets the external record drift from what actually happened, which is exactly the drift auto-mode makes invisible. A wrong number is corrected by the right one posted after it; a reversed decision is annotated on the record that reverses it; nothing is quietly abandoned.
 
 This never means rewriting history to look cleaner. The honest move is additive — the original and its correction both remain legible — so the record shows the reversal, not a polished version that hides it.
+
+On the tracker the correction is additive by construction rather than by discipline: a posted comment is not edited, so a superseded record is corrected by the record that supersedes it naming what it replaces, and the superseded one stays posted in full. For a plan or decomposition comment that correcting record is a new highest version, which is the whole mechanism of correction there — nothing is marked superseded in place, and no reader consults such a mark (`${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`). Emptying an overruled plan down to a two-line stub is the polished version this rule already forbids, not a correction of it.
 
 ## Denied-write boundary
 

@@ -47,8 +47,15 @@ SMOKE_LABEL = "documentation"
 one would hide a typo in a real caller."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
-PLAN_HUMAN = "# Execution Plan v1\nStatus: ACTIVE\n\nTL;DR: smoke-test plan comment. Safe to delete."
-"""The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one."""
+PLAN_HUMAN = "# Execution Plan v2\nSupersedes: v1\n\nTL;DR: smoke-test plan comment. Safe to delete."
+"""The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one.
+
+A v2 with `Supersedes:` on the line directly under the heading, no blank line between them, because that
+is what §7's template writes byte for byte and a plan the tracker never sees in its real shape is not the
+thing under test. What that buys is narrow enough to be worth stating rather than overclaiming: a
+`version` of 2 read back proves the heading's version number parses off this shape after a real store and
+read. It proves nothing about the human half's own round trip — `plan_file` materialises the agent-facing
+half alone, so no assertion on this path can reach the `Supersedes:` line at all."""
 
 PLAN_AGENT_HALF = (
     "## For /sy:ship\n\n"
@@ -307,8 +314,8 @@ class Smoke:
         not by itself distinguish a rich-text tracker's escaping regressing to a no-op from a genuine
         Markdown-passthrough tracker — see `PLAN_AGENT_ESCAPED`'s docstring.
 
-        On a *fresh* issue with no other plan on it, so the exactly-one-ACTIVE selection is unambiguous
-        without this run having to supersede anything.
+        On a *fresh* issue with no other plan on it, so the highest-version selection lands on the comment
+        this run just posted rather than on a plan some other run left behind.
         """
         posted = await self.call("post-comment", {
             "issue": issue, "human": PLAN_HUMAN, "agent_detail": PLAN_AGENT_HALF,
@@ -322,7 +329,7 @@ class Smoke:
             return
         self.check(
             "plan_file",
-            bool(payload.get("comment_id")) and payload.get("version") == 1,
+            bool(payload.get("comment_id")) and payload.get("version") == 2,
             f"the pin does not look right for the comment just posted: {payload} against {posted}",
         )
         self.check(

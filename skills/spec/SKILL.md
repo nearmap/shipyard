@@ -3,13 +3,13 @@ name: spec
 description: >-
   Turn a fuzzy goal or existing Task into one self-contained, execution-ready
   Task plan. Scope the surface, resolve standards, research load-bearing behaviour,
-  remove ambiguity, and maintain exactly one ACTIVE versioned execution plan.
+  remove ambiguity, and post the versioned execution plan whose highest version is the plan.
 argument-hint: "[a goal to scope, or an existing task key (<task>) to deepen]"
 disable-model-invocation: true
 effort: max
 ---
 
-Turn this goal or work item into a **Task** (or **Bug** for a defect fix) containing everything a fresh `/sy:ship` session needs to land one coherent PR. Code work is read-only; tracker writes use the `tracker` skill (`/sy:tracker`). End at the approved active plan — or, when research invalidates the premise, at a shelve-with-evidence closure (§6); do not implement.
+Turn this goal or work item into a **Task** (or **Bug** for a defect fix) containing everything a fresh `/sy:ship` session needs to land one coherent PR. Code work is read-only; tracker writes use the `tracker` skill (`/sy:tracker`). End at the approved plan — or, when research invalidates the premise, at a shelve-with-evidence closure (§6); do not implement.
 
 Plan against fresh `origin/main` unless the user names another immutable base.
 
@@ -104,7 +104,7 @@ Not every spec ends in a plan. When research shows the premise is already delive
 3. Set an **existing** status via the `tracker` skill — `done` when the premise was already delivered or the item should close, `backlog` when it is merely premature — never a new status; the evidence comment is what distinguishes this closure from delivery (decomposed/superseded/invalidated closure is not delivery).
 4. Capture the session per §8 as on every run.
 
-## 7. Capture exactly one active versioned plan
+## 7. Capture the plan as the highest version
 
 Nothing here starts until both mandatory §3 passes have run — the `sy:debate` pass over the core decision and the `sy:spec-gate` review of the drafted plan — with every spec-gate finding already dispositioned.
 
@@ -116,7 +116,7 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - strongest rejected alternative and why — the adversary's strongest objection from the §3 debate plus the user's steer, not a restatement invented after the fact;
 - risks/edge cases;
 - unverified assumptions;
-- out of scope — what this plan deliberately excludes; note it is a default contract, not a wall: small, adjacent, low-risk issues surfaced during ship may be folded in as recorded scope extensions rather than always spawning siblings (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
+- out of scope — what this plan deliberately excludes, under the fold-in-versus-follow-up policy in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`, which the exclusion is read against rather than restated from.
 
 **For `/sy:ship`** (mechanical and self-contained):
 
@@ -145,34 +145,29 @@ The ship profile never lowers review or build: `sy:gate` remains frontier tier a
 
 Present a short natural-prose summary: what you are going to do, why this way, the strongest alternative you rejected and why, the risks worth knowing, and what this deliberately excludes. A few paragraphs, read once and understood — no nested outline, no file inventory, no restatement of the `/sy:ship` section. What is being approved is the judgment; the mechanics exist for `/sy:ship`, and pasting them here buries the decision the user is being asked to make.
 
-Send that summary as direct text first, in full — two acts, not one, and the summary is never folded into the question call or replaced by a pointer at it. Only then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full ACTIVE plan comment (and, when superseding, mark the prior plan SUPERSEDED) and set the Task `ready` — it does not touch the Task body (a body edit during research, §2, is governed separately by that section, not by this rule). Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
+Send that summary as direct text first, in full — two acts, not one, and the summary is never folded into the question call or replaced by a pointer at it. Only then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full plan as one new comment at the next version and set the Task `ready` — it edits no comment already on the issue, and it does not touch the Task body (a body edit during research, §2, is governed separately by that section, not by this rule). Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
 
 A `request changes` answer revises the draft and returns to this step; re-run `sy:spec-gate` only when that revision is material, per the re-dispatch rule in its reference.
 
 ### Step 2 — after approval, post the full plan
 
-Both labeled parts are revealed here, in full, rather than at Step 1. This step never writes the Task body — not for a pre-existing Task, and not even for one this run just created — so no existing body content is ever a target of this run's write. (A body edit during research, §2, is governed separately by that section, not by this rule.) Marking a superseded plan SUPERSEDED rather than leaving two ACTIVE is the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`: an overruled record is corrected on its own surface, never left standing.
+Both labeled parts are revealed here, in full, rather than at Step 1. This step never writes the Task body — not for a pre-existing Task, and not even for one this run just created — so no existing body content is ever a target of this run's write. (A body edit during research, §2, is governed separately by that section, not by this rule.) It edits no comment already on the issue either: an earlier plan version stays posted exactly as it was, and the new version corrects it by naming what it supersedes. That additive form is what the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md` takes here — an overruled record is corrected on the record that overrules it, never emptied out.
 
-1. if an older plan is ACTIVE, edit its comment to:
+1. run `/sy:tighten` over the `/sy:ship` half. It runs on **every** plan, unconditionally — never only on one that looks long — and it rewrites that half alone. The `/sy:tighten` pass over the `/sy:ship` half completes before any tracker mutation. Its placement here, after sign-off, is deliberate: what Step 1 approved is the judgment carried in the human half, which this pass never touches, so the rewrite cannot invalidate the approval; and running it last means nothing added late escapes it.
 
-```text
-# Execution Plan v<N-1>
-Status: SUPERSEDED
-Superseded by: v<N>
-```
+   Splitting the half across comments is not the remedy for a long one, and is not available: a plan lives in exactly one comment (`${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`). Tightening is the remedy.
 
 2. append the new comment, carrying both labeled parts above in full. `post-comment`'s split is the plan's own split, so pass them as they are: `human` is this heading block plus **For your sign-off**, `agent_detail` is **For `/sy:ship`** — never one hand-composed body:
 
 ```text
 # Execution Plan v<N>
-Status: ACTIVE
 Supersedes: v<N-1>   # omit for v1
 ```
 
-3. verify by rereading plan headings/statuses that **exactly one** plan is ACTIVE.
+3. verify by rereading that this is the highest plan version on the issue and that no other comment claims it.
 4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
-The bar: a fresh session reading the Task and sole ACTIVE plan can implement and open the PR without missing design decisions.
+The bar: a fresh session reading the Task and its highest plan version can implement and open the PR without missing design decisions.
 
 ## 8. Capture the session
 

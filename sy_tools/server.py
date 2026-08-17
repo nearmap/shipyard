@@ -347,7 +347,10 @@ async def post_comment(
     # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
     _validate_machine_log(body)
     adapter = tracker.adapter()
-    _validate_body_size(body, adapter.body_limit)
+    # The loose pattern, not `_PLAN_HEADING`: what the size refusal needs is "does this open like a plan",
+    # and a `## Execution Plan v3` or `# Execution Plan v3 — revised` classified as *not* a plan gets the
+    # generic remedy that offers splitting, which is the read-side data loss this refusal exists to prevent.
+    _validate_body_size(body, adapter.body_limit, is_plan=_PLAN_CONTINUATION.match(human.lstrip()) is not None)
     posted = await adapter.post_comment(issue, body)
     return {**posted, "scrub": scrub}
 
@@ -422,17 +425,24 @@ _PLAN_HEADING = re.compile(r"#[ \t]+Execution Plan v(\d+)[ \t]*\r?$", re.MULTILI
 """The heading an execution plan comment opens with, and the version number in it.
 
 Matched against the body's start, never searched for: a comment *quoting* a plan heading mid-body is
-not a plan, and treating it as one is how "exactly one ACTIVE plan" starts picking the wrong comment."""
+not a plan, and treating it as one is how "the highest version is the plan" starts picking the wrong
+comment."""
 
-_PLAN_STATUS = re.compile(r"^Status:[ \t]*(\S+)", re.MULTILINE)
-"""A plan's status field. The **first** occurrence after the heading is the plan's own status.
+_PLAN_CONTINUATION = re.compile(r"#{1,6}[ \t]+Execution Plan v(\d+)")
+"""A heading that opens like a plan's — a real plan heading or the `v3 (continued)` stub a split plan
+leaves; this pattern matches both shapes and does not tell them apart.
 
-First-match-wins rather than a body-wide search, and reading the value rather than testing containment:
-a SUPERSEDED plan whose prose later says the word ACTIVE must not read as active, and a plan's own field
-is the line the convention in `skills/spec/SKILL.md` §7 writes directly under the heading. The status
-line is not required to still be a line of its own by the time it is read back — the rich-text round
-trip merges it into one paragraph with a following `Supersedes:` — which is why the value is taken with
-`\\S+` off the field name rather than off a whole-line match."""
+Any heading level, and no end anchor, unlike `_PLAN_HEADING`: a real plan heading is always posted at
+level one from `skills/spec/SKILL.md`'s template, but a stub is hand-made or arrives reflowed, and a
+`## Execution Plan v3 (continued)` invisible to this pattern is precisely the silent truncation the
+detector exists to catch. `plan_file`'s continuation loop is what excludes a real plan heading from this
+match (`_PLAN_HEADING.match(...) is not None` is checked separately there); `post-comment` deliberately
+does not exclude it, since a decorated or mis-levelled heading — real plan or stub alike — should still
+get the plan-specific never-split remedy rather than the generic one.
+
+Matched against the body's start rather than searched for, exactly as `_PLAN_HEADING` is: a
+`# Ship retrospective` or `# SEAMS` comment quoting a plan heading further down its body is not a
+continuation of anything, and a search would flag every one of them and strand the issue."""
 
 
 def _agent_half(body: str) -> str:
@@ -446,7 +456,7 @@ def _agent_half(body: str) -> str:
         if "</details>" not in half:
             return half.strip()
         raise ToolError(
-            "the ACTIVE plan comment's agent-facing section carries a `</details>` that is not the outer "
+            "the selected plan comment's agent-facing section carries a `</details>` that is not the outer "
             "close `post-comment` appends: cutting at it would risk dropping content after a nested "
             "disclosure block instead of at the section's real end. Repost the plan through `post-comment` "
             "so the outer close lands last."
@@ -454,7 +464,7 @@ def _agent_half(body: str) -> str:
     if _LEGACY_AGENT_DETAIL_TAG in body:
         return body.split(_LEGACY_AGENT_DETAIL_TAG, 1)[1].strip()
     raise ToolError(
-        "the ACTIVE plan comment carries neither boundary this tool can split on: neither the collapsed "
+        "the selected plan comment carries neither boundary this tool can split on: neither the collapsed "
         "agent-facing section `post-comment` writes nor the flat separator that preceded it. It was not "
         "posted as a two-part comment, so it has no `## For /sy:ship` half to hand a later phase; repost "
         "the plan through `post-comment` with the two parts passed separately."
@@ -463,20 +473,35 @@ def _agent_half(body: str) -> str:
 
 @mcp.tool(name="plan_file")
 async def plan_file(issue: IssueId) -> dict[str, Any]:
-    """Write the sole ACTIVE execution plan's agent-facing half to a file, and report where it landed.
+    """Write the highest-version execution plan's agent-facing half to a file, and report where it landed.
 
-    The way a `/sy:ship` phase after START gets the plan. It reads the issue, selects the one comment
-    that opens `# Execution Plan v<N>` and carries `Status: ACTIVE`, and materialises that comment's
-    agent-facing half — the `## For /sy:ship` part — under the issue's own scratch directory. The plan
-    text is never part of the result: a caller gets a path plus the pin (`comment_id`, `version`) and
-    hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
-    detectable by comparing the pin rather than by re-reading prose.
+    The way a `/sy:ship` phase after START gets the plan. It reads the issue, takes every comment that
+    opens `# Execution Plan v<N>`, selects the one at the highest `<N>`, and materialises that comment's
+    agent-facing half — the `## For /sy:ship` part — under the issue's own scratch directory. A posted
+    comment is never edited, so the newest version on the issue is the plan and any `Status:` line an
+    older comment carries is historical residue this tool does not read. The plan text is never part of
+    the result: a caller gets a path plus the pin (`comment_id`, `version`) and hands both on, so no
+    phase loads plan text it does not need and a plan revised between sessions is detectable by comparing
+    the pin rather than by re-reading prose.
 
-    Zero or more than one ACTIVE plan is refused, naming the count and the comment ids: that convention
-    (`skills/tracker/CONTRACT.md` § Exactly one ACTIVE plan) is what makes "the plan" unambiguous, and
-    picking one of several would ship against a plan nobody approved. `comments_truncated` says whether
-    the issue's comment page left anything out — on zero found, the ACTIVE plan may simply be past the
-    newest page rather than absent.
+    A comment whose heading opens `# Execution Plan v<N>` without being a plan heading — a
+    `v<N> (continued)` stub — is refused when its `<N>` is at or above the selected plan's own version:
+    this tool hands on one comment's half, so a plan split across two comments would be materialised with
+    the second one's content silently missing. Every such comment on the issue is scanned for and named in
+    one refusal, and the version it sends the caller to is one past the *highest* of them, so a second
+    stranded stub cannot re-trigger the identical refusal against the version the first one asked for. At
+    or above rather than equal to, because a stub numbered *higher* than the selected version means a later
+    version's second half is stranded with its first half never posted, and this tool must not quietly fall
+    back to an older complete version as though the issue's newest plan did not exist. Only a stub strictly
+    older than the selected version is skipped, as history a later version has moved past.
+
+    Three things refuse: no plan comment at all; two comments sharing the highest version — which is
+    genuinely ambiguous, since neither is the later revision of the other, and picking one would ship
+    against a plan nobody approved; and a stranded continuation stub at or above the selected version.
+    Several plan comments at *different* versions are the normal steady state
+    (`skills/tracker/CONTRACT.md`), not an error. `comments_truncated` says whether the issue's
+    comment page left anything out — on none found, the plan may simply be past the newest page rather
+    than absent.
 
     What lands on disk is the plan half **as the tracker gives it back**, not as it was posted: a
     rich-text tracker escapes un-backticked Markdown punctuation on the way through, so `some_name`
@@ -491,7 +516,7 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     # `.get` with a default, not `[...]`: only one adapter reports the flag, and an adapter that cannot
     # tell must read as "nothing known to be cut off" rather than making this tool unusable there.
     truncated = bool(read.get("comments_truncated", False))
-    active: list[tuple[str, int, str]] = []
+    plans: list[tuple[str, int, str]] = []
     for comment in read.get("comments") or []:
         if not isinstance(comment, dict):
             continue
@@ -499,28 +524,65 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
         heading = _PLAN_HEADING.match(body)
         if heading is None:
             continue
-        status = _PLAN_STATUS.search(body, heading.end())
-        if status is None or status.group(1) != "ACTIVE":
-            continue
-        active.append((str(comment.get("id") or ""), int(heading.group(1)), body))
-    if len(active) != 1:
-        ids = ", ".join(f"{comment_id or '(no id)'} (v{version})" for comment_id, version, _ in active)
+        plans.append((str(comment.get("id") or ""), int(heading.group(1)), body))
+    if not plans:
         raise ToolError(
-            f"{issue} has {len(active)} ACTIVE execution plans, not one"
-            + (f": {ids}. " if ids else ". ")
+            f"{issue} carries no execution plan comment: no comment opens `# Execution Plan v<N>`. "
             + (
-                "The ACTIVE plan may also be past the newest page of comments this read returned "
-                "(comments_truncated is true), so treat it as unresolved rather than absent. "
-                if not active and truncated
+                "It may be past the newest page of comments this read returned (comments_truncated is "
+                "true), so treat it as unresolved rather than absent. "
+                if truncated
                 else ""
             )
-            + "Exactly one plan is ACTIVE by convention and superseding is explicit; resolve it in "
-            "/sy:spec rather than picking one here."
+            + "Post the plan through `post-comment` in /sy:spec rather than reading one here."
         )
-    comment_id, version, body = active[0]
+    version = max(plan[1] for plan in plans)
+    selected = [plan for plan in plans if plan[1] == version]
+    if len(selected) != 1:
+        ids = ", ".join(f"{comment_id or '(no id)'}" for comment_id, _, _ in selected)
+        raise ToolError(
+            f"{issue} carries {len(selected)} execution plan comments at v{version}, the highest version "
+            f"on the issue: {ids}. Neither is a revision of the other, so which one is the plan is "
+            "genuinely ambiguous and picking one here would ship against a plan nobody approved. Post the "
+            f"whole plan as v{version + 1} in /sy:spec, which puts one comment past both."
+        )
+    comment_id, _, body = selected[0]
+    stranded: list[tuple[int, str]] = []
+    for comment in read.get("comments") or []:
+        if not isinstance(comment, dict):
+            continue
+        # lstripped like the selection loop above, or a leading blank line hides the heading from `.match`.
+        candidate = str(comment.get("body") or "").lstrip()
+        opener = _PLAN_CONTINUATION.match(candidate)
+        # A strict match is a plan comment, never a continuation — including the selected plan itself.
+        if opener is None or _PLAN_HEADING.match(candidate) is not None:
+            continue
+        stranded_version = int(opener.group(1))
+        if stranded_version < version:
+            # Only an older stub is history a later plan version has already moved past; refusing on
+            # it would make the issue permanently unreadable.
+            continue
+        stranded.append((stranded_version, str(comment.get("id") or "(no id)")))
+    if stranded:
+        # The whole scan first, then one refusal: raising on the first stub found named *that* stub's version
+        # as the remedy, so a second stub at a higher version re-triggered the identical refusal on the next
+        # post and burnt another comment slot, which is never editable. It was adapter-order-dependent too:
+        # one adapter returns a comment page newest-first and another oldest-first, so which stub the loop
+        # reached first — and so which remedy one issue got — varied by which tracker was configured.
+        next_version = max([version, *(stranded_version for stranded_version, _ in stranded)]) + 1
+        listed = ", ".join(f"{stub_id} (continues v{stranded_version})" for stranded_version, stub_id in stranded)
+        noun = "comment" if len(stranded) == 1 else "comments"
+        raise ToolError(
+            f"{issue} carries {len(stranded)} stranded Execution Plan continuation {noun} — a heading that opens "
+            f"a plan version without being that version's own plan comment: {listed}. v{version} is the highest "
+            "complete plan version on the issue. This tool hands on one comment's agent-facing half, so the plan "
+            "would go to /sy:ship with that content missing and nothing to say so. Post the whole plan as "
+            f"v{next_version} through `post-comment` — one comment, tightened to fit the body limit — which moves "
+            "the selected version past every comment listed here in a single post and leaves them as history."
+        )
     if not comment_id:
         raise ToolError(
-            f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id: the tracker "
+            f"{issue}'s highest-version execution plan (v{version}) has no readable comment id: the tracker "
             "read back an empty id for its own comment, so the pin this tool returns could not reliably "
             "detect a later revision at the same version. This is a tracker read fault, not a plan fault; "
             "report it rather than reposting the plan."
@@ -654,14 +716,27 @@ def _claims_within(parsed: object) -> bool:
     return False
 
 
-def _validate_body_size(body: str, limit: int) -> None:
-    if len(body) > limit:
+def _validate_body_size(body: str, limit: int, *, is_plan: bool = False) -> None:
+    """Refuse an oversized body before the write, telling the caller what to do about it.
+
+    `is_plan` withdraws the split option entirely rather than merely discouraging it: `plan_file`
+    materialises one comment's half, so a plan continued in a second comment is content nothing reads.
+    """
+    if len(body) <= limit:
+        return
+    measured = (
+        f"this body is {len(body)} characters and the limit is {limit}, so it was refused: "
+        f"{len(body) - limit} over. The write was not attempted, because a tracker that refuses an "
+        "oversized body refuses it whole — nothing partial lands and nothing is truncated for you. "
+    )
+    if is_plan:
         raise ToolError(
-            f"this body is {len(body)} characters and the limit is {limit}, so it was refused: "
-            f"{len(body) - limit} over. The write was not attempted, because a tracker that refuses an "
-            "oversized body refuses it whole — nothing partial lands and nothing is truncated for you. "
-            "Split the content across writes, or shorten it and send the shorter body."
+            measured + "Tighten whichever half is largest (most often `## For /sy:ship`) and send the "
+            "shorter body. A plan comment is never split across comments: the tools that read a plan read "
+            "one comment, so whatever is "
+            "parked in a second one is dropped without anyone being told."
         )
+    raise ToolError(measured + "Shorten it and send the shorter body, or split the content across writes.")
 
 
 def _validate_machine_log(body: str) -> None:

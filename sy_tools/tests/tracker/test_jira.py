@@ -1819,8 +1819,9 @@ def test_a_plan_comment_reads_back_as_the_shape_the_core_tests_fixture_on():
     alters the escaping fails here, naming the new shape, instead of leaving those fixtures quietly
     describing a transformation that no longer happens.
 
-    Both halves, not just the agent one: the human half's read-back shape is what the version and status
-    selection is applied to, and its status line stops being a line of its own on the way through.
+    Both halves, not just the agent one: the human half's read-back shape is what the version selection
+    is applied to, and the round trip reflows it — a heading that arrives with its blank line moved or
+    its following lines joined is a heading the selector may no longer match.
     """
     posted = PLAN_HUMAN.strip() + _AGENT_DETAIL_OPEN + PLAN_AGENT.strip() + _AGENT_DETAIL_CLOSE
     read_back = adf.adf_to_markdown(adf.markdown_to_adf(posted))

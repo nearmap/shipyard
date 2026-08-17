@@ -20,7 +20,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config",
+    "config", "tighten",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -178,13 +178,28 @@ def frontmatter(path: Path, errors: list[str]) -> None:
         fail(f"{path}: plugin-shipped agents/skills cannot declare hooks; move them to hooks/hooks.json", errors)
 
 
+def _frontmatter_block(text: str) -> str:
+    """Return the frontmatter block's body, or "" when the file opens or closes no such block.
+
+    Anchored on the `\\n---\\n` delimiter, never a split on the bare `---` substring: a `---` inside a
+    field's own value -- a `description: >-` block scalar carrying one, say -- moves a substring split's
+    boundary up into the block, so every key below it falls outside what a caller then reads as the whole
+    block and a containment pin sees an absence that is not there.
+
+    "" rather than raising: `frontmatter()` reports both delimiter failures against the path, and a raise
+    here would abort main() before it prints the collected list.
+    """
+    if not text.startswith("---\n"):
+        return ""
+    end = text.find("\n---\n", 4)
+    return "" if end == -1 else text[4:end]
+
+
 def _frontmatter_field(text: str, field: str) -> str:
     """Return a frontmatter field's value, joining an indented YAML block list into one string."""
-    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
-        # "" rather than raising: `frontmatter()` already reports both delimiter failures, and a raise
-        # here would abort main() before it prints the collected list.
+    block = _frontmatter_block(text)
+    if not block:
         return ""
-    block = text.split("---", 2)[1]
     match = re.search(rf"^{field}:(.*)$", block, re.M)
     if not match:
         return ""
@@ -623,6 +638,7 @@ def check_invariants(errors: list[str]) -> None:
     debate_ref = read("skills/shared/references/debate.md")
     spec_gate_ref = read("skills/shared/references/spec-gate.md")
     economy_ref = read("skills/shared/references/context-economy.md")
+    tighten = read("skills/tighten/SKILL.md")
     contributing = read("CONTRIBUTING.md")
     roadmap_shaping = read("skills/plan/references/roadmap-shaping.md")
     tracker_skill = read("skills/tracker/SKILL.md")
@@ -631,6 +647,9 @@ def check_invariants(errors: list[str]) -> None:
     init_repo = read("skills/init-repo/SKILL.md")
     checkpoint_handoff = read("skills/plan/references/checkpoint-handoff.md")
     jira_attachments = read("skills/tracker/jira/references/attachments.md")
+    readme = read("README.md")
+    agent_guide = read("agent-guide.md")
+    usage_doc = read("docs/usage.md")
 
     if "--match-head-commit" not in merge:
         fail("merge path missing atomic head guard (--match-head-commit)", errors)
@@ -943,6 +962,7 @@ def check_invariants(errors: list[str]) -> None:
         ("pr", pr),
         ("handoff-accounting", handoff),
         ("CONTRIBUTING.md", contributing),
+        ("tighten", tighten),
     )
     for name, text in economy_consumers:
         if "context-economy.md" not in text:
@@ -957,6 +977,92 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate agent restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
     if economy_axis_phrase in spec:
         fail("spec restates the prose-economy trigger; cite spec-gate.md instead of copying it", errors)
+
+    # An oversized plan is shortened, never split: `plan_file` materialises one comment's one agent-facing
+    # half, so a plan spread over two comments is one no later phase can read back. The staleness leg is
+    # the load-bearing one — the superseded sentence offered splitting as the remedy for every writer.
+    if "Split oversized content across writes, or shorten it." in contract:
+        fail("contract still offers splitting first; the remedy is shortening, and a plan is never split", errors)
+    if "a plan comment is never split across comments" not in contract:
+        fail("contract must state that a plan comment is never split across comments", errors)
+    # The `Status: ACTIVE`/`SUPERSEDED` field is gone: a posted comment is never edited, so the field on an
+    # older version was never updated and any reader consulting it picked the wrong plan. Only the version
+    # number selects. The three surfaces that actually carried the literal are pinned first and are what this
+    # pin is worth: spec §7's template, which a caller copies the field straight out of; `plan_file`'s
+    # docstring, which taught the read side to consult it; and the smoke fixture, which posts one for real.
+    # The prose surfaces follow, because a sentence reintroducing the convention is enough to have a caller
+    # write the field again.
+    #
+    # Matched by pattern, not by the two literal spellings: a reintroduction is a rewrite as often as a
+    # copy-paste, and `Status:ACTIVE`, a doubled space, a lowercased pair or a `**Status**:` each restore the
+    # convention while a containment check on the canonical literal stays green. Emphasis markers are
+    # tolerated between the label and its colon; the rest stays tight, so the bare word ACTIVE in unrelated
+    # prose is not a hit. `[ \t]*` rather than `\s*` keeps the gap off a newline, where an unrelated line
+    # opening with "active" would answer for a `Status:` ending the line above it, and the trailing `\b`
+    # keeps `ACTIVEnonsense` from counting as the field.
+    retired_status = re.compile(r"Status[*`_]{0,2}:[ \t]*(?:ACTIVE|SUPERSEDED)\b", re.I)
+    for name, text in (
+        ("spec", spec),
+        ("sy_tools/server.py", read("sy_tools/server.py")),
+        ("docs/smoke_mcp.py", read("docs/smoke_mcp.py")),
+        ("contract", contract),
+        ("ship", ship),
+        ("start-resume", start),
+        ("README.md", readme),
+        ("agent-guide.md", agent_guide),
+        ("tracker", tracker_skill),
+        ("context-economy", economy_ref),
+        ("docs/usage.md", usage_doc),
+    ):
+        found = retired_status.search(text)
+        if found:
+            fail(
+                f"{name} reintroduces the retired plan status field as {found.group(0)!r}; "
+                "the version alone selects", errors,
+            )
+    # Section-scoped for the same reason as the "never writes the Task body" pin above: the pass has to be
+    # Step 2's own first action. Invocation and ordering are one literal on purpose — a pin matching only
+    # `/sy:tighten` would stay green while the ordering clause, which is what keeps a half-run rewrite from
+    # reaching the tracker, was deleted out from under it.
+    density_pin = "The `/sy:tighten` pass over the `/sy:ship` half completes before any tracker mutation."
+    step_two = spec_s7.partition("### Step 2")[2]
+    # Position too, not containment alone: reordering Step 2's items so the post comes first leaves the
+    # sentence present and the ordering it states defeated. `in` before `.index()` on both, so a missing
+    # post step fails as its own message rather than as a ValueError out of the ordering comparison.
+    post_pin = "append the new comment"
+    if density_pin not in step_two:
+        fail("spec §7's Step 2 must run /sy:tighten over the ship half before any tracker mutation", errors)
+    elif post_pin not in step_two:
+        fail(f"spec §7's Step 2 must still name its post step {post_pin!r}; the ordering pin anchors on it", errors)
+    elif step_two.index(density_pin) > step_two.index(post_pin):
+        fail("spec §7's Step 2 must state the /sy:tighten pass before the step that appends the comment", errors)
+    # The density rules live in one skill and every other surface points at it, so the skill's own three
+    # rule sections and its model-invocability are what the pointers are worth. `PROACTIVE` in the
+    # description and the *absence* of `disable-model-invocation` are the two halves of that: the skill is
+    # useless if a caller has to remember to type it.
+    # Opens with it, not merely carries it: a description whose tail mentions PROACTIVE is a keyword parked
+    # out of sight rather than the first thing the model matches on. The leading YAML block-scalar indicator
+    # is stripped first — `_frontmatter_field` returns everything after the colon, so a `description: >-`
+    # value genuinely begins ` >-  `, and a bare `.startswith` would be false for the correct file too.
+    description = re.sub(r"""^\s*(?:[>|][-+]?|["'])?\s*""", "", _frontmatter_field(tighten, "description"))
+    if not description.startswith("PROACTIVE"):
+        fail("tighten's description must open PROACTIVE so the model reaches for it unprompted", errors)
+    # Containment inside the frontmatter block, not a field read: the key is only load-bearing where it would
+    # take effect, so scoping keeps the skill free to document in its body that it deliberately does not
+    # declare it — while still catching the quoted-key spelling (`"disable-model-invocation": true`), which a
+    # field read anchored on `^disable-model-invocation:` passes straight over.
+    if "disable-model-invocation" in _frontmatter_block(tighten):
+        fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
+    # Anchored to a heading line, not containment: the skill's own routing list names every one of these
+    # sections to point at them, so a containment check stays green while the heading it points at is
+    # renamed away. `## Mode` is in the list because the routing list sends a console turn to it.
+    for section in ("## Human-facing text", "## Agent-facing text", "## Mode", "## Protect"):
+        if not re.search(rf"^{re.escape(section)}\s*$", tighten, re.M):
+            fail(f"tighten must carry its `{section}` heading; the density rules live nowhere else", errors)
+    # The whole clause, not the bare token: a mention of `/sy:tighten` anywhere in the file would keep this
+    # green while the sentence putting the pass *before* the turn is sent was deleted.
+    if "it goes through `/sy:tighten` before it is sent" not in user_interaction:
+        fail("user-interaction reference must state that a turn goes through /sy:tighten before it is sent", errors)
 
     # Each adapter's body limit lives in the constant, again in the comment above it carrying that
     # figure's provenance, and again in its agent-facing ADAPTER.md prose. The Protocol docstring is no

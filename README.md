@@ -55,7 +55,7 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 ### Spec
 
-`/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and writes a complete plan: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate, which runs on every plan before sign-off), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. Before you see it, a separate `sy:spec-gate` reviewer reads the drafted plan for architecture, simplicity and correctness, and for the three things plans quietly omit: which docs the change makes stale, which figures or screenshots need a visual check, and whether a human should look at the result before the independent reviewer does. What you are then asked to approve is a short prose summary — the judgment calls, not the file inventory; the full mechanical plan lands on the ticket as the single ACTIVE plan, stamped with the commit it was planned against, once you have said yes. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
+`/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and writes a complete plan: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate, which runs on every plan before sign-off), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. Before you see it, a separate `sy:spec-gate` reviewer reads the drafted plan for architecture, simplicity and correctness, and for the three things plans quietly omit: which docs the change makes stale, which figures or screenshots need a visual check, and whether a human should look at the result before the independent reviewer does. What you are then asked to approve is a short prose summary — the judgment calls, not the file inventory; the full mechanical plan lands on the ticket as the newest plan version, stamped with the commit it was planned against, once you have said yes. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
 
 ![Verification obligations](docs/img/verification-obligations.png)
 
@@ -100,7 +100,7 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 
 ## The rules it holds itself to
 
-- exactly one execution plan is ACTIVE per task; a newer plan supersedes the old one explicitly;
+- a posted comment is never edited; the highest plan version on a task is the plan, and every earlier one stays readable as history;
 - plans record the commit they were written against; building on a materially drifted base is refused;
 - every agent that writes code gets its own isolated worktree, kept beside the repo (or wherever `worktree.root` points) so parallel work never collides;
 - `sy:gate` reviews pinned base/head commits in an isolated, read-only checkout, and every bug candidate must survive an adversarial refutation before it is reported;

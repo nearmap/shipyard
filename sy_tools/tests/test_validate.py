@@ -1,8 +1,8 @@
-"""`scripts/validate.py::check_agent_mcp_allowlists` pins its own glob/wildcard/twin rules.
+"""`scripts/validate.py`'s own unit-testable rules: the agent allowlists, and frontmatter extraction.
 
-Nothing else in the suite imports `scripts/`; it is a standalone CLI, not a package. `ROOT` is
-monkeypatched onto a throwaway `agents/` directory rather than the real one, so these cases can be
-synthetic and the real 14 agents stay untouched.
+Nothing else in the suite imports `scripts/`; it is a standalone CLI, not a package, and it is loaded
+once here for every case below. `ROOT` is monkeypatched onto a throwaway `agents/` directory rather
+than the real one, so the allowlist cases can be synthetic and the real 14 agents stay untouched.
 """
 from __future__ import annotations
 
@@ -228,3 +228,41 @@ def test_an_unprefixed_tracker_verb_does_not_satisfy_a_ship_workers_declared_set
     errors = _check(tmp_path, f"assign, {_twins('check_env', 'set-status')}", monkeypatch, name="ship-start")
     assert any("missing" in error and "assign" in error for error in errors), \
         f"an unprefixed verb must read as still missing: {errors}"
+
+
+_EMBEDDED_RULE = (
+    "---\n"
+    "name: tighten\n"
+    "description: >-\n"
+    "  PROACTIVE --- tighten one piece of already-written text before it is sent.\n"
+    "disable-model-invocation: true\n"
+    "---\n"
+    "body\n"
+)
+"""A skill whose `description` value carries a literal `---`, with a real key on a line below it.
+
+The shape a split on the bare `---` substring mis-cuts: the boundary lands inside the description, so
+every key below it -- `disable-model-invocation` here -- falls outside the block a containment pin then
+reads as clean, and the field read comes back truncated at the inner rule.
+"""
+
+
+def test_a_frontmatter_value_carrying_a_literal_rule_keeps_the_keys_below_it_in_the_block():
+    """The containment pin's whole worth: a key it must catch cannot fall outside what it is handed."""
+    block = validate._frontmatter_block(_EMBEDDED_RULE)
+    assert "disable-model-invocation: true" in block, f"a key below an inner `---` fell out of the block: {block!r}"
+    assert "body" not in block, f"extraction ran past the closing delimiter into the file body: {block!r}"
+
+
+def test_a_field_read_spans_a_block_scalar_carrying_a_literal_rule():
+    """A value cut at an inner rule reads as a shorter description, which is how an opening-word pin goes vacuous."""
+    value = validate._frontmatter_field(_EMBEDDED_RULE, "description")
+    assert value.strip().endswith("before it is sent."), f"the value was cut at the inner `---`: {value!r}"
+
+
+@pytest.mark.parametrize("text", ["name: tighten\n---\nbody\n", "---\nname: tighten\nbody\n"],
+                         ids=["no opening delimiter", "no closing delimiter"])
+def test_a_file_carrying_no_frontmatter_block_extracts_to_empty(text):
+    """Empty rather than a raise or a partial: `frontmatter()` reports both delimiter faults against the path, and
+    a caller here must not read an unclosed file's body as if it were the block."""
+    assert validate._frontmatter_block(text) == "", f"a file with no frontmatter block must extract to empty: {text!r}"

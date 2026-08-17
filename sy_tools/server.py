@@ -192,7 +192,8 @@ async def find_issues(
 ) -> dict[str, Any]:
     """Search the configured project for issues matching any combination of filters.
 
-    Canonical verb `find-issues`. One page only: `is_last` says whether more remain, and
+    Canonical verb `find-issues`. Every filter is optional and they combine as AND; with none set this
+    lists the project's recent issues. One page only: `is_last` says whether more remain, and
     `next_page_token` is the cursor to ask for them where the tracker supports one — send it back as
     `page_token`, unread and unmodified, to get the page after it.
     """
@@ -303,7 +304,8 @@ async def post_comment(
     Canonical verb `post-comment`, and the tool for one more canonical verb that has no tool of its
     own: `link-pr`'s durable half is this call with `human` saying a PR now exists for this work and
     `agent_detail` carrying the PR URL. Machine logs are not this tool at all: `post-log` is the path
-    for them.
+    for them, and nothing here structurally stops a caller pasting a well-formed log into
+    `agent_detail` — that is the caller's part of the split to keep.
 
     The tool — not the caller — writes the boundary between the two halves, so every comment splits
     the same way and a reader always knows which half is theirs. Do not compose that boundary
@@ -510,6 +512,9 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             # Only an older stub is history a later plan version has already moved past; refusing on
             # it would make the issue permanently unreadable.
             continue
+        # At or above, never equal-to: a stub numbered *higher* than the selected version means a later
+        # version's second half is stranded with its first half never posted, and falling back to an
+        # older complete version there ships against a plan the issue's newest one already superseded.
         stranded.append((stranded_version, str(comment.get("id") or "(no id)")))
     if stranded:
         # The whole scan first, then one refusal: raising on the first stub found named *that* stub's version
@@ -781,9 +786,9 @@ async def preflight(
 ) -> dict[str, Any]:
     """Check that the configured tracker's credential and account are usable before relying on them.
 
-    Canonical verb `preflight`. Run it once up front so a credential problem surfaces there instead of
-    as a half-finished workflow. A success is cached for `ttl_hours` against the plugin build, the
-    tracker, the resolved config and the values of the secret variables the selected adapter declares,
+    Canonical verb `preflight`. Never echoes a secret value. Run it once up front so a credential
+    problem surfaces there instead of as a half-finished workflow. A success is cached for `ttl_hours`
+    against the plugin build, the tracker, the resolved config and the secret variables the adapter declares,
     any of which changing invalidates it by itself. `cached` says which happened: `false` means the
     tracker was just read and the rest of the result is that read's report, `true` that a read inside
     the window already succeeded and nothing touched the network.
@@ -844,7 +849,7 @@ async def attach_artifact(
 
     `allow_opaque` is a declaration rather than a permission: the result never credits either pass with
     a clean result, since some binary content is invisible to the scanner too, and reports only the
-    declaration, exactly as if neither pass had run.
+    declaration, exactly as if neither pass had run. Without it, such a payload is refused outright.
     """
     _required(issue=issue)
 
@@ -983,7 +988,8 @@ def check_env(
     For diagnosing a missing credential without printing one: dumping the environment or echoing a
     variable writes the value into permanent transcript history, so the `PreToolUse` guard in
     `sy_tools/guards/secret_guard.py` denies those commands and names this tool as the safe alternative.
-    A variable exported empty reports as unset.
+    Neither the result nor any error it raises can carry the value, and a variable exported empty reports
+    as unset.
     """
     _required(name=name)
     return {"name": name, "present": config.env_present(name)}

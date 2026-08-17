@@ -42,13 +42,16 @@ field on the board — kilobytes of noise per issue that nothing above this seam
 BLOCKS = "Blocks"
 """The Jira link type behind the canonical `add-dependency` relation."""
 
-BLOCKER_SIDE = "outwardIssue"
-BLOCKED_SIDE = "inwardIssue"
-"""Which end of a `Blocks` link each role occupies, in both the write and the read.
+BLOCKER_SIDE = "inwardIssue"
+BLOCKED_SIDE = "outwardIssue"
+"""Which end of a `Blocks` link each role occupies, in both the write and the read: the blocker is the
+inward end and the issue it blocks is the outward end.
 
 Named rather than inlined because the two are trivially swappable and a swap is silent: it inverts
-every dependency the server reports while every call still succeeds. See `_linked` for the measured
-read semantics that fix these two values."""
+every dependency the server reports while every call still succeeds, and a suite that reads direction
+only through these names passes either way. To re-derive them rather than re-guess, take a link whose
+intended direction is known independently and compare `linkedIssues("<KEY>","is blocked by")` against
+`linkedIssues("<KEY>","blocks")`; whichever side of that link the blocker sits on is `BLOCKER_SIDE`."""
 
 COMMENT_PAGE = 50
 """How many comments one read returns, newest first: a bound truncates the oldest rather than the
@@ -301,14 +304,18 @@ class JiraAdapter:
         return {"id": issue, "parent": parent}
 
     async def add_dependency(self, issue: str, blocked_by: str) -> dict:
-        """Record that `blocked_by` blocks `issue`, then re-read to prove the direction really took.
+        """Record that `blocked_by` blocks `issue`, then re-read to prove the link arrived.
 
         A reversed dependency reads as entirely plausible and misleads every later decomposition, so a
-        link whose direction cannot be confirmed is a failure here rather than a warning.
+        link the read-back cannot find is a failure here rather than a warning. `verified: True` claims
+        exactly that much: the link is on the blocker and readable. It cannot claim `BLOCKER_SIDE` and
+        `BLOCKED_SIDE` name the ends Jira's way, since a write read back through the same two constants
+        confirms either assignment of them.
         """
         base, auth = _credentials()
-        # Jira's REST model is unambiguous: the outward issue performs the type's outward action, so on
-        # a `Blocks` link the outward issue is the blocker.
+        # The issue being read is the one performing the type's outward action toward its `outwardIssue`,
+        # so on a `Blocks` link the `outwardIssue` end is the issue that gets blocked and the `inwardIssue`
+        # end is the one blocking it.
         payload = {
             "type": {"name": BLOCKS},
             BLOCKER_SIDE: {"key": blocked_by},
@@ -740,7 +747,7 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
 
     A read carries only the *counterpart* of each link, under the field naming that counterpart's
     absolute role — the same roles the write posts, not roles relative to the issue being read. So on a
-    read of X, a counterpart under `BLOCKER_SIDE` blocks X and one under `BLOCKED_SIDE` is blocked by X.
+    read of X, a counterpart under `inwardIssue` blocks X and one under `outwardIssue` is blocked by X.
 
     An absent field means no links; a field present but not a list is a failure, since `dependencies` is
     what a caller reads to decide whether an issue is blocked and a shape this cannot parse must not come
@@ -775,8 +782,9 @@ def _linked(links: object, side: str, field: str, *, strict: bool = True) -> lis
             )
         if type_name.lower() != BLOCKS.lower():
             continue
-        # Measured, not assumed, since getting it backwards is silent and inverts every dependency: a link
-        # posted as "BLOCKER blocks BLOCKED" reads back on BLOCKED with BLOCKER under `outwardIssue`.
+        # Which side is which is worth re-deriving rather than assuming, since getting it backwards is
+        # silent and inverts every dependency: a link posted as "BLOCKER blocks BLOCKED" reads back on
+        # BLOCKED with BLOCKER under `inwardIssue`.
         counterpart = link.get(side)
         if counterpart is None:
             continue  # this direction does not apply to this link, which is not a fault

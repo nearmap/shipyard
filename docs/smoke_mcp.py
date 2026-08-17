@@ -47,7 +47,7 @@ SMOKE_LABEL = "documentation"
 one would hide a typo in a real caller."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
-PLAN_HUMAN = "# Execution Plan v1\nStatus: ACTIVE\n\nTL;DR: smoke-test plan comment. Safe to delete."
+PLAN_HUMAN = "# Execution Plan v1\n\nTL;DR: smoke-test plan comment. Safe to delete."
 """The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one."""
 
 PLAN_AGENT_HALF = (
@@ -307,8 +307,8 @@ class Smoke:
         not by itself distinguish a rich-text tracker's escaping regressing to a no-op from a genuine
         Markdown-passthrough tracker — see `PLAN_AGENT_ESCAPED`'s docstring.
 
-        On a *fresh* issue with no other plan on it, so the exactly-one-ACTIVE selection is unambiguous
-        without this run having to supersede anything.
+        On a *fresh* issue with no other plan on it, so the highest-version selection lands on the comment
+        this run just posted rather than on a plan some other run left behind.
         """
         posted = await self.call("post-comment", {
             "issue": issue, "human": PLAN_HUMAN, "agent_detail": PLAN_AGENT_HALF,

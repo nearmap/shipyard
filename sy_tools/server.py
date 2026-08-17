@@ -422,7 +422,8 @@ _PLAN_HEADING = re.compile(r"#[ \t]+Execution Plan v(\d+)[ \t]*\r?$", re.MULTILI
 """The heading an execution plan comment opens with, and the version number in it.
 
 Matched against the body's start, never searched for: a comment *quoting* a plan heading mid-body is
-not a plan, and treating it as one is how "exactly one ACTIVE plan" starts picking the wrong comment."""
+not a plan, and treating it as one is how "the highest version is the plan" starts picking the wrong
+comment."""
 
 _PLAN_CONTINUATION = re.compile(r"#[ \t]+Execution Plan v(\d+)")
 """A heading that opens like a plan's without being one — the `v3 (continued)` stub a split plan leaves.
@@ -430,16 +431,6 @@ _PLAN_CONTINUATION = re.compile(r"#[ \t]+Execution Plan v(\d+)")
 Matched against the body's start rather than searched for, exactly as `_PLAN_HEADING` is: a
 `# Ship retrospective` or `# SEAMS` comment quoting a plan heading further down its body is not a
 continuation of anything, and a search would flag every one of them and strand the issue."""
-
-_PLAN_STATUS = re.compile(r"^Status:[ \t]*(\S+)", re.MULTILINE)
-"""A plan's status field. The **first** occurrence after the heading is the plan's own status.
-
-First-match-wins rather than a body-wide search, and reading the value rather than testing containment:
-a SUPERSEDED plan whose prose later says the word ACTIVE must not read as active, and a plan's own field
-is the line the convention in `skills/spec/SKILL.md` §7 writes directly under the heading. The status
-line is not required to still be a line of its own by the time it is read back — the rich-text round
-trip merges it into one paragraph with a following `Supersedes:` — which is why the value is taken with
-`\\S+` off the field name rather than off a whole-line match."""
 
 
 def _agent_half(body: str) -> str:
@@ -453,7 +444,7 @@ def _agent_half(body: str) -> str:
         if "</details>" not in half:
             return half.strip()
         raise ToolError(
-            "the ACTIVE plan comment's agent-facing section carries a `</details>` that is not the outer "
+            "the selected plan comment's agent-facing section carries a `</details>` that is not the outer "
             "close `post-comment` appends: cutting at it would risk dropping content after a nested "
             "disclosure block instead of at the section's real end. Repost the plan through `post-comment` "
             "so the outer close lands last."
@@ -461,7 +452,7 @@ def _agent_half(body: str) -> str:
     if _LEGACY_AGENT_DETAIL_TAG in body:
         return body.split(_LEGACY_AGENT_DETAIL_TAG, 1)[1].strip()
     raise ToolError(
-        "the ACTIVE plan comment carries neither boundary this tool can split on: neither the collapsed "
+        "the selected plan comment carries neither boundary this tool can split on: neither the collapsed "
         "agent-facing section `post-comment` writes nor the flat separator that preceded it. It was not "
         "posted as a two-part comment, so it has no `## For /sy:ship` half to hand a later phase; repost "
         "the plan through `post-comment` with the two parts passed separately."
@@ -470,26 +461,29 @@ def _agent_half(body: str) -> str:
 
 @mcp.tool(name="plan_file")
 async def plan_file(issue: IssueId) -> dict[str, Any]:
-    """Write the sole ACTIVE execution plan's agent-facing half to a file, and report where it landed.
+    """Write the highest-version execution plan's agent-facing half to a file, and report where it landed.
 
-    The way a `/sy:ship` phase after START gets the plan. It reads the issue, selects the one comment
-    that opens `# Execution Plan v<N>` and carries `Status: ACTIVE`, and materialises that comment's
-    agent-facing half — the `## For /sy:ship` part — under the issue's own scratch directory. The plan
-    text is never part of the result: a caller gets a path plus the pin (`comment_id`, `version`) and
-    hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
-    detectable by comparing the pin rather than by re-reading prose.
+    The way a `/sy:ship` phase after START gets the plan. It reads the issue, takes every comment that
+    opens `# Execution Plan v<N>`, selects the one at the highest `<N>`, and materialises that comment's
+    agent-facing half — the `## For /sy:ship` part — under the issue's own scratch directory. A posted
+    comment is never edited, so the newest version on the issue is the plan and any `Status:` line an
+    older comment carries is historical residue this tool does not read. The plan text is never part of
+    the result: a caller gets a path plus the pin (`comment_id`, `version`) and hands both on, so no
+    phase loads plan text it does not need and a plan revised between sessions is detectable by comparing
+    the pin rather than by re-reading prose.
 
     A comment whose heading opens `# Execution Plan v<N>` without being a plan heading — a
-    `v<N> (continued)` stub — is refused too when its `<N>` is the ACTIVE plan's own version, naming that
+    `v<N> (continued)` stub — is refused when its `<N>` is the selected plan's own version, naming that
     comment: this tool hands on one comment's half, so a plan split across two comments would be
     materialised with the second one's content silently missing. Post the whole plan as the next version,
-    which moves the ACTIVE version past the stranded comment and leaves it as history.
+    which moves the selected version past the stranded comment and leaves it as history.
 
-    Zero or more than one ACTIVE plan is refused, naming the count and the comment ids: that convention
-    (`skills/tracker/CONTRACT.md` § Exactly one ACTIVE plan) is what makes "the plan" unambiguous, and
-    picking one of several would ship against a plan nobody approved. `comments_truncated` says whether
-    the issue's comment page left anything out — on zero found, the ACTIVE plan may simply be past the
-    newest page rather than absent.
+    Only two things refuse: no plan comment at all, and two comments sharing the highest version — which
+    is genuinely ambiguous, since neither is the later revision of the other, and picking one would ship
+    against a plan nobody approved. Several plan comments at *different* versions are the normal steady
+    state (`skills/tracker/CONTRACT.md`), not an error. `comments_truncated` says whether the issue's
+    comment page left anything out — on none found, the plan may simply be past the newest page rather
+    than absent.
 
     What lands on disk is the plan half **as the tracker gives it back**, not as it was posted: a
     rich-text tracker escapes un-backticked Markdown punctuation on the way through, so `some_name`
@@ -504,7 +498,7 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     # `.get` with a default, not `[...]`: only one adapter reports the flag, and an adapter that cannot
     # tell must read as "nothing known to be cut off" rather than making this tool unusable there.
     truncated = bool(read.get("comments_truncated", False))
-    active: list[tuple[str, int, str]] = []
+    plans: list[tuple[str, int, str]] = []
     for comment in read.get("comments") or []:
         if not isinstance(comment, dict):
             continue
@@ -512,25 +506,29 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
         heading = _PLAN_HEADING.match(body)
         if heading is None:
             continue
-        status = _PLAN_STATUS.search(body, heading.end())
-        if status is None or status.group(1) != "ACTIVE":
-            continue
-        active.append((str(comment.get("id") or ""), int(heading.group(1)), body))
-    if len(active) != 1:
-        ids = ", ".join(f"{comment_id or '(no id)'} (v{version})" for comment_id, version, _ in active)
+        plans.append((str(comment.get("id") or ""), int(heading.group(1)), body))
+    if not plans:
         raise ToolError(
-            f"{issue} has {len(active)} ACTIVE execution plans, not one"
-            + (f": {ids}. " if ids else ". ")
+            f"{issue} carries no execution plan comment: no comment opens `# Execution Plan v<N>`. "
             + (
-                "The ACTIVE plan may also be past the newest page of comments this read returned "
-                "(comments_truncated is true), so treat it as unresolved rather than absent. "
-                if not active and truncated
+                "It may be past the newest page of comments this read returned (comments_truncated is "
+                "true), so treat it as unresolved rather than absent. "
+                if truncated
                 else ""
             )
-            + "Exactly one plan is ACTIVE by convention and superseding is explicit; resolve it in "
-            "/sy:spec rather than picking one here."
+            + "Post the plan through `post-comment` in /sy:spec rather than reading one here."
         )
-    comment_id, version, body = active[0]
+    version = max(plan[1] for plan in plans)
+    selected = [plan for plan in plans if plan[1] == version]
+    if len(selected) != 1:
+        ids = ", ".join(f"{comment_id or '(no id)'}" for comment_id, _, _ in selected)
+        raise ToolError(
+            f"{issue} carries {len(selected)} execution plan comments at v{version}, the highest version "
+            f"on the issue: {ids}. Neither is a revision of the other, so which one is the plan is "
+            "genuinely ambiguous and picking one here would ship against a plan nobody approved. Post the "
+            f"whole plan as v{version + 1} in /sy:spec, which puts one comment past both."
+        )
+    comment_id, _, body = selected[0]
     for comment in read.get("comments") or []:
         if not isinstance(comment, dict):
             continue
@@ -540,21 +538,21 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
         # A strict match is a plan comment, never a continuation — including the selected plan itself.
         if opener is None or _PLAN_HEADING.match(candidate) is not None:
             continue
-        # Only the ACTIVE version's own stub strands this issue: an older one is history that a later plan
-        # version has already moved past, and refusing on it would make the issue permanently unreadable.
+        # Only the selected version's own stub strands this issue: an older one is history that a later
+        # plan version has already moved past, and refusing on it would make the issue permanently unreadable.
         if int(opener.group(1)) != version:
             continue
         raise ToolError(
             f"{issue} carries comment {comment.get('id') or '(no id)'}, a continuation of Execution Plan "
-            f"v{version} rather than a plan comment of its own, and v{version} is the ACTIVE plan. This "
-            "tool hands on one comment's agent-facing half, so the plan would go to /sy:ship with that "
-            f"comment's content missing and nothing to say so. Post the whole plan as v{version + 1} "
-            "through `post-comment` — one comment, tightened to fit the body limit — which moves the "
-            "ACTIVE version past the stranded comment and leaves it as history."
+            f"v{version} rather than a plan comment of its own, and v{version} is the highest plan version "
+            "on the issue. This tool hands on one comment's agent-facing half, so the plan would go to "
+            f"/sy:ship with that comment's content missing and nothing to say so. Post the whole plan as "
+            f"v{version + 1} through `post-comment` — one comment, tightened to fit the body limit — which "
+            "moves the selected version past the stranded comment and leaves it as history."
         )
     if not comment_id:
         raise ToolError(
-            f"{issue}'s sole ACTIVE execution plan (v{version}) has no readable comment id: the tracker "
+            f"{issue}'s highest-version execution plan (v{version}) has no readable comment id: the tracker "
             "read back an empty id for its own comment, so the pin this tool returns could not reliably "
             "detect a later revision at the same version. This is a tracker read fault, not a plan fault; "
             "report it rather than reposting the plan."

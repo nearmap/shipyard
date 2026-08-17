@@ -1833,7 +1833,9 @@ PLAN_AGENT_READ_BACK = (
 """The same two halves as the tracker gives them back — note the merged status line and the escapes."""
 
 SUPERSEDED_READ_BACK = "# Execution Plan v2\n\nStatus: SUPERSEDED Superseded by: v3\n\nStatus: ACTIVE is prose here."
-"""A superseded plan whose prose says the words a body-wide containment check would match."""
+"""An older plan comment as the tracker gives it back, carrying the status lines the convention used to
+write. Nothing reads them any more — the highest version on the issue is the plan — but comments posted
+under the old convention are still on the tracker, so the read path has to keep resolving over them."""
 
 
 def _comment_body(human: str, agent: str, *, boundary: str | None = None) -> str:
@@ -1844,8 +1846,32 @@ def _comment_body(human: str, agent: str, *, boundary: str | None = None) -> str
 
 
 def _plan_comment(*, boundary: str | None = None) -> str:
-    """The ACTIVE plan comment as read back, in whichever boundary form wrote it."""
+    """The v3 plan comment as read back, in whichever boundary form wrote it."""
     return _comment_body(PLAN_HUMAN_READ_BACK, PLAN_AGENT_READ_BACK, boundary=boundary)
+
+
+def _plan_at(version: int, *, status: str = "ACTIVE") -> str:
+    """A whole plan comment at `version`, in the read-back shape.
+
+    `status` writes the field the convention used to require and nothing reads any more; it defaults to
+    the historical `ACTIVE` on purpose, so a thread of these is a thread of *old-shaped* bodies and a
+    selector that consulted the field again would be caught rather than agreed with.
+    """
+    return _comment_body(f"# Execution Plan v{version}\n\nStatus: {status}\n\nTL;DR: a plan.", PLAN_AGENT_READ_BACK)
+
+
+def _continuation(version: int, *, status: str = "ACTIVE", lead: str = "") -> str:
+    """The stub a plan split across two comments leaves behind: a heading that is not a plan heading.
+
+    `status` is the historical field, as in `_plan_at`: written so the fixture keeps its old shape, read
+    by nothing.
+    """
+    return f"{lead}# Execution Plan v{version} (continued)\n\nStatus: {status}\n\n...the rest of the half."
+
+
+QUOTING_PROSE = "# Ship retrospective\n\nThe plan comment was headed `# Execution Plan v1` and held.\n"
+"""A comment that names a plan heading below its own: prose about a plan, not a plan and not a
+continuation of one."""
 
 
 def _thread(*bodies: str, truncated: bool = False) -> dict:
@@ -1946,18 +1972,24 @@ def test_the_legacy_separator_returns_a_nested_shaped_half_whole():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("case", "bodies", "truncated", "expected"),
+    ("bodies", "truncated", "expected"),
     [
-        ("none", (SUPERSEDED_READ_BACK,), False, "has 0 ACTIVE execution plans"),
-        ("none-truncated", (), True, "comments_truncated is true"),
-        ("two", (_plan_comment(), _plan_comment()), False, "c1 (v3), c2 (v3)"),
+        ((QUOTING_PROSE,), False, "carries no execution plan comment"),
+        ((), True, "comments_truncated is true"),
+        ((_plan_comment(), _plan_comment()), False, "2 execution plan comments at v3, the highest"),
+        ((_plan_comment(), _plan_comment()), False, "c1, c2"),
     ],
-    ids=["none", "none-past-the-page", "two"],
+    ids=["no plan comment", "no plan comment past the page", "a tie at the highest version", "the tie names both"],
 )
-async def test_plan_file_refuses_anything_but_exactly_one_active_plan(
-    monkeypatch, scratch_root, case, bodies, truncated, expected
+async def test_plan_file_refuses_only_an_absent_plan_and_a_tie_at_the_highest_version(
+    monkeypatch, scratch_root, bodies, truncated, expected
 ):
-    """Picking one of several would ship against a plan nobody approved, so both counts refuse loudly."""
+    """The two cases where no version is the newest one: nothing to select, or nothing to choose between.
+
+    A tie is genuinely ambiguous — neither comment revises the other — so picking one would ship against
+    a plan nobody approved. Anything else, several plan comments at different versions included, is the
+    steady state now and must resolve rather than refuse.
+    """
     recorder = _Recorder(_thread(*bodies, truncated=truncated))
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
@@ -2001,7 +2033,30 @@ async def test_plan_file_reports_a_pin_that_a_revised_plan_moves(monkeypatch, sc
 
 
 @pytest.mark.anyio
-async def test_plan_file_refuses_an_active_plan_whose_comment_id_reads_back_empty(monkeypatch, scratch_root):
+async def test_plan_file_selects_the_highest_version_even_when_its_status_line_says_superseded(
+    monkeypatch, scratch_root
+):
+    """A posted comment is never edited, so a `Status:` line is history and reading one picks the wrong plan.
+
+    Both directions in one thread: v1 still carries the historical `ACTIVE` and must not win, v2 carries
+    `SUPERSEDED` and must, because it is the later version. A selector that consulted the field would
+    return v1 here — which is exactly the failure the old convention hid, since nothing ever went back to
+    edit v1's line when v2 was posted.
+    """
+    monkeypatch.setattr(
+        server.tracker, "adapter", lambda: _Recorder(_thread(_plan_at(1), _plan_at(2, status="SUPERSEDED")))
+    )
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    assert result.is_error is False, _text(result)
+    payload = _payload(result)
+    assert (payload["comment_id"], payload["version"]) == ("c2", 2), (
+        f"a stale status line was consulted instead of the version: {payload}"
+    )
+
+
+@pytest.mark.anyio
+async def test_plan_file_refuses_a_selected_plan_whose_comment_id_reads_back_empty(monkeypatch, scratch_root):
     """An empty comment_id would hand out an unusable pin, silently defeating the staleness comparison."""
     thread = _thread(_plan_comment())
     thread["comments"][0]["id"] = ""
@@ -2014,27 +2069,14 @@ async def test_plan_file_refuses_an_active_plan_whose_comment_id_reads_back_empt
     assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
 
 
-def _plan_at(version: int, *, status: str = "ACTIVE") -> str:
-    """A whole plan comment at `version`, in the read-back shape, for the continuation cases below."""
-    return _comment_body(f"# Execution Plan v{version}\n\nStatus: {status}\n\nTL;DR: a plan.", PLAN_AGENT_READ_BACK)
-
-
-def _continuation(version: int, *, status: str = "ACTIVE", lead: str = "") -> str:
-    """The stub a plan split across two comments leaves behind: a heading that is not a plan heading."""
-    return f"{lead}# Execution Plan v{version} (continued)\n\nStatus: {status}\n\n...the rest of the half."
-
-
-QUOTING_PROSE = "# Ship retrospective\n\nThe plan comment was headed `# Execution Plan v1` and held.\n"
-"""A comment that names a plan heading below its own: prose about a plan, not a continuation of one."""
-
 CONTINUATION_CASES = [
     ((_plan_at(1), _continuation(1)), "c2", None),
     ((_plan_at(1), _continuation(1, lead="\n\n")), "c2", None),
     ((_continuation(1, status="SUPERSEDED"), _plan_at(2)), None, 2),
     ((_plan_at(1), QUOTING_PROSE), None, 1),
     ((_plan_at(1), "## Execution Plan v1 (continued)\n\nStatus: ACTIVE\n\n...more."), None, 1),
-    ((_plan_at(1), _plan_at(1, status="SUPERSEDED").replace("v1\n", "v1  \n", 1)), None, 1),
-    ((_plan_at(1), _plan_at(1, status="SUPERSEDED").replace("v1\n", "v1\r\n", 1)), None, 1),
+    ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2  \n", 1)), None, 2),
+    ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2\r\n", 1)), None, 2),
     ((_plan_at(1), _continuation(10)), None, 1),
 ]
 """Each thread the detector sees, the comment id it must refuse on, and the version it must write."""
@@ -2051,14 +2093,17 @@ CONTINUATION_CASES = [
     "a strict heading with a carriage return",
     "a continuation at a two-digit version",
 ])
-async def test_plan_file_refuses_only_a_continuation_stranded_at_the_active_plans_own_version(
+async def test_plan_file_refuses_only_a_continuation_stranded_at_the_selected_plans_own_version(
     monkeypatch, scratch_root, bodies, flagged, version
 ):
     """The detector has to fire on a split plan and stay silent on everything shaped a little like one.
 
     A refusal here is permanent for the issue until a new plan version is posted, so the negatives are
     the load-bearing half: a stub left by an old split, and prose that merely quotes a heading, both
-    outlive the plan they refer to and neither may make a live plan unreadable.
+    outlive the plan they refer to and neither may make a live plan unreadable. The whitespace cases put
+    the mutated heading on the *higher* version, so they pin both halves at once: the selection loop has
+    to match a heading carrying trailing spaces or a carriage return, and the detector still has to skip
+    it as a plan rather than flag it as a continuation.
     """
     monkeypatch.setattr(server.tracker, "adapter", lambda: _Recorder(_thread(*bodies)))
     async with mcp.Client(server.mcp) as client:

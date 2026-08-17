@@ -49,14 +49,17 @@ inward end and the issue it blocks is the outward end.
 
 Named rather than inlined because the two are trivially swappable and a swap is silent: it inverts
 every dependency the server reports while every call still succeeds, and a suite that reads direction
-only through these names passes either way. To re-derive them rather than re-guess: `GET /issue/<KEY>`
-on either end of a link whose direction is known independently and read its `issuelinks` entry directly
-against Jira's documented labelling rule (a link carrying an `inwardIssue` field is labelled with
-`type.inward`, "is blocked by" for `Blocks`) — the counterpart under `inwardIssue` is the blocker,
-straight off that payload, no live board required. `linkedIssues("<KEY>","is blocked by")` versus
-`linkedIssues("<KEY>","blocks")` (the live check below) corroborates this against a real board, but its
-own inward/outward perspective is not itself Atlassian-documented, so treat the REST payload's labelling
-rule as the derivation and the crossed-pair JQL result as confirmation, not the reverse."""
+only through these names passes either way. Measure them, don't derive them: Jira's own prose is not
+safe here — the `issueLink` POST docs call `outwardIssue` the "from" issue and the admin docs describe
+the outward description as "how a work item affects other work items", which compose to blocker =
+`outwardIssue`, the pre-fix (wrong) assignment this file shipped with; that composition is plausibly how
+it got inverted in the first place. Instead take a link whose direction is known independently (created
+by hand in the Jira UI, say) and `GET /issue/<KEY>` on both ends: per `_linked`'s docstring below, the
+field a counterpart appears under (`inwardIssue`/`outwardIssue`) is that counterpart's own posted role,
+so whichever end the known blocker appears under is `BLOCKER_SIDE`. `linkedIssues("<KEY>","is blocked
+by")` versus `linkedIssues("<KEY>","blocks")` (the live check below) corroborates a link's direction, but
+the default `Blocks` type's name collides with its own outward description ("blocks" both ways), so the
+`"blocks"` half alone cannot rule out an inversion — corroboration only, never the sole check."""
 
 COMMENT_PAGE = 50
 """How many comments one read returns, newest first: a bound truncates the oldest rather than the
@@ -318,9 +321,7 @@ class JiraAdapter:
         confirms either assignment of them.
         """
         base, auth = _credentials()
-        # BLOCKER_SIDE/BLOCKED_SIDE (see their docstring) name which slot is which; this is the write
-        # half of the same mapping `_linked` reads, confirmed against a live board rather than derived
-        # from the REST model, which reads as self-consistent whichever way the two are assigned.
+        # BLOCKER_SIDE/BLOCKED_SIDE: see their docstring for which slot is which and why it's measured.
         payload = {
             "type": {"name": BLOCKS},
             BLOCKER_SIDE: {"key": blocked_by},

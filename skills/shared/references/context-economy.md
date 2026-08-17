@@ -13,7 +13,7 @@ Apply both to every paragraph before it ships:
 
 ## Write to the actor
 
-A settled decision is stated, not re-argued. Once the choice is made, the artifact tells its reader what to do; the reasoning that produced it belongs to the human-facing half of the record, or nowhere. Rationale in machine-facing text is the most common form of dilution here, precisely because it reads as thoroughness.
+A settled decision is stated, not re-argued. Once the choice is made, the artifact tells its reader what to do; the reasoning that produced it belongs to the human-facing half of the record, or nowhere. Rationale in machine-facing text is the most common form of dilution here.
 
 ## No restatement, across the parts or within one
 
@@ -29,4 +29,4 @@ In Shipyard that has a hard edge. Exactly one tracker comment is carried forward
 
 ## The instance already in the tree
 
-Shipyard applies this to itself: the `## Return contract — target ≤N tokens` block in every `agents/*.md` is this principle made enforceable at the one point where an agent's output enters someone else's budget.
+The `## Return contract — target ≤N tokens` block in every `agents/*.md` is this principle made enforceable at the one point where an agent's output enters someone else's budget.

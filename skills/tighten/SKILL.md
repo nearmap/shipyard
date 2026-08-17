@@ -17,7 +17,8 @@ Ask, or resolve from what you were handed. Several patterns below are destinatio
 - **A console turn** to the user → `## Human-facing text` § Everywhere + § A console turn, then `## Mode`.
 - **A plan's sign-off half** → `## Human-facing text` § Everywhere + § A plan sign-off half.
 - **An issue body, or a PR description** → `## Human-facing text` § Everywhere; a PR description also drops anything the diff already shows.
-- **A plan's `/sy:ship` half, a dispatch brief for another agent, or one of this plugin's own files** (a skill, a reference, an agent brief, an MCP tool docstring or `Field(description=...)`) → `## Agent-facing text`.
+- **A plan's `/sy:ship` half** → `## Agent-facing text` § A plan's machine half.
+- **A dispatch brief for another agent, or one of this plugin's own files** (a skill, a reference, an agent brief, an MCP tool docstring or `Field(description=...)`) → `## Agent-facing text` § A procedure or a brief.
 
 ## Ground rules
 
@@ -92,6 +93,10 @@ Also delete on sight: the verbatim standing-policy boilerplate about out-of-scop
 
 ## Agent-facing text
 
+Two document classes bloat differently, and the destination bullet above already split them. Take the one you were routed to.
+
+### A plan's machine half
+
 Seven patterns, in descending measured volume. `Ordered changes` is 32-66% of a plan's ship half and the two largest patterns both live inside it, so a pass aimed only at the trailing fields cannot reach a third.
 
 **1. The same fact in several sections.** The largest. Three axes: `docs requiring updates` re-listing paths an ordered change already names with the same line numbers; `tests and acceptance criteria` restating `verification obligations`; `design invariants` restating ordered changes in other words.
@@ -129,6 +134,32 @@ Seven patterns, in descending measured volume. `Ordered changes` is 32-66% of a 
 
 - Cut: keep only the **delta** — where the standard is unenforced, where two authorities conflict, and which wins: "Ruff's `ANN` rules are unselected in the root config, so this is hand-checked, not linter-caught"; "where the user's global 'always add docstrings' conflicts, `CONTRIBUTING:18-25` wins".
 - Exception: an unusual constraint the authority does not carry — a seam scan, a set of string invariants a validator enforces — keeps its full statement.
+
+### A procedure or a brief
+
+**Rationale a builder cannot act on** and **The traced counterfactual** apply unchanged. **Workflow choreography the downstream phase already owns** applies with "a delegate or a tool the reader merely invokes" in place of "a later phase" — a poller's sleep/exit behaviour, a renderer's truncation rules, how soon a review bot comments. **The same fact in several sections** applies on this class's own axes: a reference restating a field or rule that another file's named section owns, and sibling paragraphs of one family each repeating the family's shared rationale. Patterns 3, 5 and 7 are keyed to plan fields and match nothing here — do not go looking for them. A docstring or a `Field(description=...)` is this class at smaller scale, and its keep test is the one `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/immutable-gate.md` § Net-new agent-facing text states.
+
+Four more, in descending measured volume, derived by classifying every changed prose unit of two full passes over Shipyard's own eleven always-resident `/sy:ship` files (`skills/**`, `agents/*.md`) — 56 units.
+
+**A brief restating the procedure it is told to follow.** Most of the cut volume in both `agents/*.md` briefs, and absent everywhere else, because only an agent brief opens by naming a reference it must follow exactly and then re-states that reference's own routing, triggers and mechanism.
+
+- Cut: "a fact found false returns `needs-decision` (or `bail-to-spec` when it invalidates the contract), never gets followed" → "a fact found false is never followed".
+- Exception: what the delegate acts on **before** it ever opens the reference — a tool it must never call, a model override it must pass, its own return contract. That is the brief's content, not the reference's.
+
+**The pointer that also summarises what it points at.** The citation earns its place; the table of contents welded to it does not, and that is the half that goes stale when the target moves.
+
+- Cut: "The full dispatch rule, including requested-vs-observed reconciliation and why effort is not symmetrical with model, is `<path>`" → "The full dispatch rule is `<path>`".
+- Exception: name the one thing in the target the reader must act on *here* rather than on arrival — a precondition to resolve before dispatch.
+
+**The unit's own topic sentence, said twice.** The most frequent of the four, in three positions: a section opening with a summary of a section further down, a paragraph closing by re-asserting the sentence it opened with, and a set named and then referred back to in the same breath.
+
+- Cut: the opener or the closer, never the body — "Not every fix round needs a fresh automated-reviewer request." above the paragraph stating exactly when one is needed.
+- Exception: an opener stating the section's **scope** — who it binds, when it applies — is content.
+
+**The rule stated in both directions.** A rule, then its own contrapositive: "X, not Y" where Y is a reading nobody would reach for, or a condition given positively and then again as its negative.
+
+- Cut: whichever direction the reader meets second → "a field name drifting from the list below is a failed write", dropping the "not a comment nobody notices is wrong" foil.
+- Exception: a wrong reading a reader genuinely does reach for, where the negative is the only thing blocking it. That is the invisible-failure case — one clause, not a sentence each way.
 
 ## Mode
 

@@ -1,10 +1,10 @@
 # Talking to the user
 
-Every skill that talks to you directly — `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:explain` — uses exactly one of three modes per turn and never blends them: a decision folded into narration reads as one more sentence and gets missed, which is the failure this reference exists to prevent. Whichever mode a turn is in, it goes through `/sy:tighten` before it is sent. `/sy:ci`, `/sy:standards`, and `/sy:help` never talk to you directly and are out of scope here.
+Every skill that talks to you directly — `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:explain` — uses exactly one of three modes per turn and never blends them: a decision folded into narration reads as one more sentence and gets missed. Whichever mode a turn is in, it goes through `/sy:tighten` before it is sent. `/sy:ci`, `/sy:standards`, and `/sy:help` never talk to you directly and are out of scope here.
 
 ## Status
 
-Narrative prose: what happened, what changed, what's next. Nothing about this turn requires you to act. A status update never ends with a question folded into the prose ("let me know if...", "does this look right?") — if a decision is actually pending, the turn is a Question or an Action needed, and follows one of the two shapes below.
+Narrative prose: what happened, what changed, what's next. Nothing about this turn requires you to act. A status update never ends with a question folded into the prose ("let me know if...", "does this look right?") — if a decision is actually pending, the turn is a Question or an Action needed.
 
 ## Question
 
@@ -14,8 +14,8 @@ Use this mode for: a `needs-decision` escalation the parent cannot resolve from 
 
 ## Action needed
 
-Something outside a multiple-choice pick that only you can do — authorize a merge, resolve external state, run a command. Close the turn with one isolated block, headed `## Action needed`, stating exactly what's needed and why the run is waiting on it. It is the last thing in the turn, never sandwiched inside status prose, at most one per turn.
+Something outside a multiple-choice pick that only you can do — authorize a merge, resolve external state, run a command. Close the turn with one isolated block, headed `## Action needed`, stating exactly what's needed and why the run is waiting on it. It is the last thing in the turn, at most one per turn.
 
 ## Optional suggestions
 
-A non-blocking nicety — suggesting `/rename`, pointing at a follow-up `/sy:plan` brief, offering `/sy:explain` on a finding worth understanding more deeply, or offering to run a ready explainer doc in a new session instead of inline — is not an Action needed. It stays a single low-key aside, explicitly framed as optional, so it never competes with a real gate. If ignoring it changes nothing about whether the run proceeds, it does not earn a block.
+A non-blocking nicety — suggesting `/rename`, pointing at a follow-up `/sy:plan` brief, offering `/sy:explain` on a finding worth understanding more deeply, or offering to run a ready explainer doc in a new session instead of inline — is not an Action needed. It stays a single low-key aside, explicitly framed as optional. If ignoring it changes nothing about whether the run proceeds, it does not earn a block.

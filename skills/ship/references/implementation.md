@@ -6,7 +6,7 @@ Before the first slice, read the plan file the state brief names — the absolut
 
 Before executing any plan step, verify its load-bearing plan facts against the current base: re-locate every cited file anchor by content (grep the surrounding phrase; never trust the plan's line numbers) and confirm each named convention still holds. A fact found false is never followed: route it by the same test as any other decision — `needs-decision` with the mismatch and its bearing spans, or `bail-to-spec` when it invalidates the plan's contract.
 
-An adjacent issue you surface mid-build that sits outside the plan's declared file set follows the same test: fold a small, low-risk fix into this branch as a recorded scope extension in `accepted_deviations` rather than filing a follow-up that loses the context you have now; defer only when it justifies its own ticket (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
+An adjacent issue you surface mid-build that sits outside the plan's declared file set follows the same test: fold a small, low-risk fix into this branch as a recorded scope extension in `accepted_deviations` rather than filing a follow-up; defer only when it justifies its own ticket (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
 
 A seeded memory anchor this phase's own direct observation contradicts is handled the same way rather than silently carried forward or left to HANDOFF: author it as a `MEMORY_REFUTE` candidate in the return block and record it to `memory_refutations` in state, for the parent to apply the moment this phase returns (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`).
 
@@ -50,4 +50,4 @@ Doc, marketing, and other prose deliverables get a deterministic content-QA pass
 
 Every load-bearing claim the brief will assert — diff scope, invariants preserved, "nothing else affected", lockfile/dependency effects, verification outcomes — carries a checkable pointer (the command run and where its output lives), never a bare assertion; a claim you cannot back is not `done`. Verify a claim about a generated or dependency artifact (lockfile hash, `depends`/`run_exports`, package moves) against the artifact itself, not against intent.
 
-Then commit/push and open a draft PR through `/sy:pr draft`; Task remains `in-progress`. Return `done` with the updated state brief; the parent honours any plan-declared pre-gate checkpoint (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint) before dispatching GATE — this worker's own contract and return value are unchanged either way.
+Then commit/push and open a draft PR through `/sy:pr draft`; Task remains `in-progress`. Return `done` with the updated state brief; a plan-declared pre-gate checkpoint (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Pre-gate checkpoint) leaves this worker's own contract and return value unchanged.

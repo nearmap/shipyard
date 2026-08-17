@@ -8,7 +8,7 @@ The fix is small (a bounded diff a reviewer can still hold alongside the main ch
 
 ## File a follow-up when
 
-It genuinely justifies itself: the fix is large or needs its own design/spec; it is genuinely independent, so filing it cold loses no context; it is risky or sits in an unfamiliar subsystem; folding it in would balloon the PR's reviewable surface past what one reviewer can hold in a sitting; or there is a real merge-ordering or ownership reason to keep it separate. When torn between one more small fold-in and a clean follow-up, prefer the fold-in — but once the PR would tell two stories instead of one, it is a follow-up.
+It genuinely justifies itself: the fix is large or needs its own design/spec; it is genuinely independent, so filing it cold loses no context; it is risky or sits in an unfamiliar subsystem; folding it in would balloon the PR's reviewable surface past what one reviewer can hold in a sitting; or there is a real merge-ordering or ownership reason to keep it separate. Once the PR would tell two stories instead of one, it is a follow-up.
 
 ## Keep re-review cheap
 

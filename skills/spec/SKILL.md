@@ -116,7 +116,7 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - strongest rejected alternative and why — the adversary's strongest objection from the §3 debate plus the user's steer, not a restatement invented after the fact;
 - risks/edge cases;
 - unverified assumptions;
-- out of scope — what this plan deliberately excludes; note it is a default contract, not a wall: small, adjacent, low-risk issues surfaced during ship may be folded in as recorded scope extensions rather than always spawning siblings (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`).
+- out of scope — what this plan deliberately excludes, under the fold-in-versus-follow-up policy in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/scope-discipline.md`, which the exclusion is read against rather than restated from.
 
 **For `/sy:ship`** (mechanical and self-contained):
 

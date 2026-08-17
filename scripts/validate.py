@@ -649,6 +649,7 @@ def check_invariants(errors: list[str]) -> None:
     jira_attachments = read("skills/tracker/jira/references/attachments.md")
     readme = read("README.md")
     agent_guide = read("agent-guide.md")
+    usage_doc = read("docs/usage.md")
 
     if "--match-head-commit" not in merge:
         fail("merge path missing atomic head guard (--match-head-commit)", errors)
@@ -996,8 +997,10 @@ def check_invariants(errors: list[str]) -> None:
     # copy-paste, and `Status:ACTIVE`, a doubled space, a lowercased pair or a `**Status**:` each restore the
     # convention while a containment check on the canonical literal stays green. Emphasis markers are
     # tolerated between the label and its colon; the rest stays tight, so the bare word ACTIVE in unrelated
-    # prose is not a hit.
-    retired_status = re.compile(r"Status[*`_]{0,2}:\s*(?:ACTIVE|SUPERSEDED)", re.I)
+    # prose is not a hit. `[ \t]*` rather than `\s*` keeps the gap off a newline, where an unrelated line
+    # opening with "active" would answer for a `Status:` ending the line above it, and the trailing `\b`
+    # keeps `ACTIVEnonsense` from counting as the field.
+    retired_status = re.compile(r"Status[*`_]{0,2}:[ \t]*(?:ACTIVE|SUPERSEDED)\b", re.I)
     for name, text in (
         ("spec", spec),
         ("sy_tools/server.py", read("sy_tools/server.py")),
@@ -1007,6 +1010,9 @@ def check_invariants(errors: list[str]) -> None:
         ("start-resume", start),
         ("README.md", readme),
         ("agent-guide.md", agent_guide),
+        ("tracker", tracker_skill),
+        ("context-economy", economy_ref),
+        ("docs/usage.md", usage_doc),
     ):
         found = retired_status.search(text)
         if found:
@@ -1019,13 +1025,27 @@ def check_invariants(errors: list[str]) -> None:
     # `/sy:tighten` would stay green while the ordering clause, which is what keeps a half-run rewrite from
     # reaching the tracker, was deleted out from under it.
     density_pin = "The `/sy:tighten` pass over the `/sy:ship` half completes before any tracker mutation."
-    if density_pin not in spec_s7.partition("### Step 2")[2]:
+    step_two = spec_s7.partition("### Step 2")[2]
+    # Position too, not containment alone: reordering Step 2's items so the post comes first leaves the
+    # sentence present and the ordering it states defeated. `in` before `.index()` on both, so a missing
+    # post step fails as its own message rather than as a ValueError out of the ordering comparison.
+    post_pin = "append the new comment"
+    if density_pin not in step_two:
         fail("spec §7's Step 2 must run /sy:tighten over the ship half before any tracker mutation", errors)
+    elif post_pin not in step_two:
+        fail(f"spec §7's Step 2 must still name its post step {post_pin!r}; the ordering pin anchors on it", errors)
+    elif step_two.index(density_pin) > step_two.index(post_pin):
+        fail("spec §7's Step 2 must state the /sy:tighten pass before the step that appends the comment", errors)
     # The density rules live in one skill and every other surface points at it, so the skill's own three
     # rule sections and its model-invocability are what the pointers are worth. `PROACTIVE` in the
     # description and the *absence* of `disable-model-invocation` are the two halves of that: the skill is
     # useless if a caller has to remember to type it.
-    if "PROACTIVE" not in _frontmatter_field(tighten, "description"):
+    # Opens with it, not merely carries it: a description whose tail mentions PROACTIVE is a keyword parked
+    # out of sight rather than the first thing the model matches on. The leading YAML block-scalar indicator
+    # is stripped first — `_frontmatter_field` returns everything after the colon, so a `description: >-`
+    # value genuinely begins ` >-  `, and a bare `.startswith` would be false for the correct file too.
+    description = re.sub(r"""^\s*(?:[>|][-+]?|["'])?\s*""", "", _frontmatter_field(tighten, "description"))
+    if not description.startswith("PROACTIVE"):
         fail("tighten's description must open PROACTIVE so the model reaches for it unprompted", errors)
     # Containment inside the frontmatter block, not a field read: the key is only load-bearing where it would
     # take effect, so scoping keeps the skill free to document in its body that it deliberately does not
@@ -1033,9 +1053,10 @@ def check_invariants(errors: list[str]) -> None:
     # field read anchored on `^disable-model-invocation:` passes straight over.
     if "disable-model-invocation" in _frontmatter_block(tighten):
         fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
-    # Anchored to a heading line, not containment: the skill's own routing list names all three sections
-    # to point at them, so a containment check stays green while the heading it points at is renamed away.
-    for section in ("## Human-facing text", "## Agent-facing text", "## Protect"):
+    # Anchored to a heading line, not containment: the skill's own routing list names every one of these
+    # sections to point at them, so a containment check stays green while the heading it points at is
+    # renamed away. `## Mode` is in the list because the routing list sends a console turn to it.
+    for section in ("## Human-facing text", "## Agent-facing text", "## Mode", "## Protect"):
         if not re.search(rf"^{re.escape(section)}\s*$", tighten, re.M):
             fail(f"tighten must carry its `{section}` heading; the density rules live nowhere else", errors)
     # The whole clause, not the bare token: a mention of `/sy:tighten` anywhere in the file would keep this

@@ -47,6 +47,7 @@ The economy rule this pass enforces lives in one place: `${CLAUDE_PLUGIN_ROOT}/s
 
 - Cut: three paragraphs on a restarted worker — which error killed it, what survived, why it was re-dispatched rather than resumed, what was seeded into the retry → "BUILD died on an API error before writing code; restarted. Nothing lost — the multi-GB toolchain env survives, and its prebuilt binary predates this task, confirming the stale-binary trap the plan flags."
 - Exception: keep it when the machinery failure changes the reader's trust in a result or costs them real time — "GATE's return carried stale SHAs and misattributed its own commits to you" tells them not to trust a prior report.
+- Exception: a mandated accounting attestation — the model tiers, state-file and status facts `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md` enumerates for a consent turn — is a required fact and is never cut. Resembling narration in shape does not make it narration.
 
 **Trailing sidebar appendices.** A milestone turn keeps going past its answer with an enumerated block of secondary findings: "Two things worth your attention", "Three things I did not do", "Two things I'm holding myself to". The label forces a second item into existence.
 
@@ -95,8 +96,9 @@ Seven patterns, in descending measured volume. `Ordered changes` is 32-66% of a 
 
 **1. The same fact in several sections.** The largest. Three axes: `docs requiring updates` re-listing paths an ordered change already names with the same line numbers; `tests and acceptance criteria` restating `verification obligations`; `design invariants` restating ordered changes in other words.
 
-- Cut: state the fact once, in the ordered change. The obligation shrinks to `lens: …; claim: …; evidence: <that change>`, and the invariant and the tests entry go.
-- Exception: a fact that must survive a *different* reader. **An invariant earns its line only when it states a property the ordered change does not state as a property** — that is what the gate reviewer checks against, and it is not always recoverable from imperative prose.
+- Cut: the *invariant*, and only it. State the fact once, in the ordered change; the obligation shrinks to `lens: …; claim: …; evidence: <that change>`.
+- Never cut: an entry in `docs requiring updates` or `tests and acceptance criteria`, however exactly an ordered change already names the same path. They are discharge-tracking fields — BUILD keys "updated or inspected" off the doc list (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/implementation.md`) and GATE composes its acceptance criteria from the tests field (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/immutable-gate.md`) — and this pass runs after sign-off review, so a deleted entry removes an obligation with nothing downstream to notice. Dedupe the *wording* instead: keep the path and its own check, drop the rationale the ordered change already carries.
+- Exception: **an invariant earns its line when it states a property the ordered change does not state as a property** — that is what the gate reviewer checks against, and it is not always recoverable from imperative prose.
 
 **2. Rationale a builder cannot act on.** Absorbs "narration of how the plan reached its own conclusions", which is never a shape of its own.
 

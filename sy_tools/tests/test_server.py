@@ -2161,6 +2161,34 @@ async def test_plan_file_refuses_a_continuation_stranded_at_or_above_the_selecte
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("order", ["oldest first", "newest first"], ids=["oldest first", "newest first"])
+async def test_plan_file_names_every_stranded_stub_and_sends_the_caller_past_the_highest(
+    monkeypatch, scratch_root, order
+):
+    """Two stubs at different stranded versions get one refusal, naming both and the version past both.
+
+    A per-stub refusal is not a smaller version of this: it names whichever stub the scan reached first, so
+    with stubs at v5 and v7 under a v3 plan it can send the caller to v6 — where the v7 stub immediately
+    re-triggers the identical refusal, and the comment they just spent is not editable. Both comment
+    orders are run because the answer must not depend on them: one adapter returns a comment page
+    newest-first and another oldest-first, so an order-sensitive remedy differs by configured tracker.
+    """
+    bodies = [_plan_at(3), _continuation(5), _continuation(7)]
+    ordered = bodies if order == "oldest first" else bodies[::-1]
+    stub_ids = [f"c{index}" for index, body in enumerate(ordered, start=1) if "(continued)" in body]
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Recorder(_thread(*ordered)))
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("plan_file", {"issue": "PROJ-1"})
+    message = _text(result)
+    assert result.is_error is True, f"a plan split across three comments was materialised: {result.content}"
+    assert "as v8" in message, f"the remedy must be one past the highest stub, not past the first found: {message}"
+    assert "as v6" not in message, f"v6 still carries the v7 stub and would refuse again: {message}"
+    for stub in stub_ids:
+        assert stub in message, f"the refusal must name every comment the caller has to move past: {message}"
+    assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
+
+
+@pytest.mark.anyio
 async def test_plan_file_refuses_a_plan_carrying_neither_boundary(monkeypatch, scratch_root):
     """A one-blob plan comment has no agent-facing half to hand on, and must not yield the whole body."""
     recorder = _Recorder(_thread(PLAN_HUMAN_READ_BACK + "\n\n" + PLAN_AGENT_READ_BACK))

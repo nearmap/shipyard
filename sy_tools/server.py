@@ -482,14 +482,15 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     the pin rather than by re-reading prose.
 
     A comment whose heading opens `# Execution Plan v<N>` without being a plan heading — a
-    `v<N> (continued)` stub — is refused when its `<N>` is at or above the selected plan's own version,
-    naming that comment: this tool hands on one comment's half, so a plan split across two comments would
-    be materialised with the second one's content silently missing. At or above rather than equal to,
-    because a stub numbered *higher* than the selected version means a later version's second half is
-    stranded with its first half never posted, and this tool must not quietly fall back to an older
-    complete version as though the issue's newest plan did not exist. Only a stub strictly older than the
-    selected version is skipped, as history a later version has moved past. Post the whole plan as the
-    version after the stranded one, which moves the selected version past it and leaves it as history.
+    `v<N> (continued)` stub — is refused when its `<N>` is at or above the selected plan's own version:
+    this tool hands on one comment's half, so a plan split across two comments would be materialised with
+    the second one's content silently missing. Every such comment on the issue is scanned for and named in
+    one refusal, and the version it sends the caller to is one past the *highest* of them, so a second
+    stranded stub cannot re-trigger the identical refusal against the version the first one asked for. At
+    or above rather than equal to, because a stub numbered *higher* than the selected version means a later
+    version's second half is stranded with its first half never posted, and this tool must not quietly fall
+    back to an older complete version as though the issue's newest plan did not exist. Only a stub strictly
+    older than the selected version is skipped, as history a later version has moved past.
 
     Three things refuse: no plan comment at all; two comments sharing the highest version — which is
     genuinely ambiguous, since neither is the later revision of the other, and picking one would ship
@@ -543,6 +544,7 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             f"whole plan as v{version + 1} in /sy:spec, which puts one comment past both."
         )
     comment_id, _, body = selected[0]
+    stranded: list[tuple[int, str]] = []
     for comment in read.get("comments") or []:
         if not isinstance(comment, dict):
             continue
@@ -557,16 +559,23 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             # Only an older stub is history a later plan version has already moved past; refusing on
             # it would make the issue permanently unreadable.
             continue
-        # `stranded_version`, not the selected one: the guard above has already skipped every stub older
-        # than the selection, so the stub is the higher of the two and one past it clears both.
-        next_version = stranded_version + 1
+        stranded.append((stranded_version, str(comment.get("id") or "(no id)")))
+    if stranded:
+        # The whole scan first, then one refusal: raising on the first stub found named *that* stub's version
+        # as the remedy, so a second stub at a higher version re-triggered the identical refusal on the next
+        # post and burnt another comment slot, which is never editable. It was adapter-order-dependent too:
+        # one adapter returns a comment page newest-first and another oldest-first, so which stub the loop
+        # reached first — and so which remedy one issue got — varied by which tracker was configured.
+        next_version = max([version, *(stranded_version for stranded_version, _ in stranded)]) + 1
+        listed = ", ".join(f"{stub_id} (continues v{stranded_version})" for stranded_version, stub_id in stranded)
+        noun = "comment" if len(stranded) == 1 else "comments"
         raise ToolError(
-            f"{issue} carries comment {comment.get('id') or '(no id)'}, a continuation of Execution Plan "
-            f"v{stranded_version} rather than a plan comment of its own, and v{version} is the highest complete "
-            "plan version on the issue. This tool hands on one comment's agent-facing half, so the plan would go "
-            f"to /sy:ship with that comment's content missing and nothing to say so. Post the whole plan as "
-            f"v{next_version} through `post-comment` — one comment, tightened to fit the body limit — which "
-            "moves the selected version past the stranded comment and leaves it as history."
+            f"{issue} carries {len(stranded)} stranded Execution Plan continuation {noun} — a heading that opens "
+            f"a plan version without being that version's own plan comment: {listed}. v{version} is the highest "
+            "complete plan version on the issue. This tool hands on one comment's agent-facing half, so the plan "
+            "would go to /sy:ship with that content missing and nothing to say so. Post the whole plan as "
+            f"v{next_version} through `post-comment` — one comment, tightened to fit the body limit — which moves "
+            "the selected version past every comment listed here in a single post and leaves them as history."
         )
     if not comment_id:
         raise ToolError(

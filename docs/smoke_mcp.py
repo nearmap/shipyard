@@ -271,8 +271,10 @@ class Smoke:
         if dependency is not None:
             self.check(
                 "add-dependency",
+                # Write and read-back share the adapter's own coordinate system, so this proves the
+                # link was recorded, never that its direction is right.
                 bool(dependency.get("verified")),
-                f"the tracker did not verify {second} as blocked by {first}",
+                f"the tracker did not confirm that {second} is blocked by {first}",
             )
 
         await self.call("add-label", {"issue": first, "label": SMOKE_LABEL})

@@ -274,7 +274,7 @@ class Smoke:
                 # Write and read-back share the adapter's own coordinate system, so this proves the
                 # link was recorded, never that its direction is right.
                 bool(dependency.get("verified")),
-                f"the tracker did not record a dependency between {second} and {first}",
+                f"the tracker did not confirm that {second} is blocked by {first}",
             )
 
         await self.call("add-label", {"issue": first, "label": SMOKE_LABEL})

@@ -49,9 +49,14 @@ inward end and the issue it blocks is the outward end.
 
 Named rather than inlined because the two are trivially swappable and a swap is silent: it inverts
 every dependency the server reports while every call still succeeds, and a suite that reads direction
-only through these names passes either way. To re-derive them rather than re-guess, take a link whose
-intended direction is known independently and compare `linkedIssues("<KEY>","is blocked by")` against
-`linkedIssues("<KEY>","blocks")`; whichever side of that link the blocker sits on is `BLOCKER_SIDE`."""
+only through these names passes either way. To re-derive them rather than re-guess: `GET /issue/<KEY>`
+on either end of a link whose direction is known independently and read its `issuelinks` entry directly
+against Jira's documented labelling rule (a link carrying an `inwardIssue` field is labelled with
+`type.inward`, "is blocked by" for `Blocks`) — the counterpart under `inwardIssue` is the blocker,
+straight off that payload, no live board required. `linkedIssues("<KEY>","is blocked by")` versus
+`linkedIssues("<KEY>","blocks")` (the live check below) corroborates this against a real board, but its
+own inward/outward perspective is not itself Atlassian-documented, so treat the REST payload's labelling
+rule as the derivation and the crossed-pair JQL result as confirmation, not the reverse."""
 
 COMMENT_PAGE = 50
 """How many comments one read returns, newest first: a bound truncates the oldest rather than the
@@ -313,9 +318,9 @@ class JiraAdapter:
         confirms either assignment of them.
         """
         base, auth = _credentials()
-        # The issue being read is the one performing the type's outward action toward its `outwardIssue`,
-        # so on a `Blocks` link the `outwardIssue` end is the issue that gets blocked and the `inwardIssue`
-        # end is the one blocking it.
+        # BLOCKER_SIDE/BLOCKED_SIDE (see their docstring) name which slot is which; this is the write
+        # half of the same mapping `_linked` reads, confirmed against a live board rather than derived
+        # from the REST model, which reads as self-consistent whichever way the two are assigned.
         payload = {
             "type": {"name": BLOCKS},
             BLOCKER_SIDE: {"key": blocked_by},

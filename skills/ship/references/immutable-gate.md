@@ -61,6 +61,30 @@ REVIEW_EFFORT: max
 
 Acceptance evidence gets its own PR comment, never only the mutable description.
 
+## Net-new agent-facing text
+
+Shipyard's own agent-facing prose is always-resident: every sentence added to it is paid for out of
+every later session's attention budget. So each addition justifies itself here — reviewer-initiated,
+builder-answerable, no new artifact and no new return value.
+
+- **Scope** — net-new agent-facing text in the diff: `skills/**/*.md`, `agents/*.md`, and MCP tool
+  docstrings and `Field(description=...)` in `sy_tools/server.py`.
+- **Carrier** — the PR body, one line per addition. Nowhere else: a justification in a commit message
+  or a tracker comment does not discharge this.
+- **Keep/cut test** — text stays when its reader must act on it *before* reaching the thing it
+  describes and no runtime signal teaches it: an irreversible effect, a caller-declared trust boundary
+  where misuse succeeds, routing between two surfaces, mutually-exclusive options. Otherwise it goes.
+  Apply the two cut tests in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md` by
+  citation; never restate them.
+- **Refutation test** — a justification survives only if removing the text would change what its
+  reader does. "It adds useful background" is refuted by default. Use the refute mode `sy:hunt`
+  already has. Three shapes read as cuttable and are not: a defence that stops a later reader
+  simplifying a check into a no-op, a duplication `scripts/validate.py` itself requires in two places,
+  and a documented carve-out.
+- **Outcome** — an addition whose justification is refuted is an actionable finding in the fix cycle
+  below. The builder cuts it or re-justifies there; no extra round budget, and no new `sy:gate` return
+  field.
+
 ## Fix cycle
 
 `sy:gate` reports; the GATE worker triages findings — applying accepted fixes in the build worktree and pushing, and recording rejections with reasoning. A finding whose resolution is genuinely ambiguous returns `needs-decision` (checkpoint: resolved vs pending findings and current pushed SHA); a finding exposing a plan-contract problem returns `bail-to-spec` — including a finding that restates a root cause an earlier round in this same session already treated as fixed, which is the plan's own shape being wrong rather than one more fix to attempt. A resumed continuation worker sees only the checkpoint and cannot recognize that pattern; the round bound below is what catches the same loop from outside. Every new commit invalidates CI/review coverage.

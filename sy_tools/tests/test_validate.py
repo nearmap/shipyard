@@ -266,3 +266,69 @@ def test_a_file_carrying_no_frontmatter_block_extracts_to_empty(text):
     """Empty rather than a raise or a partial: `frontmatter()` reports both delimiter faults against the path, and
     a caller here must not read an unclosed file's body as if it were the block."""
     assert validate._frontmatter_block(text) == "", f"a file with no frontmatter block must extract to empty: {text!r}"
+
+
+_CLAUSE = "## Net-new agent-facing text\n"
+_CARRIER = "- **Carrier** --- the PR body, one line per addition.\n"
+_CITATION = (
+    "- Net-new agent-facing text in the diff carries one justification line per addition;\n"
+    "  see immutable-gate.md for the scope and the keep/cut test.\n"
+)
+
+
+def _gate_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gate_ref: str,
+    reviewer: str,
+) -> list[str]:
+    """Build the two-file tree `check_gate_justification` reads and return its errors."""
+    (tmp_path / "skills" / "ship" / "references").mkdir(parents=True)
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "skills" / "ship" / "references" / "immutable-gate.md").write_text(gate_ref, encoding="utf-8")
+    (tmp_path / "agents" / "gate.md").write_text(reviewer, encoding="utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_gate_justification(errors)
+    return errors
+
+
+def test_a_tree_carrying_the_clause_its_carrier_and_the_citation_passes(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + _CARRIER, _CITATION)
+    assert not errors, f"a complete clause plus reviewer citation must pass: {errors}"
+
+
+def test_a_gate_reference_without_the_clause_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, "## Fix cycle\n", _CITATION)
+    assert any("Net-new agent-facing text clause" in error for error in errors), \
+        f"a reference that dropped the clause must be refused: {errors}"
+
+
+def test_a_clause_without_its_named_carrier_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE, _CITATION)
+    assert any("carrier" in error for error in errors), \
+        f"a clause with nowhere for a justification to land must be refused: {errors}"
+
+
+def test_a_reviewer_that_never_names_the_obligation_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + _CARRIER, "- review the diff. See immutable-gate.md.\n")
+    assert any("must name the net-new agent-facing text obligation" in error for error in errors), \
+        f"an obligation the reviewer's brief never names never runs: {errors}"
+
+
+def test_a_reviewer_naming_the_obligation_without_the_reference_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + _CARRIER, "- Net-new agent-facing text is justified.\n")
+    assert any("must cite immutable-gate.md" in error for error in errors), \
+        f"the duty without its reference leaves the keep/cut test to be invented: {errors}"
+
+
+@pytest.mark.parametrize("restating", ["gate_ref", "reviewer"])
+@pytest.mark.parametrize("cut_test", validate.CUT_TESTS)
+def test_either_file_restating_a_context_economy_cut_test_is_refused(tmp_path, monkeypatch, restating, cut_test):
+    # The literals come from the constant rather than being retyped here: a second copy in the test is
+    # exactly the drift the check exists to stop.
+    files = {"gate_ref": _CLAUSE + _CARRIER, "reviewer": _CITATION}
+    files[restating] += f"{cut_test}\n"
+    errors = _gate_check(tmp_path, monkeypatch, files["gate_ref"], files["reviewer"])
+    assert any("restates a context-economy cut test" in error for error in errors), \
+        f"{restating} restating {cut_test!r} must be refused: {errors}"

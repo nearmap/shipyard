@@ -17,7 +17,7 @@ Ask, or resolve from what you were handed. Several patterns below are destinatio
 - **A console turn** to the user → `## Human-facing text` § Everywhere + § A console turn, then `## Mode`.
 - **A plan's sign-off half** → `## Human-facing text` § Everywhere + § A plan sign-off half.
 - **An issue body, or a PR description** → `## Human-facing text` § Everywhere; a PR description also drops anything the diff already shows.
-- **A plan's `/sy:ship` half, a dispatch brief for another agent, or one of this plugin's own files** (a skill, a reference, an agent brief) → `## Agent-facing text`.
+- **A plan's `/sy:ship` half, a dispatch brief for another agent, or one of this plugin's own files** (a skill, a reference, an agent brief, an MCP tool docstring or `Field(description=...)`) → `## Agent-facing text`.
 
 ## Ground rules
 

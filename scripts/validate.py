@@ -67,6 +67,12 @@ CHECK_ENV_TOOL = "check_env"
 # The lowest number an adapter's `body_limit` could plausibly be. Both real limits are 32k and 64k, and
 # no tracker documents anything near this floor, so a declaration under it is a typo, not a limit.
 BODY_LIMIT_FLOOR = 8_192
+# The two cut tests as `skills/shared/references/context-economy.md` phrases them. One copy here, read by
+# every check that pins the rule, because a second copy in a checker is the same drift it forbids.
+CUT_TESTS = (
+    "Does removing this sentence change what its reader does?",
+    "Would a pointer do the work this text is doing?",
+)
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -293,6 +299,54 @@ def check_config_seam(errors: list[str]) -> None:
                     errors,
                 )
                 break
+
+
+def check_gate_justification(errors: list[str]) -> None:
+    """The net-new-agent-facing-text obligation exists, names its carrier, and the reviewer initiates it.
+
+    Standalone rather than a leg of `check_invariants`: that function's `read()` raises on any missing
+    file, so a synthetic tree exercising this rule would have to carry every path it reads.
+    """
+    gate_ref_rel = "skills/ship/references/immutable-gate.md"
+    reviewer_rel = "agents/gate.md"
+    gate_ref = (ROOT / gate_ref_rel).read_text(encoding="utf-8")
+    reviewer = (ROOT / reviewer_rel).read_text(encoding="utf-8")
+
+    if "Net-new agent-facing text" not in gate_ref:
+        fail(
+            f"{gate_ref_rel} must keep the Net-new agent-facing text clause; without it every sentence "
+            "added to an always-resident brief ships unjustified",
+            errors,
+        )
+    # An obligation with no named carrier is discharged by nobody.
+    if "one line per addition" not in gate_ref:
+        fail(
+            f"{gate_ref_rel} must name the carrier ('one line per addition' in the PR body); an "
+            "obligation with no place to land is discharged by nobody",
+            errors,
+        )
+    if "net-new agent-facing text" not in reviewer.lower():
+        fail(
+            f"{reviewer_rel} must name the net-new agent-facing text obligation; the reviewer initiates "
+            "it, so a clause its own brief never mentions never runs",
+            errors,
+        )
+    if "immutable-gate.md" not in reviewer:
+        fail(
+            f"{reviewer_rel} must cite immutable-gate.md for that obligation's scope and tests; naming "
+            "the duty without the reference leaves the reviewer to invent the keep/cut test",
+            errors,
+        )
+    # `check_invariants`'s restatement pin runs over `economy_consumers`, which lists neither of these two
+    # files, so without this leg the no-restatement invariant holds here by authorial care alone.
+    for rel, text in ((gate_ref_rel, gate_ref), (reviewer_rel, reviewer)):
+        for cut_test in CUT_TESTS:
+            if cut_test in text:
+                fail(
+                    f"{rel} restates a context-economy cut test; this clause forks the rule it is meant "
+                    "to apply by citation, and the two copies drift",
+                    errors,
+                )
 
 
 def check_no_repo_scratch_refs(errors: list[str]) -> None:
@@ -949,11 +1003,7 @@ def check_invariants(errors: list[str]) -> None:
 
     # Context economy is a single copy: the two cut tests are phrased once, in the reference, and every
     # authoring surface carries a pointer to it. A consumer that spells a cut test out has forked the rule.
-    cut_tests = (
-        "Does removing this sentence change what its reader does?",
-        "Would a pointer do the work this text is doing?",
-    )
-    for cut_test in cut_tests:
+    for cut_test in CUT_TESTS:
         if cut_test not in economy_ref:
             fail(f"context-economy.md must state the cut test {cut_test!r} verbatim", errors)
     economy_consumers = (
@@ -967,7 +1017,7 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in economy_consumers:
         if "context-economy.md" not in text:
             fail(f"{name} authors an agent-facing artifact and must cite context-economy.md", errors)
-        for cut_test in cut_tests:
+        for cut_test in CUT_TESTS:
             if cut_test in text:
                 fail(f"{name} restates a context-economy cut test; cite context-economy.md instead", errors)
     economy_axis_phrase = "narrates what a cited anchor already shows"
@@ -1424,6 +1474,7 @@ def main() -> int:
     check_hooks(errors)
     check_invariants(errors)
     check_poller_argv(errors)
+    check_gate_justification(errors)
 
     # Here rather than in pytest because neither is reachable there: one is bash, and the other sits
     # outside the `sy_tools` tree pytest's `testpaths` collects.

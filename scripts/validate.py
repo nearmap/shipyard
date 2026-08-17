@@ -982,9 +982,11 @@ def check_invariants(errors: list[str]) -> None:
         fail("tighten's description must open PROACTIVE so the model reaches for it unprompted", errors)
     if "disable-model-invocation" in tighten:
         fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
+    # Anchored to a heading line, not containment: the skill's own routing list names all three sections
+    # to point at them, so a containment check stays green while the heading it points at is renamed away.
     for section in ("## Human-facing text", "## Agent-facing text", "## Protect"):
-        if section not in tighten:
-            fail(f"tighten must carry its {section} section; the density rules live nowhere else", errors)
+        if not re.search(rf"^{re.escape(section)}\s*$", tighten, re.M):
+            fail(f"tighten must carry its `{section}` heading; the density rules live nowhere else", errors)
     if "/sy:tighten" not in user_interaction:
         fail("user-interaction reference must name /sy:tighten as the pass a turn goes through", errors)
 

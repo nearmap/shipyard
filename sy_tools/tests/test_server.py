@@ -475,18 +475,27 @@ def test_the_size_refusal_names_shortening_before_splitting():
 
 
 @pytest.mark.anyio
-async def test_an_oversized_plan_comment_is_refused_with_no_offer_to_split_it(monkeypatch):
+@pytest.mark.parametrize("heading", [
+    "# Execution Plan v1",
+    "## Execution Plan v3",
+    "# Execution Plan v3 — revised",
+], ids=["the template's own heading", "a mis-levelled heading", "a decorated heading"])
+async def test_an_oversized_plan_comment_is_refused_with_no_offer_to_split_it(monkeypatch, heading):
     """A plan split across comments reads back with a half missing, so the guard must not suggest it.
 
     Driven through `post-comment` rather than the helper, because the convention that a plan comment is
     one comment lives in the caller: a correct message the writer never asks for is no guard at all.
+
+    A heading carrying a level or a suffix the template does not write is still a plan for this purpose:
+    misclassifying one hands back the generic remedy, which offers the split whose whole cost this
+    refusal exists to state.
     """
     recorder = _Recorder()
     recorder.body_limit = STUB_BODY_LIMIT
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     arguments = {
         "issue": "PROJ-1",
-        "human": "# Execution Plan v1\nStatus: ACTIVE\n\nTL;DR: too long.",
+        "human": f"{heading}\n\nTL;DR: too long.",
         "agent_detail": "## For /sy:ship\n\n" + "x" * STUB_BODY_LIMIT,
     }
     async with mcp.Client(server.mcp) as client:
@@ -2070,31 +2079,32 @@ async def test_plan_file_refuses_a_selected_plan_whose_comment_id_reads_back_emp
 
 
 CONTINUATION_CASES = [
-    ((_plan_at(1), _continuation(1)), "c2", None),
-    ((_plan_at(1), _continuation(1, lead="\n\n")), "c2", None),
-    ((_continuation(1, status="SUPERSEDED"), _plan_at(2)), None, 2),
-    ((_plan_at(1), QUOTING_PROSE), None, 1),
-    ((_plan_at(1), "## Execution Plan v1 (continued)\n\nStatus: ACTIVE\n\n...more."), None, 1),
-    ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2  \n", 1)), None, 2),
-    ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2\r\n", 1)), None, 2),
-    ((_plan_at(1), _continuation(10)), "c2", None),
+    ((_plan_at(1), _continuation(1)), "c2", None, 2),
+    ((_plan_at(1), _continuation(1, lead="\n\n")), "c2", None, 2),
+    ((_continuation(1, status="SUPERSEDED"), _plan_at(2)), None, 2, None),
+    ((_plan_at(1), QUOTING_PROSE), None, 1, None),
+    ((_plan_at(1), "## Execution Plan v1 (continued)\n\nStatus: ACTIVE\n\n...more."), "c2", None, 2),
+    ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2  \n", 1)), None, 2, None),
+    ((_plan_at(1), _plan_at(2, status="SUPERSEDED").replace("v2\n", "v2\r\n", 1)), None, 2, None),
+    ((_plan_at(1), _continuation(10)), "c2", None, 11),
 ]
-"""Each thread the detector sees, the comment id it must refuse on, and the version it must write."""
+"""Each thread the detector sees, the comment id it must refuse on, the version it must write, and the
+version its refusal must name as the remedy."""
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(("bodies", "flagged", "version"), CONTINUATION_CASES, ids=[
+@pytest.mark.parametrize(("bodies", "flagged", "version", "next_version"), CONTINUATION_CASES, ids=[
     "a same-version continuation",
     "a continuation behind a leading blank line",
     "a superseded stub under a newer plan",
     "prose quoting a plan heading",
-    "a level-two heading",
+    "a level-two heading stranded stub",
     "a strict heading with trailing spaces",
     "a strict heading with a carriage return",
     "a continuation ahead of the selected plan's version",
 ])
 async def test_plan_file_refuses_a_continuation_stranded_at_or_above_the_selected_plans_version(
-    monkeypatch, scratch_root, bodies, flagged, version
+    monkeypatch, scratch_root, bodies, flagged, version, next_version
 ):
     """The detector has to fire on a split plan and stay silent on everything shaped a little like one.
 
@@ -2103,9 +2113,15 @@ async def test_plan_file_refuses_a_continuation_stranded_at_or_above_the_selecte
     plan they refer to and neither may make a live plan unreadable. But a stub *ahead* of the selected
     version is a positive, not a negative — a later version's second half posted without its first, where
     silently handing back the older complete plan would ship against a version the issue has moved past.
+    A stub mangled to level two is a positive for the same reason: the heading level is not what makes it
+    a stub, and a detector anchored on level one leaves the split it exists to catch invisible.
     The whitespace cases put the mutated heading on the *higher* version, so they pin both halves at once:
     the selection loop has to match a heading carrying trailing spaces or a carriage return, and the
     detector still has to skip it as a plan rather than flag it as a continuation.
+
+    The remedy version is asserted, not just the flagged id: it is one past the *stranded* stub, so the
+    v10 stub under a v1 plan has to name v11 — a refusal naming v2 there would send the caller to a
+    version the stub already outranks, leaving the issue unreadable after they followed the instruction.
     """
     monkeypatch.setattr(server.tracker, "adapter", lambda: _Recorder(_thread(*bodies)))
     async with mcp.Client(server.mcp) as client:
@@ -2113,6 +2129,9 @@ async def test_plan_file_refuses_a_continuation_stranded_at_or_above_the_selecte
     if flagged is not None:
         assert result.is_error is True, f"a plan split across two comments was materialised: {result.content}"
         assert flagged in _text(result), f"the refusal must name the stranded comment: {_text(result)}"
+        assert f"as v{next_version}" in _text(result), (
+            f"the refusal must send the caller to v{next_version}, past the stranded stub: {_text(result)}"
+        )
         assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
         return
     assert result.is_error is False, _text(result)

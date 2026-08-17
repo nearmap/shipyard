@@ -971,9 +971,15 @@ def check_invariants(errors: list[str]) -> None:
         fail("contract must state that a plan comment is never split across comments", errors)
     # The `Status: ACTIVE`/`SUPERSEDED` field is gone: a posted comment is never edited, so the field on an
     # older version was never updated and any reader consulting it picked the wrong plan. Only the version
-    # number selects. Pinned as absence on every surface that once taught the convention, because prose is
-    # where it would come back — one sentence reintroducing it is enough to have a caller write the field again.
+    # number selects. The three surfaces that actually carried the literal are pinned first and are what this
+    # pin is worth: spec §7's template, which a caller copies the field straight out of; `plan_file`'s
+    # docstring, which taught the read side to consult it; and the smoke fixture, which posts one for real.
+    # The prose surfaces follow, because a sentence reintroducing the convention is enough to have a caller
+    # write the field again.
     for name, text in (
+        ("spec", spec),
+        ("sy_tools/server.py", read("sy_tools/server.py")),
+        ("docs/smoke_mcp.py", read("docs/smoke_mcp.py")),
         ("contract", contract),
         ("ship", ship),
         ("start-resume", start),
@@ -996,9 +1002,12 @@ def check_invariants(errors: list[str]) -> None:
     # useless if a caller has to remember to type it.
     if "PROACTIVE" not in _frontmatter_field(tighten, "description"):
         fail("tighten's description must open PROACTIVE so the model reaches for it unprompted", errors)
-    # Frontmatter-scoped, not whole-file: the key is only load-bearing where it would take effect, and a
-    # containment check would stop the skill from documenting that it deliberately does not declare it.
-    if _frontmatter_field(tighten, "disable-model-invocation").strip():
+    # Containment inside the frontmatter block, not a field read: the key is only load-bearing where it would
+    # take effect, so scoping keeps the skill free to document in its body that it deliberately does not
+    # declare it — while still catching the quoted-key spelling (`"disable-model-invocation": true`), which a
+    # field read anchored on `^disable-model-invocation:` passes straight over.
+    frontmatter_block = tighten.split("---", 2)[1] if tighten.startswith("---\n") and "\n---\n" in tighten[4:] else ""
+    if "disable-model-invocation" in frontmatter_block:
         fail("tighten must stay model-invocable; it cannot declare disable-model-invocation", errors)
     # Anchored to a heading line, not containment: the skill's own routing list names all three sections
     # to point at them, so a containment check stays green while the heading it points at is renamed away.

@@ -347,7 +347,10 @@ async def post_comment(
     # what this catches here is a claim that is prose-only, malformed, or ambiguous — never a valid log.
     _validate_machine_log(body)
     adapter = tracker.adapter()
-    _validate_body_size(body, adapter.body_limit, is_plan=_PLAN_HEADING.match(human.lstrip()) is not None)
+    # The loose pattern, not `_PLAN_HEADING`: what the size refusal needs is "does this open like a plan",
+    # and a `## Execution Plan v3` or `# Execution Plan v3 — revised` classified as *not* a plan gets the
+    # generic remedy that offers splitting, which is the read-side data loss this refusal exists to prevent.
+    _validate_body_size(body, adapter.body_limit, is_plan=_PLAN_CONTINUATION.match(human.lstrip()) is not None)
     posted = await adapter.post_comment(issue, body)
     return {**posted, "scrub": scrub}
 
@@ -425,8 +428,14 @@ Matched against the body's start, never searched for: a comment *quoting* a plan
 not a plan, and treating it as one is how "the highest version is the plan" starts picking the wrong
 comment."""
 
-_PLAN_CONTINUATION = re.compile(r"#[ \t]+Execution Plan v(\d+)")
+_PLAN_CONTINUATION = re.compile(r"#{1,6}[ \t]+Execution Plan v(\d+)")
 """A heading that opens like a plan's without being one — the `v3 (continued)` stub a split plan leaves.
+
+Any heading level, and no end anchor, unlike `_PLAN_HEADING`: a real plan heading is always posted at
+level one from `skills/spec/SKILL.md`'s template, but a stub is hand-made or arrives reflowed, and a
+`## Execution Plan v3 (continued)` invisible to this pattern is precisely the silent truncation the
+detector exists to catch. Also what `post-comment` classifies a plan by when it refuses an oversized
+body, so a decorated or mis-levelled heading still gets the never-split remedy rather than the generic one.
 
 Matched against the body's start rather than searched for, exactly as `_PLAN_HEADING` is: a
 `# Ship retrospective` or `# SEAMS` comment quoting a plan heading further down its body is not a
@@ -548,7 +557,9 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             # Only an older stub is history a later plan version has already moved past; refusing on
             # it would make the issue permanently unreadable.
             continue
-        next_version = max(version, stranded_version) + 1
+        # `stranded_version`, not the selected one: the guard above has already skipped every stub older
+        # than the selection, so the stub is the higher of the two and one past it clears both.
+        next_version = stranded_version + 1
         raise ToolError(
             f"{issue} carries comment {comment.get('id') or '(no id)'}, a continuation of Execution Plan "
             f"v{stranded_version} rather than a plan comment of its own, and v{version} is the highest complete "

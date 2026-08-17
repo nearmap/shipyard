@@ -47,12 +47,15 @@ SMOKE_LABEL = "documentation"
 one would hide a typo in a real caller."""
 STATUSES = ("backlog", "ready", "in-progress", "in-review", "done")
 
-PLAN_HUMAN = "# Execution Plan v2\n\nSupersedes: v1\n\nTL;DR: smoke-test plan comment. Safe to delete."
+PLAN_HUMAN = "# Execution Plan v2\nSupersedes: v1\n\nTL;DR: smoke-test plan comment. Safe to delete."
 """The human half of a plan comment, in the shape `skills/spec/SKILL.md` §7 writes one.
 
-A v2 with its `Supersedes:` line, not a bare v1: every plan past the first carries that line right under
-the heading, and it is one of the lines the tracker reflows on the way back — so a v1 fixture would leave
-the shape this smoke exists to prove untested."""
+A v2 with `Supersedes:` on the line directly under the heading, no blank line between them, because that
+is what §7's template writes byte for byte and a plan the tracker never sees in its real shape is not the
+thing under test. What that buys is narrow enough to be worth stating rather than overclaiming: a
+`version` of 2 read back proves the heading's version number parses off this shape after a real store and
+read. It proves nothing about the human half's own round trip — `plan_file` materialises the agent-facing
+half alone, so no assertion on this path can reach the `Supersedes:` line at all."""
 
 PLAN_AGENT_HALF = (
     "## For /sy:ship\n\n"

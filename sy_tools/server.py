@@ -429,13 +429,16 @@ not a plan, and treating it as one is how "the highest version is the plan" star
 comment."""
 
 _PLAN_CONTINUATION = re.compile(r"#{1,6}[ \t]+Execution Plan v(\d+)")
-"""A heading that opens like a plan's without being one — the `v3 (continued)` stub a split plan leaves.
+"""A heading that opens like a plan's — a real plan heading or the `v3 (continued)` stub a split plan
+leaves; this pattern matches both shapes and does not tell them apart.
 
 Any heading level, and no end anchor, unlike `_PLAN_HEADING`: a real plan heading is always posted at
 level one from `skills/spec/SKILL.md`'s template, but a stub is hand-made or arrives reflowed, and a
 `## Execution Plan v3 (continued)` invisible to this pattern is precisely the silent truncation the
-detector exists to catch. Also what `post-comment` classifies a plan by when it refuses an oversized
-body, so a decorated or mis-levelled heading still gets the never-split remedy rather than the generic one.
+detector exists to catch. `plan_file`'s continuation loop is what excludes a real plan heading from this
+match (`_PLAN_HEADING.match(...) is not None` is checked separately there); `post-comment` deliberately
+does not exclude it, since a decorated or mis-levelled heading — real plan or stub alike — should still
+get the plan-specific never-split remedy rather than the generic one.
 
 Matched against the body's start rather than searched for, exactly as `_PLAN_HEADING` is: a
 `# Ship retrospective` or `# SEAMS` comment quoting a plan heading further down its body is not a

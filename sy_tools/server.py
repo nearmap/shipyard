@@ -1331,8 +1331,10 @@ def memory_refute(
     narrowed than erased, and that condition is the part a future reader needs. The lesson file is never
     deleted, only rewritten in place, so a refuted entry stays visible in `memory_list` and
     `memory_search` carrying a `status` of `corrected` or `tombstoned`. `memory_add` under the same title
-    is then refused rather than silently overwriting the refutation and its evidence, so a refuted title
-    has to be read before anything is written over it.
+    is then refused unconditionally rather than silently overwriting the refutation and its evidence, so
+    the title becomes terminal for `memory_add`: no later add can land on it, and a successor lesson that
+    does still hold has to go under a new title. Narrowing this refutation is `memory_refute` again on the
+    same title, which stays available.
     """
     try:
         return {"path": str(memory.refute(title, evidence, correction))}

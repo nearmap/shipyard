@@ -94,6 +94,21 @@ def test_a_re_add_over_a_refuted_title_is_refused_while_a_live_one_still_replace
     assert "Never reproduced." in text, f"the refusal must leave the refutation's evidence intact: {text!r}"
 
 
+def test_a_refusal_on_a_slug_collision_names_the_stored_title_not_the_callers(store):
+    """Two long titles truncate to one slug, so the refused caller's title is not necessarily the title
+    whose refutation is being protected; naming the caller's would send a reader after a lesson nobody has."""
+    stored = "Resume drops the model override whenever a nested agent dispatch omits it from the payload"
+    other = "Resume drops the model override whenever a nested agent dispatch omits it from the request"
+    path = memory.add(stored, "agent dispatch", "resume,models", "Pass it explicitly.")
+    memory.refute(stored, "Never reproduced.")
+
+    with pytest.raises(ValueError, match="from the payload") as refusal:
+        memory.add(other, "agent dispatch", "resume,models", "Pass it explicitly.")
+    assert other not in str(refusal.value), \
+        f"the caller's colliding title must not be reported as the stored one: {refusal.value}"
+    assert len(_lessons(store)) == 1, f"the collision must be one file, or this test proves nothing: {path}"
+
+
 @pytest.mark.parametrize(
     ("title", "scope", "body"),
     [("", "agent dispatch", "Pass it explicitly."), ("Resume drops it", "", "Pass it explicitly."),

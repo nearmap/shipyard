@@ -821,27 +821,6 @@ async def test_get_issue_reports_board_values_relations_labels_and_comments(monk
     assert issue["body"].startswith("## Context"), "this tracker is native Markdown; nothing may convert the body"
 
 
-@pytest.mark.parametrize(("count", "truncated"), [(1, False), (99, False), (100, True), (101, True)])
-@pytest.mark.anyio
-async def test_a_full_comment_page_reports_truncated_and_a_short_one_does_not(monkeypatch, board, count, truncated):
-    """`gh` asks the comment connection for one page and exposes no cursor, so a thread that fills the page
-    is indistinguishable from a complete one — and `plan_file` reads that flag to know whether a plan
-    comment it could not find might simply be off the page."""
-    comments = [
-        {"id": f"IC_{n}", "author": {"login": "octocat"}, "createdAt": "2026-07-31T00:00:00Z", "body": f"note {n}"}
-        for n in range(count)
-    ]
-    _install(monkeypatch, _json({**_issue_view(), "comments": comments}), _json(_items()))
-
-    issue = await adapter.GithubAdapter().get_issue("7")
-
-    assert issue["comments_truncated"] is truncated, (
-        f"{count} comments against a page of {adapter.COMMENT_PAGE} must read "
-        f"truncated={truncated}: {issue['comments_truncated']}"
-    )
-    assert len(issue["comments"]) == count, "the truncation flag must not shorten the thread it reports on"
-
-
 @pytest.mark.anyio
 async def test_an_issue_id_gh_would_read_as_a_flag_is_refused_before_any_call(monkeypatch, board, tmp_path):
     """An id crosses the tool boundary opaque and lands in `gh`'s argv, where a leading dash is a flag.

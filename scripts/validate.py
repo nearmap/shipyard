@@ -312,24 +312,38 @@ def check_gate_justification(errors: list[str]) -> None:
     gate_ref = (ROOT / gate_ref_rel).read_text(encoding="utf-8")
     reviewer = (ROOT / reviewer_rel).read_text(encoding="utf-8")
 
-    if not re.search(r"^## Net-new agent-facing text\s*$", gate_ref, re.M):
+    clause = re.search(r"^## Net-new agent-facing text\s*$", gate_ref, re.M)
+    if clause is None:
         fail(
             f"{gate_ref_rel} must keep the Net-new agent-facing text clause; without it every sentence "
             "added to an always-resident brief ships unjustified",
             errors,
         )
-    # An obligation with no named carrier is discharged by nobody. Whitespace-tolerant, unlike the
-    # containment pins around it: this phrase sits mid-sentence in wrapped prose, so a re-wrap between
-    # any two of its words would void the leg silently while the sentence still said the same thing.
-    # Scoped to the clause's own section: an unscoped whole-file search stays green even once the section
-    # is hollowed out, as long as the phrase happens to survive somewhere else in the file.
-    gate_section = gate_ref.partition("## Net-new agent-facing text")[2].partition("## Fix cycle")[0]
-    if not re.search(r"one\s+line\s+per\s+addition", gate_section):
-        fail(
-            f"{gate_ref_rel} must name the carrier ('one line per addition' in the PR body); an "
-            "obligation with no place to land is discharged by nobody",
-            errors,
-        )
+    else:
+        # An obligation with no named carrier is discharged by nobody. Whitespace-tolerant, unlike the
+        # containment pins around it: this phrase sits mid-sentence in wrapped prose, so a re-wrap between
+        # any two of its words would void the leg silently while the sentence still said the same thing.
+        # Scoped to the clause's own section: an unscoped whole-file search stays green even once the
+        # section is hollowed out, as long as the phrase happens to survive somewhere else in the file.
+        # The right boundary is the next `## ` heading, whatever it is called, and its absence is a loud
+        # failure: a terminator pinned by name silently widens the scope back to the whole file the moment
+        # that heading is renamed, which is the very vacuity this scoping exists to close.
+        terminator = re.search(r"^## ", gate_ref[clause.end() :], re.M)
+        if terminator is None:
+            fail(
+                f"{gate_ref_rel}: the Net-new agent-facing text section's boundary could not be located "
+                "— the heading that terminated it was renamed or removed, and the carrier pin below would "
+                "otherwise widen to the end of the file and pass on any other section's prose",
+                errors,
+            )
+        elif not re.search(
+            r"one\s+line\s+per\s+addition", gate_ref[clause.end() : clause.end() + terminator.start()]
+        ):
+            fail(
+                f"{gate_ref_rel} must name the carrier ('one line per addition' in the PR body); an "
+                "obligation with no place to land is discharged by nobody",
+                errors,
+            )
     if "net-new agent-facing text" not in reviewer.lower():
         fail(
             f"{reviewer_rel} must name the net-new agent-facing text obligation; the reviewer initiates "

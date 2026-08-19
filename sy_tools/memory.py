@@ -49,12 +49,17 @@ def add(title: str, scope: str, tags: str, body: str) -> Path:
     # The write is unrecoverable (os.replace over the old text), so replacing a live entry is the normal
     # update path but replacing a refutation would destroy its evidence with no signal and no way back.
     if path.is_file():
-        refuted = _frontmatter_value(path.read_text(encoding="utf-8"), "status")
+        stored = path.read_text(encoding="utf-8")
+        refuted = _frontmatter_value(stored, "status")
         if refuted:
+            # The stored title, not the caller's: two titles can truncate to one slug, so the argument
+            # that reached here may not be the title whose refutation is being protected.
+            stored_title = _frontmatter_value(stored, "title") or title.strip()
             raise ValueError(
-                f"the lesson stored under title {title.strip()!r} was refuted (status: {refuted}) and a "
-                "plain add() would destroy that refutation and its evidence; read the entry with "
-                "memory_search first, and refute it again if the correction needs narrowing"
+                f"the lesson stored under title {stored_title!r} was refuted (status: {refuted}) and a "
+                "plain add() would destroy that refutation and its evidence; this title is closed to "
+                "add() for good — read the entry with memory_search, refute() the same title again to "
+                "narrow the correction, and give a genuinely new lesson a different title"
             )
     directory.mkdir(parents=True, exist_ok=True)
     text = (
@@ -208,9 +213,11 @@ def _ensure_index() -> None:
         _rebuild_index(directory)
         return
     entries = len(re.findall(r"^- \[", index.read_text(encoding="utf-8"), re.M))
-    # Hand-deleting or hand-editing a lesson is unsupported, but tolerating a vanished or silently
-    # modified file beats serving it back as a ghost or stale entry out of an index that never rebuilds.
-    # Count alone would miss an edit in place, which changes the title, scope, tags, or status the index shows.
+    # Hand-deleting or hand-editing a lesson is unsupported, but tolerating a vanished file, or one edited
+    # to a newer mtime than the index, beats serving it back as a ghost or stale entry out of an index that
+    # never rebuilds. Count alone would miss an edit in place, which changes the title, scope, tags, or
+    # status the index shows; the mtime leg catches only an edit that left the file newer than the index,
+    # so an edit with a preserved or backdated mtime (a `git checkout`, say) stays invisible to both.
     if entries != len(lessons) or any(p.stat().st_mtime > index.stat().st_mtime for p in lessons):
         _rebuild_index(directory)
 

@@ -258,10 +258,11 @@ async def add_dependency(
     issue: IssueId,
     blocked_by: Annotated[str, Field(description="Opaque id of the issue that must land first.")],
 ) -> dict[str, Any]:
-    """Record that one issue is blocked by another, and verify the direction took.
+    """Record that one issue is blocked by another, and read the link back.
 
-    Canonical verb `add-dependency`. This, not a status, is how blocking is expressed. The result
-    carries `verified` from a read-back, so a link recorded the wrong way round cannot pass silently.
+    Canonical verb `add-dependency`. This, not a status, is how blocking is expressed, and the direction
+    matters: `issue` waits for `blocked_by`. `verified` comes from a read-back in the adapter's own
+    coordinate system, so it proves the link arrived and nothing more -- it cannot detect a reversed one.
     """
     _required(issue=issue, blocked_by=blocked_by)
     return await tracker.adapter().add_dependency(issue, blocked_by)

@@ -110,7 +110,7 @@ class TrackerAdapter(Protocol):
         ...
 
     async def add_dependency(self, issue: str, blocked_by: str) -> dict:
-        """Record that `issue` is blocked by `blocked_by`, and verify the direction really took."""
+        """Record that `issue` is blocked by `blocked_by`, and verify the link arrived."""
         ...
 
     async def add_label(self, issue: str, label: str) -> dict:

@@ -323,7 +323,8 @@ async def test_a_site_carrying_userinfo_is_refused_without_echoing_it(monkeypatc
 # ---- the canonical verbs -------------------------------------------------------------------------
 #
 # The response fixtures below are the shapes the real API returns, measured against a live instance and
-# trimmed to the fields the adapter reads.
+# trimmed to the fields the adapter reads. Shapes are all the measurement covers: which end of a link
+# carries which role is a separate claim, asserted per test rather than vouched for by this banner.
 
 ADF_BODY = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
     {"type": "text", "text": "Body line."}]}]}
@@ -339,8 +340,8 @@ ISSUE: dict[str, Any] = {
         "parent": {"key": "PROJ-1", "fields": {"summary": "The epic"}},
         # `subtasks` carries only genuine Sub-tasks of a Task; an Epic's children never appear here
         "subtasks": [{"key": "PROJ-8"}, {"key": "PROJ-9"}],
-        # measured live: a counterpart under `outwardIssue` blocks this issue, one under `inwardIssue`
-        # is blocked BY it. So PROJ-5 is the blocker and PROJ-6 is downstream.
+        # a counterpart under `inwardIssue` blocks this issue, one under `outwardIssue` is an issue this
+        # issue blocks, so PROJ-6 is upstream of PROJ-7 here and PROJ-5 is downstream of it
         "issuelinks": [
             {"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}},
             {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-6"}},
@@ -349,7 +350,7 @@ ISSUE: dict[str, Any] = {
         "labels": ["decomposed", "shipyard"],
     },
 }
-"""One issue as `GET /issue/{id}?fields=...` returns it: `PROJ-5` blocks it, it blocks `PROJ-6`."""
+"""One issue as `GET /issue/{id}?fields=...` returns it: its blocker is `PROJ-6`, and it blocks `PROJ-5`."""
 
 THREAD: dict[str, Any] = {
     "comments": [{
@@ -377,8 +378,8 @@ TRANSITIONS = {"transitions": [
 
 STATUS_READ = {"fields": {"status": {"name": "In Progress"}}}
 LABELS_READ = {"fields": {"labels": ["decomposed"]}}
-LINK_CONFIRMED = {"fields": {"issuelinks": [{"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}]}}
-"""Read back from the BLOCKER: the issue it blocks arrives as the link's inward end."""
+LINK_CONFIRMED = {"fields": {"issuelinks": [{"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-7"}}]}}
+"""Read back from the BLOCKER: the issue it blocks arrives as the link's outward end."""
 MYSELF_BODY = {"accountId": "5f8a1c2d3e4f", "displayName": "Ship Bot"}
 PROJECT_BODY = {"id": "10000", "key": FAKE_PROJECT, "name": "Shipyard"}
 """A `GET /project/{key}` response for the configured project, trimmed to what preflight reads."""
@@ -505,11 +506,11 @@ async def test_a_create_that_returns_no_key_is_not_reported_as_created(credentia
 
 @pytest.mark.anyio
 async def test_get_issue_reads_canonical_fields_markdown_and_only_the_blockers(credentials, monkeypatch):
-    """`dependencies` is what blocks this issue: the counterpart arriving as the link's OUTWARD end.
+    """`dependencies` is what blocks this issue: the counterpart arriving as the link's INWARD end.
 
-    Measured against real linked issues, not inferred: a read carries only the counterpart, and the field
-    it arrives under names that counterpart's absolute role. Reporting the wrong end inverts every
-    dependency downstream while every call still succeeds, so the fixture carries one link each way.
+    A read carries only the counterpart, and the field it arrives under names that counterpart's absolute
+    role. Reporting the wrong end inverts every dependency downstream while every call still succeeds, so
+    the fixture carries one link each way and only one of them may come back.
     """
     calls = _transport(monkeypatch, ISSUE, THREAD)
 
@@ -531,9 +532,9 @@ async def test_get_issue_reads_canonical_fields_markdown_and_only_the_blockers(c
     assert (full["status"], full["type"]) == ("in-review", "task"), f"natives were not canonicalised: {full}"
     assert full["parent"] == "PROJ-1", f"the parent key was not extracted: {full['parent']}"
     assert full["children"] == ["PROJ-8", "PROJ-9"]
-    assert full["dependencies"] == ["PROJ-5"], (
-        f"dependencies must be this issue's blockers only, got {full['dependencies']}: PROJ-6 is blocked BY this "
-        "issue and PROJ-4 is not a Blocks link at all"
+    assert full["dependencies"] == ["PROJ-6"], (
+        f"dependencies must be this issue's blockers only, got {full['dependencies']}: PROJ-5 is an issue this "
+        "issue blocks and PROJ-4 is not a Blocks link at all"
     )
     assert full["labels"] == ["decomposed", "shipyard"]
     assert full["body"].strip() == "Body line.", f"the rich-text body was not converted: {full['body']!r}"
@@ -912,9 +913,9 @@ async def test_a_blocks_link_whose_counterpart_side_is_absent_is_not_a_failure(c
     as required only when `id` is not given, so that object is addressable, just not by the key this returns.
     """
     for entry, expected in (
-        ({"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}, ["PROJ-5"]),
-        ({"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-6"}}, []),
-        ({"type": {"name": "Blocks"}, "outwardIssue": {"id": "10099"}}, []),
+        ({"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}}, []),
+        ({"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-6"}}, ["PROJ-6"]),
+        ({"type": {"name": "Blocks"}, "inwardIssue": {"id": "10099"}}, []),
     ):
         _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
 
@@ -941,14 +942,14 @@ async def test_a_blocks_link_whose_counterpart_names_no_issue_is_not_reported_as
     value being non-empty rather than on it being the string the spec types it as, so `_str_field` reads both
     members now.
     """
-    entry = {"type": {"name": "Blocks"}, "outwardIssue": counterpart}
+    entry = {"type": {"name": "Blocks"}, "inwardIssue": counterpart}
     _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [entry]}}, THREAD)
 
     with pytest.raises(TrackerError) as failure:
         await adapter.JiraAdapter().get_issue("PROJ-7")
 
     message = str(failure.value)
-    assert "issuelinks" in message and "entry 0" in message and "outwardIssue" in message, message
+    assert "issuelinks" in message and "entry 0" in message and "inwardIssue" in message, message
     assert FAKE_TOKEN not in message, f"shapes only: {message}"
 
 
@@ -1215,16 +1216,16 @@ async def test_link_parent_writes_the_parent_field(credentials, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_add_dependency_posts_the_blocker_outward_and_verifies_the_direction(credentials, monkeypatch):
+async def test_add_dependency_posts_the_blocker_inward_and_reads_the_link_back(credentials, monkeypatch):
     calls = _transport(monkeypatch, (201, None), LINK_CONFIRMED)
 
     result = await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
 
     assert (calls[0]["method"], calls[0]["url"]) == ("POST", f"{BASE}/issueLink"), calls
     assert _sent(calls[0]) == {
-        "type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-5"}, "inwardIssue": {"key": "PROJ-7"},
-    }, f"the blocker is the outward end in Jira's model: {_sent(calls[0])}"
-    assert calls[1]["url"] == f"{BASE}/issue/PROJ-5?fields=issuelinks", "the direction is verified from the blocker"
+        "type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-5"}, "outwardIssue": {"key": "PROJ-7"},
+    }, f"the blocker belongs on the inward end in Jira's model: {_sent(calls[0])}"
+    assert calls[1]["url"] == f"{BASE}/issue/PROJ-5?fields=issuelinks", "the link is read back from the blocker"
     assert result == {"id": "PROJ-7", "blocked_by": "PROJ-5", "verified": True}
 
 
@@ -1233,8 +1234,8 @@ async def test_add_dependency_posts_the_blocker_outward_and_verifies_the_directi
     "verification",
     [
         {"fields": {"issuelinks": []}},
-        {"fields": {"issuelinks": [{"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-7"}}]}},
-        {"fields": {"issuelinks": [{"type": {"name": "Relates"}, "inwardIssue": {"key": "PROJ-7"}}]}},
+        {"fields": {"issuelinks": [{"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}]}},
+        {"fields": {"issuelinks": [{"type": {"name": "Relates"}, "outwardIssue": {"key": "PROJ-7"}}]}},
     ],
     ids=["no-link", "reversed-link", "wrong-type"],
 )
@@ -1249,8 +1250,8 @@ async def test_add_dependency_fails_when_the_direction_is_not_confirmed(credenti
 @pytest.mark.parametrize(
     "unrelated",
     [
-        {"type": {"name": "Blocks"}, "inwardIssue": {}},
-        {"type": {"name": "Blocks"}, "inwardIssue": {"key": {"nested": 1}}},
+        {"type": {"name": "Blocks"}, "outwardIssue": {}},
+        {"type": {"name": "Blocks"}, "outwardIssue": {"key": {"nested": 1}}},
         {"type": {}},
         {"type": {"name": "Relates"}},
         "not a link object",
@@ -1266,7 +1267,7 @@ async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(crede
     existed — which invites a retry that creates a second one. The verification only needs the entry it just
     wrote, so an entry it cannot parse is simply not that entry.
     """
-    confirming = {"type": {"name": "Blocks"}, "inwardIssue": {"key": "PROJ-7"}}
+    confirming = {"type": {"name": "Blocks"}, "outwardIssue": {"key": "PROJ-7"}}
     _transport(monkeypatch, (201, None), {"fields": {"issuelinks": [unrelated, confirming]}})
 
     result = await adapter.JiraAdapter().add_dependency("PROJ-7", "PROJ-5")
@@ -1277,7 +1278,7 @@ async def test_add_dependency_is_not_failed_by_an_unrelated_malformed_link(crede
 @pytest.mark.anyio
 async def test_get_issue_still_refuses_the_malformed_link_add_dependency_tolerates(credentials, monkeypatch):
     """The tolerance above is scoped to the write's own verification, not granted to the general read."""
-    unrelated = {"type": {"name": "Blocks"}, "outwardIssue": {"key": {"nested": 1}}}
+    unrelated = {"type": {"name": "Blocks"}, "inwardIssue": {"key": {"nested": 1}}}
     _transport(monkeypatch, {**ISSUE, "fields": {**ISSUE["fields"], "issuelinks": [unrelated]}}, THREAD)
 
     with pytest.raises(TrackerError, match="issuelinks"):

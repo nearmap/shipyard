@@ -39,7 +39,7 @@ Neither zone is the other's fallback and neither may absorb the other: the docs 
 No `jira`, `acli`, `gh issue`, `gh-project`, ADF, or any other tracker-native term leaks into a skill, agent, script, or `sy_tools/` module outside its zone.
 Core speaks **only** the canonical vocabulary in `skills/tracker/CONTRACT.md`: the verbs (`preflight`, `create-issue`, `create-child`, `get-issue`, `update-issue`, `find-issues`, `set-status`, `assign`, `link-parent`, `add-dependency`, `add-label`, `type-convert`, `post-comment`, `post-log`, `attach-artifact`, `attachment-download`, `attachment-update`, `link-pr`), the canonical statuses, and the canonical types.
 
-Each verb has **exactly one** documented, implemented path: the MCP tool of the same name. There is deliberately no parallel CLI recipe for a tracker operation anywhere outside `sy_tools/` — a second path is a second thing to keep correct, and the recipes this replaced had drifted into an inverted link direction and a truncating read that both looked like they worked. If you need tracker-specific behaviour, it belongs in an adapter, reached through a contract verb.
+Each verb has **exactly one** documented, implemented path: the MCP tool of the same name. There is deliberately no parallel CLI recipe for a tracker operation anywhere outside `sy_tools/` — a second path is a second thing to keep correct, and the recipes this replaced had drifted into a truncating read that looked like it worked. If you need tracker-specific behaviour, it belongs in an adapter, reached through a contract verb.
 
 ## Where a test lives
 

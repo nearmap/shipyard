@@ -141,11 +141,14 @@ async def create_issue(
 
 @mcp.tool(name="get-issue")
 async def get_issue(issue: IssueId) -> dict[str, Any]:
-    """Read one issue in full: body, status, type, relations, labels and every comment on it.
+    """Read one issue: body, status, type, relations, labels, and one page of its comments.
 
-    Canonical verb `get-issue`. Status and type come back as canonical tokens, so a caller can
-    branch on them without knowing the board's column names; a column this repo does not map
-    passes through under its own name rather than being dropped.
+    Canonical verb `get-issue`. Status and type come back as canonical tokens, so a caller can branch on
+    them without knowing the board's column names; a column this repo does not map passes through under
+    its own name rather than being dropped. Comments and relations are bounded pages, so read
+    `comments_truncated`, `children_truncated` and `dependencies_truncated` before treating a result as
+    the whole history: a clipped page reads exactly like a complete short one, and an adapter that omits
+    a flag reads as untruncated.
     """
     _required(issue=issue)
     return await tracker.adapter().get_issue(issue)
@@ -275,9 +278,11 @@ async def add_label(
 ) -> dict[str, Any]:
     """Add one label to an issue, keeping the labels already on it.
 
-    Canonical verb `add-label`. Additive by contract, and the full resulting label set comes back so
-    the caller can confirm nothing was displaced. `label` is credential-scrubbed before the write and
-    `scrub` names what it redacted, so the label that lands may not be the one sent.
+    Canonical verb `add-label`. Additive by contract, and the resulting label set comes back — but on a
+    tracker with no append primitive that set is what this call intended, read-modify-written rather than
+    read back, so a label another writer added in between is lost while the result still looks intact.
+    `label` is credential-scrubbed before the write and `scrub` names what it redacted, so the label that
+    lands may not be the one sent.
     """
     _required(issue=issue, label=label)
     # Scrubbed like a body: a caller-supplied string that lands in durable tracker state and in the
@@ -465,7 +470,8 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
     detectable by comparing the pin rather than by re-reading prose. Several plan comments at
     *different* versions are the normal steady state (`skills/tracker/CONTRACT.md`), not an error.
-    `comments_truncated` says whether the issue's comment page left anything out.
+    `comments_truncated` says whether the comment page is *known* to have left anything out; an adapter
+    that does not report it reads as `false`, so it bounds the risk rather than excluding it.
 
     What lands on disk is the plan half **as the tracker gives it back**, not as it was posted: a
     rich-text tracker escapes un-backticked Markdown punctuation on the way through, so `some_name`
@@ -1132,9 +1138,10 @@ def fingerprint_config() -> dict[str, Any]:
     """A stable digest of every resolved configuration value and the plugin build, disclosing neither.
 
     Equal digests mean neither the resolved configuration nor the plugin build changed, so a caller
-    holding one can tell whether an edit landed without re-reading anything. Coverage is build-granular:
-    an in-place edit under one build does not move the digest, only a plugin upgrade or a checkout's own
-    commit does.
+    holding one can tell whether an edit landed without re-reading anything. It moves with any resolved
+    value, derived ones included, and with the plugin's build identifier — the only cover for
+    `config/floors.json` and `agents/*.md`'s `effort:` frontmatter, config-relevant inputs that are not
+    resolved values: an in-place edit to either is invisible here until the build identifier moves.
     """
     try:
         return {"fingerprint": config.fingerprint()}
@@ -1281,8 +1288,10 @@ def memory_add(
 
     For a tool/skill-level trap that outlives this repo and this session; repo trivia belongs in that
     repo instead. The store is user-global, so a lesson written here is what an unrelated session in
-    another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add
-    under an existing title, because the write is idempotent by title rather than append-only.
+    another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add under
+    an existing title, because the write is idempotent by the title's kebab slug truncated to 80
+    characters rather than append-only: two titles sharing that prefix are one lesson, and re-adding a
+    title `memory_refute` already refuted overwrites the refutation.
     """
     try:
         return {"path": str(memory.add(title, scope, tags, body))}
@@ -1319,8 +1328,9 @@ def memory_refute(
     Prefer a `correction` to a tombstone: a lesson that was wrong only under some condition is more use
     narrowed than erased, and that condition is the part a future reader needs. The lesson file is never
     deleted, only rewritten in place, so a refuted entry stays visible in `memory_list` and
-    `memory_search` carrying a `status` of `corrected` or `tombstoned` — that visibility is what stops
-    the same wrong conclusion being re-derived and re-added under the same title later.
+    `memory_search` carrying a `status` of `corrected` or `tombstoned`. Nothing enforces that, though:
+    `memory_add` under the same title overwrites the refutation and its evidence outright, so a refuted
+    title is one to check before re-adding rather than one the store defends.
     """
     try:
         return {"path": str(memory.refute(title, evidence, correction))}
@@ -1356,9 +1366,10 @@ def memory_list() -> dict[str, Any]:
     """Report the whole memory index: every stored lesson with its scope, tags, date, and refutation status.
 
     The cheap way to see what memory holds before a search, and what `/sy:plan`, `/sy:spec`, and
-    `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, which
-    is rebuilt first whenever it disagrees with the lessons on disk — tolerance for corruption, not a
-    licence to hand-delete, which is unsupported.
+    `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, rebuilt
+    first when its entry *count* disagrees with the lessons on disk — so a vanished lesson is absent here
+    rather than a dead link, but an edit or a swap leaving the count intact is served stale. Tolerance for
+    corruption, not a licence to hand-delete, which is unsupported.
     """
     try:
         return {"root": str(memory.root()), "index": memory.index_text()}

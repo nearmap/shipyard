@@ -266,3 +266,128 @@ def test_a_file_carrying_no_frontmatter_block_extracts_to_empty(text):
     """Empty rather than a raise or a partial: `frontmatter()` reports both delimiter faults against the path, and
     a caller here must not read an unclosed file's body as if it were the block."""
     assert validate._frontmatter_block(text) == "", f"a file with no frontmatter block must extract to empty: {text!r}"
+
+
+_CLAUSE = "## Net-new agent-facing text\n"
+_CARRIER = "- **Carrier** --- the PR body, one line per addition.\n"
+_CITATION = (
+    "- Net-new agent-facing text in the diff carries one justification line per addition;\n"
+    "  see immutable-gate.md for the scope and the keep/cut test.\n"
+)
+# The heading that closes the clause's section. Present in every fixture the carrier leg is meant to
+# reach, because that leg is scoped between the clause heading and the next `## ` one.
+_TERM = "## Fix cycle\n"
+
+
+def _gate_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gate_ref: str,
+    reviewer: str,
+) -> list[str]:
+    """Build the two-file tree `check_gate_justification` reads and return its errors."""
+    (tmp_path / "skills" / "ship" / "references").mkdir(parents=True)
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "skills" / "ship" / "references" / "immutable-gate.md").write_text(gate_ref, encoding="utf-8")
+    (tmp_path / "agents" / "gate.md").write_text(reviewer, encoding="utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_gate_justification(errors)
+    return errors
+
+
+def test_a_tree_carrying_the_clause_its_carrier_and_the_citation_passes(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + _CARRIER + _TERM, _CITATION)
+    assert not errors, f"a complete clause plus reviewer citation must pass: {errors}"
+
+
+def test_a_gate_reference_without_the_clause_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, "## Fix cycle\n", _CITATION)
+    assert any("Net-new agent-facing text clause" in error for error in errors), \
+        f"a reference that dropped the clause must be refused: {errors}"
+
+
+def test_a_clause_without_its_named_carrier_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + _TERM, _CITATION)
+    assert any("carrier" in error for error in errors), \
+        f"a clause with nowhere for a justification to land must be refused: {errors}"
+
+
+def test_a_reviewer_that_never_names_the_obligation_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(
+        tmp_path, monkeypatch, _CLAUSE + _CARRIER + _TERM, "- review the diff. See immutable-gate.md.\n"
+    )
+    assert any("must name the net-new agent-facing text obligation" in error for error in errors), \
+        f"an obligation the reviewer's brief never names never runs: {errors}"
+
+
+def test_a_reviewer_naming_the_obligation_without_the_reference_is_refused(tmp_path, monkeypatch):
+    errors = _gate_check(
+        tmp_path, monkeypatch, _CLAUSE + _CARRIER + _TERM, "- Net-new agent-facing text is justified.\n"
+    )
+    assert any("must cite immutable-gate.md" in error for error in errors), \
+        f"the duty without its reference leaves the keep/cut test to be invented: {errors}"
+
+
+@pytest.mark.parametrize("restating", ["gate_ref", "reviewer"])
+@pytest.mark.parametrize("cut_test", validate.CUT_TESTS)
+def test_either_file_restating_a_context_economy_cut_test_is_refused(tmp_path, monkeypatch, restating, cut_test):
+    # The literals come from the constant rather than being retyped here: a second copy in the test is
+    # exactly the drift the check exists to stop.
+    files = {"gate_ref": _CLAUSE + _CARRIER + _TERM, "reviewer": _CITATION}
+    files[restating] += f"{cut_test}\n"
+    errors = _gate_check(tmp_path, monkeypatch, files["gate_ref"], files["reviewer"])
+    assert any("restates a context-economy cut test" in error for error in errors), \
+        f"{restating} restating {cut_test!r} must be refused: {errors}"
+
+
+def test_a_carrier_phrase_broken_across_a_line_wrap_still_satisfies_the_pin(tmp_path, monkeypatch):
+    """Prose re-wraps on every edit. A containment pin on a mid-sentence phrase would go vacuous the first
+    time the line reflowed, while the sentence still said exactly what the pin exists to check."""
+    wrapped = "- **Carrier** --- the PR body, one\n  line per addition.\n"
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + wrapped + _TERM, _CITATION)
+    assert not errors, f"a re-wrapped carrier phrase must still count as named: {errors}"
+
+
+def test_a_hollowed_clause_is_refused_even_when_the_carrier_phrase_survives_elsewhere(tmp_path, monkeypatch):
+    """A whole-file containment pin is the vacuity class this check exists to close: the section could be
+    gutted to nothing and the leg would still read green off an unrelated section's prose."""
+    gate_ref = _CLAUSE + "- **Carrier** --- the PR body.\n## Fix cycle\n- Justify with one line per addition.\n"
+    errors = _gate_check(tmp_path, monkeypatch, gate_ref, _CITATION)
+    assert any("carrier" in error for error in errors), \
+        f"a hollowed clause must be refused however the phrase reads elsewhere in the file: {errors}"
+
+
+def test_a_clause_section_with_no_terminating_heading_is_reported_not_scanned_to_the_end_of_the_file(
+    tmp_path, monkeypatch
+):
+    """With nothing closing the section the carrier pin has no right boundary, so it would widen back to
+    the whole file — the vacuity this scoping exists to close. Unbounded is reported, not assumed green."""
+    errors = _gate_check(tmp_path, monkeypatch, _CLAUSE + _CARRIER, _CITATION)
+    assert any("boundary could not be located" in error for error in errors), \
+        f"a clause section no heading closes must be reported loudly: {errors}"
+
+
+def test_a_renamed_terminating_heading_still_bounds_the_section_rather_than_voiding_the_pin(tmp_path, monkeypatch):
+    """The boundary is the next `## ` heading, whatever it is called: a terminator pinned by name would let
+    a rename widen the section until an unrelated section's prose satisfied the carrier pin."""
+    gate_ref = _CLAUSE + "- **Carrier** --- the PR body.\n## Justification cycle\n" + _CARRIER
+    errors = _gate_check(tmp_path, monkeypatch, gate_ref, _CITATION)
+    assert any("must name the carrier" in error for error in errors), \
+        f"a hollowed clause must be refused however the following section is titled: {errors}"
+
+
+def test_a_poller_invocation_wrapped_after_the_verb_is_reported_not_silently_matched(tmp_path, monkeypatch):
+    """A newline-crossing selector capture is worse than no match: the flag-order leg then passes on a token
+    picked out of the following line, so the argv rule reads clean against text it never checked."""
+    (tmp_path / "skills").mkdir()
+    site = "skills/probe.md"
+    (tmp_path / site).write_text(
+        "Wait with `ci_poll.sh poll\n--repo owner/name --head <sha>`.\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    monkeypatch.setattr(validate, "POLLER_CALL_SITES", (site,))
+    errors: list[str] = []
+    validate.check_poller_argv(errors)
+    assert any("must invoke the shared poller by name" in error for error in errors), \
+        f"a wrapped invocation must be reported as no invocation, not matched across the newline: {errors}"

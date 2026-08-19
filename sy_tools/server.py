@@ -121,10 +121,9 @@ async def create_issue(
     """Create an issue in the configured tracker and return its opaque id and URL.
 
     Canonical verb `create-issue`. Passing `parent` is also the canonical verb `create-child`: there
-    is deliberately no separate tool for a child, because it is this same write.
-
-    A `body` that claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is. Title and
-    body are credential-scrubbed, and `scrub` reports the variable names it redacted.
+    is deliberately no separate tool for a child, because it is this same write. `title` and `body`
+    are credential-scrubbed before the write and `scrub` names what it redacted, so a caller needing
+    the durable text verbatim must read it back.
     """
     _required(title=title)
     # The title is scrubbed with the body: every search result echoes it back, and it cannot be edited
@@ -142,11 +141,14 @@ async def create_issue(
 
 @mcp.tool(name="get-issue")
 async def get_issue(issue: IssueId) -> dict[str, Any]:
-    """Read one issue in full: body, status, type, relations, labels and every comment on it.
+    """Read one issue: body, status, type, relations, labels, and its comments.
 
-    Canonical verb `get-issue`. Status and type come back as canonical tokens, so a caller can
-    branch on them without knowing the board's column names; a column this repo does not map
-    passes through under its own name rather than being dropped.
+    Canonical verb `get-issue`. Status and type come back as canonical tokens, so a caller can branch on
+    them without knowing the board's column names; a column this repo does not map passes through under
+    its own name rather than being dropped. Relations are bounded pages, and comments are too on some
+    trackers, so read `children_truncated`, `dependencies_truncated` and `comments_truncated` where
+    present before treating a result as the whole history: a clipped page reads exactly like a complete
+    short one, and an adapter that omits a flag reads as untruncated.
     """
     _required(issue=issue)
     return await tracker.adapter().get_issue(issue)
@@ -162,10 +164,10 @@ async def update_issue(
 ) -> dict[str, Any]:
     """Replace an issue's body with new Markdown.
 
-    Canonical verb `update-issue`. A whole-body replacement, never an append: to keep any of the
-    existing body, read it with `get-issue` first and send it back as part of `body`. A `body` that
-    claims `shipyard.ship_metrics.v1` is validated exactly as a comment's is, and the body is
-    credential-scrubbed, with `scrub` reporting the variable names it redacted.
+    Canonical verb `update-issue`. Never an append: to keep any of the existing body, read it with
+    `get-issue` first and send it back inside `body`. `body` is credential-scrubbed before the write
+    and `scrub` names what it redacted, so a caller needing the durable text verbatim must read it
+    back.
     """
     _required(issue=issue)
     (body,), scrub = _scrub_texts(body)
@@ -197,11 +199,10 @@ async def find_issues(
 ) -> dict[str, Any]:
     """Search the configured project for issues matching any combination of filters.
 
-    Canonical verb `find-issues`. Every filter is optional and they combine as AND; with none set
-    this lists the project's recent issues. One page only: `is_last` says whether more remain, and
+    Canonical verb `find-issues`. Every filter is optional and they combine as AND; with none set this
+    lists the project's recent issues. One page only: `is_last` says whether more remain, and
     `next_page_token` is the cursor to ask for them where the tracker supports one — send it back as
-    `page_token`, unread and unmodified, to get the page after it. A tracker with no cursor reports
-    `next_page_token: null`, so there is nothing to send back and `page_token` does nothing.
+    `page_token`, unread and unmodified, to get the page after it.
     """
     return await tracker.adapter().find_issues(
         status=status, issue_type=issue_type, parent=parent, text=text, limit=limit, page_token=page_token
@@ -218,9 +219,8 @@ async def set_status(
 ) -> dict[str, Any]:
     """Move an issue to a canonical lifecycle status.
 
-    Canonical verb `set-status`. The five canonical stages are the whole vocabulary; each maps to
-    the column name this repo configures, which comes back as `native` so the move is auditable.
-    `blocked` is not a status — record a blocking relationship with `add-dependency` instead.
+    Canonical verb `set-status`. `blocked` is not a status — record a blocking relationship with
+    `add-dependency` instead.
     """
     _required(issue=issue)
     return await tracker.adapter().set_status(issue, status)
@@ -236,8 +236,7 @@ async def assign(
 ) -> dict[str, Any]:
     """Assign an issue and report the account it resolved to.
 
-    Canonical verb `assign`. Self-assignment is the caller need this serves; any other assignee is
-    refused rather than quietly landing the issue on the wrong person.
+    Canonical verb `assign`.
     """
     _required(issue=issue)
     return await tracker.adapter().assign(issue, assignee)
@@ -264,10 +263,9 @@ async def add_dependency(
 ) -> dict[str, Any]:
     """Record that one issue is blocked by another, and read the link back.
 
-    Canonical verb `add-dependency`. This, not a status, is how blocking is expressed. The
-    direction matters: `issue` waits for `blocked_by`. The result carries `verified` from a
-    read-back, which proves the link arrived and nothing more: that read shares the adapter's
-    own coordinate system with the write, so it cannot detect a reversed direction.
+    Canonical verb `add-dependency`. This, not a status, is how blocking is expressed, and the direction
+    matters: `issue` waits for `blocked_by`. `verified` comes from a read-back in the adapter's own
+    coordinate system, so it proves the link arrived and nothing more — it cannot detect a reversed one.
     """
     _required(issue=issue, blocked_by=blocked_by)
     return await tracker.adapter().add_dependency(issue, blocked_by)
@@ -280,9 +278,11 @@ async def add_label(
 ) -> dict[str, Any]:
     """Add one label to an issue, keeping the labels already on it.
 
-    Canonical verb `add-label`. Additive by contract, and the full resulting label set comes back so
-    the caller can confirm nothing was displaced. The `label` goes through the same credential scrub
-    every body does, reported under `scrub`.
+    Canonical verb `add-label`. Additive by contract, and the resulting label set comes back — but on a
+    tracker with no append primitive that set is what this call intended, read-modify-written rather than
+    read back, so a label another writer added in between is lost while the result still looks intact.
+    `label` is credential-scrubbed before the write and `scrub` names what it redacted, so the label that
+    lands may not be the one sent.
     """
     _required(issue=issue, label=label)
     # Scrubbed like a body: a caller-supplied string that lands in durable tracker state and in the
@@ -315,23 +315,15 @@ async def post_comment(
     Canonical verb `post-comment`, and the tool for one more canonical verb that has no tool of its
     own: `link-pr`'s durable half is this call with `human` saying a PR now exists for this work and
     `agent_detail` carrying the PR URL. Machine logs are not this tool at all: `post-log` is the path
-    for them. Nothing here structurally stops a caller pasting a well-formed log into `agent_detail` —
-    that is the caller's part of the split to keep.
+    for them, and nothing here structurally stops a caller pasting a well-formed log into
+    `agent_detail` — that is the caller's part of the split to keep.
 
-    Both parts are required, and the tool — not the caller — writes the boundary between them, so
-    every comment splits the same way and a reader always knows which half is theirs. That boundary
-    is not a flat separator: `agent_detail` is wrapped in a captioned section that both trackers
-    render collapsed by default, so a reader meets the human half first and expands the rest only
-    when they want it. Do not compose the boundary yourself, and do not fold the agent-facing
-    pointers into `human` to fill the field. A half that already carries that section's opening —
-    an earlier comment's body pasted in whole, say — is refused rather than nested inside a second
-    one, which is a shape a tracker can render by dropping the inner content.
+    The tool — not the caller — writes the boundary between the two halves, so every comment splits
+    the same way and a reader always knows which half is theirs. Do not compose that boundary
+    yourself, and do not fold the agent-facing pointers into `human` to fill the field.
 
-    Both parts are credential-scrubbed before assembly, and `scrub` reports the variable names it
-    redacted. The assembled body is machine-log validated as a backstop: it is refused when it names
-    `shipyard.ship_metrics.v1` in prose — literally or as a `\\uXXXX` escape — or carries a claim
-    against that schema that is malformed or ambiguous. One well-formed, standalone record, identical
-    to what `post-log` would have written, passes this check; it is still `post-log`'s content.
+    Both halves are credential-scrubbed before the write and `scrub` names what it redacted, so a
+    caller needing the posted text verbatim must read it back.
     """
     _required(issue=issue, human=human, agent_detail=agent_detail)
     (human, agent_detail), scrub = _scrub_texts(human, agent_detail)
@@ -373,13 +365,9 @@ async def post_log(
     Canonical verb `post-log`. A machine log has no human-judgment half to pair with, which is why it
     is this tool and not `post-comment`. It takes the record as a native object and does the
     serialising and fencing itself, so the "a machine log is never appended to any other content"
-    rule holds by this signature rather than by a caller remembering it.
-
-    `title` must be a single line — it is the heading, not a place to carry prose or a second fenced
-    block in beside the log — and `payload` must be a non-empty object. A payload claiming
-    `shipyard.ship_metrics.v1` is validated against that schema and the whole write is refused when it
-    does not match. `title` and the serialised payload are credential-scrubbed, and `scrub` reports the
-    variable names it redacted.
+    rule holds by this signature rather than by a caller remembering it. `title` and the serialised
+    `payload` are credential-scrubbed before the write and `scrub` names what it redacted, so a
+    caller needing the posted record verbatim must read it back.
     """
     _required(issue=issue, title=title)
     if len(title.strip().splitlines()) > 1:
@@ -476,46 +464,25 @@ def _agent_half(body: str) -> str:
 async def plan_file(issue: IssueId) -> dict[str, Any]:
     """Write the highest-version execution plan's agent-facing half to a file, and report where it landed.
 
-    The way a `/sy:ship` phase after START gets the plan. It reads the issue, takes every comment that
-    opens `# Execution Plan v<N>`, selects the one at the highest `<N>`, and materialises that comment's
-    agent-facing half — the `## For /sy:ship` part — under the issue's own scratch directory. A posted
-    comment is never edited, so the newest version on the issue is the plan and any `Status:` line an
-    older comment carries is historical residue this tool does not read. The plan text is never part of
-    the result: a caller gets a path plus the pin (`comment_id`, `version`) and hands both on, so no
-    phase loads plan text it does not need and a plan revised between sessions is detectable by comparing
-    the pin rather than by re-reading prose.
-
-    A comment whose heading opens `# Execution Plan v<N>` without being a plan heading — a
-    `v<N> (continued)` stub — is refused when its `<N>` is at or above the selected plan's own version:
-    this tool hands on one comment's half, so a plan split across two comments would be materialised with
-    the second one's content silently missing. Every such comment on the issue is scanned for and named in
-    one refusal, and the version it sends the caller to is one past the *highest* of them, so a second
-    stranded stub cannot re-trigger the identical refusal against the version the first one asked for. At
-    or above rather than equal to, because a stub numbered *higher* than the selected version means a later
-    version's second half is stranded with its first half never posted, and this tool must not quietly fall
-    back to an older complete version as though the issue's newest plan did not exist. Only a stub strictly
-    older than the selected version is skipped, as history a later version has moved past.
-
-    Three things refuse: no plan comment at all; two comments sharing the highest version — which is
-    genuinely ambiguous, since neither is the later revision of the other, and picking one would ship
-    against a plan nobody approved; and a stranded continuation stub at or above the selected version.
-    Several plan comments at *different* versions are the normal steady state
-    (`skills/tracker/CONTRACT.md`), not an error. `comments_truncated` says whether the issue's
-    comment page left anything out — on none found, the plan may simply be past the newest page rather
-    than absent.
+    The way a `/sy:ship` phase after START gets the plan. Every comment opening `# Execution Plan v<N>`
+    is a candidate and the highest `<N>` is the plan, since a posted comment is never edited. The plan
+    text is never part of the result: a caller gets a path plus the pin (`comment_id`, `version`) and
+    hands both on, so no phase loads plan text it does not need and a plan revised between sessions is
+    detectable by comparing the pin rather than by re-reading prose. Several plan comments at
+    *different* versions are the normal steady state (`skills/tracker/CONTRACT.md`), not an error.
+    `comments_truncated` says whether the comment page is *known* to have left anything out; an adapter
+    that does not report it reads as `false`, so it bounds the risk rather than excluding it.
 
     What lands on disk is the plan half **as the tracker gives it back**, not as it was posted: a
     rich-text tracker escapes un-backticked Markdown punctuation on the way through, so `some_name`
-    written without backticks reads back as `some\\_name` and a link target arrives inside `<>`. A
-    two-line header the tool writes records the version, the comment id and that transformation, so a
-    reader of the file knows which text is authoritative. Nothing is scrubbed on this path: it is a read
-    whose output stays on the machine that ran it, and a silent redaction inside a file a later phase
-    treats as the plan would be a change to the plan with no signal that it happened.
+    written without backticks reads back as `some\\_name` and a link target arrives inside `<>`. Nothing
+    is scrubbed on this path: a silent redaction inside a file a later phase treats as the plan would be
+    a change to the plan with no signal that it happened.
     """
     _required(issue=issue)
     read = await tracker.adapter().get_issue(issue)
-    # `.get` with a default, not `[...]`: only one adapter reports the flag, and an adapter that cannot
-    # tell must read as "nothing known to be cut off" rather than making this tool unusable there.
+    # `.get` with a default, not `[...]`: an adapter that cannot tell whether its comment page was clipped
+    # must read as "nothing known to be cut off" rather than making this tool unusable there.
     truncated = bool(read.get("comments_truncated", False))
     plans: list[tuple[str, int, str]] = []
     for comment in read.get("comments") or []:
@@ -563,6 +530,9 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
             # Only an older stub is history a later plan version has already moved past; refusing on
             # it would make the issue permanently unreadable.
             continue
+        # At or above, never equal-to: a stub numbered *higher* than the selected version means a later
+        # version's second half is stranded with its first half never posted, and falling back to an
+        # older complete version there ships against a plan the issue's newest one already superseded.
         stranded.append((stranded_version, str(comment.get("id") or "(no id)")))
     if stranded:
         # The whole scan first, then one refusal: raising on the first stub found named *that* stub's version
@@ -834,15 +804,12 @@ async def preflight(
 ) -> dict[str, Any]:
     """Check that the configured tracker's credential and account are usable before relying on them.
 
-    Canonical verb `preflight`. Reports what it confirmed and never echoes a secret value. Run it once
-    up front so a credential problem surfaces there instead of as a half-finished workflow.
-
-    A live read is the only thing that tells a present-but-dead credential from a working one and it is
-    not free, so a success is cached for `ttl_hours` against the plugin build, the tracker, the resolved
-    config and the values of the secret variables the selected adapter declares; any of those changing
-    invalidates it by itself, and `force` demands the live read regardless. `cached: false` means the
-    tracker was just read and the rest of the result is that read's report; `true` means a read inside
-    the window already succeeded and nothing touched the network.
+    Canonical verb `preflight`. Never echoes a secret value. Run it once up front so a credential
+    problem surfaces there instead of as a half-finished workflow. A success is cached for `ttl_hours`
+    against the plugin build, the tracker, the resolved config and the values of the secret variables
+    the adapter declares, any of which changing invalidates it by itself. `cached` says which
+    happened: `false` means the tracker was just read and the rest of the result is that read's
+    report, `true` that a read inside the window already succeeded and nothing touched the network.
     """
     ttl_hours = preflight_cache.DEFAULT_TTL_HOURS
     try:
@@ -862,6 +829,18 @@ async def preflight(
     return {**confirmed, "tracker": name, "cached": False, "ttl_hours": ttl_hours}
 
 
+# Declared once and shared, so both attachment writers describe this the same way.
+AllowOpaque = Annotated[
+    bool,
+    Field(
+        description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
+        "The pattern scanner still runs as a best-effort check and a finding still blocks the "
+        "upload, but some binary content is invisible to it, so use this only for an artifact "
+        "you have separately established carries no credential."
+    ),
+]
+
+
 @mcp.tool(name="attach-artifact")
 async def attach_artifact(
     issue: IssueId,
@@ -876,30 +855,19 @@ async def attach_artifact(
     caller: Annotated[
         str, Field(description="Workflow asking for the attachment, e.g. ship, spec, plan.")
     ] = "",
-    allow_opaque: Annotated[
-        bool,
-        Field(
-            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
-            "The pattern scanner still runs as a best-effort check and a finding still blocks the "
-            "upload, but some binary content is invisible to it, so use this only for an artifact "
-            "you have separately established carries no credential."
-        ),
-    ] = False,
+    allow_opaque: AllowOpaque = False,
 ) -> dict[str, Any]:
     """Sanitise a local file and attach it to a tracker issue as a durable artifact.
 
     Canonical verb `attach-artifact`. Runs the known-value scrub and then the pattern scanner over a
-    text payload, in that order, before anything leaves the machine. Gated by the `transcript.attach` config key; for
-    `ship` callers the `full` process tier is required on top of it. When the gate is off the call
-    is a no-op skip: nothing is read, scrubbed, scanned, or uploaded.
+    text payload, in that order, before anything leaves the machine. Gated by the `transcript.attach`
+    config key, with the `full` process tier required on top of it for `ship` callers; with the gate off
+    the call is a silent no-op skip rather than a failure — nothing is read, scrubbed, scanned or
+    uploaded.
 
-    `allow_opaque` is the one exception, and it is a declaration rather than a permission: a payload
-    that is not UTF-8 text will not be scrubbed, since the scrub needs a decode it does not have, but
-    the pattern scanner still runs over it as a best-effort check and a genuine finding still blocks
-    the upload. The result never credits that scan with a clean result, since some binary content is
-    invisible to the scanner too; it reports only the declaration, exactly as if neither pass had run.
-    Without it such a payload is refused outright. Set it only for an artifact you have separately
-    established carries no credential.
+    `allow_opaque` is a declaration rather than a permission: the result never credits either pass with
+    a clean result, since some binary content is invisible to the scanner too, and reports only the
+    declaration, exactly as if neither pass had run. Without it, such a payload is refused outright.
     """
     _required(issue=issue)
 
@@ -943,12 +911,9 @@ async def type_convert(
 ) -> dict[str, Any]:
     """Change an existing issue's kind in place, verified by reading the new kind back.
 
-    Canonical verb `type-convert`. Best-effort by nature: a tracker may refuse the change outright
-    (a workflow rule, a required field, a hierarchy constraint), and this fails loudly naming the
-    kind the issue still has rather than reporting a conversion that did not happen. Side effects
-    follow the kind — parent links and board membership among them — and are not reversible by
-    converting back, so confirm the target before calling. When a tracker refuses, create the new
-    issue, link it, and close the old one instead.
+    Canonical verb `type-convert`. Side effects follow the kind — parent links and board membership
+    among them — and are not reversible by converting back, so confirm the target before calling. When
+    a tracker refuses the change, create the new issue, link it, and close the old one instead.
     """
     _required(issue=issue, issue_type=issue_type)
     return await tracker.adapter().type_convert(issue, issue_type)
@@ -965,9 +930,8 @@ async def attachment_download(
 ) -> dict[str, Any]:
     """Download one artifact already attached to an issue, to a local path.
 
-    Canonical verb `attachment-download`. Resolution is by filename with an exactly-one-match rule; pass
-    the tracker-native id instead when an issue carries several attachments of the same name. An
-    ambiguous or absent match fails rather than picking one.
+    Canonical verb `attachment-download`. Resolution is by filename under an exactly-one-match rule: an
+    ambiguous or absent match fails rather than picking one, which is what the native id is for.
     """
     _required(issue=issue, filename_or_id=filename_or_id, output_path=output_path)
     return await tracker.adapter().attachment_download(issue, filename_or_id, Path(output_path))
@@ -987,30 +951,16 @@ async def attachment_update(
     caller: Annotated[
         str, Field(description="Workflow asking for the replacement, e.g. ship, spec, plan.")
     ] = "",
-    allow_opaque: Annotated[
-        bool,
-        Field(
-            description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
-            "The pattern scanner still runs as a best-effort check and a finding still blocks the "
-            "upload, but some binary content is invisible to it, so use this only for an artifact "
-            "you have separately established carries no credential."
-        ),
-    ] = False,
+    allow_opaque: AllowOpaque = False,
 ) -> dict[str, Any]:
     """Replace an issue's attachment of the same filename, sanitising the replacement first.
 
-    Canonical verb `attachment-update`. Replace-by-filename, taking no id: calling it where nothing
-    already matches `path`'s filename is a plain upload, and where more than one existing attachment
-    shares that filename what happens is adapter-specific (see the tracker's own `ADAPTER.md`), since the
-    trackers offer no common primitive for "replace all of these". It runs
-    the same gate and the same sanitisation, in the same order, as `attach-artifact`, `allow_opaque`
-    included: with it set, a payload that is not UTF-8 text replaces the existing artifact having
-    skipped only the scrub -- the pattern scan still runs and a finding still blocks it -- and the
-    result declares the skip rather than crediting either pass with a clean result it cannot stand
-    behind.
-
-    Destructive: the artifact it replaces is irrecoverable once the replacement lands and there is no
-    undo, so confirm the target first.
+    Canonical verb `attachment-update`. Destructive: the artifact it replaces is irrecoverable once the
+    replacement lands and there is no undo, so confirm the target first. Replace-by-filename, taking no
+    id: calling it where nothing already matches `path`'s filename is a plain upload, and where more
+    than one existing attachment shares that filename what happens is adapter-specific (see the
+    tracker's own `ADAPTER.md`). It runs the same gate and the same sanitisation, in the same order, as
+    `attach-artifact`, `allow_opaque` included.
     """
     _required(issue=issue)
 
@@ -1067,10 +1017,7 @@ def check_env(
 def validate_config() -> dict[str, Any]:
     """Report every reason the resolved configuration would be rejected.
 
-    Covers schema violations, missing required keys, an unknown tracker, a required credential absent
-    from the environment, an environment variable that outranks the resolved per-agent models, a
-    retired `SY_*` setting variable still set in the environment, model-floor breaches, and two board
-    columns configured under one name. Side-effect-free, and never prints a secret value.
+    Side-effect-free, and never prints a secret value.
     """
     errors = config.validate()
     # A config with two statuses under one column name validated clean here and then broke on the first
@@ -1111,10 +1058,10 @@ def get_config(
     """Read one resolved configuration value by dotted key.
 
     Resolution is the merged layer chain, so this is the only correct way to learn a setting: reading a
-    layer file directly misses whatever a higher layer overrode. An unknown key is an error unless
-    `default` is given — a key an adapter documents as optional has no entry to resolve, and a caller
-    that knows it is optional says so by supplying one. A credential-shaped key is refused outright:
-    secrets are never read from a config file, and `check_env` is how to ask about one.
+    layer file directly misses whatever a higher layer overrode. A missing key raises unless a
+    non-`None` `default` is given — `default=None` behaves like omitting it. A credential-shaped key is
+    refused outright: secrets are never read from a
+    config file, and `check_env` is how to ask about one.
     """
     _required(key=key)
     try:
@@ -1128,10 +1075,10 @@ def get_config(
 def show_config() -> dict[str, Any]:
     """Report every resolved configuration value together with the layer each one came from.
 
-    For seeing the whole resolved config at once — which setting a layer overrode and where it came
-    from — rather than one key at a time. Also reports the digest of the resolved values and the layer
-    chain on disk with whether each file is present. Refuses to report anything at all when the
-    resolved configuration carries a credential-shaped key, naming only the key.
+    The whole resolved config at once, where `get_config` answers for one key. Also reports the
+    digest of the resolved values and the layer chain on disk with whether each file is present.
+    Refuses to report anything at all when the resolved configuration carries a credential-shaped
+    key, naming only the key.
     """
     try:
         return config.show()
@@ -1150,8 +1097,7 @@ def agent_model(
 
     Dispatch with what this returns, never with the configured value read raw: a per-agent floor is a
     quality floor rather than a cost dial, so cost-scaling may raise one and never lower it, and the
-    report says whether either value was clamped and which layer the request came from. An agent the
-    configuration does not name is an error listing the ones it does.
+    report says whether either value was clamped.
     """
     _required(name=name)
     try:
@@ -1178,9 +1124,6 @@ def scratch_dir(
 
     Everything a workflow writes that is not part of the repository belongs under here, so nothing
     lands in the consuming checkout. Takes either one identifier or `repo`, not both and not neither.
-    An identifier must be a relative name that stays strictly inside the resolved scratch root;
-    anything resolving to the root itself or outside it is refused, because two identifiers would then
-    collide there and the first caller to clean up what it was handed would delete the other's data.
     """
     if bool(identifier.strip()) == repo:
         raise ToolError("'scratch_dir' takes either one identifier or repo, not both and not neither")
@@ -1196,12 +1139,10 @@ def fingerprint_config() -> dict[str, Any]:
     """A stable digest of every resolved configuration value and the plugin build, disclosing neither.
 
     Equal digests mean neither the resolved configuration nor the plugin build changed, so a caller
-    holding one can tell whether an edit landed without re-reading anything. It changes with any resolved
-    value, including one derived rather than written, and with the plugin's own build identifier — which
-    is what covers `config/floors.json`'s floors and `agents/*.md`'s `effort:` frontmatter, config-relevant
-    inputs that are not resolved values. Coverage is build-granular: an in-place edit under one build does
-    not move the digest, only a plugin upgrade or a checkout's own commit does. It is not a hash of any
-    single file.
+    holding one can tell whether an edit landed without re-reading anything. It moves with any resolved
+    value, derived ones included, and with the plugin's build identifier — the only cover for
+    `config/floors.json` and `agents/*.md`'s `effort:` frontmatter, config-relevant inputs that are not
+    resolved values: an in-place edit to either is invisible here until the build identifier moves.
     """
     try:
         return {"fingerprint": config.fingerprint()}
@@ -1264,9 +1205,7 @@ def usage_summarize(
 
     Reads the on-disk transcript tree, so it also works on a resumed session and counts subagent turns
     the caller never saw. Counts are de-duplicated by message id and grouped by agent type and model,
-    small enough to post as a standalone machine-log comment. An agent named in `require_agent` but
-    absent from the tree is an error, since a roll-up missing a dispatched agent's transcript
-    under-reports rather than fails.
+    small enough to post as a standalone machine-log comment.
     """
     main = _transcript_source(session_id, transcript)
     result = usage.summarize(main, phase=phase, task=task)
@@ -1298,13 +1237,12 @@ def export_transcript(
     """Render one session's whole transcript tree as readable text on disk, and report where it landed.
 
     Replaces the manual `/export` step for the attachment flow: bulky tool output is truncated per
-    `transcript.truncation_limits`, raw JSONL noise is dropped, and subagent sections are ordered by
-    first timestamp, so the result is audit-readable rather than a machine dump. Run it as late as
-    possible so the captured tail is maximal; it reads on-disk transcripts, so it also works on a
-    resumed session.
+    `transcript.truncation_limits` and raw JSONL noise is dropped, so the result is audit-readable
+    rather than a machine dump. Run it as late as possible so the captured tail is maximal; it reads
+    the on-disk transcript tree, so it also works on a resumed session.
 
-    `output` is mandatory and the rendered text is never part of the result: the transcript is meant to
-    be scanned, redacted and attached by path without ever being read back into the caller's context.
+    The rendered text is never part of the result: the transcript is meant to be scanned, redacted and
+    attached by path without ever being read back into the caller's context.
     """
     _required(output=output)
     main = _transcript_source(session_id, transcript)
@@ -1331,7 +1269,8 @@ def memory_add(
         str,
         Field(
             description="The lesson in one line. Becomes the kebab-slug filename, so re-using a title "
-            "already stored replaces that lesson instead of adding a second copy of it."
+            "already stored replaces that lesson instead of adding a second copy of it — unless that "
+            "lesson was refuted, which is refused rather than overwritten."
         ),
     ],
     scope: Annotated[
@@ -1351,12 +1290,10 @@ def memory_add(
 
     For a tool/skill-level trap that outlives this repo and this session; repo trivia belongs in that
     repo instead. The store is user-global, so a lesson written here is what an unrelated session in
-    another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add
-    under an existing title, because the write is idempotent by title rather than append-only. An
-    empty title, scope, or body is refused, and so is a title with no letters or digits in it, since
-    it would leave the lesson under a nameless file, and an interior newline in title, scope, or tags, since
-    each is written as one frontmatter line: a break truncates the value there and leaves its remainder as an
-    orphan line inside the frontmatter block.
+    another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add under
+    an existing title, because the write is idempotent by the title's kebab slug truncated to 80
+    characters rather than append-only: two titles sharing that prefix are one lesson. Re-adding a title
+    `memory_refute` already refuted is refused, because the write would destroy the refutation.
     """
     try:
         return {"path": str(memory.add(title, scope, tags, body))}
@@ -1391,17 +1328,13 @@ def memory_refute(
     """Correct or tombstone one stored lesson that direct observation contradicts.
 
     Prefer a `correction` to a tombstone: a lesson that was wrong only under some condition is more use
-    narrowed than erased, and that condition is the part a future reader needs. `evidence` is mandatory
-    either way, because a refutation overrules what an earlier session concluded and the next reader has
-    to be able to re-check the overrule instead of trusting it. The lesson file is never deleted, only
-    rewritten in place, so a refuted entry stays visible in `memory_list` and `memory_search` carrying a
-    `status` of `corrected` or `tombstoned` — that visibility is what stops the same wrong conclusion
-    being re-derived and re-added under the same title later. Idempotent by title like `memory_add`:
-    refuting twice rewrites the one file rather than forking a second, and does not re-nest the
-    preserved pre-refutation claim. An empty title or evidence is refused, and so is a title no lesson is
-    stored under, since there is nothing to refute and adding one would record the correction as fact. An
-    interior newline in the title is refused too, since refute() writes that title back as one frontmatter
-    line whenever the stored file carries none, where a break would truncate it and orphan its remainder.
+    narrowed than erased, and that condition is the part a future reader needs. The lesson file is never
+    deleted, only rewritten in place, so a refuted entry stays visible in `memory_list` and
+    `memory_search` carrying a `status` of `corrected` or `tombstoned`. `memory_add` under the same title
+    is then refused unconditionally rather than silently overwriting the refutation and its evidence, so
+    the title becomes terminal for `memory_add`: no later add can land on it, and a successor lesson that
+    does still hold has to go under a new title. Narrowing this refutation is `memory_refute` again on the
+    same title, which stays available.
     """
     try:
         return {"path": str(memory.refute(title, evidence, correction))}
@@ -1423,10 +1356,8 @@ def memory_search(
 
     Each match is one `path: title` line — plus `(status: corrected|tombstoned)` once the lesson has been
     refuted — so a caller can read the interesting ones by path without pulling the whole store into
-    context, and never mistakes a refuted hit for a live one. `root` is the store the search ran against, which
-    is what makes an empty `matches` diagnosable: no lesson matched a populated store, rather than the
-    resolver having pointed at a root the lessons are not in. An empty query is refused, because it
-    matches everything and `memory_list` is the way to ask for that.
+    context, and never mistakes a refuted hit for a live one. To ask for everything instead, use
+    `memory_list`.
     """
     try:
         return {"query": query, "root": str(memory.root()), "matches": memory.search(query)}
@@ -1439,10 +1370,11 @@ def memory_list() -> dict[str, Any]:
     """Report the whole memory index: every stored lesson with its scope, tags, date, and refutation status.
 
     The cheap way to see what memory holds before a search, and what `/sy:plan`, `/sy:spec`, and
-    `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, which
-    is rebuilt first whenever it disagrees with the lessons on disk, so a lesson that vanished from the
-    store is absent here rather than a dead link — tolerance for corruption, not a licence to hand-delete,
-    which is unsupported; an empty store reports `(no entries)`. `root` is the store it was read from.
+    `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, rebuilt
+    first when its entry *count* disagrees with the lessons on disk or a lesson file is newer than the
+    index — so a vanished lesson is absent here rather than a dead link, but an in-place edit that keeps
+    or backdates the file's mtime is served stale. Tolerance for
+    corruption, not a licence to hand-delete, which is unsupported.
     """
     try:
         return {"root": str(memory.root()), "index": memory.index_text()}

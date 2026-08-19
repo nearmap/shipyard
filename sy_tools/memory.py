@@ -6,8 +6,9 @@ frontmatter block (title, scope, tags, date, plus status once the lesson has bee
 body. Beside them sits a greppable `index.md`, regenerated on every write and rebuilt on read
 whenever it disagrees with the lessons on disk. Writes are idempotent by title: re-adding or
 refuting a lesson under a title already stored replaces that one file rather than adding a second
-copy of it. A lesson later contradicted is corrected or tombstoned in place, never deleted, so the
-refuted claim stays readable rather than being silently re-derived under the same title.
+copy of it, except that a re-add over a title already refuted is refused rather than overwriting it. A
+lesson later contradicted is corrected or tombstoned in place, never deleted, so the refuted claim stays
+readable rather than being silently re-derived under the same title.
 
 The write/read discipline (when a lesson is worth storing, who reads it back) lives in
 skills/shared/references/memory.md.
@@ -34,24 +35,40 @@ def root() -> Path:
 
 
 def add(title: str, scope: str, tags: str, body: str) -> Path:
-    """Store one lesson and regenerate the index; same-title re-adds replace the entry.
+    """Store one lesson and regenerate the index; same-title re-adds replace a live entry.
 
-    Raises `ValueError` for an empty `title`/`scope`/`body`, and for an interior newline in
-    `title`/`scope`/`tags`.
+    Raises `ValueError` for an empty `title`/`scope`/`body`, for an interior newline in
+    `title`/`scope`/`tags`, and for a title whose stored lesson already carries a refutation.
     """
     if not title.strip() or not scope.strip() or not body.strip():
         raise ValueError("title, scope, and body must all be non-empty")
     _require_single_line(title=title, scope=scope, tags=tags)
     slug = _slug(title)
     directory = root()
+    path = directory / f"{slug}.md"
+    # The write is unrecoverable (os.replace over the old text), so replacing a live entry is the normal
+    # update path but replacing a refutation would destroy its evidence with no signal and no way back.
+    if path.is_file():
+        stored = path.read_text(encoding="utf-8")
+        refuted = _frontmatter_value(stored, "status")
+        if refuted:
+            # The stored title, not the caller's: two titles can truncate to one slug, so the argument
+            # that reached here may not be the title whose refutation is being protected.
+            stored_title = _frontmatter_value(stored, "title") or title.strip()
+            raise ValueError(
+                f"the lesson stored under title {stored_title!r} was refuted (status: {refuted}) and a "
+                "plain add() would destroy that refutation and its evidence; this title is closed to "
+                "add() for good — read the entry with memory_search, refute() the same title again to "
+                "narrow the correction, and give a genuinely new lesson a different title"
+            )
     directory.mkdir(parents=True, exist_ok=True)
     text = (
         f"---\ntitle: {title.strip()}\nscope: {scope.strip()}\ntags: {tags.strip()}\n"
         f"date: {date.today().isoformat()}\n---\n\n{body.strip()}\n"
     )
-    _atomic_write(directory / f"{slug}.md", text)
+    _atomic_write(path, text)
     _rebuild_index(directory)
-    return directory / f"{slug}.md"
+    return path
 
 
 def refute(title: str, evidence: str, correction: str = "") -> Path:
@@ -192,10 +209,17 @@ def _ensure_index() -> None:
     lessons = _lesson_paths(directory)
     if not lessons and not index.is_file():
         return
-    entries = len(re.findall(r"^- \[", index.read_text(encoding="utf-8"), re.M)) if index.is_file() else -1
-    # Hand-deleting a lesson is unsupported, but tolerating a vanished file beats serving it back as a
-    # ghost entry out of a stale index.
-    if entries != len(lessons):
+    if not index.is_file():
+        _rebuild_index(directory)
+        return
+    entries = len(re.findall(r"^- \[", index.read_text(encoding="utf-8"), re.M))
+    # Hand-deleting or hand-editing a lesson is unsupported, but tolerating a vanished file, or one edited
+    # to a newer mtime than the index, beats serving it back as a ghost or stale entry out of an index that
+    # never rebuilds. Count alone would miss an edit in place, which changes the title, scope, tags, or
+    # status the index shows; the mtime leg catches only an edit that left the file newer than the index,
+    # so an edit that carries over an old or an explicitly backdated mtime (`cp -p`, `rsync -a`, `tar -x`,
+    # a restored backup) stays invisible to both.
+    if entries != len(lessons) or any(p.stat().st_mtime > index.stat().st_mtime for p in lessons):
         _rebuild_index(directory)
 
 

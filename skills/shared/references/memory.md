@@ -11,7 +11,7 @@ memory_list {}
 memory_refute {"title": "<the stored lesson's title>", "evidence": "<what was directly observed>", "correction": "<the narrower claim that still holds, or empty to tombstone>"}
 ```
 
-Storage root: whatever the resolver reports for `memory.dir` (see `docs/configuration.md`). It is cross-repo by design; never write repo paths or secrets into a lesson. Writes are idempotent — re-adding the same title replaces the entry — so a retry never duplicates.
+Storage root: whatever the resolver reports for `memory.dir` (see `docs/configuration.md`). It is cross-repo by design; never write repo paths or secrets into a lesson. Writes are idempotent — re-adding the same title replaces the entry — so a retry never duplicates; a title `memory_refute` already refuted refuses instead, since replacing it would silently destroy the refutation.
 
 ## When to write
 
@@ -35,4 +35,4 @@ Read memory back at the start of work, before decisions harden: `/sy:plan` and `
 
 ## Curation
 
-Memory earns its keep only while it stays small enough to read. Before adding, `memory_search` for an existing entry and extend it (same title, replaced body) rather than writing a near-duplicate. The store is managed only through the four tools above; hand-editing and hand-deleting are unsupported, and the index's tolerance of a vanished file is a defence against corruption, not a sanctioned workflow. A refuted anchor is never left standing: it is corrected or tombstoned through `memory_refute`, never carried forward as if it still held and never silently deleted. No mechanism enforces this — the discipline is the convention.
+Memory earns its keep only while it stays small enough to read. Before adding, `memory_search` for an existing entry and extend it (same title, replaced body) rather than writing a near-duplicate — which works only while that entry is live: a title `memory_refute` already refuted is refused for good, so a still-valid successor lesson needs a new title. The store is managed only through the four tools above; hand-editing and hand-deleting are unsupported, and the index's tolerance of a vanished file is a defence against corruption, not a sanctioned workflow. A refuted anchor is never left standing: it is corrected or tombstoned through `memory_refute`, never carried forward as if it still held and never silently deleted. No mechanism enforces this — the discipline is the convention.

@@ -205,6 +205,8 @@ class GithubAdapter:
         from the board card instead. `children_truncated` and `dependencies_truncated` say whether
         `gh`'s own per-page cap on those two relations cut anything off, the same signal the other
         adapter reports as `comments_truncated`: a clipped list reads exactly like a complete short one.
+        The comment thread needs no such flag: GitHub's comment connection is a cursored page `gh`
+        follows to exhaustion, so the thread comes back whole and this read reports no comment cap.
         """
         data = _view(issue, ISSUE_FIELDS)
         url = str(data.get("url") or "")
@@ -213,6 +215,7 @@ class GithubAdapter:
         owner, number = _project_ref()
         children, children_truncated = _relation(data.get("subIssues"))
         dependencies, dependencies_truncated = _relation(data.get("blockedBy"))
+        comments = _comments(data)
         return {
             **_summary(data, _item_index(owner, number).get(url, {})),
             "body": str(data.get("body") or ""),
@@ -220,7 +223,7 @@ class GithubAdapter:
             "children_truncated": children_truncated,
             "dependencies": dependencies,
             "dependencies_truncated": dependencies_truncated,
-            "comments": _comments(data),
+            "comments": comments,
         }
 
     def _sync_update_issue(self, issue: str, body: str) -> dict:

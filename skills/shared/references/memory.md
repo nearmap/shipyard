@@ -11,7 +11,7 @@ memory_list {}
 memory_refute {"title": "<the stored lesson's title>", "evidence": "<what was directly observed>", "correction": "<the narrower claim that still holds, or empty to tombstone>"}
 ```
 
-Storage root: whatever the resolver reports for `memory.dir` (see `docs/configuration.md`). It is cross-repo by design; never write repo paths or secrets into a lesson. Writes are idempotent — re-adding the same title replaces the entry — so a retry never duplicates.
+Storage root: whatever the resolver reports for `memory.dir` (see `docs/configuration.md`). It is cross-repo by design; never write repo paths or secrets into a lesson. Writes are idempotent — re-adding the same title replaces the entry — so a retry never duplicates; a title `memory_refute` already refuted refuses instead, since replacing it would silently destroy the refutation.
 
 ## When to write
 

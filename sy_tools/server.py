@@ -141,14 +141,14 @@ async def create_issue(
 
 @mcp.tool(name="get-issue")
 async def get_issue(issue: IssueId) -> dict[str, Any]:
-    """Read one issue: body, status, type, relations, labels, and one page of its comments.
+    """Read one issue: body, status, type, relations, labels, and its comments.
 
     Canonical verb `get-issue`. Status and type come back as canonical tokens, so a caller can branch on
     them without knowing the board's column names; a column this repo does not map passes through under
-    its own name rather than being dropped. Comments and relations are bounded pages, so read
-    `comments_truncated`, `children_truncated` and `dependencies_truncated` before treating a result as
-    the whole history: a clipped page reads exactly like a complete short one, and an adapter that omits
-    a flag reads as untruncated.
+    its own name rather than being dropped. Relations are bounded pages, and comments are too on some
+    trackers, so read `children_truncated`, `dependencies_truncated` and `comments_truncated` where
+    present before treating a result as the whole history: a clipped page reads exactly like a complete
+    short one, and an adapter that omits a flag reads as untruncated.
     """
     _required(issue=issue)
     return await tracker.adapter().get_issue(issue)

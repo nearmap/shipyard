@@ -217,7 +217,8 @@ def _ensure_index() -> None:
     # to a newer mtime than the index, beats serving it back as a ghost or stale entry out of an index that
     # never rebuilds. Count alone would miss an edit in place, which changes the title, scope, tags, or
     # status the index shows; the mtime leg catches only an edit that left the file newer than the index,
-    # so an edit with a preserved or backdated mtime (a `git checkout`, say) stays invisible to both.
+    # so an edit that carries over an old or an explicitly backdated mtime (`cp -p`, `rsync -a`, `tar -x`,
+    # a restored backup) stays invisible to both.
     if entries != len(lessons) or any(p.stat().st_mtime > index.stat().st_mtime for p in lessons):
         _rebuild_index(directory)
 

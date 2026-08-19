@@ -332,8 +332,9 @@ def check_gate_justification(errors: list[str]) -> None:
         if terminator is None:
             fail(
                 f"{gate_ref_rel}: the Net-new agent-facing text section's boundary could not be located "
-                "— the heading that terminated it was renamed or removed, and the carrier pin below would "
-                "otherwise widen to the end of the file and pass on any other section's prose",
+                "— no `## ` heading follows it, whether because it is now last in the file or because the "
+                "headings after it were removed, and the carrier pin below would otherwise widen to the "
+                "end of the file and pass on any other section's prose",
                 errors,
             )
         elif not re.search(

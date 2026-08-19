@@ -265,7 +265,7 @@ async def add_dependency(
 
     Canonical verb `add-dependency`. This, not a status, is how blocking is expressed, and the direction
     matters: `issue` waits for `blocked_by`. `verified` comes from a read-back in the adapter's own
-    coordinate system, so it proves the link arrived and nothing more -- it cannot detect a reversed one.
+    coordinate system, so it proves the link arrived and nothing more — it cannot detect a reversed one.
     """
     _required(issue=issue, blocked_by=blocked_by)
     return await tracker.adapter().add_dependency(issue, blocked_by)
@@ -481,8 +481,8 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
     """
     _required(issue=issue)
     read = await tracker.adapter().get_issue(issue)
-    # `.get` with a default, not `[...]`: only one adapter reports the flag, and an adapter that cannot
-    # tell must read as "nothing known to be cut off" rather than making this tool unusable there.
+    # `.get` with a default, not `[...]`: an adapter that cannot tell whether its comment page was clipped
+    # must read as "nothing known to be cut off" rather than making this tool unusable there.
     truncated = bool(read.get("comments_truncated", False))
     plans: list[tuple[str, int, str]] = []
     for comment in read.get("comments") or []:
@@ -1058,8 +1058,9 @@ def get_config(
     """Read one resolved configuration value by dotted key.
 
     Resolution is the merged layer chain, so this is the only correct way to learn a setting: reading a
-    layer file directly misses whatever a higher layer overrode. Whether an unknown key is an error is
-    `default`'s to decide. A credential-shaped key is refused outright: secrets are never read from a
+    layer file directly misses whatever a higher layer overrode. A missing key raises unless a
+    non-`None` `default` is given — `default=None` behaves like omitting it. A credential-shaped key is
+    refused outright: secrets are never read from a
     config file, and `check_env` is how to ask about one.
     """
     _required(key=key)
@@ -1268,7 +1269,8 @@ def memory_add(
         str,
         Field(
             description="The lesson in one line. Becomes the kebab-slug filename, so re-using a title "
-            "already stored replaces that lesson instead of adding a second copy of it."
+            "already stored replaces that lesson instead of adding a second copy of it — unless that "
+            "lesson was refuted, which is refused rather than overwritten."
         ),
     ],
     scope: Annotated[
@@ -1290,8 +1292,8 @@ def memory_add(
     repo instead. The store is user-global, so a lesson written here is what an unrelated session in
     another checkout reads back. `path` is the Markdown file holding it — the same path on a re-add under
     an existing title, because the write is idempotent by the title's kebab slug truncated to 80
-    characters rather than append-only: two titles sharing that prefix are one lesson, and re-adding a
-    title `memory_refute` already refuted overwrites the refutation.
+    characters rather than append-only: two titles sharing that prefix are one lesson. Re-adding a title
+    `memory_refute` already refuted is refused, because the write would destroy the refutation.
     """
     try:
         return {"path": str(memory.add(title, scope, tags, body))}
@@ -1328,9 +1330,9 @@ def memory_refute(
     Prefer a `correction` to a tombstone: a lesson that was wrong only under some condition is more use
     narrowed than erased, and that condition is the part a future reader needs. The lesson file is never
     deleted, only rewritten in place, so a refuted entry stays visible in `memory_list` and
-    `memory_search` carrying a `status` of `corrected` or `tombstoned`. Nothing enforces that, though:
-    `memory_add` under the same title overwrites the refutation and its evidence outright, so a refuted
-    title is one to check before re-adding rather than one the store defends.
+    `memory_search` carrying a `status` of `corrected` or `tombstoned`. `memory_add` under the same title
+    is then refused rather than silently overwriting the refutation and its evidence, so a refuted title
+    has to be read before anything is written over it.
     """
     try:
         return {"path": str(memory.refute(title, evidence, correction))}

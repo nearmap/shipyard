@@ -6,6 +6,7 @@ a real lesson would just make these tests look content-dependent.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,37 @@ def test_a_hand_emptied_store_serves_no_entries_rather_than_ghosts(store):
         lesson.unlink()
     assert "(no entries)" in memory.index_text(), "a stale index must not serve ghost entries"
     assert memory.search("model override") == [], "a deleted lesson must not still be searchable"
+
+
+def test_a_lesson_edited_in_place_rebuilds_the_index_though_the_file_count_did_not_change(store):
+    """Count alone cannot see an edit: hand-editing is unsupported, but the index must not keep serving a
+    title, scope, or status the file on disk no longer carries."""
+    memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it explicitly.")
+    lesson, = _lessons(store)
+    index = store / memory.INDEX_NAME
+    lesson.write_text(
+        "---\ntitle: Resume keeps the model override\nscope: agent dispatch\ntags: resume\n"
+        "date: 2026-08-19\n---\n\nIt survives.\n",
+        encoding="utf-8",
+    )
+    os.utime(lesson, (index.stat().st_mtime + 10, index.stat().st_mtime + 10))
+    listing = memory.index_text()
+    assert "Resume keeps the model override" in listing, f"an edited lesson must rebuild the index: {listing!r}"
+    assert "Resume drops the model override" not in listing, f"the stale title must not survive: {listing!r}"
+
+
+def test_a_re_add_over_a_refuted_title_is_refused_while_a_live_one_still_replaces(store):
+    """The refutation and its evidence are unrecoverable once overwritten, so a plain re-add must refuse
+    rather than destroy them; a live entry's re-add is the documented update path and must still work."""
+    memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it explicitly.")
+    replaced = memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it always.")
+    assert "Pass it always." in replaced.read_text(encoding="utf-8"), "a live entry's re-add must still replace it"
+
+    memory.refute("Resume drops the model override", "Never reproduced.", correction="Nested calls only.")
+    with pytest.raises(ValueError, match="corrected"):
+        memory.add("Resume drops the model override", "agent dispatch", "resume,models", "Pass it explicitly.")
+    text = replaced.read_text(encoding="utf-8")
+    assert "Never reproduced." in text, f"the refusal must leave the refutation's evidence intact: {text!r}"
 
 
 @pytest.mark.parametrize(

@@ -342,6 +342,15 @@ def test_a_carrier_phrase_broken_across_a_line_wrap_still_satisfies_the_pin(tmp_
     assert not errors, f"a re-wrapped carrier phrase must still count as named: {errors}"
 
 
+def test_a_hollowed_clause_is_refused_even_when_the_carrier_phrase_survives_elsewhere(tmp_path, monkeypatch):
+    """A whole-file containment pin is the vacuity class this check exists to close: the section could be
+    gutted to nothing and the leg would still read green off an unrelated section's prose."""
+    gate_ref = _CLAUSE + "- **Carrier** --- the PR body.\n## Fix cycle\n- Justify with one line per addition.\n"
+    errors = _gate_check(tmp_path, monkeypatch, gate_ref, _CITATION)
+    assert any("carrier" in error for error in errors), \
+        f"a hollowed clause must be refused however the phrase reads elsewhere in the file: {errors}"
+
+
 def test_a_poller_invocation_wrapped_after_the_verb_is_reported_not_silently_matched(tmp_path, monkeypatch):
     """A newline-crossing selector capture is worse than no match: the flag-order leg then passes on a token
     picked out of the following line, so the argv rule reads clean against text it never checked."""

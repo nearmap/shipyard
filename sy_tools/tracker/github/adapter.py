@@ -47,6 +47,13 @@ ITEM_LIMIT = "10000"
 ISSUE_FIELDS = "number,title,body,url,labels,parent,subIssues,blockedBy,comments"
 SUMMARY_FIELDS = "number,title,url,labels,parent"
 
+COMMENT_PAGE = 100
+"""How many comments one `gh issue view --json comments` returns, oldest first.
+
+`gh` asks the GraphQL comment connection for a single page and exposes no cursor through `--json`, so
+this is a hard ceiling rather than the first of several pages this adapter could follow. Named after
+jira's constant of the same job, whose bound differs and whose truncation report is the same signal."""
+
 MAX_BOARD_READS = 500
 """How many individual `gh issue view` reads one board-filtered search may perform.
 
@@ -202,9 +209,10 @@ class GithubAdapter:
         """Read `issue` from `gh`, with status and type taken from the board.
 
         `gh issue view --json` exposes no project single-select value, so `Status` and `Type` are read
-        from the board card instead. `children_truncated` and `dependencies_truncated` say whether
-        `gh`'s own per-page cap on those two relations cut anything off, the same signal the other
-        adapter reports as `comments_truncated`: a clipped list reads exactly like a complete short one.
+        from the board card instead. `children_truncated`, `dependencies_truncated` and
+        `comments_truncated` say whether `gh`'s own per-page cap on each of those cut anything off: a
+        clipped list reads exactly like a complete short one. The comment cap has no `totalCount` beside
+        it, so a full page is reported truncated rather than proven so.
         """
         data = _view(issue, ISSUE_FIELDS)
         url = str(data.get("url") or "")
@@ -213,6 +221,9 @@ class GithubAdapter:
         owner, number = _project_ref()
         children, children_truncated = _relation(data.get("subIssues"))
         dependencies, dependencies_truncated = _relation(data.get("blockedBy"))
+        # Length stands in for the raw field's own: `_comments` refuses an unreadable entry rather than
+        # dropping it, so it is never shorter than what `gh` returned.
+        comments = _comments(data)
         return {
             **_summary(data, _item_index(owner, number).get(url, {})),
             "body": str(data.get("body") or ""),
@@ -220,7 +231,8 @@ class GithubAdapter:
             "children_truncated": children_truncated,
             "dependencies": dependencies,
             "dependencies_truncated": dependencies_truncated,
-            "comments": _comments(data),
+            "comments": comments,
+            "comments_truncated": len(comments) >= COMMENT_PAGE,
         }
 
     def _sync_update_issue(self, issue: str, body: str) -> dict:

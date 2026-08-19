@@ -312,7 +312,7 @@ def check_gate_justification(errors: list[str]) -> None:
     gate_ref = (ROOT / gate_ref_rel).read_text(encoding="utf-8")
     reviewer = (ROOT / reviewer_rel).read_text(encoding="utf-8")
 
-    if "Net-new agent-facing text" not in gate_ref:
+    if not re.search(r"^## Net-new agent-facing text\s*$", gate_ref, re.M):
         fail(
             f"{gate_ref_rel} must keep the Net-new agent-facing text clause; without it every sentence "
             "added to an always-resident brief ships unjustified",
@@ -321,7 +321,10 @@ def check_gate_justification(errors: list[str]) -> None:
     # An obligation with no named carrier is discharged by nobody. Whitespace-tolerant, unlike the
     # containment pins around it: this phrase sits mid-sentence in wrapped prose, so a re-wrap between
     # any two of its words would void the leg silently while the sentence still said the same thing.
-    if not re.search(r"one\s+line\s+per\s+addition", gate_ref):
+    # Scoped to the clause's own section: an unscoped whole-file search stays green even once the section
+    # is hollowed out, as long as the phrase happens to survive somewhere else in the file.
+    gate_section = gate_ref.partition("## Net-new agent-facing text")[2].partition("## Fix cycle")[0]
+    if not re.search(r"one\s+line\s+per\s+addition", gate_section):
         fail(
             f"{gate_ref_rel} must name the carrier ('one line per addition' in the PR body); an "
             "obligation with no place to land is discharged by nobody",

@@ -1371,8 +1371,9 @@ def memory_list() -> dict[str, Any]:
 
     The cheap way to see what memory holds before a search, and what `/sy:plan`, `/sy:spec`, and
     `/sy:ship` read at the start of a task. `index` is the greppable index file's Markdown text, rebuilt
-    first when its entry *count* disagrees with the lessons on disk — so a vanished lesson is absent here
-    rather than a dead link, but an edit or a swap leaving the count intact is served stale. Tolerance for
+    first when its entry *count* disagrees with the lessons on disk or a lesson file is newer than the
+    index — so a vanished lesson is absent here rather than a dead link, but an in-place edit that keeps
+    or backdates the file's mtime is served stale. Tolerance for
     corruption, not a licence to hand-delete, which is unsupported.
     """
     try:

@@ -7,7 +7,7 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 
 1. Edit the skills, agents, docs, or adapter files.
 2. Validate: `pixi run validate` — checks frontmatter, the agent return contracts, the promises skills make to each other, and the script self-tests. It must pass.
-3. Run the MCP server's own test suite: `pixi run pytest`. It covers `sy_tools/` — the tool surface, both tracker adapters, config resolution, and the secret-scrub path. `validate.py` reads parts of that same tree as text — it requires files under `sy_tools/` to exist, content-checks `sy_tools/server.py` and both adapters, and scans the tree for seam violations — but executes none of it, so neither suite substitutes for the other. Lint and type-check the same tree: `pixi run ruff check sy_tools/` and `pixi run ty check sy_tools/`. CI enforces all four; run them locally rather than finding out from a failed check.
+3. Run the MCP server's own test suite: `pixi run pytest`. It covers `sy_tools/` — the tool surface, both tracker adapters, config resolution, and the secret-scrub path. `validate.py` reads parts of that same tree as text — it requires files under `sy_tools/` to exist and content-checks `sy_tools/server.py` and both adapters — but executes none of it, so neither suite substitutes for the other. Lint and type-check the same tree: `pixi run ruff check sy_tools/` and `pixi run ty check sy_tools/`. CI enforces all four; run them locally rather than finding out from a failed check.
 4. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
 5. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 

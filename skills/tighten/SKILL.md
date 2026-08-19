@@ -16,7 +16,7 @@ Ask, or resolve from what you were handed. Several patterns below are destinatio
 
 - **A console turn** to the user → `## Human-facing text` § Everywhere + § A console turn, then `## Mode`.
 - **A plan's sign-off half** → `## Human-facing text` § Everywhere + § A plan sign-off half.
-- **An issue body, or a PR description** → `## Human-facing text` § Everywhere; a PR description also drops anything the diff already shows.
+- **An issue body, or a PR description** → `## Human-facing text` § Everywhere + § An issue body, or a PR description.
 - **A plan's `/sy:ship` half** → `## Agent-facing text` § A plan's machine half.
 - **A dispatch brief for another agent, or one of this plugin's own files** (a skill, a reference, an agent brief, an MCP tool docstring or `Field(description=...)`) → `## Agent-facing text` § A procedure or a brief.
 
@@ -28,9 +28,17 @@ No budget, threshold or target number governs this pass. "Under N lines" is not 
 
 The economy rule this pass enforces lives in one place: `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`. Read it before rewriting anything; do not copy its tests into your output.
 
+Which half a fact belongs in is a cut of its own, and one tool already makes it: `post-comment` takes `human` and `agent_detail` as separate arguments and writes the boundary itself (`sy_tools/server.py`), so the reader meets the judgment half first and the receipts stay reachable without being in the way — `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md` § 1 is the worked split. A console turn, an issue body and a PR description have no such argument, so the author makes the same cut by hand. The human half is the judgment: what changed, why, what to look hardest at, and what is being asked of the reader. The agent half is what a later session needs and this reader does not — SHAs, round counts, per-site tables, pointers, the method behind a figure. With no `agent_detail` to put it in, that half goes to the tracker comment, the commit history, or the run's own record, and having nowhere else to file it is not a reason to leave it on the human surface.
+
 ## Human-facing text
 
 ### Everywhere
+
+**Pipeline-internal narration.** The largest single driver, measured on console turns and present on every destination here. The reader is told how the agent's own machinery behaved: worker deaths, resume decisions, delegation budgets, model tiers, poller mechanics, state-file writes, how many review rounds it took and what each one found. None of it changes what they know or must do. In a sign-off half it usually arrives wearing a heading — see § A plan sign-off half's *Extra named sections beyond the five*, whose cut applies there instead.
+
+- Cut: three paragraphs on a restarted worker — which error killed it, what survived, why it was re-dispatched rather than resumed, what was seeded into the retry → "BUILD died on an API error before writing code; restarted. Nothing lost — the multi-GB toolchain env survives, and its prebuilt binary predates this task, confirming the stale-binary trap the plan flags."
+- Exception: keep it when the machinery failure changes the reader's trust in a result or costs them real time — "GATE's return carried stale SHAs and misattributed its own commits to you" tells them not to trust a prior report.
+- Exception: a mandated accounting attestation — the model tiers, state-file and status facts `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md` enumerates for a consent turn — is a required fact and is never cut. Resembling narration in shape does not make it narration.
 
 **Restatement of what the reader already has.** Costs the reader a re-read to discover there is nothing new in it, and buries whatever *is* new that turn. Three measured shapes: a finding already delivered and told again in full; the "still blocking / still running" block reprinted on a turn where nothing about it changed; and one fact entered under two section headings of the same document.
 
@@ -43,12 +51,6 @@ The economy rule this pass enforces lives in one place: `${CLAUDE_PLUGIN_ROOT}/s
 - Exception: keep it when the provenance *is* the news ("I verified this myself because the source already got three things wrong") — once per session, not once per claim. Keep **owner** attribution always: it tells the reader whose decision they are re-opening. Drop internal-pass attribution.
 
 ### A console turn
-
-**Pipeline-internal narration.** The largest single driver. The reader is told how the agent's own machinery behaved: worker deaths, resume decisions, delegation budgets, model tiers, poller mechanics, state-file writes. None of it changes what they know or must do.
-
-- Cut: three paragraphs on a restarted worker — which error killed it, what survived, why it was re-dispatched rather than resumed, what was seeded into the retry → "BUILD died on an API error before writing code; restarted. Nothing lost — the multi-GB toolchain env survives, and its prebuilt binary predates this task, confirming the stale-binary trap the plan flags."
-- Exception: keep it when the machinery failure changes the reader's trust in a result or costs them real time — "GATE's return carried stale SHAs and misattributed its own commits to you" tells them not to trust a prior report.
-- Exception: a mandated accounting attestation — the model tiers, state-file and status facts `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md` enumerates for a consent turn — is a required fact and is never cut. Resembling narration in shape does not make it narration.
 
 **Trailing sidebar appendices.** A milestone turn keeps going past its answer with an enumerated block of secondary findings: "Two things worth your attention", "Three things I did not do", "Two things I'm holding myself to". The label forces a second item into existence.
 
@@ -90,6 +92,25 @@ Do not touch short turns. Turns under 200 chars (`Let me check X.`, `Dispatching
 - Exception: a pre-existing condition this change makes durable, harder to fix, or load-bearing is a real risk. The test is whether the plan changes the item's status, not whether the plan caused it.
 
 Also delete on sight: the verbatim standing-policy boilerplate about out-of-scope being "a default contract, not a wall". It is standing policy, not this plan's content.
+
+### An issue body, or a PR description
+
+Three shapes, from a single measured body rather than a corpus: one Shipyard PR description of 4,142 words, classified section by section across its ten sections; one of the three was already carried as a clause in the routing list above. One body can place a shape and cannot rank shapes by volume, so only the largest is sized.
+
+**Pipeline-internal narration** (§ Everywhere) reaches its largest form here — 955 of those 4,142 words — because this text is written after the work, so the machinery has a whole run to tell: how many review rounds there were, what each found and how it was fixed, which fix produced which commit. The diff and the commit list carry what changed; the run's retrospective carries how it went.
+
+- Cut: a section per review round → nothing, or one clause where a round changed the shipped answer rather than the route to it.
+- Exception: a finding the reader must still weigh — a defect found inside the fix for another defect, a ruling that overturned the author's own judgment. State the finding, not the round.
+
+**Detail the diff or the ticket already carries.** The reader arrives with both open. A file-by-file walk, a table reproducing what the diff shows, or a restatement of the ticket's problem statement is a second copy of what they are already looking at.
+
+- Cut: the walk → the one sentence naming what the reader would otherwise misread the diff as doing.
+- Exception: a change whose point is invisible in the diff — a deletion that restores a lost guarantee, an edit that looks cosmetic and carries a semantic fix. The diff shows the edit and never the reason.
+
+**A draft narrating its own revision history.** A figure corrected mid-run is left in beside its replacement and labelled stale; a claim withdrawn is left in and marked withdrawn. The reader is judging the current state and pays twice over to work out which number is live.
+
+- Cut: state the current figure. The superseded one goes wherever the rest of the run's history goes.
+- Exception: a figure the reader already acted on — one they were shown at a checkpoint or in a comment — earns one clause saying it is superseded and by how much.
 
 ## Agent-facing text
 

@@ -118,7 +118,7 @@ shipyard/
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}
   skills/
-    plan/ spec/ ship/ spike/ pr/ ci/ standards/ explain/ help/
+    plan/ spec/ ship/ spike/ pr/ ci/ standards/ tighten/ explain/ help/ config/ init-repo/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
       jira/    ADAPTER.md + references/

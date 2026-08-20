@@ -7,6 +7,8 @@ than the real one, so the allowlist cases can be synthetic and the real 14 agent
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -391,3 +393,377 @@ def test_a_poller_invocation_wrapped_after_the_verb_is_reported_not_silently_mat
     validate.check_poller_argv(errors)
     assert any("must invoke the shared poller by name" in error for error in errors), \
         f"a wrapped invocation must be reported as no invocation, not matched across the newline: {errors}"
+
+
+_PINS = validate.HUMAN_TEXT_PINS
+# The pinned sentences are read out of the checker's own constant, never retyped: a second copy here would
+# agree with the first forever and the pin would stop tracking the tree it is meant to police.
+_STEP_ONE = (
+    f"{_PINS['signoff_pass']}\n"
+    "Send that summary as direct text first, in full.\n"
+    f"{_PINS['signoff_option']}\n"
+)
+_GROUND_RULES = f"## Ground rules\nPreserve every fact. {_PINS['short_text_floor']}\n"
+_THE_READER = (
+    "## The reader\n"
+    "Resolve `text.reader` with `get_config` and write to the reader it names.\n"
+    f"- **The floor.** The setting {_PINS['reader_floor']}.\n"
+)
+_PROTECT = f"## Protect\nNever drop an anchor. {_PINS['companion_half']}\n"
+_TIGHTEN_REPORT = "## Report\nName what changed and by how much.\n"
+_SCHEMA_TEXT = {"type": "object", "additionalProperties": False, "properties": {"reader": {"type": "string"}}}
+
+
+def _spec_md(step_one: str = _STEP_ONE, step_two: str = "### Step 2 - post the plan\nPost it once.\n") -> str:
+    return (
+        "## 7. Capture the plan as the highest version\n"
+        "### Step 1 - ask for sign-off on the judgment\n"
+        f"{step_one}{step_two}"
+        "## 8. Capture the session\n"
+    )
+
+
+def _tighten_md(sections: tuple[str, ...] = (_GROUND_RULES, _THE_READER, _PROTECT, _TIGHTEN_REPORT)) -> str:
+    return "".join(sections)
+
+
+def _interaction_md(question_body: str = f"Ask through the tool. {_PINS['escape_hatch']}\n") -> str:
+    return (
+        "## Status\nA statement needing no answer.\n"
+        f"## Question\n{question_body}"
+        "## Action needed\nSay what you need.\n"
+    )
+
+
+def _server_py(
+    human_desc: str = f"The part a human reads and judges; {_PINS['post_comment_pass']}.",
+    detail_desc: str = "The part a future session needs: pointers and exact identifiers.",
+    detail_param: str = "agent_detail",
+    earlier_desc: str = "The label to add.",
+) -> str:
+    return (
+        '@mcp.tool(name="add-label")\n'
+        "async def add_label(\n"
+        f'    label: Annotated[str, Field(description="{earlier_desc}")],\n'
+        ") -> dict[str, Any]:\n"
+        '    """Add a label."""\n\n\n'
+        '@mcp.tool(name="post-comment")\n'
+        "async def post_comment(\n"
+        "    human: Annotated[\n"
+        "        str,\n"
+        f'        Field(description="{human_desc}"),\n'
+        "    ],\n"
+        f"    {detail_param}: Annotated[\n"
+        "        str,\n"
+        f'        Field(description="{detail_desc}"),\n'
+        "    ],\n"
+        ") -> dict[str, Any]:\n"
+        '    """Post a two-part comment."""\n'
+    )
+
+
+_ROUTING_FILES = {
+    "spec": ("skills/spec/SKILL.md", _spec_md()),
+    "tighten": ("skills/tighten/SKILL.md", _tighten_md()),
+    "interaction": ("skills/shared/references/user-interaction.md", _interaction_md()),
+    "server": ("sy_tools/server.py", _server_py()),
+    "schema": ("config/schema.json", json.dumps({"properties": {"text": _SCHEMA_TEXT}})),
+    "defaults": ("config/defaults.json", json.dumps({"text": {"reader": "expert"}})),
+}
+
+
+def _routing_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> list[str]:
+    """Build the six-file tree `check_human_text_routing` reads, replacing any of them, and return its errors."""
+    unknown = set(overrides) - set(_ROUTING_FILES)
+    assert not unknown, f"no such file in the routing tree: {sorted(unknown)}"
+    for key, (rel, default) in _ROUTING_FILES.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(overrides.get(key, default), encoding="utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_human_text_routing(errors)
+    return errors
+
+
+def test_a_step_one_stating_the_pass_before_the_summary_send_passes(tmp_path, monkeypatch):
+    step_one = (
+        f"{_PINS['signoff_pass']}\n"
+        "Hold the pre-pass draft for the duration of this step.\n"
+        "Send that summary as direct text first, in full.\n"
+        f"{_PINS['signoff_option']}\n"
+    )
+    errors = _routing_check(tmp_path, monkeypatch, spec=_spec_md(step_one=step_one))
+    assert not errors, f"prose between the pass sentence and the send must not disturb the ordering pin: {errors}"
+
+
+def test_a_step_one_that_never_states_the_pass_over_the_signoff_half_is_refused(tmp_path, monkeypatch):
+    step_one = f"Send that summary as direct text first, in full.\n{_PINS['signoff_option']}\n"
+    errors = _routing_check(tmp_path, monkeypatch, spec=_spec_md(step_one=step_one))
+    assert any("tightened before it is shown" in error for error in errors), \
+        f"a sign-off half shown untightened is not the text the user approved: {errors}"
+
+
+@pytest.mark.parametrize("placement", ["in step two", "after the send"])
+def test_the_pass_sentence_outside_step_one_or_after_the_send_is_refused(tmp_path, monkeypatch, placement):
+    """Closes the two vacuity classes a whole-file containment pin passes on: the sentence surviving in the
+    next step, and the sentence surviving in order-defeating position inside its own step."""
+    if placement == "in step two":
+        spec = _spec_md(
+            step_one=f"Send that summary as direct text first, in full.\n{_PINS['signoff_option']}\n",
+            step_two=f"### Step 2 - post the plan\n{_PINS['signoff_pass']}\n",
+        )
+        expected = "tightened before it is shown"
+    else:
+        spec = _spec_md(
+            step_one=(
+                "Send that summary as direct text first, in full.\n"
+                f"{_PINS['signoff_pass']}\n{_PINS['signoff_option']}\n"
+            ),
+        )
+        expected = "must state the pass before the step that sends"
+    errors = _routing_check(tmp_path, monkeypatch, spec=spec)
+    assert any(expected in error for error in errors), f"a pass sentence {placement} must be refused: {errors}"
+
+
+def test_a_step_one_with_no_step_two_heading_to_bound_it_is_refused(tmp_path, monkeypatch):
+    """An unterminated Step 1 runs to the end of the section, so both sign-off pins would be satisfiable by
+    prose belonging to the step after approval."""
+    errors = _routing_check(tmp_path, monkeypatch, spec=_spec_md(step_two="Post the plan once approved.\n"))
+    assert any("no `### Step 2` to bound it" in error for error in errors), \
+        f"a Step 1 with no right-hand bound must be refused, not widened: {errors}"
+
+
+def test_a_step_one_offering_the_pre_pass_half_before_anything_else_passes(tmp_path, monkeypatch):
+    step_one = (
+        f"{_PINS['signoff_option']}\n{_PINS['signoff_pass']}\n"
+        "Send that summary as direct text first, in full.\n"
+    )
+    errors = _routing_check(tmp_path, monkeypatch, spec=_spec_md(step_one=step_one))
+    assert not errors, f"the escape-hatch option is pinned by presence in the step, not by position: {errors}"
+
+
+def test_a_step_one_with_no_option_to_see_the_pre_pass_half_is_refused(tmp_path, monkeypatch):
+    step_one = f"{_PINS['signoff_pass']}\nSend that summary as direct text first, in full.\n"
+    errors = _routing_check(tmp_path, monkeypatch, spec=_spec_md(step_one=step_one))
+    assert any("must offer the pre-pass sign-off half" in error for error in errors), \
+        f"a compressed half with no way back to the full one is a lossy gate: {errors}"
+
+
+def test_the_pre_pass_option_parked_in_step_two_is_refused(tmp_path, monkeypatch):
+    """The vacuity a whole-file pin passes on: the option surviving as prose in the step after approval,
+    where the sign-off call it belongs to can no longer offer it."""
+    spec = _spec_md(
+        step_one=f"{_PINS['signoff_pass']}\nSend that summary as direct text first, in full.\n",
+        step_two=f"### Step 2 - post the plan\n{_PINS['signoff_option']}\n",
+    )
+    errors = _routing_check(tmp_path, monkeypatch, spec=spec)
+    assert any("must offer the pre-pass sign-off half" in error for error in errors), \
+        f"an option parked outside the step that offers it must be refused: {errors}"
+
+
+def test_the_pre_pass_option_left_only_past_a_deleted_step_two_heading_is_refused(tmp_path, monkeypatch):
+    """Without the loud terminator the region would widen past the deleted heading and swallow this copy,
+    turning the bounded pin back into the whole-section pin it replaced."""
+    spec = _spec_md(
+        step_one=f"{_PINS['signoff_pass']}\nSend that summary as direct text first, in full.\n",
+        step_two=f"{_PINS['signoff_option']}\n",
+    )
+    errors = _routing_check(tmp_path, monkeypatch, spec=spec)
+    assert any("no `### Step 2` to bound it" in error for error in errors), \
+        f"a widened region must be refused rather than satisfied by the text it swallowed: {errors}"
+
+
+def test_a_human_field_naming_the_pass_passes_with_further_tools_defined_after_it(tmp_path, monkeypatch):
+    server = _server_py() + '\n\n@mcp.tool(name="post-log")\nasync def post_log() -> None:\n    """Post a log."""\n'
+    errors = _routing_check(tmp_path, monkeypatch, server=server)
+    assert not errors, f"the bound ends at the second parameter; later tools are none of its business: {errors}"
+
+
+def test_a_human_field_that_never_names_the_pass_is_refused(tmp_path, monkeypatch):
+    errors = _routing_check(tmp_path, monkeypatch, server=_server_py(human_desc="The part a human reads."))
+    assert any("must tell the caller to run the pass" in error for error in errors), \
+        f"the human half is durable text and must be tightened before it is posted: {errors}"
+
+
+@pytest.mark.parametrize("placement", ["the detail field", "an earlier tool"])
+def test_the_pass_clause_in_any_field_but_the_human_one_is_refused(tmp_path, monkeypatch, placement):
+    """Closes whole-file containment: the clause surviving on the machine half, or on some unrelated tool's
+    field, leaves the human half with no instruction while the pin reads green."""
+    clause = f"the caller should {_PINS['post_comment_pass']}."
+    if placement == "the detail field":
+        server = _server_py(human_desc="The part a human reads.", detail_desc=clause)
+    else:
+        server = _server_py(human_desc="The part a human reads.", earlier_desc=clause)
+    errors = _routing_check(tmp_path, monkeypatch, server=server)
+    assert any("must tell the caller to run the pass" in error for error in errors), \
+        f"the clause on {placement} must not satisfy the human half's pin: {errors}"
+
+
+def test_a_renamed_second_parameter_leaves_the_human_field_unbounded_and_is_refused(tmp_path, monkeypatch):
+    """An ordinary rename retires the right-hand bound silently. Unterminated, the region runs to the end of
+    the module and the clause would be satisfiable from any later description."""
+    errors = _routing_check(tmp_path, monkeypatch, server=_server_py(detail_param="machine_detail"))
+    assert any("bounds the `human` field description" in error for error in errors), \
+        f"a renamed bound must be reported, not silently widened: {errors}"
+
+
+def test_a_reader_section_carrying_the_setting_and_the_floor_passes(tmp_path, monkeypatch):
+    reader = _THE_READER + "Write to the reader it names, not to the reader you imagined.\n"
+    tighten = _tighten_md((_GROUND_RULES, reader, _PROTECT, _TIGHTEN_REPORT))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert not errors, f"extra prose in the section must not disturb either leg: {errors}"
+
+
+@pytest.mark.parametrize("missing", ["the setting", "the floor"])
+def test_a_reader_section_missing_the_setting_or_the_floor_is_refused(tmp_path, monkeypatch, missing):
+    """A heading with no consumer leaves the setting declared in two config files and read by nobody, and a
+    section with no floor leaves compression free to drop the decision itself."""
+    if missing == "the setting":
+        reader = f"## The reader\nWrite for whoever reads it. The setting {_PINS['reader_floor']}.\n"
+        expected = "must resolve `text.reader`"
+    else:
+        reader = "## The reader\nResolve `text.reader` with `get_config`.\n"
+        expected = "must keep the floor"
+    tighten = _tighten_md((_GROUND_RULES, reader, _PROTECT, _TIGHTEN_REPORT))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert any(expected in error for error in errors), f"a reader section missing {missing} must be refused: {errors}"
+
+
+def test_a_reader_section_left_last_and_hollow_is_refused(tmp_path, monkeypatch):
+    """The heading's following `## ` deleted, with the setting and the floor parked in an earlier section:
+    unbounded the region reads to the end of the file, and a whole-file pin stays green on the parked copy."""
+    parked = f"## Human-facing text\nResolve `text.reader`. The setting {_PINS['reader_floor']}.\n"
+    tighten = _tighten_md((_GROUND_RULES, parked, _PROTECT, "## The reader\n"))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert any("`## The reader` has no following `## ` heading" in error for error in errors), \
+        f"an unbounded reader section must be refused rather than widened: {errors}"
+
+
+def test_a_protect_section_stating_the_companion_condition_passes(tmp_path, monkeypatch):
+    protect = f"## Protect\n{_PINS['companion_half']}\nNo `text.reader` setting relaxes either rule.\n"
+    tighten = _tighten_md((_GROUND_RULES, _THE_READER, protect, _TIGHTEN_REPORT))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert not errors, f"the condition is pinned by presence in the section, not by position: {errors}"
+
+
+def test_a_protect_section_without_the_companion_condition_is_refused(tmp_path, monkeypatch):
+    protect = "## Protect\nAn entry may name an anchor as removable.\n"
+    tighten = _tighten_md((_GROUND_RULES, _THE_READER, protect, _TIGHTEN_REPORT))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert any("only to a companion half" in error for error in errors), \
+        f"the relaxation outlives its condition unless the condition is pinned: {errors}"
+
+
+def test_a_protect_section_left_last_and_hollow_is_refused(tmp_path, monkeypatch):
+    """Its following `## ` deleted and the condition parked earlier: one edit is both the terminator absence
+    and the vacuity a whole-file pin would pass on."""
+    parked = f"## Report\nName what changed. {_PINS['companion_half']}\n"
+    tighten = _tighten_md((_GROUND_RULES, _THE_READER, parked, "## Protect\n"))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert any("`## Protect` has no following `## ` heading" in error for error in errors), \
+        f"an unbounded protect section must be refused rather than widened: {errors}"
+
+
+def test_ground_rules_carrying_the_short_text_floor_mid_section_pass(tmp_path, monkeypatch):
+    ground = f"## Ground rules\nPreserve every fact.\n{_PINS['short_text_floor']}\nMatch the register.\n"
+    tighten = _tighten_md((ground, _THE_READER, _PROTECT, _TIGHTEN_REPORT))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert not errors, f"the floor is pinned by presence in the rules, not by position: {errors}"
+
+
+def test_ground_rules_without_the_short_text_floor_are_refused(tmp_path, monkeypatch):
+    ground = "## Ground rules\nPreserve every fact. Cut padding, never substance.\n"
+    tighten = _tighten_md((ground, _THE_READER, _PROTECT, _TIGHTEN_REPORT))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert any("must keep the short-text floor" in error for error in errors), \
+        f"without the floor the pass rewrites text that was already correct: {errors}"
+
+
+def test_ground_rules_left_last_and_hollow_are_refused(tmp_path, monkeypatch):
+    """The floor parked in a section that binds one destination is the weakness this leg closes, and an
+    unbounded rules section is what would let the pin read green from there."""
+    parked = f"## Report\nName what changed. {_PINS['short_text_floor']}\n"
+    tighten = _tighten_md((_THE_READER, _PROTECT, parked, "## Ground rules\n"))
+    errors = _routing_check(tmp_path, monkeypatch, tighten=tighten)
+    assert any("`## Ground rules` has no following `## ` heading" in error for error in errors), \
+        f"an unbounded rules section must be refused rather than widened: {errors}"
+
+
+def test_a_question_section_offering_the_fuller_version_passes(tmp_path, monkeypatch):
+    body = (
+        "Ask through the tool, one call per turn.\n"
+        f"{_PINS['escape_hatch']}\nIt is a third option, not a second call.\n"
+    )
+    errors = _routing_check(tmp_path, monkeypatch, interaction=_interaction_md(question_body=body))
+    assert not errors, f"extra guidance around the hatch must not disturb the pin: {errors}"
+
+
+def test_a_question_section_with_no_escape_hatch_is_refused(tmp_path, monkeypatch):
+    interaction = _interaction_md(question_body="Ask through the tool, one call per turn.\n")
+    errors = _routing_check(tmp_path, monkeypatch, interaction=interaction)
+    assert any("must offer the fuller version" in error for error in errors), \
+        f"a compressed half with no route to the fuller one is a decision taken on less: {errors}"
+
+
+def test_a_question_section_left_unbounded_by_a_deleted_next_heading_is_refused(tmp_path, monkeypatch):
+    """`## Action needed` deleted and its body left behind carrying the hatch: unbounded, the question region
+    swallows the orphaned prose and the pin reads green on a sentence that section no longer owns."""
+    interaction = (
+        "## Status\nA statement needing no answer.\n"
+        "## Question\nAsk through the tool, one call per turn.\n"
+        f"Say what you need. {_PINS['escape_hatch']}\n"
+    )
+    errors = _routing_check(tmp_path, monkeypatch, interaction=interaction)
+    assert any("`## Question` has no following `## ` heading" in error for error in errors), \
+        f"an unbounded question section must be refused rather than widened: {errors}"
+
+
+def test_a_schema_and_defaults_declaring_the_reader_alongside_other_keys_pass(tmp_path, monkeypatch):
+    text = {**_SCHEMA_TEXT, "properties": {"reader": {"type": "string"}, "width": {"type": "integer"}}}
+    errors = _routing_check(
+        tmp_path, monkeypatch,
+        schema=json.dumps({"properties": {"text": text}}),
+        defaults=json.dumps({"text": {"reader": "expert", "width": 80}}),
+    )
+    assert not errors, f"the setting is pinned by path, and siblings under the same object are fine: {errors}"
+
+
+def test_a_tree_declaring_the_reader_in_neither_config_file_is_refused(tmp_path, monkeypatch):
+    errors = _routing_check(
+        tmp_path, monkeypatch, schema=json.dumps({"properties": {}}), defaults=json.dumps({}),
+    )
+    assert any("must declare `text.reader`" in error for error in errors), f"the schema must be refused: {errors}"
+    assert any("must ship a `text.reader` default" in error for error in errors), \
+        f"the defaults must be refused: {errors}"
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        (
+            {"properties": {"text": {"type": "object", "additionalProperties": False, "properties": {}}}},
+            "must declare `text.reader`",
+        ),
+        (
+            {"properties": {"limits": {"properties": {"reader": {"type": "string"}}}}},
+            "must declare `text.reader`",
+        ),
+        (
+            {"properties": {"text": {**_SCHEMA_TEXT, "additionalProperties": True}}},
+            "must set additionalProperties false",
+        ),
+    ],
+    ids=["a text object with no reader", "a reader under another object", "an open text object"],
+)
+def test_the_schema_shapes_raw_containment_would_pass_on_are_refused(tmp_path, monkeypatch, shape, expected):
+    """Every shape where the key's characters appear in the file while the setting the pass resolves is
+    undeclared, unreachable at the path that resolves it, or unprotected against a typo."""
+    errors = _routing_check(tmp_path, monkeypatch, schema=json.dumps(shape))
+    assert any(expected in error for error in errors), f"a shape containment would pass on must be refused: {errors}"
+
+
+def test_the_human_text_routing_check_is_registered_in_the_validation_run():
+    """A check nothing calls protects nothing, and `main()` is its only caller."""
+    assert "check_human_text_routing(errors)" in inspect.getsource(validate.main), \
+        "the routing check must be registered in main()"

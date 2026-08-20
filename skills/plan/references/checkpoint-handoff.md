@@ -13,7 +13,7 @@ Re-render:
 
 ## Decision log = adaptation delta
 
-For each planning run that changes the tracker, append one clear human-facing comment. Keep it short and plain: one short sentence or single-line dot point per item below, no nested outline and no restated roadmap — a reader should take in the whole delta at a glance. These bullets are the comment's `human` part; the footer below is its `agent_detail`, which is what re-entry reads back.
+For each planning run that changes the tracker, append one clear human-facing comment. Keep it short and plain: one short sentence or single-line dot point per item below, no nested outline and no restated roadmap — a reader should take in the whole delta at a glance. That bar is `${CLAUDE_PLUGIN_ROOT}/skills/tighten/SKILL.md`'s durable-comment human half; run the pass over these bullets rather than judging brevity by eye. These bullets are the comment's `human` part; the footer below is its `agent_detail`, which is what re-entry reads back.
 
 - what changed and why;
 - what shipped since prior checkpoint;

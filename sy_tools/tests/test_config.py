@@ -1323,3 +1323,48 @@ def test_a_name_the_environment_cannot_encode_is_absent_rather_than_a_crash():
     """
     assert config.env_present("\ud800") is False
     assert config.env_present("EXAMPLE_\udfff_TOKEN") is False
+
+
+def _write_reader_layer(repo: Path, reader: object) -> None:
+    layer = {**FIXTURE_LAYER, "text": reader if isinstance(reader, dict) else {"reader": reader}}
+    (repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+
+
+def test_text_reader_resolves_to_its_shipped_default_and_a_layer_outranks_it(fixture_repo):
+    """The shipped default is read from `config/defaults.json`, never restated here, so the two cannot drift."""
+    shipped = json.loads((PLUGIN_ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))["text"]["reader"]
+    assert isinstance(shipped, str) and shipped.strip(), "the shipped reader must be a non-empty string"
+
+    values, provenance = config.resolve()
+    assert values["text"]["reader"] == shipped
+    assert provenance["text.reader"] == "shipped-default"
+
+    _write_reader_layer(fixture_repo, "a tired reviewer on a phone")
+    values, provenance = config.resolve()
+    assert values["text"]["reader"] == "a tired reviewer on a phone", "a repo layer must outrank the shipped default"
+    assert provenance["text.reader"] == "repo-committed"
+
+
+def test_an_empty_text_reader_is_refused_rather_than_resolving_to_nothing(fixture_repo):
+    """Without `minLength`, `""` would resolve as configured and silently mean no reader at all."""
+    _write_reader_layer(fixture_repo, "")
+    assert any("text.reader" in e and "at least 1 characters" in e for e in config.validate())
+
+
+def test_a_text_reader_over_the_length_cap_is_refused(fixture_repo):
+    """A declared `maxLength` nothing enforces is a lie: a 201-character value would otherwise pass unremarked."""
+    _write_reader_layer(fixture_repo, "r" * 201)
+    assert any("text.reader" in e and "at most 200 characters" in e for e in config.validate())
+
+
+def test_a_non_string_text_reader_is_refused_rather_than_coerced(fixture_repo):
+    """Type alone: an int would stringify happily downstream and land in a prompt as a bare number."""
+    _write_reader_layer(fixture_repo, 15)
+    assert any("text.reader" in e and "type" in e for e in config.validate())
+
+
+def test_an_undeclared_key_beside_text_reader_is_refused(fixture_repo):
+    """A misspelled or invented sibling would otherwise be accepted and then never read by anything."""
+    _write_reader_layer(fixture_repo, {"reader": "a new joiner", "readers": "a new joiner"})
+    assert any("text.readers" in e and "schema.json" in e for e in config.validate())

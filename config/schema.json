@@ -185,6 +185,18 @@
         }
       }
     },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reader": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Who a durable human-facing artifact is written for, applied by /sy:tighten as an authoring instruction that is never executed and never a length target."
+        }
+      }
+    },
     "transcript": {
       "type": "object",
       "additionalProperties": false,

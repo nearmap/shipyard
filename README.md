@@ -41,6 +41,7 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 | a branch that needs its PR created or tidied | `/sy:pr` |
 | a failing or pending CI run to diagnose | `/sy:ci` |
 | a decision, bug, or system you want to genuinely understand before acting on it | `/sy:explain …` |
+| a draft you want tightened before anyone else reads it | `/sy:tighten …` |
 | a question about Shipyard itself — a command, a config knob, which model an agent uses | `/sy:help …` |
 
 `<task>` is an issue ID — a Jira key like `PROJ-123` or a GitHub issue like `#123`. Shipyard never parses IDs; it passes them straight through to the configured tracker.
@@ -117,7 +118,7 @@ shipyard/
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}
   skills/
-    plan/ spec/ ship/ spike/ pr/ ci/ standards/ explain/ help/
+    plan/ spec/ ship/ spike/ pr/ ci/ standards/ tighten/ explain/ help/ config/ init-repo/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
       jira/    ADAPTER.md + references/

@@ -1,9 +1,9 @@
 # Resolving a scalar config value named in skill prose
 
 A bullet that names a dotted config key (`limits.max_depth_agents`, `ship.merge_strategy`,
-`spec.light_tier_max_files`, and similar) is documentation, not execution: text in a skill file is
-read, never run. Naming the key in backticks does not resolve it. Before treating the value as
-authoritative for a decision in this run, resolve it for real, with the `sy` MCP server's
+`spec.light_tier_max_files`, `text.reader`, and similar) is documentation, not execution: text in a
+skill file is read, never run. Naming the key in backticks does not resolve it. Before treating the
+value as authoritative for a decision in this run, resolve it for real, with the `sy` MCP server's
 `get_config` tool:
 
 ```

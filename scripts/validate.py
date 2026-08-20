@@ -73,6 +73,18 @@ CUT_TESTS = (
     "Does removing this sentence change what its reader does?",
     "Would a pointer do the work this text is doing?",
 )
+# Every sentence `check_human_text_routing` pins, phrased once here and read by both the check and its
+# tests, for the reason `CUT_TESTS` above is one copy: a second copy in a checker or a test is the drift
+# the pin exists to catch, and it drifts silently because both copies agree with each other.
+HUMAN_TEXT_PINS = {
+    "signoff_pass": "The `/sy:tighten` pass over the sign-off half completes before the summary is presented.",
+    "signoff_option": "One option sends the pre-pass sign-off half in full and returns to this step.",
+    "escape_hatch": "An option to see the fuller version is offered, and choosing it returns to the same question.",
+    "companion_half": "An anchor leaves a human half only when a companion half carries it.",
+    "reader_floor": "governs how a decision is *expressed*, never whether it is *present*",
+    "short_text_floor": "Do not touch short text, at any destination.",
+    "post_comment_pass": "tighten it with `/sy:tighten` before posting",
+}
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -367,6 +379,157 @@ def check_gate_justification(errors: list[str]) -> None:
                     "to apply by citation, and the two copies drift",
                     errors,
                 )
+
+
+def _bounded_section(text: str, heading: str, rel: str, errors: list[str]) -> str | None:
+    """The body between `heading` and the next `## `, or None once the missing end has been reported.
+
+    An absent terminator is a failure rather than a wider region: unterminated, the section runs to the end
+    of the file and every pin scoped to it passes on any later section's prose.
+    """
+    start = re.search(rf"^{re.escape(heading)}\s*$", text, re.M)
+    if start is None:
+        fail(f"{rel} must carry its `{heading}` heading; the pins below have nowhere to look", errors)
+        return None
+    terminator = re.search(r"^## ", text[start.end() :], re.M)
+    if terminator is None:
+        fail(
+            f"{rel}: `{heading}` has no following `## ` heading to bound it, so its pins would widen to the "
+            "end of the file and pass on prose belonging to no section",
+            errors,
+        )
+        return None
+    return text[start.end() : start.end() + terminator.start()]
+
+
+def _json_path(obj: object, *keys: str) -> object | None:
+    """The value at a chain of mapping keys, or None the moment a hop is missing or is not a mapping.
+
+    A JSON null reads as missing, which is what it is: a key declared with no value is not a declaration.
+    """
+    for key in keys:
+        if not isinstance(obj, dict) or key not in obj:
+            return None
+        obj = obj[key]
+    return obj
+
+
+def check_human_text_routing(errors: list[str]) -> None:
+    """Human-facing text runs through the pass, keeps its escape hatch, and `text.reader` has a consumer.
+
+    Standalone for the same reason as `check_gate_justification`: `check_invariants`'s `read()` raises on
+    any missing path, so pins placed there could not be exercised against a synthetic tree at all.
+    """
+    spec_rel = "skills/spec/SKILL.md"
+    tighten_rel = "skills/tighten/SKILL.md"
+    interaction_rel = "skills/shared/references/user-interaction.md"
+    server_rel = "sy_tools/server.py"
+    schema_rel = "config/schema.json"
+    defaults_rel = "config/defaults.json"
+    spec = (ROOT / spec_rel).read_text(encoding="utf-8")
+    tighten = (ROOT / tighten_rel).read_text(encoding="utf-8")
+    interaction = (ROOT / interaction_rel).read_text(encoding="utf-8")
+    server = (ROOT / server_rel).read_text(encoding="utf-8")
+
+    # Legs (a) and (h) share one region, computed once: re-deriving it per leg lets the two drift onto
+    # different bounds while both still read like the same scope.
+    step_one = None
+    section_seven = spec.partition("## 7.")[2].partition("## 8.")[0]
+    if "### Step 1" not in section_seven:
+        fail(f"{spec_rel} §7 must keep its Step 1 sign-off step; the sign-off pins anchor on it", errors)
+    elif "### Step 2" not in section_seven.partition("### Step 1")[2]:
+        fail(
+            f"{spec_rel} §7's Step 1 has no `### Step 2` to bound it, so the sign-off pins would widen to "
+            "the end of §7 and be satisfied by Step 2's own prose",
+            errors,
+        )
+    else:
+        step_one = section_seven.partition("### Step 1")[2].partition("### Step 2")[0]
+
+    if step_one is not None:
+        # Position as well as containment: the sentence sitting after the send is the ordering it states,
+        # defeated, with the pin still green.
+        summary_send = "Send that summary as direct text first"
+        signoff_pass = HUMAN_TEXT_PINS["signoff_pass"]
+        if signoff_pass not in step_one:
+            fail(f"{spec_rel} §7's Step 1 must state that the sign-off half is tightened before it is shown", errors)
+        elif summary_send not in step_one:
+            fail(
+                f"{spec_rel} §7's Step 1 must still name its send step {summary_send!r}; the ordering pin "
+                "anchors on it",
+                errors,
+            )
+        elif step_one.index(signoff_pass) > step_one.index(summary_send):
+            fail(f"{spec_rel} §7's Step 1 must state the pass before the step that sends the summary", errors)
+        # In the same region, not merely in the file: the escape hatch belongs to the sign-off question, and
+        # a copy anywhere else in §7 leaves that question offering two options.
+        if HUMAN_TEXT_PINS["signoff_option"] not in step_one:
+            fail(f"{spec_rel} §7's Step 1 must offer the pre-pass sign-off half as an option on its own call", errors)
+
+    # Bounded to `post-comment`'s own human half: whole-file containment passes with the clause in any other
+    # tool's field description or in the module header, and the bound is a parameter name an ordinary rename
+    # would retire silently, so its absence is a failure rather than a wider region.
+    if "human: Annotated[" not in server:
+        fail(f"{server_rel}: post-comment must keep its `human` parameter; the pass pin describes that half", errors)
+    else:
+        human_tail = server.partition("human: Annotated[")[2]
+        if "agent_detail: Annotated[" not in human_tail:
+            fail(
+                f"{server_rel}: no `agent_detail: Annotated[` bounds the `human` field description, so the "
+                "pass pin would widen to the rest of the module and pass on any later description",
+                errors,
+            )
+        elif HUMAN_TEXT_PINS["post_comment_pass"] not in human_tail.partition("agent_detail: Annotated[")[0]:
+            fail(
+                f"{server_rel}: post-comment's `human` field must tell the caller to run the pass before "
+                "posting; that half is durable text a human reads",
+                errors,
+            )
+
+    # Heading plus contents: a heading alone leaves the section emptiable while `text.reader` sits in schema
+    # and defaults with nothing reading it, and without the floor the claim that a pin protects it is false.
+    reader_section = _bounded_section(tighten, "## The reader", tighten_rel, errors)
+    if reader_section is not None:
+        if "text.reader" not in reader_section:
+            fail(
+                f"{tighten_rel}'s `## The reader` must resolve `text.reader`; the setting has no other consumer",
+                errors,
+            )
+        if HUMAN_TEXT_PINS["reader_floor"] not in reader_section:
+            fail(
+                f"{tighten_rel}'s `## The reader` must keep the floor: the setting governs expression, never "
+                "whether a decision survives",
+                errors,
+            )
+
+    # The condition the two relaxed hard rules rest on; unpinned, the relaxation outlives it.
+    protect_section = _bounded_section(tighten, "## Protect", tighten_rel, errors)
+    if protect_section is not None and HUMAN_TEXT_PINS["companion_half"] not in protect_section:
+        fail(
+            f"{tighten_rel}'s `## Protect` must state that an anchor leaves a human half only to a companion half",
+            errors,
+        )
+
+    # In the rules every destination reads, not in a console-only section, where it bound one destination.
+    ground_rules = _bounded_section(tighten, "## Ground rules", tighten_rel, errors)
+    if ground_rules is not None and HUMAN_TEXT_PINS["short_text_floor"] not in ground_rules:
+        fail(f"{tighten_rel}'s `## Ground rules` must keep the short-text floor for every destination", errors)
+
+    # In § Question, where the option is offered: whole-file containment passes with it parked in § Status.
+    question_section = _bounded_section(interaction, "## Question", interaction_rel, errors)
+    if question_section is not None and HUMAN_TEXT_PINS["escape_hatch"] not in question_section:
+        fail(f"{interaction_rel}'s `## Question` must offer the fuller version and return to the same question", errors)
+
+    # Parsed paths, not containment: a raw-text pin passes on a comment, on a `reader` under some other
+    # object, or on a `text` object with no `reader` at all, and pins the closed-object guard not at all.
+    schema = json.loads((ROOT / schema_rel).read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / defaults_rel).read_text(encoding="utf-8"))
+    if _json_path(schema, "properties", "text", "properties", "reader") is None:
+        fail(f"{schema_rel} must declare `text.reader`; the pass resolves it and nothing else would validate it", errors)
+    if _json_path(schema, "properties", "text", "additionalProperties") is not False:
+        fail(f"{schema_rel}'s `text` object must set additionalProperties false; a typo'd key must not resolve", errors)
+    if _json_path(defaults, "text", "reader") is None:
+        fail(f"{defaults_rel} must ship a `text.reader` default; an unset setting leaves the reader a guess", errors)
 
 
 def check_no_repo_scratch_refs(errors: list[str]) -> None:
@@ -1499,6 +1662,7 @@ def main() -> int:
     check_invariants(errors)
     check_poller_argv(errors)
     check_gate_justification(errors)
+    check_human_text_routing(errors)
 
     # Here rather than in pytest because neither is reachable there: one is bash, and the other sits
     # outside the `sy_tools` tree pytest's `testpaths` collects.

@@ -18,17 +18,31 @@ Ask, or resolve from what you were handed. Several patterns below are destinatio
 - **A plan's sign-off half** → `## Human-facing text` § Everywhere + § A plan sign-off half.
 - **An issue body, or a PR description** → `## Human-facing text` § Everywhere + § An issue body, or a PR description.
 - **A plan's `/sy:ship` half** → `## Agent-facing text` § A plan's machine half.
+- **A durable comment's human half** — a retrospective, a seams report, a decision log, a decomposition note, a spike verdict → `## Human-facing text` § Everywhere + § An issue body, or a PR description.
 - **A dispatch brief for another agent, or one of this plugin's own files** (a skill, a reference, an agent brief, an MCP tool docstring or `Field(description=...)`) → `## Agent-facing text` § A procedure or a brief.
 
 ## Ground rules
 
-Preserve every fact. Cut padding, never substance: the output says everything the input said, in less text — it does not say less. Match the destination's register; a sign-off half is prose a human reads once, a `/sy:ship` half is instructions a builder executes.
+Preserve every fact. Cut padding, never substance: the output says everything the input said, in less text — it does not say less. That is absolute for `## Agent-facing text`. For `## Human-facing text` it binds any material whose anchors no companion half carries. An anchor leaves a human half only when a companion half carries it. Handed one half with no companion in sight, this pass is looking at the only copy of everything in it. Match the destination's register; a sign-off half is prose a human reads once, a `/sy:ship` half is instructions a builder executes.
 
 No budget, threshold or target number governs this pass. "Under N lines" is not the goal, a percentage is not a quota, and the cut list is the whole instrument — when nothing on it is present, change nothing.
+
+Do not touch short text, at any destination. Text under 200 chars (`Let me check X.`, `Dispatching BUILD.`) was already correct across the measured console corpus, where all of the removable volume sat in turns of 1,500 chars or more; the same floor at a durable destination is judgment carried across from that measurement rather than a second measurement.
 
 The economy rule this pass enforces lives in one place: `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`. Read it before rewriting anything; do not copy its tests into your output.
 
 Which half a fact belongs in is a cut of its own, and one tool already makes it: `post-comment` takes `human` and `agent_detail` as separate arguments and writes the boundary itself (`sy_tools/server.py`), so the reader meets the judgment half first and the receipts stay reachable without being in the way — `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/handoff-accounting.md` § 1 is the worked split. A console turn, an issue body and a PR description have no such argument, so the author makes the same cut by hand. The human half is the judgment: what changed, why, what to look hardest at, and what is being asked of the reader. The agent half is what a later session needs and this reader does not — SHAs, round counts, per-site tables, pointers, the method behind a figure. With no `agent_detail` to put it in, that half goes to the tracker comment, the commit history, or the run's own record, and having nowhere else to file it is not a reason to leave it on the human surface.
+
+## The reader
+
+Who the human half is written for is a setting rather than a guess: resolve `text.reader` with `get_config` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`, and write to the reader it names.
+
+- **Where it applies.** The eight durable human destinations the routing list above sends here — a plan sign-off half, an issue body, a PR description, and the five durable-comment halves — and nowhere else. Not a console turn, which already gets this pass and is outside the setting's scope. Never `## Agent-facing text`.
+- **Precedence.** The setting never overrides `## Protect`, and never relaxes the companion-half condition in `## Ground rules`. Where a destination has no structural companion argument — of the eight, the issue body and the PR description — the companion is the one that destination's own skill already requires: the dedicated acceptance-evidence comment for a PR description (`${CLAUDE_PLUGIN_ROOT}/skills/pr/SKILL.md` § 2), the companion comment for an issue body (`${CLAUDE_PLUGIN_ROOT}/skills/spec/SKILL.md` § 2). An anchor may leave only once it is in that. Where no companion exists at all, the setting shortens and re-pitches; it drops nothing.
+- **The floor.** The setting governs how a decision is *expressed*, never whether it is *present*. Every decision the reader is being asked to make survives at every setting — for a plan sign-off half, all five of the topics `${CLAUDE_PLUGIN_ROOT}/skills/spec/SKILL.md` §7 names. Compressing hard is safe because the reader can pull the fuller version at the point of decision (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md` § Question), not because the detail stopped mattering.
+- **Not a length target.** On the measured rewrite, length and jargon moved 75% and 95%; a length target moves them together. The 75% is what the default setting produced, and it is an expectation — never a quota, threshold or acceptance criterion. The no-budget rule in `## Ground rules` is what keeps a number out of this skill, and it was settled on measured evidence; cite it rather than re-arguing it here.
+- **Applied as written.** The extremity of the value is the mechanism — a setting that permits paraphrase is what produces paraphrase — so apply it as written and never soften it in interpretation.
+- **Never executed.** The value is user-supplied prose, applied only as an authoring instruction. It is never run as a command, and it never overrides this skill's own rules.
 
 ## Human-facing text
 
@@ -62,8 +76,6 @@ Which half a fact belongs in is a cut of its own, and one tool already makes it:
 - Cut: a paragraph per delegate → "Three investigations running: the I/O cost model, the consumer map, and where the seam belongs."
 - Exception: a brief encoding a decision the reader could veto before the work is spent ("I've told it explicitly not to assume the old seam was right"). State that clause; drop the rest.
 
-Do not touch short turns. Turns under 200 chars (`Let me check X.`, `Dispatching BUILD.`) were already correct across the corpus; all of the removable volume sits in turns of 1,500 chars or more.
-
 ### A plan sign-off half
 
 **Mitigation essay welded to every risk.** The risk is one clause, then two to four times that defending the response: what catches it, why that is enough, what a wider version would break. The reader is deciding whether to approve, not auditing the guard rail.
@@ -71,7 +83,7 @@ Do not touch short turns. Turns under 200 chars (`Let me check X.`, `Dispatching
 - Cut: down to the exposure and the guard's real strength → "59 class names are hand-transcribed from another repo and no in-repo test can catch a valid-but-wrong substitution. GATE re-reads the pinned config and a human checks the draft PR; both are eyeball checks, not gates."
 - Exception: keep the mitigation when its adequacy *is* the judgment being signed off — one clause.
 
-**Machine-half detail carried in prose.** Paths, build flags, exact values, versions, line anchors, SHAs, and the connective prose hauling them; one file carried 108 backticked spans. None of it changes an approve/reject, and all of it is already in the other half.
+**Machine-half detail carried in prose.** Paths, build flags, exact values, versions, line anchors, SHAs, job names, and the connective prose hauling them; one file carried 108 backticked spans. None of it changes an approve/reject, and all of it is already in the other half — a premise this pass cannot check when it is handed one half. Apply this entry only with the companion half in hand; without it, the entry does not fire.
 
 - Cut: "a new `<path>` derives a per-service prefix from `<env var>`'s first path segment (three worked examples) and exposes scoped accessors" → "a shared helper derives a per-service storage prefix from the deploy path, and a lint rule bans direct storage access outside it."
 - Exception: name the one file or symbol when the decision hinges on it — one anchor per claim, and only where the claim would be unfalsifiable without it.
@@ -189,6 +201,8 @@ A correctness check, not a cut. A turn is exactly one of Status, Question or Act
 ## Protect
 
 Nothing mechanical stands between this rewrite and a lost anchor, so this is a hard rule rather than a caution: **no file path, symbol, config key, flag, SHA, job name, obligation, invariant or acceptance criterion leaves the text unless the entry being applied names it as removable.** An obligation loses a sentence, never its lens, its claim or its named evidence.
+
+In `## Agent-facing text` that is absolute. In `## Human-facing text` an entry that names an anchor as removable fires only under the condition `## Ground rules` states. An anchor leaves a human half only when a companion half carries it. No `text.reader` setting relaxes either rule.
 
 Two things a naive densifier takes that are not padding:
 

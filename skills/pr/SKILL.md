@@ -36,7 +36,7 @@ Base on real diff/log. The mutable description is the PR's human-attention secti
 
 **Acceptance criteria/evidence never live only in the mutable description.** `/sy:ship` posts them as a dedicated PR comment so promotion/refresh cannot erase them.
 
-What belongs in which of those two, and how hard to cut each, is `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
+What belongs in which of those two, and how hard to cut each, is `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`; `/sy:tighten` is the pass that applies it, and the description goes through it — destination a PR description — before it is written.
 
 Title: `<TICKET> - <imperative summary>` when branch carries a ticket key.
 

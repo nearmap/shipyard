@@ -299,7 +299,7 @@ async def post_comment(
         str,
         Field(
             description="The part a human should read and judge: the TL;DR, the reasoning, what needs "
-            "their attention. Leads the comment."
+            "their attention. Leads the comment; tighten it with `/sy:tighten` before posting."
         ),
     ],
     agent_detail: Annotated[

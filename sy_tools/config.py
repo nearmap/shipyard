@@ -894,6 +894,8 @@ def _schema_violations(node: dict, value: object, path: str) -> list[str]:
             violations.append(f"{path!r} does not match the required pattern {node['pattern']!r}")
         if "minLength" in node and len(value) < node["minLength"]:
             violations.append(f"{path!r} must be at least {node['minLength']} characters")
+        if "maxLength" in node and len(value) > node["maxLength"]:
+            violations.append(f"{path!r} must be at most {node['maxLength']} characters")
     if isinstance(value, int) and not isinstance(value, bool) and "minimum" in node and value < node["minimum"]:
         violations.append(f"{path!r} must be >= {node['minimum']}, got {value}")
     if isinstance(value, list) and "items" in node:

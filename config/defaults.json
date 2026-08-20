@@ -43,6 +43,9 @@
       "max_gate_rounds": 5
     }
   },
+  "text": {
+    "reader": "eli15 tldr"
+  },
   "transcript": {
     "attach": false,
     "truncation_limits": {

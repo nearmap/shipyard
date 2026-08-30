@@ -33,6 +33,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 
 REVIEW_MODES = {'gate', 'hunt', 'repo-standards', 'repo-review'}
@@ -50,7 +51,8 @@ MUTATING_GIT = {
     'worktree', 'rm', 'mv', 'revert', 'update-ref', 'filter-branch',
 }
 MUTATING_GH = {
-    'pr': {'merge', 'close', 'create', 'edit', 'ready', 'comment', 'review', 'reopen', 'lock', 'unlock'},
+    'pr': {'merge', 'close', 'create', 'edit', 'ready', 'comment', 'review', 'reopen', 'lock', 'unlock',
+           'revert', 'update-branch'},
     'release': {'create', 'edit', 'delete', 'upload'},
 }
 # Issue-level subcommands are deliberately absent, not overlooked: naming them here would put
@@ -67,10 +69,15 @@ REMOTE_BODY_FLAGS = {
 REMOTE_METHOD_FLAGS = {'curl': ('-X', '--request'), 'wget': ('--method',)}
 # `gh api` field flags. Per gh's own documentation the request method "is GET normally and POST if any
 # parameters were added", so one of these with no explicit method is a write however it reads.
-GH_API_FIELD_FLAGS = ('-f', '--field', '-F', '--raw-field', '--input')
-# `gh` global flags taking a separate value, skipped when locating the subcommand so that
-# `gh -R owner/repo pr merge` is read as `pr merge` rather than as the repo argument.
-_GH_VALUE_FLAGS = {'-R', '--repo', '--hostname'}
+GH_API_FIELD_FLAGS = ('-f', '--raw-field', '-F', '--field', '--input')
+# `gh` flags taking a separate value, skipped when locating the subcommand so that
+# `gh -R owner/repo pr merge` is read as `pr merge` rather than as the repo argument. `gh api`'s own
+# value-taking flags are here too: without them `gh api -H 'Accept: x' graphql` reads the header value
+# as the endpoint, and the graphql exemption below -- which is positional -- denies a legitimate read.
+_GH_VALUE_FLAGS = {
+    '-R', '--repo', '--hostname',
+    '-H', '--header', '-q', '--jq', '-t', '--template', '--cache', '-p', '--preview',
+}
 
 _ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=.*')
 """A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
@@ -206,7 +213,7 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
 
 
 def _segment_reason(segment: str) -> str | None:
-    tokens = [t.strip('"\'') for t in segment.split()]
+    tokens = _tokens(segment)
     i = 0
     while i < len(tokens):
         tok = tokens[i]
@@ -277,6 +284,19 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
         if flag in REMOTE_BODY_FLAGS[cmd]:
             return f'{cmd} {flag} sends a request body, which writes to the remote'
     return None
+
+
+def _tokens(segment: str) -> list[str]:
+    """A segment's words, quote-aware, falling back to a whitespace split when the quoting is unbalanced.
+
+    Quote-aware because a quoted value holding a space is one word to the shell and would otherwise be two
+    here, shifting every positional after it: `gh api -H "Accept: x" graphql` read `x` as the endpoint and
+    denied a legitimate GraphQL read (verified before the fix).
+    """
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return [t.strip('"\'') for t in segment.split()]
 
 
 def _gh_words(rest: list[str]) -> list[str]:
@@ -374,6 +394,7 @@ def _run_remote_cases() -> None:
         'gh pr merge 32 --squash', 'gh pr close 32', 'gh pr edit 32 --body x', 'gh pr ready 32',
         'gh pr comment 32 --body-file report.md', 'gh pr review 32 --approve', 'gh pr reopen 32',
         'gh pr create --title x --body y', 'gh pr lock 32', 'gh pr unlock 32',
+        'gh pr revert 32', 'gh pr update-branch 32',
         'gh release create v1',
         'gh api -X POST repos/o/r/issues/1/comments', 'gh api --method DELETE repos/o/r/issues/1',
         'gh api -XPATCH repos/o/r/pulls/comments/1', 'gh api --method=PUT repos/o/r/x',
@@ -393,6 +414,9 @@ def _run_remote_cases() -> None:
         'gh run view 12345 --log-failed',
         # No method named at all, so nothing to deny on -- including graphql, a read carried over POST.
         'gh api repos/o/r/pulls/32/comments', 'gh api graphql -f query=query{viewer{login}}',
+        # A value-taking flag before `graphql` must not shift it out of the position the exemption reads.
+        'gh api -H "Accept: application/vnd.v3+json" graphql -f query=query{viewer{login}}',
+        'gh api --jq .data graphql -f query=query{viewer{login}}',
         'gh api -X GET repos/o/r', 'gh api --method GET repos/o/r',
         'gh api repos/o/r/pulls/32', 'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
         'curl https://example.test/x', 'curl -s -L https://example.test/x',

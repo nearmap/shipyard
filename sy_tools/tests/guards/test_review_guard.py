@@ -52,6 +52,8 @@ def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
     'gh pr create --title x --body y',
     'gh pr lock 32',
     'gh pr unlock 32',
+    'gh pr revert 32',
+    'gh pr update-branch 32',
     'curl -X POST https://example.test/x',
     'curl -d @body.json https://example.test/x',
 ])
@@ -68,8 +70,14 @@ def test_every_review_mode_is_refused_a_remote_write(mode, command):
     'gh api repos/o/r/pulls/32/comments',
     'gh api repos/o/r/pulls/32',
     'gh api graphql -f query=query{viewer{login}}',
+    'gh api -H "Accept: application/vnd.v3+json" graphql -f query=query{viewer{login}}',
+    'gh api --jq .data graphql -f query=query{viewer{login}}',
     'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
 ])
 def test_every_review_mode_keeps_its_remote_reads(mode, command):
-    """`gh api graphql` is the load-bearing one: a field-carrying read over POST that names no method."""
+    """`gh api graphql` is the load-bearing one: a field-carrying read over POST that names no method.
+
+    Including the flag-first spellings: a value-taking flag before `graphql` must not shift it out of the
+    position the exemption reads, quoted header value and all.
+    """
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None

@@ -8,9 +8,10 @@ This is a backstop, not a shell sandbox: the review prompts still require read-o
 
 Both sides are deny-lists, so an unrecognised command is allowed. That direction is
 deliberate for an agent whose job is reading: a missed write shape is a gap, but a wrongly
-denied read breaks the review outright. The remote leg keys on the method a command names
-and never on whether a request is a POST underneath, which is what keeps `gh api graphql`
--- a read carried over POST, and how review threads are enumerated -- working.
+denied read breaks the review outright. The remote leg denies both a named mutating method
+and a field flag with no explicit method (gh's own docs call that an implicit POST);
+`gh api graphql` -- a read carried over POST, and how review threads are enumerated -- is
+exempted from the second check by name, which is what keeps it working.
 
 The threat model is an honest mistake, not an attacker: a review agent reaching for a
 write has misread its brief, it is not trying to get past this file. So the deny-lists

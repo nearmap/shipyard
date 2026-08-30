@@ -59,6 +59,13 @@ def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
     # Flag and value quoted into one shell word: `-d hello` is a real POST, and matching the whole word
     # against the body-flag set missed it.
     'curl "-d hello" https://example.test/x',
+    # Bundled and glued curl short options: `-sXPOST` is `-s -X POST`, `-d@body.json` is `-d @body.json`.
+    # A flag is neither the whole token nor its leading characters in any of these, and all four POST live.
+    'curl -d\'{"a":1}\' https://example.test/x',
+    'curl -d@body.json https://example.test/x',
+    'curl -Fk=v https://example.test/x',
+    'curl -sXPOST https://example.test/x',
+    'curl -skXDELETE https://example.test/x',
 ])
 def test_every_review_mode_is_refused_a_remote_write(mode, command):
     """Parametrized over the live set, so a review mode added later inherits this coverage rather than missing it."""
@@ -76,6 +83,8 @@ def test_every_review_mode_is_refused_a_remote_write(mode, command):
     'gh api -H "Accept: application/vnd.v3+json" graphql -f query=query{viewer{login}}',
     'gh api --jq .data graphql -f query=query{viewer{login}}',
     'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
+    # An ordinary header carrying a `;`, with no body or method flag: masking it must not invent a write.
+    'curl -H "Content-Type: application/json; charset=utf-8" https://example.test/x',
 ])
 def test_every_review_mode_keeps_its_remote_reads(mode, command):
     """`gh api graphql` is the load-bearing one: a field-carrying read over POST that names no method.
@@ -84,3 +93,19 @@ def test_every_review_mode_keeps_its_remote_reads(mode, command):
     position the exemption reads, quoted header value and all.
     """
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None
+
+
+@pytest.mark.parametrize('command', [
+    # A charset directive in a Content-Type header is ordinary, and splitting the raw string on it stranded
+    # `curl` and its `-d` in different segments, so the POST was never seen (verified live).
+    'curl -H "Content-Type: application/json; charset=utf-8" -d \'{"body":"x"}\' https://example.test/x',
+    'git -c user.name="a; b" commit -m x',
+])
+def test_a_separator_inside_a_quoted_value_does_not_split_the_command(command):
+    assert review_guard.decision('gate', 'Bash', {'command': command}, cwd='/repo') is not None
+
+
+def test_unbalanced_quoting_still_denies_through_the_pre_existing_fallback():
+    """Nothing to mask when no closing quote exists, so the split -- and `_tokens`' fallback -- behave as before."""
+    assert review_guard._mask_quoted('git commit -m "a; b') == ('git commit -m "a; b', {})
+    assert review_guard.decision('gate', 'Bash', {'command': 'git commit -m "a; b'}, cwd='/repo') is not None

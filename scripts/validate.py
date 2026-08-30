@@ -1687,6 +1687,26 @@ def check_invariants(errors: list[str]) -> None:
             "override of the return contract and the blocked returns",
             errors,
         )
+    # The reviewer's report reaches the pull request across three files and is silently droppable at each:
+    # written, carried through gate's return, then posted. Pinned where each hop is written.
+    if "REPORT:" not in repo_review:
+        fail(
+            "agents/repo-review.md must return a REPORT path for the report it writes; findings that live "
+            "only in a return reach nobody but sy:gate, which is the invisibility this step exists to fix",
+            errors,
+        )
+    if "REPO_REVIEW_REPORT" not in gate:
+        fail(
+            "agents/gate.md must carry repo-review's REPORT path through its own return block; the caller "
+            "posts that file and cannot post a path gate never reports",
+            errors,
+        )
+    if fix_cycle_start is not None and "REPO_REVIEW_REPORT" not in gate_ref[fix_cycle_start.end():]:
+        fail(
+            "immutable-gate § Fix cycle must post the REPO_REVIEW_REPORT to the pull request through /sy:pr; "
+            "unposted, the repository's own reviewer is visible only inside gate's return",
+            errors,
+        )
     # Neither file is in the fixed citation loop above, so this is what holds both the key and its citation.
     for rel in ("skills/standards/references/resolve.md", "skills/standards/references/review.md"):
         text = read(rel)

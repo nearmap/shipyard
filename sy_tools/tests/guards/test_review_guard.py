@@ -56,6 +56,9 @@ def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
     'gh pr update-branch 32',
     'curl -X POST https://example.test/x',
     'curl -d @body.json https://example.test/x',
+    # Flag and value quoted into one shell word: `-d hello` is a real POST, and matching the whole word
+    # against the body-flag set missed it.
+    'curl "-d hello" https://example.test/x',
 ])
 def test_every_review_mode_is_refused_a_remote_write(mode, command):
     """Parametrized over the live set, so a review mode added later inherits this coverage rather than missing it."""

@@ -280,20 +280,18 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
     if method is not None and method.upper() in MUTATING_HTTP_METHODS:
         return f'{cmd} --request {method.upper()} writes to the remote'
     for tok in rest:
-        flag = tok.split('=', 1)[0]
+        # Also split on a space: `curl "-d hello"` is one shell word, and the flag is only its first.
+        flag = tok.split('=', 1)[0].split(' ', 1)[0]
         if flag in REMOTE_BODY_FLAGS[cmd]:
             return f'{cmd} {flag} sends a request body, which writes to the remote'
     return None
 
 
 def _tokens(segment: str) -> list[str]:
-    """A segment's words, quote-aware, falling back to a whitespace split when the quoting is unbalanced.
-
-    Quote-aware because a quoted value holding a space is one word to the shell and would otherwise be two
-    here, shifting every positional after it: `gh api -H "Accept: x" graphql` read `x` as the endpoint and
-    denied a legitimate GraphQL read (verified before the fix).
-    """
+    """A segment's words, quote-aware, falling back to a whitespace split when the quoting is unbalanced."""
     try:
+        # Quoted spaces are one word to the shell: unsplit, `gh api -H "Accept: x" graphql` read `x` as the
+        # endpoint and denied a legitimate GraphQL read (verified before the fix).
         return shlex.split(segment)
     except ValueError:
         return [t.strip('"\'') for t in segment.split()]
@@ -407,6 +405,8 @@ def _run_remote_cases() -> None:
         'curl -XDELETE https://example.test/x', 'curl -d @body.json https://example.test/x',
         'curl --data-binary @body.json https://example.test/x', 'curl -F k=v https://example.test/x',
         'curl -T upload.txt https://example.test/x', 'curl --data-urlencode k=v https://example.test/x',
+        # A short flag quoted together with its value is one shell word, so the flag is only its first part.
+        'curl "-d hello" https://example.test/x', "curl '-F k=v' https://example.test/x",
         'wget --post-data=x https://example.test/x', 'wget --method=DELETE https://example.test/x',
     ]
     allow = [
@@ -472,6 +472,9 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': 'timeout 30 pytest -q'}, False),
         ('gate', 'Bash', {'command': "find src -name '*.py' -exec grep -l foo {} +"}, False),
         ('gate', 'Bash', {'command': 'git commit -m x'}, True),
+        # A `;` inside the quoted message splits the segment mid-quote, so this reaches `_tokens` unbalanced
+        # and is denied only by its whitespace-split fallback.
+        ('gate', 'Bash', {'command': 'git commit -m "a; b"'}, True),
         ('gate', 'Bash', {'command': 'git -C /repo commit -m x'}, True),
         ('gate', 'Bash', {'command': 'git stash'}, True),
         ('gate', 'Bash', {'command': 'git apply patch.diff'}, True),

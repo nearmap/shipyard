@@ -1707,6 +1707,22 @@ def check_invariants(errors: list[str]) -> None:
             "unposted, the repository's own reviewer is visible only inside gate's return",
             errors,
         )
+    # The guard's remote leg and the one documented shape it must not deny. `graphql` by name because
+    # "deny anything that is a POST underneath" is the wrong rule this leg was written to avoid.
+    guard = read("sy_tools/guards/review_guard.py")
+    for token, why in (
+        ("MUTATING_GH", "the deny-list is what stops a review agent merging or commenting on the PR it reviews"),
+        ("REMOTE_BODY_FLAGS", "a request body is a remote write whatever method the command names"),
+        ("graphql", "a read carried over POST must stay allowed, or review-thread enumeration breaks"),
+    ):
+        if token not in guard:
+            fail(f"sy_tools/guards/review_guard.py must name `{token}`: {why}", errors)
+    if "remote" not in guard.split('"""')[1].lower():
+        fail(
+            "review_guard's module docstring must state that it models the remote side too; it named "
+            "interpreter indirection as its one gap while every remote write went through untouched",
+            errors,
+        )
     # Neither file is in the fixed citation loop above, so this is what holds both the key and its citation.
     for rel in ("skills/standards/references/resolve.md", "skills/standards/references/review.md"):
         text = read(rel)

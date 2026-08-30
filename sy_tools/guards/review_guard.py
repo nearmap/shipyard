@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 """PreToolUse guard for the review agents.
 
-Reads Claude Code hook JSON on stdin and denies obvious source mutation. This is a
-backstop, not a shell sandbox: the review prompts still require read-only work.
-Interpreter indirection (`bash -c`, `python -c`) is a documented gap pending an
-allowlist approach.
+Reads Claude Code hook JSON on stdin and denies obvious mutation on two sides: the local
+checkout (filesystem verbs and mutating `git` subcommands) and the remote (`gh`
+subcommands that write, and `curl`/`wget` carrying a mutating method or a request body).
+This is a backstop, not a shell sandbox: the review prompts still require read-only work.
+
+Both sides are deny-lists, so an unrecognised command is allowed. That direction is
+deliberate for an agent whose job is reading: a missed write shape is a gap, but a wrongly
+denied read breaks the review outright. The remote leg keys on the method a command names
+and never on whether a request is a POST underneath, which is what keeps `gh api graphql`
+-- a read carried over POST, and how review threads are enumerated -- working.
+
+Interpreter indirection (`bash -c`, `python -c`) is a documented gap pending an allowlist
+approach, and it covers the remote side equally: nothing here inspects what an interpreter
+would go on to run.
 
 Runs as a single plugin-level PreToolUse hook for every agent, so it selects its mode
 from the event's agent_type (namespace-stripped, e.g. `sy:gate` -> `gate`) and fails
@@ -39,6 +49,26 @@ MUTATING_GIT = {
     'merge', 'push', 'pull', 'restore', 'stash', 'apply', 'am', 'branch', 'tag',
     'worktree', 'rm', 'mv', 'revert', 'update-ref', 'filter-branch',
 }
+MUTATING_GH = {
+    'pr': {'merge', 'close', 'edit', 'ready', 'comment', 'review', 'reopen'},
+    'release': {'create', 'edit', 'delete', 'upload'},
+}
+# Issue-level subcommands are deliberately absent, not overlooked: naming them here would put
+# tracker-native vocabulary in a core module, which the seam rule forbids and its own check enforces.
+# They stay reachable, and the `gh api` method leg below still covers the same writes over REST.
+MUTATING_HTTP_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+# Per command, because the same short flag means different things: `-d` is a request body to curl and
+# `--debug` to wget, so one shared set would deny a plain wget read.
+REMOTE_BODY_FLAGS = {
+    'curl': {'-d', '--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode',
+             '-F', '--form', '-T', '--upload-file'},
+    'wget': {'--post-data', '--post-file', '--body-data', '--body-file'},
+}
+REMOTE_METHOD_FLAGS = {'curl': ('-X', '--request'), 'wget': ('--method',)}
+# `gh` global flags taking a separate value, skipped when locating the subcommand so that
+# `gh -R owner/repo pr merge` is read as `pr merge` rather than as the repo argument.
+_GH_VALUE_FLAGS = {'-R', '--repo', '--hostname'}
+
 _ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=.*')
 """A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
 
@@ -197,6 +227,8 @@ def _segment_reason(segment: str) -> str | None:
         sub = _git_subcommand(rest)
         if sub in MUTATING_GIT:
             return f'git {sub} mutates the checkout or git state'
+    if cmd in REMOTE_BODY_FLAGS or cmd == 'gh':
+        return _remote_reason(cmd, rest)
     if cmd == 'find':
         if '-delete' in rest:
             return 'find -delete mutates files'
@@ -205,6 +237,67 @@ def _segment_reason(segment: str) -> str | None:
                 exe = rest[rest.index(flag) + 1].lstrip('\\').rsplit('/', 1)[-1]
                 if exe in MUTATING_COMMANDS or exe == 'git':
                     return f'find {flag} {exe} mutates files'
+    return None
+
+
+def _remote_reason(cmd: str, rest: list[str]) -> str | None:
+    """A deny reason for a remote-side mutation, or None to allow.
+
+    A deny-list: an unrecognised remote command, subcommand or flag is allowed. Reads are the reviewer's
+    whole job, so a shape this does not recognise fails open rather than breaking one.
+    """
+    if cmd == 'gh':
+        words = _gh_words(rest)
+        group = words[0] if words else None
+        if group == 'api':
+            # On the named method only. `gh api graphql` is a read carried over POST and names no method,
+            # so denying on the underlying verb would break review-thread enumeration.
+            method = _flag_value(rest, ('-X', '--method'))
+            if method is not None and method.upper() != 'GET':
+                return f'gh api --method {method.upper()} writes to the remote'
+            return None
+        sub = words[1] if len(words) > 1 else None
+        if group in MUTATING_GH and sub in MUTATING_GH[group]:
+            return f'gh {group} {sub} writes to the remote; a review reports, it never changes what it reviews'
+        return None
+    method = _flag_value(rest, REMOTE_METHOD_FLAGS[cmd])
+    if method is not None and method.upper() in MUTATING_HTTP_METHODS:
+        return f'{cmd} --request {method.upper()} writes to the remote'
+    for tok in rest:
+        flag = tok.split('=', 1)[0]
+        if flag in REMOTE_BODY_FLAGS[cmd]:
+            return f'{cmd} {flag} sends a request body, which writes to the remote'
+    return None
+
+
+def _gh_words(rest: list[str]) -> list[str]:
+    """`gh`'s positional words, with global flags and their values stepped over."""
+    words: list[str] = []
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok in _GH_VALUE_FLAGS:
+            i += 2
+            continue
+        if tok.startswith('-'):
+            i += 1
+            continue
+        words.append(tok)
+        i += 1
+    return words
+
+
+def _flag_value(rest: list[str], flags: tuple[str, ...]) -> str | None:
+    """The value of the first of `flags` present, across the `-X V`, `-XV` and `--flag=V` spellings."""
+    for i, tok in enumerate(rest):
+        for flag in flags:
+            if tok == flag:
+                return rest[i + 1] if i + 1 < len(rest) else ''
+            if tok.startswith(f'{flag}='):
+                return tok[len(flag) + 1:]
+            # `-XPOST`: a short flag with its value glued on, which curl and gh both accept.
+            if len(flag) == 2 and tok.startswith(flag) and len(tok) > 2:
+                return tok[2:]
     return None
 
 
@@ -248,6 +341,7 @@ def _self_test() -> None:
         globals()['scratch_root'] = lambda cwd: root
         try:
             _run_cases(root)
+            _run_remote_cases()
             globals()['scratch_root'] = lambda cwd: None
             for mode in sorted(SANDBOX_WRITE_MODES):
                 for tool, tool_input in (
@@ -259,6 +353,45 @@ def _self_test() -> None:
                     )
         finally:
             globals()['scratch_root'] = original
+
+
+def _run_remote_cases() -> None:
+    """The remote leg, both directions, for every review mode -- new modes included automatically.
+
+    The allowed half is the load-bearing half: this is a deny-list guarding an agent whose entire job is
+    reading, so a case that wrongly denies a read is a worse defect than one that misses a write.
+    """
+    deny = [
+        'gh pr merge 32 --squash', 'gh pr close 32', 'gh pr edit 32 --body x', 'gh pr ready 32',
+        'gh pr comment 32 --body-file report.md', 'gh pr review 32 --approve', 'gh pr reopen 32',
+        'gh release create v1',
+        'gh api -X POST repos/o/r/issues/1/comments', 'gh api --method DELETE repos/o/r/issues/1',
+        'gh api -XPATCH repos/o/r/pulls/comments/1', 'gh api --method=PUT repos/o/r/x',
+        # A global flag with its own value must not be mistaken for the subcommand.
+        'gh -R nearmap/shipyard pr merge 32',
+        'curl -X POST https://example.test/x', 'curl --request PUT https://example.test/x',
+        'curl -XDELETE https://example.test/x', 'curl -d @body.json https://example.test/x',
+        'curl --data-binary @body.json https://example.test/x', 'curl -F k=v https://example.test/x',
+        'curl -T upload.txt https://example.test/x', 'curl --data-urlencode k=v https://example.test/x',
+        'wget --post-data=x https://example.test/x', 'wget --method=DELETE https://example.test/x',
+    ]
+    allow = [
+        'gh pr view 32', 'gh pr diff 32', 'gh pr checks 32', 'gh pr list --state open',
+        'gh run view 12345 --log-failed',
+        # No method named at all, so nothing to deny on -- including graphql, a read carried over POST.
+        'gh api repos/o/r/pulls/32/comments', 'gh api graphql -f query=query{viewer{login}}',
+        'gh api -X GET repos/o/r', 'gh api --method GET repos/o/r',
+        'curl https://example.test/x', 'curl -s -L https://example.test/x',
+        'curl -X GET https://example.test/x', 'wget https://example.test/x',
+        # `-d` is a request body to curl and `--debug` to wget; a shared flag set would deny this read.
+        'wget -d https://example.test/x',
+    ]
+    for mode in sorted(REVIEW_MODES):
+        for command, want_deny in [(c, True) for c in deny] + [(c, False) for c in allow]:
+            got = decision(mode, 'Bash', {'command': command}, cwd='/repo')
+            assert (got is not None) == want_deny, (
+                f'{mode} remote: {command!r} -> {got!r} (wanted {"deny" if want_deny else "allow"})'
+            )
 
 
 def _run_cases(root: Path) -> None:

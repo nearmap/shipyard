@@ -1,6 +1,6 @@
 # Review mode
 
-If a dedicated repository standards-review skill exists, invoke it and return its cited findings. Do not duplicate the pass.
+When `skills.standards` names the repository's own standards skill (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`), invoke its review mode and return its cited findings — skipping the invocation only when the caller states that skill already ran for this scope. Do not duplicate the pass.
 
 Otherwise resolve authoritative repo docs and review only applicable rules. Every standards finding requires exact code pointer, exact rule/section pointer, severity, and concrete fix. Preference is not policy.
 

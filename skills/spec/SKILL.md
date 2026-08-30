@@ -47,7 +47,7 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 
 ## 3. Resolve standards and deep research
 
-- Resolve standards in a delegate (subagent running `/sy:standards resolve <scope>`) that returns only the compact contract — authority, task-relevant constraints, primitives, risk lenses; the raw rule and doc reads stay out of the spec context, where standards loaded early would be re-paid on every later turn.
+- Resolve standards in the `repo-standards` delegate (running `/sy:standards resolve <scope>` at the model `agent_model {"name": "repo-standards"}` reports) that returns only the compact contract — authority, task-relevant constraints, primitives, risk lenses; the raw rule and doc reads stay out of the spec context, where standards loaded early would be re-paid on every later turn.
 - Deep research starts only after the §1 premise + prior-work check has survived; evidence against the premise found later still stops the spec (see §6, shelving with evidence) rather than merely reshaping it.
 - Read durable cross-session memory early — `memory_list` (or `memory_search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the plan as a known anchor, and a lesson this task's own research directly contradicts is refuted immediately (`memory_refute`, same reference) rather than carried forward or silently dropped.
 - Trace every load-bearing claim to code, current primary docs, or real data.
@@ -62,7 +62,7 @@ Record standards compactly, for example:
 
 ```text
 Standards authority
-- /repo-standards skill
+- the skill `skills.standards` names
 
 Task-specific constraints / risk lenses
 - public response schema remains backward compatible

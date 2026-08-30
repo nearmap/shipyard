@@ -116,7 +116,7 @@ shipyard/
   hooks/hooks.json                # review + secret guards, spec-gate round cap, usage accounting, eval-event log (plugin-level)
   sy_tools/                       # the sy MCP server: the tool surface, config resolution, guards, tracker adapters
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
-  agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater ship-{start,build,gate}
+  agents/                         # sweep seam trace slice hunt gate spec-gate img-inspector explain-author debate debater repo-{standards,review} ship-{start,build,gate}
   skills/
     plan/ spec/ ship/ spike/ pr/ ci/ standards/ tighten/ explain/ help/ config/ init-repo/
     tracker/

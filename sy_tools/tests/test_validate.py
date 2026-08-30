@@ -2,7 +2,7 @@
 
 Nothing else in the suite imports `scripts/`; it is a standalone CLI, not a package, and it is loaded
 once here for every case below. `ROOT` is monkeypatched onto a throwaway `agents/` directory rather
-than the real one, so the allowlist cases can be synthetic and the real 14 agents stay untouched.
+than the real one, so the allowlist cases can be synthetic and the real 16 agents stay untouched.
 """
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ _spec = importlib.util.spec_from_file_location(
 assert _spec is not None and _spec.loader is not None
 validate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validate)
+
+REAL_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _check(
@@ -767,3 +769,30 @@ def test_the_human_text_routing_check_is_registered_in_the_validation_run():
     """A check nothing calls protects nothing, and `main()` is its only caller."""
     assert "check_human_text_routing(errors)" in inspect.getsource(validate.main), \
         "the routing check must be registered in main()"
+
+
+def _tier_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stem: str, declared_name: str) -> list[str]:
+    """`check_agent_frontmatter_tiers` over one synthetic agent, with the real floors and tiers in scope."""
+    for rel in ("config/floors.json", "config/defaults.json"):
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((REAL_ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    (agents / f"{stem}.md").write_text(
+        f"---\nname: {declared_name}\ndescription: test\nmodel: fable\neffort: max\n---\nbody\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_agent_frontmatter_tiers(errors)
+    return errors
+
+
+def test_a_frontmatter_name_matching_its_filename_stem_passes(tmp_path, monkeypatch):
+    assert _tier_check(tmp_path, monkeypatch, "probe", "probe") == []
+
+
+def test_a_frontmatter_name_drifted_from_its_filename_stem_is_refused(tmp_path, monkeypatch):
+    """Floors key on the stem while dispatch and `agent_model` key on the name; drift mis-floors silently."""
+    errors = _tier_check(tmp_path, monkeypatch, "repo-review", "repo_review")
+    assert any("is not the filename stem" in e for e in errors), errors

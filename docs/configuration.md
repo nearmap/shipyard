@@ -64,6 +64,8 @@ show_config {}
 | `ship.escalation.max_needs_decision` | no | A ship phase exceeding this many `needs-decision` returns without reaching `done` escalates to `/sy:spec` as underspecified. |
 | `ship.escalation.max_needs_trace` | no | A ship phase exceeding this many `needs-trace` returns without reaching `done` escalates to `/sy:spec` as missing evidence, on its own separate count. |
 | `ship.escalation.max_gate_rounds` | no | A GATE phase whose fix-cycle rounds for the run have reached this many without converging returns `needs-decision` (tagged `max_gate_rounds`) rather than continuing; a count that has reached the cap is a breach, so the cap-th round is the last one allowed. The count is never reset merely because a fix round pushes a new head, only by an explicit raise-budget disposition. |
+| `skills.standards` | no | Names this repository's own engineering-standards skill — a bare name, or the `plugin:skill` form — which `/sy:standards` then treats as its top authority in both modes. Unset means the repository has none and the pass resolves its docs and rules directly. |
+| `skills.reviewer` | no | Names this repository's own code-review skill, which `sy:gate` runs over the same pinned commits as an additive pass. Its findings are candidates for `sy:gate` to judge, never a verdict, and it never fixes or dispositions anything. Unset means no extra review runs. |
 | `text.reader` | no | Who a durable human-facing artifact is written for — a plan's sign-off half, an issue body, a PR description, the human half of a durable comment. `/sy:tighten` applies it as an authoring instruction: it shapes register and vocabulary, it is never executed as a request, and it can never override that skill's `## Protect` rules or drop a decision the reader has to make. It is **not** a length target and is deliberately not expressed as one — length follows from what the reader needs, not from a cap. An extreme value is intended usage rather than a mistake: the extremity is the mechanism, because a setting that permits paraphrase is what produces paraphrase. |
 | `transcript.attach` | no | Whether `/sy:plan`, `/sy:spec`, and (full-tier) `/sy:ship` render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself. |
 | `transcript.truncation_limits.tool_input` | no | Character limit per tool-input block when `sy_tools/usage.py` renders a readable transcript. |
@@ -110,7 +112,7 @@ export ACLI_TOKEN=...
 
 ## Models: tiers, then per-agent bindings
 
-Tiers exist so that raising the frontier tier is one edit rather than thirteen:
+Tiers exist so that raising the frontier tier is one edit rather than one per agent:
 
 ```json
 {

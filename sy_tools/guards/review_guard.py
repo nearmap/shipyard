@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse guard for the gate/hunt review agents.
+"""PreToolUse guard for the review agents.
 
 Reads Claude Code hook JSON on stdin and denies obvious source mutation. This is a
 backstop, not a shell sandbox: the review prompts still require read-only work.
@@ -9,12 +9,13 @@ allowlist approach.
 Runs as a single plugin-level PreToolUse hook for every agent, so it selects its mode
 from the event's agent_type (namespace-stripped, e.g. `sy:gate` -> `gate`) and fails
 open — allowing the tool — for any agent that is not a review agent, so build agents
-can still mutate. An explicit `gate`/`hunt`/`self-test` argv still forces that mode.
+can still mutate. An explicit argv naming a review mode, or `self-test`, still forces
+that mode.
 
-Hunt's write sandbox is the repository's own scratch directory, resolved from the
-event's cwd (see `scratch_root`) and never from the environment. Resolving it is the
-only thing this script asks of the config resolver, and a resolution it cannot make
-fails closed.
+The write sandbox the `SANDBOX_WRITE_MODES` subset gets is the repository's own scratch
+directory, resolved from the event's cwd (see `scratch_root`) and never from the
+environment. Resolving it is the only thing this script asks of the config resolver, and
+a resolution it cannot make fails closed. Every other review mode is purely read-only.
 """
 from __future__ import annotations
 
@@ -24,7 +25,10 @@ from pathlib import Path
 import re
 import sys
 
-REVIEW_MODES = {'gate', 'hunt'}
+REVIEW_MODES = {'gate', 'hunt', 'repo-standards', 'repo-review'}
+# The subset that may write into the resolved scratch root. Everything in REVIEW_MODES but not here is
+# read-only; anything here but not in REVIEW_MODES would be unguarded entirely, which `_self_test` pins.
+SANDBOX_WRITE_MODES = {'hunt', 'repo-review'}
 WRAPPERS = {'sudo', 'env', 'nice', 'ionice', 'nohup', 'time', 'timeout', 'stdbuf', 'xargs', 'command'}
 MUTATING_COMMANDS = {
     'rm', 'mv', 'cp', 'install', 'truncate', 'touch', 'dd', 'rsync', 'ln',
@@ -45,7 +49,7 @@ read *that* as the command, matched it against nothing, and allowed whatever fol
 `FOO+=bar rm -rf src` and `FOO+=bar git commit -m x` both went through this guard untouched
 (verified before the fix). A missed assignment prefix disarms the mutation check entirely rather
 than narrowing it, which is why it is worth fixing here rather than deferring with this file's other
-known gaps: this hook gates every `gate`/`hunt` review agent."""
+known gaps: this hook gates every review agent."""
 
 
 def deny(reason: str) -> None:
@@ -59,12 +63,12 @@ def deny(reason: str) -> None:
 
 
 def scratch_root(cwd: str) -> Path | None:
-    """Hunt's write sandbox for this event, or None when it cannot be resolved.
+    """The sandbox-write modes' writable root for this event, or None when it cannot be resolved.
 
     Resolved from the event's own `cwd`, which is the load-bearing part. Claude Code exports
     `CLAUDE_PROJECT_DIR` to a hook subprocess but not to a subagent's own Bash tool, so a root
     derived from the environment would name the main checkout here and the worktree there: inside a
-    `/sy:ship` worktree the guard would deny every hunt write as an escape while the agent believed
+    `/sy:ship` worktree the guard would deny every sandboxed write as an escape while the agent believed
     it was writing inside the sandbox it had been given. `repo_scratch_dir` keys on the logical
     repository, so guard and guarded agree from either without depending on `CLAUDE_PROJECT_DIR` or
     any working-directory convention (absent a `GIT_COMMON_DIR`/`GIT_DIR` override, which neither the
@@ -105,9 +109,12 @@ def decision(mode: str, tool: str, args: dict, cwd: str) -> str | None:
     root = scratch_root(cwd)
     if tool in {'Write', 'Edit', 'MultiEdit', 'NotebookEdit'}:
         path = args.get('file_path') or args.get('path') or args.get('notebook_path') or ''
-        if mode == 'hunt' and path and under_scratch(path, cwd, root):
+        if mode in SANDBOX_WRITE_MODES and path and under_scratch(path, cwd, root):
             return None
-        return f'{mode} is source-read-only; in hunt mode writes are allowed only under {_sandbox(root)}'
+        return (
+            f'{mode} is source-read-only; a sandbox-write mode ({", ".join(sorted(SANDBOX_WRITE_MODES))}) may '
+            f'write only under {_sandbox(root)}'
+        )
     if tool != 'Bash':
         return None
     return _classify_bash(str(args.get('command', '')), mode, cwd, root)
@@ -151,16 +158,16 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         reason = _segment_reason(segment)
         if reason:
             return f'{mode} review: {reason}'
-    # Shell redirection is allowed to /dev/null, and for hunt to the resolved sandbox root.
+    # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
     for target in re.findall(r'(?:^|\s)(?:>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
         target = target.strip('"\'')
         if target == '/dev/null':
             continue
-        if mode == 'hunt' and under_scratch(target, cwd, root):
+        if mode in SANDBOX_WRITE_MODES and under_scratch(target, cwd, root):
             continue
         return (
-            f'{mode} review: shell redirection is allowed only to /dev/null, or in hunt mode under '
-            f'{_sandbox(root)}'
+            f'{mode} review: shell redirection is allowed only to /dev/null, or for a sandbox-write mode '
+            f'({", ".join(sorted(SANDBOX_WRITE_MODES))}) under {_sandbox(root)}'
         )
     return None
 
@@ -224,6 +231,13 @@ def _self_test() -> None:
     """
     import tempfile
 
+    # A mode granted the sandbox but absent from REVIEW_MODES is never dispatched to `decision` at all: the
+    # guard fails open on it and the grant silently becomes unrestricted write. Asserted, not assumed,
+    # because the two sets are edited independently and only one of them is what `main` gates on.
+    assert SANDBOX_WRITE_MODES <= REVIEW_MODES, (
+        f'{sorted(SANDBOX_WRITE_MODES - REVIEW_MODES)} may write the sandbox but is not guarded at all'
+    )
+
     original = globals()['scratch_root']
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / 'scratch' / 'logical-repo'
@@ -235,13 +249,14 @@ def _self_test() -> None:
         try:
             _run_cases(root)
             globals()['scratch_root'] = lambda cwd: None
-            for tool, tool_input in (
-                ('Write', {'file_path': str(root / 'repro.py')}),
-                ('Bash', {'command': f'echo data > {root / "out.txt"}'}),
-            ):
-                assert decision('hunt', tool, tool_input, cwd='/repo') is not None, (
-                    f'an unresolvable sandbox root must deny {tool}, never allow it'
-                )
+            for mode in sorted(SANDBOX_WRITE_MODES):
+                for tool, tool_input in (
+                    ('Write', {'file_path': str(root / 'repro.py')}),
+                    ('Bash', {'command': f'echo data > {root / "out.txt"}'}),
+                ):
+                    assert decision(mode, tool, tool_input, cwd='/repo') is not None, (
+                        f'an unresolvable sandbox root must deny {mode} {tool}, never allow it'
+                    )
         finally:
             globals()['scratch_root'] = original
 
@@ -259,6 +274,23 @@ def _run_cases(root: Path) -> None:
         ('hunt', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, False),
         ('hunt', 'Bash', {'command': 'echo data > /tmp/out.txt'}, True),
         ('hunt', 'Bash', {'command': f'echo data > {root / "link" / "out.txt"}'}, True),
+        # `repo-review` is the second sandbox-write mode: the same containment, keyed on the set and not on
+        # the one mode name the two write sites used to compare against.
+        ('repo-review', 'Write', {'file_path': str(root / 'repro.py')}, False),
+        ('repo-review', 'Write', {'file_path': str(root / '..' / 'elsewhere' / 'a.py')}, True),
+        ('repo-review', 'Write', {'file_path': 'src/a.py'}, True),
+        ('repo-review', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, False),
+        ('repo-review', 'Bash', {'command': 'echo data > /tmp/out.txt'}, True),
+        ('repo-review', 'Bash', {'command': 'git commit -m x'}, True),
+        ('repo-review', 'Bash', {'command': 'git rev-parse HEAD'}, False),
+        # `repo-standards` is guarded but ungranted: being in REVIEW_MODES and not SANDBOX_WRITE_MODES has to
+        # deny a write *inside* the root too, which is the direction an accidental `in REVIEW_MODES` test
+        # at either write site would invert.
+        ('repo-standards', 'Write', {'file_path': str(root / 'repro.py')}, True),
+        ('repo-standards', 'Write', {'file_path': 'src/a.py'}, True),
+        ('repo-standards', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, True),
+        ('repo-standards', 'Bash', {'command': 'rm -rf src'}, True),
+        ('repo-standards', 'Bash', {'command': "grep -rn 'foo' skills/"}, False),
         ('gate', 'Write', {'file_path': str(root / 'repro.py')}, True),
         ('gate', 'Bash', {'command': 'git log --oneline -5'}, False),
         ('gate', 'Bash', {'command': 'git diff HEAD~1 -- src/'}, False),

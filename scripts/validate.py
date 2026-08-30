@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_AGENTS = {
     "sweep", "seam", "trace", "slice", "hunt", "gate", "ship-start", "ship-build", "ship-gate",
     "img-inspector", "explain-author", "debate", "debater", "spec-gate",
+    "repo-standards", "repo-review",
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
@@ -621,6 +622,16 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
         model = re.search(r"^model:\s*(\S+)", block, re.M)
         effort = re.search(r"^effort:\s*(\S+)", block, re.M)
+        # Floors and defaults below are keyed on `p.stem`, while the runtime `agent_type` and every
+        # `agent_model` call key on the frontmatter `name`. Drift between them mis-floors the agent under a
+        # different name's floor -- or no floor at all -- and every check here still reads clean.
+        declared_name = re.search(r"^name:\s*(\S+)", block, re.M)
+        if declared_name and declared_name.group(1) != p.stem:
+            fail(
+                f"{p.relative_to(ROOT)}: frontmatter name {declared_name.group(1)!r} is not the filename stem "
+                f"{p.stem!r}; the floor below is keyed on the stem and dispatch is keyed on the name",
+                errors,
+            )
         if not model:
             fail(f"{p.relative_to(ROOT)}: frontmatter declares no model", errors)
         if not effort:
@@ -1578,6 +1589,62 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} names a live-resolved config value and must cite config-values.md", errors)
     if "shipped default" not in config_values_ref or "never restate" not in config_values_ref.lower():
         fail("config-values.md must forbid restating a shipped default as prose", errors)
+    # Section-scoped: whole-file containment on `agents/gate.md` is satisfied by a mention in the frontmatter
+    # description or the return contract, while § Review is the only region a dispatch reads as an
+    # instruction. A missing terminator is `_bounded_section`'s own loud failure rather than a wider region.
+    gate_review = _bounded_section(gate, "## Review", "agents/gate.md", errors)
+    if gate_review is not None and "skills.reviewer" not in gate_review:
+        fail(
+            "agents/gate.md § Review must name `skills.reviewer`: gate dispatches the configured reviewer "
+            "itself, so a clause its own review procedure never carries never runs",
+            errors,
+        )
+    # Three regions, because the carve-out only works if all three carry their own half: gate labels the
+    # finding, the fix cycle refuses to drop it, and the parent puts it to the user. Section-scoped for the
+    # same reason as the pins above -- whole-file containment is satisfied by any one of the three.
+    # `## Fix cycle` is the last section in immutable-gate.md, so its body genuinely is the file's tail and
+    # `_bounded_section` -- which refuses an unterminated section precisely because that is normally a pin
+    # widening past its scope -- cannot express it. Scoped from the heading anyway rather than whole-file, so
+    # the rule cannot drift up into § Pin scope and stay green, and an absent heading still fails loud.
+    fix_cycle_start = re.search(r"^## Fix cycle\s*$", gate_ref, re.M)
+    if fix_cycle_start is None:
+        fail(
+            "immutable-gate must keep its `## Fix cycle` heading; the GATE worker's triage rules are scoped to it",
+            errors,
+        )
+    elif "reason: reviewer_findings" not in gate_ref[fix_cycle_start.end():]:
+        fail(
+            "immutable-gate § Fix cycle must return a declined repo-review finding as a needs-decision tagged "
+            "`reason: reviewer_findings`; a reviewer finding the GATE worker silently drops is the taste call "
+            "the ticket owner never gets to make",
+            errors,
+        )
+    if "reason: reviewer_findings" not in ship_worker or "AskUserQuestion" not in ship_worker:
+        fail(
+            "ship SKILL's § Worker contract must route a `reason: reviewer_findings` return to AskUserQuestion "
+            "rather than resolving it itself; a carve-out with no parent-side disposition is resolved by the "
+            "parent exactly like the ordinary needs-decision it was written to escape",
+            errors,
+        )
+    # Names `repo-review` and its labelling in one literal: a bare `repo-review` containment leg beside this
+    # one could never fail on its own, because no text satisfying this pin fails that one.
+    if gate_review is not None and "repo-review`-originated" not in gate_review:
+        fail(
+            "agents/gate.md § Review must name `repo-review` and label a promoted finding as originating "
+            "there; the GATE worker's carve-out cannot fire on a finding it cannot tell apart from gate's own",
+            errors,
+        )
+    # Neither file is in the fixed citation loop above, so this is what holds both the key and its citation.
+    for rel in ("skills/standards/references/resolve.md", "skills/standards/references/review.md"):
+        text = read(rel)
+        if "skills.standards" not in text:
+            fail(
+                f"{rel} must name `skills.standards` as what its repository-skill branch resolves; a branch "
+                "keyed on an unnamed 'dedicated skill' is decided by whoever happens to be reading",
+                errors,
+            )
+        if "config-values.md" not in text:
+            fail(f"{rel} names a live-resolved config value and must cite config-values.md", errors)
 
 
 def check_poller_argv(errors: list[str]) -> None:

@@ -272,7 +272,7 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
             # through the same `-f`/`-F` flags, and denying it would break review-thread enumeration.
             method = _flag_value(rest, ('-X', '--method'))
             if method is not None and method.upper() != 'GET':
-                return f'gh api --method {method.upper()} writes to the remote'
+                return f'gh api names method {method.upper()}, which writes to the remote'
             if method is None and words[1:2] != ['graphql'] and _flag_value(rest, GH_API_FIELD_FLAGS) is not None:
                 return (
                     'gh api with a field flag and no --method is a POST, which writes to the remote; '
@@ -285,7 +285,7 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
         return None
     method = _flag_value(rest, REMOTE_METHOD_FLAGS[cmd])
     if method is not None and method.upper() in MUTATING_HTTP_METHODS:
-        return f'{cmd} --request {method.upper()} writes to the remote'
+        return f'{cmd} names method {method.upper()}, which writes to the remote'
     for tok in rest:
         # Also split on a space: `curl "-d hello"` is one shell word, and the flag is only its first.
         flag = tok.split('=', 1)[0].split(' ', 1)[0]

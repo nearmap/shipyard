@@ -866,6 +866,7 @@ def check_invariants(errors: list[str]) -> None:
     handoff = read("skills/ship/references/handoff-accounting.md")
     merge = read("skills/ship/references/merge-accounting.md")
     gate = read("agents/gate.md")
+    repo_review = read("agents/repo-review.md")
     spec = read("skills/spec/SKILL.md")
     start = read("skills/ship/references/start-resume.md")
     ship_start_agent = read("agents/ship-start.md")
@@ -1398,7 +1399,7 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (
         ("gate", read("agents/gate.md")), ("debate", read("agents/debate.md")),
         ("ship-build", read("agents/ship-build.md")), ("ship-gate", read("agents/ship-gate.md")),
-        ("ship-start", read("agents/ship-start.md")),
+        ("ship-start", read("agents/ship-start.md")), ("repo-review", repo_review),
     ):
         if "model-dispatch.md" not in text:
             fail(f"agent {name} dispatches subagents and must cite model-dispatch.md", errors)
@@ -1524,6 +1525,7 @@ def check_invariants(errors: list[str]) -> None:
     config_values_ref = read("skills/shared/references/config-values.md")
     for name, text in (
         ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),
+        ("repo-review", repo_review),
     ):
         if "limits.max_depth_agents" not in text:
             fail(f"{name} must name limits.max_depth_agents rather than a hardcoded depth-agent cap", errors)
@@ -1632,6 +1634,57 @@ def check_invariants(errors: list[str]) -> None:
         fail(
             "agents/gate.md § Review must name `repo-review` and label a promoted finding as originating "
             "there; the GATE worker's carve-out cannot fire on a finding it cannot tell apart from gate's own",
+            errors,
+        )
+    # Vetting is what makes repo-review more than a relay, and every half of it is silently droppable:
+    # the tool grant, the bounded primitives, and the degrade-not-drop rule on a dispatch that never lands.
+    if not re.search(r"^tools:.*\bAgent\b", repo_review, re.M):
+        fail(
+            "agents/repo-review.md must grant the Agent tool: it vets findings with depth agents, and "
+            "`check_agent_mcp_allowlists` never checks that a tool an agent needs is present",
+            errors,
+        )
+    for token, why in (
+        ("sy:hunt", "refute mode is the primary vetting primitive"),
+        ("unvetted", "a finding whose depth agent never dispatched degrades to unvetted rather than dropped"),
+    ):
+        if token not in repo_review:
+            fail(f"agents/repo-review.md must name `{token}`: {why}", errors)
+    # Four hops, each pinned where it is written: the field's definition, the condition on asking for it,
+    # the composition out of the plan file, and the append at the only site that dispatches the reviewer.
+    # Whole-file containment at any one hop passes while the sentence stops threading at another.
+    orientation = "reviewer orientation"
+    if f"`{orientation}: " not in spec:
+        fail(
+            "spec's /sy:ship section must define the optional `reviewer orientation` field; an orienting "
+            "sentence no plan half declares is one no plan can carry",
+            errors,
+        )
+    # Section-scoped to §7, where the plan half is drafted: `skills.reviewer` appears in §3's own prose, so
+    # a whole-file pin here would be satisfied by a mention that has nothing to do with when to ask.
+    if "skills.reviewer" not in spec.partition("## 7.")[2].partition("## 8.")[0]:
+        fail(
+            "spec §7 must gate the `reviewer orientation` question on `skills.reviewer` resolving non-null; "
+            "an unconditional question puts an extra call in front of every repository that names no reviewer",
+            errors,
+        )
+    if orientation not in gate_ref:
+        fail(
+            "immutable-gate § Pin scope must compose the plan's `reviewer orientation` out of the plan file "
+            "when seeding sy:gate; unread there, the field stops threading one hop before its consumer",
+            errors,
+        )
+    if gate_review is not None and orientation not in gate_review:
+        fail(
+            "agents/gate.md § Review must append the plan's `reviewer orientation` to the repo-review "
+            "dispatch; gate is the only site that dispatches the reviewer, so nowhere else can",
+            errors,
+        )
+    if orientation not in repo_review:
+        fail(
+            "agents/repo-review.md must state that appended `reviewer orientation` is orientation only and "
+            "overrides no part of its contract; an unbounded appended instruction is a plan-authored "
+            "override of the return contract and the blocked returns",
             errors,
         )
     # Neither file is in the fixed citation loop above, so this is what holds both the key and its citation.

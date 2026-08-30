@@ -128,7 +128,7 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - `docs requiring updates: <list, or 'none'>`;
 - `visual-debug obligations: <list, or 'none'>`;
 - `pre-gate checkpoint: <channel: 'draft PR' or 'running preview'>, or 'none'` — whether `/sy:ship`'s parent pauses for a human look at the draft PR (or a running local preview) before dispatching GATE, framed as "is this the right thing", never as a correctness review; `/sy:ship` never launches a preview itself, only points at the channel declared here. Default when absent is `none`: an unattended or overnight ship run that never declares one sees no change at all;
-- `reviewer orientation: <one sentence>` — optional, and the only optional field here: one sentence telling the repository's own reviewer what this ticket is really about, such as that it is a performance change rather than a feature. It reaches `repo-review` appended to that agent's instructions as orientation only, and can never override its return contract, its never-fixes/promotes/dispositions rule, or its four `blocked` returns. Omit the field and nothing is appended;
+- `reviewer orientation: <one sentence>` — optional, and the only optional field here: one sentence telling the repository's own reviewer what this ticket is really about, such as that it is a performance change rather than a feature. It reaches `repo-review` appended to that agent's instructions as orientation only, and can never override its return contract, its never-fixes/promotes/dispositions rule, or its five `blocked` returns. Omit the field and nothing is appended;
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 

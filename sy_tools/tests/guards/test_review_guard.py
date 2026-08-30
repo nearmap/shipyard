@@ -46,6 +46,12 @@ def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
     'gh pr comment 32 --body-file report.md',
     'gh pr merge 32 --squash',
     'gh api -X POST repos/o/r/issues/1/comments',
+    # No method, but a field flag makes gh send a POST: the REST spelling of `gh pr review --approve`.
+    'gh api repos/o/r/pulls/32/reviews -f event=APPROVE -f body=lgtm',
+    'gh api repos/o/r/issues/1/comments -f body=x',
+    'gh pr create --title x --body y',
+    'gh pr lock 32',
+    'gh pr unlock 32',
     'curl -X POST https://example.test/x',
     'curl -d @body.json https://example.test/x',
 ])
@@ -60,8 +66,10 @@ def test_every_review_mode_is_refused_a_remote_write(mode, command):
     'gh pr diff 32',
     'gh pr checks 32',
     'gh api repos/o/r/pulls/32/comments',
+    'gh api repos/o/r/pulls/32',
     'gh api graphql -f query=query{viewer{login}}',
+    'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
 ])
 def test_every_review_mode_keeps_its_remote_reads(mode, command):
-    """`gh api graphql` is the load-bearing one: a read carried over POST that names no method."""
+    """`gh api graphql` is the load-bearing one: a field-carrying read over POST that names no method."""
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None

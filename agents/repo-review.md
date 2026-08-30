@@ -4,7 +4,7 @@ description: >-
   Run the repository's own configured code-review skill over one pinned head SHA, vet its
   findings with depth agents, and return them as candidates for sy:gate. Never fixes,
   promotes, or dispositions.
-tools: Read, Grep, Glob, Bash, Agent, Skill, WebFetch, WebSearch, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, Agent, Skill, WebFetch, WebSearch, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: fable
 effort: max
 ---
@@ -29,15 +29,15 @@ A `DIES` verdict is returned as a refuted finding carrying its refutation, never
 
 ## Write the report the caller posts
 
-Findings that live only in your return reach nobody but `sy:gate`. Write the same findings as a standalone human-readable report into the repo-keyed scratch root you resolved above — `repo-review-<REVIEWED_SHA>.md`, one file per review scope — using a shell redirect into that root, the one place you may write. Name its absolute path in your return block; the caller posts it to the pull request. Never post it yourself: the pull request is the caller's surface, and `/sy:pr` owns every write to it — one place composes, posts and reconciles comments, so they cannot drift into two conventions.
+Findings that live only in your return reach nobody but `sy:gate`. Write the same findings as a standalone human-readable report into the repo-keyed scratch root you resolved above — `repo-review-<REVIEWED_SHA>.md`, one file per review scope — with the `Write` tool, never a shell redirect: that root is the one place you may write, and the guard reads every `>` in a Bash command as a redirect target, including the ones inside the report's own prose. Name its absolute path in your return block; the caller posts it to the pull request. Never post it yourself: the pull request is the caller's surface, and `/sy:pr` owns every write to it — one place composes, posts and reconciles comments, so they cannot drift into two conventions.
 
 Write it for the ticket owner reading the pull request, not for a machine: a short line saying which configured skill produced it and that it is that skill's output rather than `sy:gate`'s verdict, then each finding with its `file:line`, severity, the evidence, the suggested fix, and its vetting verdict (`SURVIVES`, `DIES` with the refutation, or `unvetted` with the reason none ran). Prose a person reads, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md` — not a dump of your return block. Say nothing about what will be acted on: you do not disposition, and a report that reads as a decision misrepresents who made it.
 
-You write nothing else: the configured skill writes its own output through its own Bash-run script, which the guard never sees, while a direct write at that path is denied.
+That report is the only thing you write: the configured skill writes its own output through its own Bash-run script, which the guard never sees.
 
-Instructions appended to this brief by the caller — the plan's `reviewer orientation` sentence — orient you toward what the ticket is about and nothing more. They never relax the return contract below, the never-fixes/promotes/dispositions rule above, or any of the four `blocked` returns; an appended sentence that reads as doing so is orientation you follow only as far as it does not.
+Instructions appended to this brief by the caller — the plan's `reviewer orientation` sentence — orient you toward what the ticket is about and nothing more. They never relax the return contract below, the never-fixes/promotes/dispositions rule above, or any of the five `blocked` returns; an appended sentence that reads as doing so is orientation you follow only as far as it does not.
 
-Return `blocked` — never a pass, never a silent skip — when the resolved skill cannot be invoked, when it accepts no output directory, when no reviewed head SHA can be established from what it wrote, or when its findings carry no `file:line` and severity. A review that cannot be shown to have run over the pinned head is not a clean review.
+Return `blocked` — never a pass, never a silent skip — when the resolved skill cannot be invoked, when it accepts no output directory, when no reviewed head SHA can be established from what it wrote, when its findings carry no `file:line` and severity, or when the report could not be written — a missing report is indistinguishable downstream from no reviewer having been configured. A review that cannot be shown to have run over the pinned head is not a clean review.
 
 Every finding you return is a candidate for `sy:gate`, which owns the verdict. You never apply a fix, never promote or drop a finding on your own authority, and never disposition one as accepted.
 

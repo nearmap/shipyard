@@ -50,11 +50,11 @@ MUTATING_GIT = {
     'worktree', 'rm', 'mv', 'revert', 'update-ref', 'filter-branch',
 }
 MUTATING_GH = {
-    'pr': {'merge', 'close', 'edit', 'ready', 'comment', 'review', 'reopen'},
+    'pr': {'merge', 'close', 'create', 'edit', 'ready', 'comment', 'review', 'reopen', 'lock', 'unlock'},
     'release': {'create', 'edit', 'delete', 'upload'},
 }
 # Issue-level subcommands are deliberately absent, not overlooked: naming them here would put
-# tracker-native vocabulary in a core module, which the seam rule forbids and its own check enforces.
+# tracker-native vocabulary in a core module, which the seam rule forbids.
 # They stay reachable, and the `gh api` method leg below still covers the same writes over REST.
 MUTATING_HTTP_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
 # Per command, because the same short flag means different things: `-d` is a request body to curl and
@@ -65,6 +65,9 @@ REMOTE_BODY_FLAGS = {
     'wget': {'--post-data', '--post-file', '--body-data', '--body-file'},
 }
 REMOTE_METHOD_FLAGS = {'curl': ('-X', '--request'), 'wget': ('--method',)}
+# `gh api` field flags. Per gh's own documentation the request method "is GET normally and POST if any
+# parameters were added", so one of these with no explicit method is a write however it reads.
+GH_API_FIELD_FLAGS = ('-f', '--field', '-F', '--raw-field', '--input')
 # `gh` global flags taking a separate value, skipped when locating the subcommand so that
 # `gh -R owner/repo pr merge` is read as `pr merge` rather than as the repo argument.
 _GH_VALUE_FLAGS = {'-R', '--repo', '--hostname'}
@@ -250,11 +253,17 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
         words = _gh_words(rest)
         group = words[0] if words else None
         if group == 'api':
-            # On the named method only. `gh api graphql` is a read carried over POST and names no method,
-            # so denying on the underlying verb would break review-thread enumeration.
+            # On the named method, plus the implicit POST a field flag makes of an unmethoded call.
+            # `gh api graphql` is exempt: it is a read carried over POST that passes its query variables
+            # through the same `-f`/`-F` flags, and denying it would break review-thread enumeration.
             method = _flag_value(rest, ('-X', '--method'))
             if method is not None and method.upper() != 'GET':
                 return f'gh api --method {method.upper()} writes to the remote'
+            if method is None and words[1:2] != ['graphql'] and _flag_value(rest, GH_API_FIELD_FLAGS) is not None:
+                return (
+                    'gh api with a field flag and no --method is a POST, which writes to the remote; '
+                    'name --method GET for a read'
+                )
             return None
         sub = words[1] if len(words) > 1 else None
         if group in MUTATING_GH and sub in MUTATING_GH[group]:
@@ -364,9 +373,13 @@ def _run_remote_cases() -> None:
     deny = [
         'gh pr merge 32 --squash', 'gh pr close 32', 'gh pr edit 32 --body x', 'gh pr ready 32',
         'gh pr comment 32 --body-file report.md', 'gh pr review 32 --approve', 'gh pr reopen 32',
+        'gh pr create --title x --body y', 'gh pr lock 32', 'gh pr unlock 32',
         'gh release create v1',
         'gh api -X POST repos/o/r/issues/1/comments', 'gh api --method DELETE repos/o/r/issues/1',
         'gh api -XPATCH repos/o/r/pulls/comments/1', 'gh api --method=PUT repos/o/r/x',
+        # No method named, but a field flag makes each one a POST: a REST approval and a REST comment.
+        'gh api repos/o/r/pulls/32/reviews -f event=APPROVE -f body=lgtm',
+        'gh api repos/o/r/issues/1/comments -f body=x',
         # A global flag with its own value must not be mistaken for the subcommand.
         'gh -R nearmap/shipyard pr merge 32',
         'curl -X POST https://example.test/x', 'curl --request PUT https://example.test/x',
@@ -381,6 +394,7 @@ def _run_remote_cases() -> None:
         # No method named at all, so nothing to deny on -- including graphql, a read carried over POST.
         'gh api repos/o/r/pulls/32/comments', 'gh api graphql -f query=query{viewer{login}}',
         'gh api -X GET repos/o/r', 'gh api --method GET repos/o/r',
+        'gh api repos/o/r/pulls/32', 'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
         'curl https://example.test/x', 'curl -s -L https://example.test/x',
         'curl -X GET https://example.test/x', 'wget https://example.test/x',
         # `-d` is a request body to curl and `--debug` to wget; a shared flag set would deny this read.

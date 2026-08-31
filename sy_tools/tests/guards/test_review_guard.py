@@ -81,7 +81,8 @@ def test_every_review_mode_is_refused_a_remote_write(mode, command):
     'gh api --input body.json graphql',
 ])
 def test_every_review_mode_keeps_its_remote_reads(mode, command):
-    """`gh api graphql` is the load-bearing one: a field-carrying read over POST that names no method.
+    """`gh api graphql` is the load-bearing one: exempt by its literal command shape, not by inspecting
+    the query, so any field-carrying call to it is allowed whatever the query underneath actually does.
 
     Including the flag-first spellings: a value-taking flag before `graphql` must not shift it out of the
     position the exemption reads, quoted header value and all -- `gh api`'s own field flags included,

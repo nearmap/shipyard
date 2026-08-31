@@ -14,9 +14,10 @@ recognising the literal words an agent would type, and no stand-in can deny `gh 
 `gh` pattern alone carries zones where it does not apply: the guard and its tests. That matches the two
 other statements of this rule — `CONTRIBUTING.md`'s and `scripts/validate.py`'s `check_seam` — which
 both ban GitHub-as-*tracker* vocabulary rather than the CLI's bare name: `check_seam` spells out the
-literal `gh issue`/`gh project`/`gh gist`, while `CONTRIBUTING.md` states the same rule by one example
-(`gh-project`) plus a catch-all for "any other tracker-native term". Every other token still fires in
-both directories, so the corpora keep their neutral names.
+literal `gh issue`/`gh project`/`gh gist`, while `CONTRIBUTING.md` states the same rule by two examples
+(`gh issue`, `gh-project`) plus a catch-all for "any other tracker-native term" -- one of those two the
+same literal `check_seam` matches. Every other token still fires in both directories, so the corpora
+keep their neutral names.
 
 The patterns below are word-bounded, so a tracker name buried in an identifier (`ACLI_TOKEN`) reads as
 one word to `\b` and slips a scan that a bare `acli` would fail; the corpora therefore use neutral

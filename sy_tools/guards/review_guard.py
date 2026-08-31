@@ -83,6 +83,11 @@ GH_API_FIELD_FLAGS = ('-f', '--raw-field', '-F', '--field', '--input')
 # value-taking flags are here too, the field flags included: without them `gh api -H 'Accept: x' graphql`
 # or `gh api -f query=x graphql` reads the flag's value as the endpoint, and the graphql exemption below
 # -- which is positional -- denies a legitimate read.
+#
+# The skip is unconditional across every `gh` subcommand, not just `api`: a field flag written before its
+# own subcommand (`gh pr -f merge 32`, `gh release --input create v1` -- not a spelling `gh --help` teaches)
+# steps over the subcommand word along with the flag's value and reaches `MUTATING_GH` as an unrecognised
+# shape, which fails open. Accepted, same direction as this module's other documented bypasses.
 _GH_VALUE_FLAGS = {
     '-R', '--repo', '--hostname',
     '-H', '--header', '-q', '--jq', '-t', '--template', '--cache', '-p', '--preview',

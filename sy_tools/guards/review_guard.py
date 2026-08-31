@@ -9,17 +9,18 @@ This is a backstop, not a shell sandbox: the review prompts still require read-o
 Both sides are deny-lists, so an unrecognised command is allowed. That direction is
 deliberate for an agent whose job is reading: a missed write shape is a gap, but a wrongly
 denied read breaks the review outright. The remote leg denies both a named mutating method
-and a field flag with no explicit method (gh's own docs call that an implicit POST);
-`gh api graphql` -- a read carried over POST, and how review threads are enumerated -- is
-exempted from the second check by name, which is what keeps it working.
+and a field flag with no explicit method (gh's own docs call that an implicit POST); every
+`gh api graphql` call is exempted from that second check, because the plugin's own PR flows
+run through that shape (`skills/pr/SKILL.md`) and review threads are enumerated through it.
 
 The threat model is an honest mistake, not an attacker: a review agent reaching for a
 write has misread its brief, it is not trying to get past this file. So the deny-lists
 cover writes spelled the natural way, and adversarial spellings are out of scope and stay
 out -- a separator hidden inside a quoted value, a curl short flag bundled or glued past
 a flag-name match (`-sXPOST`, `-d@body.json`), interpreter indirection (`bash -c`,
-`python -c`) whose argument nothing here reads. Catching those means reimplementing bash's
-quoting and curl's option parsing in this module, and every attempt at it here has cost
+`python -c`) whose argument nothing here reads, and a mutation query carried by the exempt
+`gh api graphql` shape, whose body nothing here inspects. Catching those means reimplementing
+bash's quoting and curl's option parsing in this module, and every attempt at it here has cost
 more real false denies and fail-open holes than the shapes it closed. A bypass of that
 kind is an accepted limit of a backstop, not a defect to file against this module.
 
@@ -60,7 +61,7 @@ MUTATING_GIT = {
 MUTATING_GH = {
     'pr': {'merge', 'close', 'create', 'edit', 'ready', 'comment', 'review', 'reopen', 'lock', 'unlock',
            'revert', 'update-branch'},
-    'release': {'create', 'edit', 'delete', 'upload'},
+    'release': {'create', 'edit', 'delete', 'delete-asset', 'upload'},
 }
 # Issue-level subcommands are deliberately absent, not overlooked: naming them here would put
 # tracker-native vocabulary in a core module, which the seam rule forbids.
@@ -79,11 +80,13 @@ REMOTE_METHOD_FLAGS = {'curl': ('-X', '--request'), 'wget': ('--method',)}
 GH_API_FIELD_FLAGS = ('-f', '--raw-field', '-F', '--field', '--input')
 # `gh` flags taking a separate value, skipped when locating the subcommand so that
 # `gh -R owner/repo pr merge` is read as `pr merge` rather than as the repo argument. `gh api`'s own
-# value-taking flags are here too: without them `gh api -H 'Accept: x' graphql` reads the header value
-# as the endpoint, and the graphql exemption below -- which is positional -- denies a legitimate read.
+# value-taking flags are here too, the field flags included: without them `gh api -H 'Accept: x' graphql`
+# or `gh api -f query=x graphql` reads the flag's value as the endpoint, and the graphql exemption below
+# -- which is positional -- denies a legitimate read.
 _GH_VALUE_FLAGS = {
     '-R', '--repo', '--hostname',
     '-H', '--header', '-q', '--jq', '-t', '--template', '--cache', '-p', '--preview',
+    *GH_API_FIELD_FLAGS,
 }
 
 _ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=.*')
@@ -268,8 +271,10 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
         group = words[0] if words else None
         if group == 'api':
             # On the named method, plus the implicit POST a field flag makes of an unmethoded call.
-            # `gh api graphql` is exempt: it is a read carried over POST that passes its query variables
-            # through the same `-f`/`-F` flags, and denying it would break review-thread enumeration.
+            # The exemption keys on the literal `gh api graphql` shape and never reads the query, so it
+            # covers reads and writes alike: the plugin's own PR flows use this shape and some of them
+            # mutate (`skills/pr/SKILL.md`'s `requestReviews`). An uninspected mutation query is therefore
+            # an accepted gap, on the terms the module docstring's threat model sets out.
             method = _flag_value(rest, ('-X', '--method'))
             if method is not None and method.upper() != 'GET':
                 return f'gh api names method {method.upper()}, which writes to the remote'
@@ -400,7 +405,7 @@ def _run_remote_cases() -> None:
         'gh pr comment 32 --body-file report.md', 'gh pr review 32 --approve', 'gh pr reopen 32',
         'gh pr create --title x --body y', 'gh pr lock 32', 'gh pr unlock 32',
         'gh pr revert 32', 'gh pr update-branch 32',
-        'gh release create v1',
+        'gh release create v1', 'gh release delete-asset v1.0.0 asset.zip',
         'gh api -X POST repos/o/r/issues/1/comments', 'gh api --method DELETE repos/o/r/issues/1',
         'gh api -XPATCH repos/o/r/pulls/comments/1', 'gh api --method=PUT repos/o/r/x',
         # No method named, but a field flag makes each one a POST: a REST approval and a REST comment.
@@ -419,11 +424,14 @@ def _run_remote_cases() -> None:
     allow = [
         'gh pr view 32', 'gh pr diff 32', 'gh pr checks 32', 'gh pr list --state open',
         'gh run view 12345 --log-failed',
-        # No method named at all, so nothing to deny on -- including graphql, a read carried over POST.
+        # No method named at all, so nothing to deny on -- and `graphql`, which is exempt by shape.
         'gh api repos/o/r/pulls/32/comments', 'gh api graphql -f query=query{viewer{login}}',
         # A value-taking flag before `graphql` must not shift it out of the position the exemption reads.
         'gh api -H "Accept: application/vnd.v3+json" graphql -f query=query{viewer{login}}',
         'gh api --jq .data graphql -f query=query{viewer{login}}',
+        # A field flag before the endpoint is valid gh syntax, and its value must be stepped over too:
+        # unskipped, `query=x` reads as the endpoint and pushes `graphql` past the exemption's position.
+        'gh api -f query=x graphql', 'gh api -F query=x graphql', 'gh api --input body.json graphql',
         'gh api -X GET repos/o/r', 'gh api --method GET repos/o/r',
         'gh api repos/o/r/pulls/32', 'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
         'curl https://example.test/x', 'curl -s -L https://example.test/x',

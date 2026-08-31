@@ -45,6 +45,7 @@ def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
 @pytest.mark.parametrize('command', [
     'gh pr comment 32 --body-file report.md',
     'gh pr merge 32 --squash',
+    'gh release delete-asset v1.0.0 asset.zip',
     'gh api -X POST repos/o/r/issues/1/comments',
     # No method, but a field flag makes gh send a POST: the REST spelling of `gh pr review --approve`.
     'gh api repos/o/r/pulls/32/reviews -f event=APPROVE -f body=lgtm',
@@ -76,11 +77,14 @@ def test_every_review_mode_is_refused_a_remote_write(mode, command):
     'gh api -H "Accept: application/vnd.v3+json" graphql -f query=query{viewer{login}}',
     'gh api --jq .data graphql -f query=query{viewer{login}}',
     'gh api repos/o/r/pulls/32 --method GET -f foo=bar',
+    'gh api -f query=x graphql',
+    'gh api --input body.json graphql',
 ])
 def test_every_review_mode_keeps_its_remote_reads(mode, command):
     """`gh api graphql` is the load-bearing one: a field-carrying read over POST that names no method.
 
     Including the flag-first spellings: a value-taking flag before `graphql` must not shift it out of the
-    position the exemption reads, quoted header value and all.
+    position the exemption reads, quoted header value and all -- `gh api`'s own field flags included,
+    which were absent from the skip set and so denied this read outright.
     """
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None

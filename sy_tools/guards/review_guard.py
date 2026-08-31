@@ -86,8 +86,10 @@ GH_API_FIELD_FLAGS = ('-f', '--raw-field', '-F', '--field', '--input')
 #
 # The skip is unconditional across every `gh` subcommand, not just `api`: a field flag written before its
 # own subcommand (`gh pr -f merge 32`, `gh release --input create v1` -- not a spelling `gh --help` teaches)
-# steps over the subcommand word along with the flag's value and reaches `MUTATING_GH` as an unrecognised
-# shape, which fails open. Accepted, same direction as this module's other documented bypasses.
+# leaves the subcommand word sitting in the flag's value slot, so the two-token skip consumes it and the
+# call reaches `MUTATING_GH` as an unrecognised shape, which fails open (a third token restores it, e.g.
+# `gh pr -f x=1 merge 32` still denies). Accepted, same direction as this module's other documented
+# bypasses.
 _GH_VALUE_FLAGS = {
     '-R', '--repo', '--hostname',
     '-H', '--header', '-q', '--jq', '-t', '--template', '--cache', '-p', '--preview',

@@ -47,7 +47,7 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 
 ## 3. Resolve standards and deep research
 
-- Resolve standards in a delegate (subagent running `/sy:standards resolve <scope>`) that returns only the compact contract — authority, task-relevant constraints, primitives, risk lenses; the raw rule and doc reads stay out of the spec context, where standards loaded early would be re-paid on every later turn.
+- Resolve standards in the `repo-standards` delegate (running `/sy:standards resolve <scope>` at the model `agent_model {"name": "repo-standards"}` reports) that returns only the compact contract — authority, task-relevant constraints, primitives, risk lenses; the raw rule and doc reads stay out of the spec context, where standards loaded early would be re-paid on every later turn.
 - Deep research starts only after the §1 premise + prior-work check has survived; evidence against the premise found later still stops the spec (see §6, shelving with evidence) rather than merely reshaping it.
 - Read durable cross-session memory early — `memory_list` (or `memory_search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the plan as a known anchor, and a lesson this task's own research directly contradicts is refuted immediately (`memory_refute`, same reference) rather than carried forward or silently dropped.
 - Trace every load-bearing claim to code, current primary docs, or real data.
@@ -62,7 +62,7 @@ Record standards compactly, for example:
 
 ```text
 Standards authority
-- /repo-standards skill
+- the skill `skills.standards` names
 
 Task-specific constraints / risk lenses
 - public response schema remains backward compatible
@@ -128,12 +128,15 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - `docs requiring updates: <list, or 'none'>`;
 - `visual-debug obligations: <list, or 'none'>`;
 - `pre-gate checkpoint: <channel: 'draft PR' or 'running preview'>, or 'none'` — whether `/sy:ship`'s parent pauses for a human look at the draft PR (or a running local preview) before dispatching GATE, framed as "is this the right thing", never as a correctness review; `/sy:ship` never launches a preview itself, only points at the channel declared here. Default when absent is `none`: an unattended or overnight ship run that never declares one sees no change at all;
+- `reviewer orientation: <one sentence>` — optional, and the only optional field here: one sentence telling the repository's own reviewer what this ticket is really about, such as that it is a performance change rather than a feature. It reaches `repo-review` appended to that agent's instructions as orientation only, and can never override its return contract, its never-fixes/promotes/dispositions rule, or its five `blocked` returns. Omit the field and nothing is appended;
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 
 Backtick every identifier, path and URL in the `/sy:ship` half that contains a `_` or a `*`: `/sy:ship` reads this half back off the tracker with `plan_file`, and a rich-text tracker escapes un-backticked Markdown punctuation on the way through, so a bare `some_name` reaches the builder as `some\_name`.
 
 The docs-sync, visual-debug, and pre-gate-checkpoint fields are all required and all legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–6 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder; a `none` on the pre-gate checkpoint is the plan author's call, and is never second-guessed that way.
+
+`reviewer orientation` is the one field collected by asking, and only when there is a reviewer to orient: resolve `skills.reviewer` (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) while drafting this half and, when it is non-null, close that drafting step with one `AskUserQuestion` — the sentence you would write / a different sentence / none — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. When it resolves `null` the question is never asked and the field is never written, so a repository naming no reviewer skill sees no extra question and no extra field. Ask it here, while drafting, never folded into Step 1's sign-off call below, which stays a single question about the plan itself.
 
 End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
 

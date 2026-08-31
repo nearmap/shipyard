@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_AGENTS = {
     "sweep", "seam", "trace", "slice", "hunt", "gate", "ship-start", "ship-build", "ship-gate",
     "img-inspector", "explain-author", "debate", "debater", "spec-gate",
+    "repo-standards", "repo-review",
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
@@ -621,6 +622,16 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
         block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
         model = re.search(r"^model:\s*(\S+)", block, re.M)
         effort = re.search(r"^effort:\s*(\S+)", block, re.M)
+        # Floors and defaults below are keyed on `p.stem`, while the runtime `agent_type` and every
+        # `agent_model` call key on the frontmatter `name`. Drift between them mis-floors the agent under a
+        # different name's floor -- or no floor at all -- and every check here still reads clean.
+        declared_name = re.search(r"^name:\s*(\S+)", block, re.M)
+        if declared_name and declared_name.group(1) != p.stem:
+            fail(
+                f"{p.relative_to(ROOT)}: frontmatter name {declared_name.group(1)!r} is not the filename stem "
+                f"{p.stem!r}; the floor below is keyed on the stem and dispatch is keyed on the name",
+                errors,
+            )
         if not model:
             fail(f"{p.relative_to(ROOT)}: frontmatter declares no model", errors)
         if not effort:
@@ -855,6 +866,7 @@ def check_invariants(errors: list[str]) -> None:
     handoff = read("skills/ship/references/handoff-accounting.md")
     merge = read("skills/ship/references/merge-accounting.md")
     gate = read("agents/gate.md")
+    repo_review = read("agents/repo-review.md")
     spec = read("skills/spec/SKILL.md")
     start = read("skills/ship/references/start-resume.md")
     ship_start_agent = read("agents/ship-start.md")
@@ -1387,7 +1399,7 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (
         ("gate", read("agents/gate.md")), ("debate", read("agents/debate.md")),
         ("ship-build", read("agents/ship-build.md")), ("ship-gate", read("agents/ship-gate.md")),
-        ("ship-start", read("agents/ship-start.md")),
+        ("ship-start", read("agents/ship-start.md")), ("repo-review", repo_review),
     ):
         if "model-dispatch.md" not in text:
             fail(f"agent {name} dispatches subagents and must cite model-dispatch.md", errors)
@@ -1513,6 +1525,7 @@ def check_invariants(errors: list[str]) -> None:
     config_values_ref = read("skills/shared/references/config-values.md")
     for name, text in (
         ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),
+        ("repo-review", repo_review),
     ):
         if "limits.max_depth_agents" not in text:
             fail(f"{name} must name limits.max_depth_agents rather than a hardcoded depth-agent cap", errors)
@@ -1578,6 +1591,149 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} names a live-resolved config value and must cite config-values.md", errors)
     if "shipped default" not in config_values_ref or "never restate" not in config_values_ref.lower():
         fail("config-values.md must forbid restating a shipped default as prose", errors)
+    # Section-scoped: whole-file containment on `agents/gate.md` is satisfied by a mention in the frontmatter
+    # description or the return contract, while § Review is the only region a dispatch reads as an
+    # instruction. A missing terminator is `_bounded_section`'s own loud failure rather than a wider region.
+    gate_review = _bounded_section(gate, "## Review", "agents/gate.md", errors)
+    if gate_review is not None and "skills.reviewer" not in gate_review:
+        fail(
+            "agents/gate.md § Review must name `skills.reviewer`: gate dispatches the configured reviewer "
+            "itself, so a clause its own review procedure never carries never runs",
+            errors,
+        )
+    # Three regions, because the carve-out only works if all three carry their own half: gate labels the
+    # finding, the fix cycle refuses to drop it, and the parent puts it to the user. Section-scoped for the
+    # same reason as the pins above -- whole-file containment is satisfied by any one of the three.
+    # `## Fix cycle` is the last section in immutable-gate.md, so its body genuinely is the file's tail and
+    # `_bounded_section` -- which refuses an unterminated section precisely because that is normally a pin
+    # widening past its scope -- cannot express it. Scoped from the heading anyway rather than whole-file, so
+    # the rule cannot drift up into § Pin scope and stay green, and an absent heading still fails loud.
+    fix_cycle_start = re.search(r"^## Fix cycle\s*$", gate_ref, re.M)
+    if fix_cycle_start is None:
+        fail(
+            "immutable-gate must keep its `## Fix cycle` heading; the GATE worker's triage rules are scoped to it",
+            errors,
+        )
+    elif "reason: reviewer_findings" not in gate_ref[fix_cycle_start.end():]:
+        fail(
+            "immutable-gate § Fix cycle must return a declined repo-review finding as a needs-decision tagged "
+            "`reason: reviewer_findings`; a reviewer finding the GATE worker silently drops is the taste call "
+            "the ticket owner never gets to make",
+            errors,
+        )
+    if "reason: reviewer_findings" not in ship_worker or "AskUserQuestion" not in ship_worker:
+        fail(
+            "ship SKILL's § Worker contract must route a `reason: reviewer_findings` return to AskUserQuestion "
+            "rather than resolving it itself; a carve-out with no parent-side disposition is resolved by the "
+            "parent exactly like the ordinary needs-decision it was written to escape",
+            errors,
+        )
+    # Names `repo-review` and its labelling in one literal: a bare `repo-review` containment leg beside this
+    # one could never fail on its own, because no text satisfying this pin fails that one.
+    if gate_review is not None and "repo-review`-originated" not in gate_review:
+        fail(
+            "agents/gate.md § Review must name `repo-review` and label a promoted finding as originating "
+            "there; the GATE worker's carve-out cannot fire on a finding it cannot tell apart from gate's own",
+            errors,
+        )
+    # Vetting is what makes repo-review more than a relay, and every half of it is silently droppable:
+    # the tool grant, the bounded primitives, and the degrade-not-drop rule on a dispatch that never lands.
+    if not re.search(r"^tools:.*\bAgent\b", repo_review, re.M):
+        fail(
+            "agents/repo-review.md must grant the Agent tool: it vets findings with depth agents, and "
+            "`check_agent_mcp_allowlists` never checks that a tool an agent needs is present",
+            errors,
+        )
+    for token, why in (
+        ("sy:hunt", "refute mode is the primary vetting primitive"),
+        ("unvetted", "a finding whose depth agent never dispatched degrades to unvetted rather than dropped"),
+    ):
+        if token not in repo_review:
+            fail(f"agents/repo-review.md must name `{token}`: {why}", errors)
+    # Four hops, each pinned where it is written: the field's definition, the condition on asking for it,
+    # the composition out of the plan file, and the append at the only site that dispatches the reviewer.
+    # Whole-file containment at any one hop passes while the sentence stops threading at another.
+    orientation = "reviewer orientation"
+    if f"`{orientation}: " not in spec:
+        fail(
+            "spec's /sy:ship section must define the optional `reviewer orientation` field; an orienting "
+            "sentence no plan half declares is one no plan can carry",
+            errors,
+        )
+    # Section-scoped to §7, where the plan half is drafted: `skills.reviewer` appears in §3's own prose, so
+    # a whole-file pin here would be satisfied by a mention that has nothing to do with when to ask.
+    if "skills.reviewer" not in spec.partition("## 7.")[2].partition("## 8.")[0]:
+        fail(
+            "spec §7 must gate the `reviewer orientation` question on `skills.reviewer` resolving non-null; "
+            "an unconditional question puts an extra call in front of every repository that names no reviewer",
+            errors,
+        )
+    if orientation not in gate_ref:
+        fail(
+            "immutable-gate § Pin scope must compose the plan's `reviewer orientation` out of the plan file "
+            "when seeding sy:gate; unread there, the field stops threading one hop before its consumer",
+            errors,
+        )
+    if gate_review is not None and orientation not in gate_review:
+        fail(
+            "agents/gate.md § Review must append the plan's `reviewer orientation` to the repo-review "
+            "dispatch; gate is the only site that dispatches the reviewer, so nowhere else can",
+            errors,
+        )
+    if orientation not in repo_review:
+        fail(
+            "agents/repo-review.md must state that appended `reviewer orientation` is orientation only and "
+            "overrides no part of its contract; an unbounded appended instruction is a plan-authored "
+            "override of the return contract and the blocked returns",
+            errors,
+        )
+    # The reviewer's report reaches the pull request across three files and is silently droppable at each:
+    # written, carried through gate's return, then posted. Pinned where each hop is written.
+    if "REPORT:" not in repo_review:
+        fail(
+            "agents/repo-review.md must return a REPORT path for the report it writes; findings that live "
+            "only in a return reach nobody but sy:gate, which is the invisibility this step exists to fix",
+            errors,
+        )
+    if "REPO_REVIEW_REPORT" not in gate:
+        fail(
+            "agents/gate.md must carry repo-review's REPORT path through its own return block; the caller "
+            "posts that file and cannot post a path gate never reports",
+            errors,
+        )
+    if fix_cycle_start is not None and "REPO_REVIEW_REPORT" not in gate_ref[fix_cycle_start.end():]:
+        fail(
+            "immutable-gate § Fix cycle must post the REPO_REVIEW_REPORT to the pull request through /sy:pr; "
+            "unposted, the repository's own reviewer is visible only inside gate's return",
+            errors,
+        )
+    # The guard's remote leg and the one documented shape it must not deny. `graphql` by name because
+    # "deny anything that is a POST underneath" is the wrong rule this leg was written to avoid.
+    guard = read("sy_tools/guards/review_guard.py")
+    for token, why in (
+        ("MUTATING_GH", "the deny-list is what stops a review agent merging or commenting on the PR it reviews"),
+        ("REMOTE_BODY_FLAGS", "a request body is a remote write whatever method the command names"),
+        ("graphql", "the exempt shape must stay allowed by name, or review-thread enumeration breaks"),
+    ):
+        if token not in guard:
+            fail(f"sy_tools/guards/review_guard.py must name `{token}`: {why}", errors)
+    if "remote" not in guard.split('"""')[1].lower():
+        fail(
+            "review_guard's module docstring must state that it models the remote side too; it named "
+            "interpreter indirection as its one gap while every remote write went through untouched",
+            errors,
+        )
+    # Neither file is in the fixed citation loop above, so this is what holds both the key and its citation.
+    for rel in ("skills/standards/references/resolve.md", "skills/standards/references/review.md"):
+        text = read(rel)
+        if "skills.standards" not in text:
+            fail(
+                f"{rel} must name `skills.standards` as what its repository-skill branch resolves; a branch "
+                "keyed on an unnamed 'dedicated skill' is decided by whoever happens to be reading",
+                errors,
+            )
+        if "config-values.md" not in text:
+            fail(f"{rel} names a live-resolved config value and must cite config-values.md", errors)
 
 
 def check_poller_argv(errors: list[str]) -> None:

@@ -43,6 +43,10 @@
       "max_gate_rounds": 5
     }
   },
+  "skills": {
+    "standards": null,
+    "reviewer": null
+  },
   "text": {
     "reader": "eli15 tldr"
   },
@@ -71,6 +75,8 @@
       "gate": { "model": "frontier", "effort": "max" },
       "hunt": { "model": "standard", "effort": "high" },
       "img-inspector": { "model": "cheap", "effort": "medium" },
+      "repo-review": { "model": "frontier", "effort": "max" },
+      "repo-standards": { "model": "standard", "effort": "high" },
       "seam": { "model": "standard", "effort": "high" },
       "ship-build": { "model": "standard", "effort": "high" },
       "ship-gate": { "model": "cheap", "effort": "high" },

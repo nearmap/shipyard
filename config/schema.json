@@ -91,7 +91,7 @@
       "properties": {
         "tiers": {
           "type": "object",
-          "description": "Named tiers mapped to concrete model aliases, so raising the frontier tier is one edit rather than thirteen.",
+          "description": "Named tiers mapped to concrete model aliases, so raising the frontier tier is one edit rather than one per agent.",
           "additionalProperties": { "type": "string" }
         },
         "agents": {
@@ -182,6 +182,26 @@
               "description": "A GATE phase whose fix-cycle rounds for the run have reached this many without converging returns needs-decision (tagged max_gate_rounds) rather than continuing; a count that has reached the cap is a breach, so the cap-th round is the last one allowed. The count is never reset merely because a fix round pushes a new head, only by an explicit raise-budget disposition."
             }
           }
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "standards": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-z0-9][a-z0-9-]*(:[a-z0-9][a-z0-9-]*)?$",
+          "description": "This repository's own engineering-standards skill, as a bare name or the plugin:skill form. Null means there is none, and the standards pass resolves repo docs itself."
+        },
+        "reviewer": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-z0-9][a-z0-9-]*(:[a-z0-9][a-z0-9-]*)?$",
+          "description": "This repository's own code-review skill, as a bare name or the plugin:skill form, run by sy:gate as an additive pass. Null means there is none and no extra review runs."
         }
       }
     },

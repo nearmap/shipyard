@@ -1368,3 +1368,69 @@ def test_an_undeclared_key_beside_text_reader_is_refused(fixture_repo):
     """A misspelled or invented sibling would otherwise be accepted and then never read by anything."""
     _write_reader_layer(fixture_repo, {"reader": "a new joiner", "readers": "a new joiner"})
     assert any("text.readers" in e and "schema.json" in e for e in config.validate())
+
+
+def _write_skills_layer(repo: Path, skills: object) -> None:
+    layer = {**FIXTURE_LAYER, "skills": skills}
+    (repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    config.reload()
+
+
+@pytest.mark.parametrize("key", ["standards", "reviewer"])
+def test_a_skills_key_resolves_to_its_shipped_default_and_a_layer_outranks_it(fixture_repo, key):
+    """Null from the shipped layer is what makes the pass inert until a repository opts in."""
+    shipped = json.loads((PLUGIN_ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))["skills"][key]
+    assert shipped is None, "both keys must ship null, or every existing path changes on install"
+
+    values, provenance = config.resolve()
+    assert values["skills"][key] is None
+    assert provenance[f"skills.{key}"] == "shipped-default"
+
+    _write_skills_layer(fixture_repo, {key: "nearmap-reviewer"})
+    values, provenance = config.resolve()
+    assert values["skills"][key] == "nearmap-reviewer", "a repo layer must outrank the shipped default"
+    assert provenance[f"skills.{key}"] == "repo-committed"
+
+
+@pytest.mark.parametrize("key", ["standards", "reviewer"])
+@pytest.mark.parametrize("value", ["dropbox:find-dropbox-content", "hunt"])
+def test_both_documented_skill_name_forms_resolve(fixture_repo, key, value):
+    """The pattern has to admit the `plugin:skill` form as well as a bare name; both appear in a live list."""
+    _write_skills_layer(fixture_repo, {key: value})
+    assert not [e for e in config.validate() if f"skills.{key}" in e]
+    assert config.resolve()[0]["skills"][key] == value
+
+
+@pytest.mark.parametrize("key", ["standards", "reviewer"])
+def test_an_empty_skill_name_is_refused_rather_than_resolving_to_nothing(fixture_repo, key):
+    """Without `minLength`, `""` would resolve as configured and mean neither "none" nor a skill."""
+    _write_skills_layer(fixture_repo, {key: ""})
+    assert any(f"skills.{key}" in e and "at least 1 characters" in e for e in config.validate())
+
+
+@pytest.mark.parametrize("key", ["standards", "reviewer"])
+def test_a_skill_name_over_the_length_cap_is_refused(fixture_repo, key):
+    """A declared `maxLength` nothing enforces is a lie: a 101-character value would pass unremarked."""
+    _write_skills_layer(fixture_repo, {key: "s" * 101})
+    assert any(f"skills.{key}" in e and "at most 100 characters" in e for e in config.validate())
+
+
+@pytest.mark.parametrize("key", ["standards", "reviewer"])
+@pytest.mark.parametrize("value", ["Nearmap-Reviewer", "-hunt", "a b", "/sy:standards", "plugin:"])
+def test_a_skill_name_the_pattern_rejects_is_refused(fixture_repo, key, value):
+    """A leading slash, a capital, or a space names no invokable skill; unrefused it fails only at dispatch."""
+    _write_skills_layer(fixture_repo, {key: value})
+    assert any(f"skills.{key}" in e and "pattern" in e for e in config.validate())
+
+
+@pytest.mark.parametrize("key", ["standards", "reviewer"])
+def test_a_non_string_skill_name_is_refused_rather_than_coerced(fixture_repo, key):
+    """Type alone: an int would stringify downstream and reach `Skill` as a bare number."""
+    _write_skills_layer(fixture_repo, {key: 15})
+    assert any(f"skills.{key}" in e and "type" in e for e in config.validate())
+
+
+def test_an_undeclared_key_beside_the_skills_keys_is_refused(fixture_repo):
+    """`additionalProperties: false` is the only thing standing between a typo and a silently unread key."""
+    _write_skills_layer(fixture_repo, {"standards": "hunt", "standard": "hunt"})
+    assert any("skills.standard" in e and "schema.json" in e for e in config.validate())

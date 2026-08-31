@@ -49,6 +49,16 @@
     "min_effort": "medium",
     "why": "tracing a data path end to end needs enough capability to keep the whole path in view"
   },
+  "repo-standards": {
+    "min_model": "cheap",
+    "min_effort": "medium",
+    "why": "resolving which repo document is authoritative is a reading task, and a weaker model returns a plausible-looking contract nobody can trace to a source"
+  },
+  "repo-review": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "a repo-authored review pass is an additive judgment task like spec-gate, not the final pre-merge backstop; sy:gate still reviews the same code at frontier tier regardless"
+  },
   "img-inspector": {
     "min_model": "cheap",
     "min_effort": "medium",

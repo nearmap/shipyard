@@ -4,7 +4,7 @@
 
 Resolve in order:
 
-1. dedicated repository standards skill;
+1. the repository's own standards skill, named by `skills.standards` (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — a value set but uninvokable fails loud rather than falling to tier 2;
 2. repository docs/rules such as `CLAUDE.md`, `CONTRIBUTING.md`, `AUTHORING.md`, `.claude/rules/`, standards directories, language guides, and documents explicitly referenced by them;
 3. `fallback-risk.md` only when no applicable repo authority exists.
 

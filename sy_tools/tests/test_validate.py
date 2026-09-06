@@ -821,7 +821,8 @@ def _loop_gate_ref() -> str:
         f"{_LOOP_SECTIONS['fix_cycle']}\n"
         f"A round returns `done` or `{_LOOP_PINS['handover']}`; every disposition comes from one "
         f"`{_LOOP_PINS['triage_agent']}` delegate and carries a `{_LOOP_PINS['root_cause_key']}` matched "
-        f"against `{_LOOP_PINS['round_log']}`, a match returning `{_LOOP_PINS['bail_to_spec']}`.\n"
+        f"against `{_LOOP_PINS['round_log']}`, a match {_LOOP_PINS['accept_recurrence']} returning "
+        f"`{_LOOP_PINS['bail_to_spec']}`.\n"
         f"It converges only with no {_LOOP_PINS['stopping_rule']} standing.\n"
     )
 
@@ -1072,3 +1073,54 @@ def test_the_gate_loop_check_is_registered_in_main(tmp_path):
     """A check nothing calls protects nothing, and `main()` is its only caller."""
     assert "check_gate_loop(errors)" in inspect.getsource(validate.main), \
         "the gate-loop check must be registered in main()"
+
+
+def test_a_fix_cycle_that_bails_on_any_recorded_key_is_refused(tmp_path, monkeypatch):
+    """The log records rejects under their key too, and the delegate reuses a matching key by construction.
+
+    So a recurrence clause keyed on "already treated" bails the whole run to /sy:spec over a finding an
+    earlier round correctly rejected; only an accept disposition is the plan-contract signal.
+    """
+    gate_ref = _loop_gate_ref().replace(_LOOP_PINS["accept_recurrence"], "already recorded as treated")
+    errors = _loop_check(tmp_path, monkeypatch, gate_ref=gate_ref)
+    assert any("the recurrence clause whole" in e for e in errors), \
+        f"a recurrence clause matching a rejected key too must be refused: {errors}"
+
+
+def _guard_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agents: dict[str, str], modes: tuple[str, ...]
+) -> list[str]:
+    """Build an agents/ tree and a `REVIEW_MODES` declaration, and return the cross-check's errors."""
+    for stem, tools in agents.items():
+        target = tmp_path / "agents" / f"{stem}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"---\nname: {stem}\ntools: {tools}\nmodel: opus\neffort: high\n---\nbody\n", "utf-8")
+    guard = tmp_path / "sy_tools" / "guards" / "review_guard.py"
+    guard.parent.mkdir(parents=True, exist_ok=True)
+    guard.write_text(f"REVIEW_MODES = {{{', '.join(repr(m) for m in modes)}}}\n", "utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_read_only_agents_are_guarded(errors)
+    return errors
+
+
+def test_a_read_only_agent_absent_from_review_modes_is_refused(tmp_path, monkeypatch):
+    """`gate-triage`'s own history: a read-only brief the guard's mode set never named, so it guarded nothing."""
+    agents = {"gate": "Read, Grep", "gate-triage": "Read, Grep", "slice": "Read, Write, Edit"}
+    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",))
+    assert len(errors) == 1 and "gate-triage.md" in errors[0], \
+        f"only the unguarded read-only agent may be refused: {errors}"
+
+
+def test_a_guarded_or_declared_read_only_agent_passes_and_a_phantom_mode_is_refused(tmp_path, monkeypatch):
+    agents = {"gate": "Read, Grep", "sweep": "Read, Grep", "slice": "Read, Write, Edit"}
+    monkeypatch.setattr(validate, "UNGUARDED_READ_ONLY_AGENTS", {"sweep"})
+    assert _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",)) == []
+    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate", "gate-triage"))
+    assert any("is no agent under agents/" in e for e in errors), \
+        f"a mode name no agent_type carries must be refused: {errors}"
+
+
+def test_the_read_only_guard_cross_check_is_registered_in_main(tmp_path):
+    assert "check_read_only_agents_are_guarded(errors)" in inspect.getsource(validate.main), \
+        "the read-only guard cross-check must be registered in main()"

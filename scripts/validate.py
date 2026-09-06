@@ -57,6 +57,11 @@ MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
 # `Bash` leg aside, which is a shell not a write). One copy: a delegate refused `Write`/`Edit` but
 # granted `MultiEdit` is a delegate refused nothing.
 FILE_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+# Read-only agents deliberately outside `review_guard.py`'s `REVIEW_MODES`: each investigates for
+# /sy:plan or /sy:spec rather than reviewing a change it must not touch, so the guard's deny-lists buy
+# nothing there. Declared, not inferred, so that adding a read-only agent forces the guarded-or-not
+# choice: `gate-triage` shipped unguarded precisely because nothing made anyone make it.
+UNGUARDED_READ_ONLY_AGENTS = {"sweep", "seam", "trace", "debate", "debater", "spec-gate", "img-inspector"}
 # Exactly the tracker-mutation verbs each `/sy:ship` worker's own procedure names: `start-resume.md`
 # step 7 sets status and self-assigns, `immutable-gate.md`'s promote step sets status, and
 # `implementation.md` names no tracker verb at all. Exact sets, not floors — a worker gaining or
@@ -102,6 +107,7 @@ GATE_LOOP_PINS = {
     "round_log_seed": "gate_round_log: []",
     "root_cause_key": "root_cause_key",
     "bail_to_spec": "bail-to-spec",
+    "accept_recurrence": "already recorded with an accept disposition",
     "triage_agent": "sy:gate-triage",
     "stopping_rule": "undispositioned actionable finding",
     "cost_boundary": "Cost comes out of the loop, never the reviewer",
@@ -561,13 +567,14 @@ def check_gate_loop(errors: list[str]) -> None:
         fix_cycle = _last_section(
             gate_ref[fix_cycle_start.end():], gate_ref_rel, GATE_LOOP_SECTIONS["fix_cycle"], errors
         )
-        for key in ("round_log", "root_cause_key", "bail_to_spec"):
+        for key in ("round_log", "root_cause_key", "bail_to_spec", "accept_recurrence"):
             if GATE_LOOP_PINS[key] not in fix_cycle:
                 fail(
                     f"{gate_ref_rel} § Fix cycle must keep the recurrence clause whole, and "
                     f"`{GATE_LOOP_PINS[key]}` is missing from it; per-round dispatch destroyed the in-context "
-                    "memory that used to catch a root cause an earlier round already treated, so reading the "
-                    "log and bailing is the only thing left that catches it",
+                    "memory that used to catch a root cause an earlier round already accepted a fix for, so "
+                    "reading the log and bailing is the only thing left that catches it -- and bailing on a "
+                    "key the log carries only under a reject abandons the run over a finding already judged",
                     errors,
                 )
         if GATE_LOOP_PINS["triage_agent"] not in fix_cycle:
@@ -1007,6 +1014,42 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                         "cannot reach the tool",
                         errors,
                     )
+
+
+def check_read_only_agents_are_guarded(errors: list[str]) -> None:
+    """Every agent granted no file-write tool is a `review_guard.py` mode or a declared unguarded one.
+
+    The guard keys on the dispatched `agent_type` and fails open on a name it does not recognise, so an
+    agent whose brief says read-only and whose `tools:` grants no writer is still free to mutate through
+    Bash until its name is in that set. Nothing but this cross-check reads the two sides together.
+    """
+    guard_rel = "sy_tools/guards/review_guard.py"
+    declared = re.search(r"^REVIEW_MODES\s*=\s*\{([^}]*)\}", (ROOT / guard_rel).read_text(encoding="utf-8"), re.M)
+    if declared is None:
+        fail(f"{guard_rel} must declare `REVIEW_MODES` as a set literal; it is the set every check here reads", errors)
+        return
+    modes = set(re.findall(r"['\"]([^'\"]+)['\"]", declared.group(1)))
+    stems = set()
+    for p in sorted((ROOT / "agents").glob("*.md")):
+        stems.add(p.stem)
+        tools = _frontmatter_field(p.read_text(encoding="utf-8"), "tools").strip()
+        granted = {entry.strip() for entry in tools.split(",")}
+        # An absent or empty `tools:` inherits every tool, writers included, so such an agent is not
+        # read-only at all; `check_agent_mcp_allowlists` is what refuses that shape.
+        if not tools or granted & set(FILE_WRITE_TOOLS) or p.stem in modes or p.stem in UNGUARDED_READ_ONLY_AGENTS:
+            continue
+        fail(
+            f"{p.relative_to(ROOT)}: grants no file-write tool but is neither a `REVIEW_MODES` entry in "
+            f"{guard_rel} nor named in `UNGUARDED_READ_ONLY_AGENTS`; the guard fails open on an agent_type it "
+            "does not recognise, so a read-only brief nothing guards is enforced by the brief alone",
+            errors,
+        )
+    for mode in sorted(modes - stems):
+        fail(
+            f"{guard_rel}: `REVIEW_MODES` names {mode!r}, which is no agent under agents/; the guard selects on "
+            "the dispatched agent_type, so a name no agent carries guards nothing",
+            errors,
+        )
 
 
 def check_contract_completeness(errors: list[str]) -> None:
@@ -2043,6 +2086,7 @@ def main() -> int:
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
     check_agent_mcp_allowlists(errors)
+    check_read_only_agents_are_guarded(errors)
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)

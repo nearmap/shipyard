@@ -53,6 +53,10 @@ SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
 # below must read the prefix rather than the tail.
 SY_PREFIXES = ("mcp__sy__", "mcp__plugin_sy_sy__")
 MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
+# Every tool that can write a file, as `hooks/hooks.json`'s PreToolUse matcher enumerates them (its
+# `Bash` leg aside, which is a shell not a write). One copy: a delegate refused `Write`/`Edit` but
+# granted `MultiEdit` is a delegate refused nothing.
+FILE_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 # Exactly the tracker-mutation verbs each `/sy:ship` worker's own procedure names: `start-resume.md`
 # step 7 sets status and self-assigns, `immutable-gate.md`'s promote step sets status, and
 # `implementation.md` names no tracker verb at all. Exact sets, not floors — a worker gaining or
@@ -439,6 +443,25 @@ def _json_path(obj: object, *keys: str) -> object | None:
     return obj
 
 
+def _last_section(tail: str, rel: str, heading: str, errors: list[str]) -> str:
+    """`tail` -- the text after a file's final `## ` heading -- bounded, refusing any section appended after it.
+
+    Two pins scope themselves from a heading to end of file because the section is last in its own file.
+    That reasoning expires the moment a `## ` section is appended: the scope follows it, and every term the
+    pin requires could sit under the new heading and still pass.
+    """
+    later = re.search(r"^## .*$", tail, re.M)
+    if later is None:
+        return tail
+    fail(
+        f"{rel}: `{heading}` is no longer the file's last section ({later.group(0).strip()!r} follows it), but "
+        "its pins are scoped from that heading to the end of the file; every term they require could live "
+        "under the appended heading and still pass. Put the new section above it",
+        errors,
+    )
+    return tail[:later.start()]
+
+
 def check_gate_loop(errors: list[str]) -> None:
     """GATE's one-round-per-dispatch shape: the `handover` return, its triage delegate, and cross-round recurrence.
 
@@ -492,6 +515,7 @@ def check_gate_loop(errors: list[str]) -> None:
 
     # `## Return contract` is the last section of this file, so `_bounded_section` -- which refuses an
     # unterminated section because that is normally a pin widening past its scope -- cannot express it.
+    # `_last_section` holds that premise: it is only a scope while nothing follows the heading.
     return_start = re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['return_contract'])}", worker, re.M)
     if return_start is None:
         fail(
@@ -499,12 +523,16 @@ def check_gate_loop(errors: list[str]) -> None:
             "this worker may emit are scoped to it",
             errors,
         )
-    elif GATE_LOOP_PINS["handover_block"] not in worker[return_start.end():]:
-        fail(
-            f"{worker_rel} § Return contract must show the `{GATE_LOOP_PINS['handover_block']}` form; a return "
-            "the worker's own brief never shows is one it never emits",
-            errors,
+    else:
+        return_contract = _last_section(
+            worker[return_start.end():], worker_rel, GATE_LOOP_SECTIONS["return_contract"], errors
         )
+        if GATE_LOOP_PINS["handover_block"] not in return_contract:
+            fail(
+                f"{worker_rel} § Return contract must show the `{GATE_LOOP_PINS['handover_block']}` form; a "
+                "return the worker's own brief never shows is one it never emits",
+                errors,
+            )
 
     if GATE_LOOP_PINS["round_log_seed"] not in start:
         fail(
@@ -520,7 +548,8 @@ def check_gate_loop(errors: list[str]) -> None:
         )
 
     # Scoped from the heading to the end of the file, and not whole-file, for the reason `## Return
-    # contract` above is: `## Fix cycle` is the last section of its own file too.
+    # contract` above is: `## Fix cycle` is the last section of its own file too, and `_last_section`
+    # refuses the appended heading that would end that.
     fix_cycle_start = re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['fix_cycle'])}\s*$", gate_ref, re.M)
     if fix_cycle_start is None:
         fail(
@@ -529,7 +558,9 @@ def check_gate_loop(errors: list[str]) -> None:
             errors,
         )
     else:
-        fix_cycle = gate_ref[fix_cycle_start.end():]
+        fix_cycle = _last_section(
+            gate_ref[fix_cycle_start.end():], gate_ref_rel, GATE_LOOP_SECTIONS["fix_cycle"], errors
+        )
         for key in ("round_log", "root_cause_key", "bail_to_spec"):
             if GATE_LOOP_PINS[key] not in fix_cycle:
                 fail(
@@ -575,8 +606,17 @@ def check_gate_loop(errors: list[str]) -> None:
             errors,
         )
     declared = re.search(r"^tools:[ \t]*(.*)$", _frontmatter_block(triage), re.M)
-    granted = [entry.strip() for entry in (declared.group(1) if declared else "").split(",") if entry.strip()]
-    for tool in ("Write", "Edit"):
+    value = declared.group(1).strip() if declared else ""
+    if not value:
+        fail(
+            f"{triage_rel}: tools: must be an explicit, non-empty allowlist; absent, it inherits every tool "
+            f"including {'/'.join(FILE_WRITE_TOOLS)} and every tracker verb, and the two checks below pass "
+            "vacuously on the empty grant they read -- the read-only, no-tracker-verb delegate this file "
+            "describes would be enforced by nothing",
+            errors,
+        )
+    granted = [entry.strip() for entry in value.split(",") if entry.strip()]
+    for tool in FILE_WRITE_TOOLS:
         if tool in granted:
             fail(
                 f"{triage_rel}: tools: grants {tool!r}; triage authors dispositions its caller applies, so a "

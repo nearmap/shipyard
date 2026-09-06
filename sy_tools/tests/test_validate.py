@@ -998,6 +998,51 @@ def test_a_triage_brief_granting_an_edit_or_a_tracker_verb_is_refused(tmp_path, 
         f"a read-only delegate granted a tracker verb must be refused: {errors}"
 
 
+def test_a_triage_brief_with_no_tools_field_at_all_is_refused(tmp_path, monkeypatch):
+    """An absent `tools:` inherits every tool, so the Write/Edit and tracker-verb legs pass on an empty grant."""
+    triage = _loop_triage().replace("tools: Read, Grep, Glob, mcp__sy__check_env\n", "")
+    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    assert any("must be an explicit, non-empty allowlist" in e for e in errors), \
+        f"a triage brief declaring no tools at all must be refused: {errors}"
+
+
+def test_a_triage_brief_granting_multiedit_is_refused(tmp_path, monkeypatch):
+    """The refusal covers every write-capable tool `hooks/hooks.json` guards, not just `Write` and `Edit`."""
+    triage = _loop_triage().replace("tools: Read, Grep", "tools: Read, MultiEdit, Grep")
+    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    assert any("land a fix no caller recorded" in e and "MultiEdit" in e for e in errors), \
+        f"a read-only delegate granted MultiEdit must be refused: {errors}"
+
+
+def test_a_section_appended_after_the_fix_cycle_is_refused(tmp_path, monkeypatch):
+    """The heading-to-EOF scope is only a scope while the section is last; an appended `##` silently widens it."""
+    gate_ref = _loop_gate_ref() + "## Appendix\nAnything at all.\n"
+    errors = _loop_check(tmp_path, monkeypatch, gate_ref=gate_ref)
+    assert any("no longer the file's last section" in e and "Appendix" in e for e in errors), \
+        f"a section appended after § Fix cycle must be refused: {errors}"
+
+
+def test_fix_cycle_terms_moved_under_an_appended_section_are_refused(tmp_path, monkeypatch):
+    """The terms are all still in the file, just past a new heading -- the exact drift the scope used to miss."""
+    heading = _LOOP_SECTIONS["fix_cycle"] + "\n"
+    head, _, body = _loop_gate_ref().partition(heading)
+    errors = _loop_check(tmp_path, monkeypatch, gate_ref=head + heading + "## Appendix\n" + body)
+    assert any("no longer the file's last section" in e for e in errors), \
+        f"terms relocated under an appended heading must be refused: {errors}"
+    assert any("becomes an in-worker loop again" in e for e in errors), \
+        f"the pins must be re-bounded to the real section, not the appended one: {errors}"
+
+
+def test_a_section_appended_after_the_gate_worker_return_contract_is_refused(tmp_path, monkeypatch):
+    """Same proof for the other heading-to-EOF scope: `agents/ship-gate.md` § Return contract."""
+    intro, _, block = _loop_worker().partition("\n")
+    errors = _loop_check(tmp_path, monkeypatch, worker=intro + "\n## Appendix\n" + block)
+    assert any("no longer the file's last section" in e for e in errors), \
+        f"a section appended after § Return contract must be refused: {errors}"
+    assert any("is one it never emits" in e for e in errors), \
+        f"the handover form moved under the appended heading must leave the pin unsatisfied: {errors}"
+
+
 def test_the_fix_cycle_pins_do_not_widen_above_their_heading(tmp_path, monkeypatch):
     """The section is last in its file, so a heading-to-EOF scope is the only one available; prove it is a scope."""
     heading = _LOOP_SECTIONS["fix_cycle"] + "\n"

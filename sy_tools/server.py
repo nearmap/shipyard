@@ -1050,7 +1050,7 @@ def get_config(
         str | list[str],
         Field(
             description="Dotted config key to read, e.g. `columns.ready`, `worktree.root`, `ci.poll_timeout`. "
-            "A list reads every key in one call and reports them, in order, under `values`."
+            "A list reads every key in one call and reports them, keyed by name, under `values`."
         ),
     ],
     default: Annotated[
@@ -1099,7 +1099,7 @@ def agent_model(
         str | list[str],
         Field(
             description="Agent to resolve, as named under `models.agents`, e.g. `gate`, `ship-build`. A list "
-            "resolves every name in one call and reports them, in order, under `agents`."
+            "resolves every name in one call and reports them, keyed by name, under `agents`."
         ),
     ],
 ) -> dict[str, Any]:
@@ -1167,6 +1167,8 @@ def ship_state_update(
     if not fields:
         raise ToolError("'fields' is required and must name at least one field to write")
     state = Path(path)
+    if not state.is_absolute():
+        raise ToolError(f"{path!r} is not absolute; a relative path resolves against an unpredictable cwd")
     if not state.is_file():
         raise ToolError(
             f"no ship state file at {path!r}; the ship START phase seeds it and this tool never creates one"

@@ -2231,7 +2231,7 @@ def test_get_config_reads_a_list_of_keys_in_one_call_and_leaves_the_single_key_r
     """The list form is additive: every caller parsing `key`/`value` today has to keep working."""
     keys = ["ci.poll_timeout", "columns.ready"]
     assert server.get_config(keys) == {"values": {k: fixed_config[k] for k in keys}}, (
-        "a list must report every key it was given, in the order it was given them"
+        "a list must report every key it was given, keyed by name"
     )
     assert server.get_config("columns.ready") == {"key": "columns.ready", "value": "Fixture Ready"}, (
         "the single-key return shape must be unchanged"
@@ -2262,7 +2262,7 @@ def test_agent_model_resolves_a_list_of_agents_in_one_call_and_leaves_the_single
     monkeypatch.setattr(server.config, "agent_binding", lambda name: bindings[name])
     assert server.agent_model(["ship-build", "gate"]) == {
         "agents": {"ship-build": bindings["ship-build"], "gate": bindings["gate"]}
-    }, "a list must report one binding per name, in the order it was given them"
+    }, "a list must report one binding per name, keyed by name"
     assert server.agent_model("gate") == bindings["gate"], "the single-name return shape must be unchanged"
 
 
@@ -2345,6 +2345,13 @@ def test_ship_state_update_refuses_rather_than_writing_a_state_nothing_seeded(tm
     with pytest.raises(server.ToolError, match=message):
         server.ship_state_update(str(path), fields)
     assert (path.read_bytes() if path.exists() else None) == before, "a refusal must leave the path as it found it"
+
+
+def test_ship_state_update_refuses_a_relative_path(ship_state, monkeypatch):
+    """A relative path resolves against whatever the process's cwd happens to be, not the run's real state."""
+    monkeypatch.chdir(ship_state.parent)
+    with pytest.raises(server.ToolError, match="not absolute"):
+        server.ship_state_update(ship_state.name, {"phase": "GATE"})
 
 
 def test_appending_a_gate_round_round_trips_through_the_yaml_dump(ship_state):

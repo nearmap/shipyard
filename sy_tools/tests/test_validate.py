@@ -1088,17 +1088,27 @@ def test_a_fix_cycle_that_bails_on_any_recorded_key_is_refused(tmp_path, monkeyp
 
 
 def _guard_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agents: dict[str, str], modes: tuple[str, ...]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agents: dict[str, str | None],
+    modes: tuple[str, ...],
+    unguarded: tuple[str, ...] = (),
 ) -> list[str]:
-    """Build an agents/ tree and a `REVIEW_MODES` declaration, and return the cross-check's errors."""
+    """Build an agents/ tree, a `REVIEW_MODES` declaration and an exemption set, and return the errors.
+
+    A `None` tools value writes the agent with no `tools:` line at all -- the frontmatter shape that
+    inherits every tool, file writers included.
+    """
     for stem, tools in agents.items():
         target = tmp_path / "agents" / f"{stem}.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"---\nname: {stem}\ntools: {tools}\nmodel: opus\neffort: high\n---\nbody\n", "utf-8")
+        line = "" if tools is None else f"tools: {tools}\n"
+        target.write_text(f"---\nname: {stem}\n{line}model: opus\neffort: high\n---\nbody\n", "utf-8")
     guard = tmp_path / "sy_tools" / "guards" / "review_guard.py"
     guard.parent.mkdir(parents=True, exist_ok=True)
     guard.write_text(f"REVIEW_MODES = {{{', '.join(repr(m) for m in modes)}}}\n", "utf-8")
     monkeypatch.setattr(validate, "ROOT", tmp_path)
+    monkeypatch.setattr(validate, "UNGUARDED_READ_ONLY_AGENTS", set(unguarded))
     errors: list[str] = []
     validate.check_read_only_agents_are_guarded(errors)
     return errors
@@ -1114,11 +1124,29 @@ def test_a_read_only_agent_absent_from_review_modes_is_refused(tmp_path, monkeyp
 
 def test_a_guarded_or_declared_read_only_agent_passes_and_a_phantom_mode_is_refused(tmp_path, monkeypatch):
     agents = {"gate": "Read, Grep", "sweep": "Read, Grep", "slice": "Read, Write, Edit"}
-    monkeypatch.setattr(validate, "UNGUARDED_READ_ONLY_AGENTS", {"sweep"})
-    assert _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",)) == []
-    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate", "gate-triage"))
+    assert _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep",)) == []
+    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate", "gate-triage"), unguarded=("sweep",))
     assert any("is no agent under agents/" in e for e in errors), \
         f"a mode name no agent_type carries must be refused: {errors}"
+
+
+def test_a_stale_exemption_naming_no_agent_is_refused(tmp_path, monkeypatch):
+    """A renamed or deleted agent must not leave the exemption behind for whatever next takes its stem."""
+    agents = {"gate": "Read, Grep", "sweep": "Read, Grep"}
+    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep", "img-inspector"))
+    assert len(errors) == 1 and "img-inspector" in errors[0] and "UNGUARDED_READ_ONLY_AGENTS" in errors[0], \
+        f"only the stale exemption may be refused, naming it: {errors}"
+
+
+@pytest.mark.parametrize("target", ["mode", "exempt"])
+def test_dropping_the_tools_field_of_a_guarded_or_exempt_agent_is_refused(tmp_path, monkeypatch, target):
+    """Deleting `tools:` is the one edit that would otherwise drop an agent out of every check here: it reads
+    as absent, so the read-only premise is gone, and only a /sy:ship worker is refused for it elsewhere."""
+    agents = {"gate": None if target == "mode" else "Read, Grep", "sweep": None if target == "exempt" else "Read"}
+    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep",))
+    stem = "gate" if target == "mode" else "sweep"
+    assert len(errors) == 1 and f"{stem}.md" in errors[0] and "declares no tools:" in errors[0], \
+        f"{stem} with no tools: field must be refused naming it: {errors}"
 
 
 def test_the_read_only_guard_cross_check_is_registered_in_main(tmp_path):

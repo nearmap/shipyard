@@ -57,11 +57,17 @@ MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
 # `Bash` leg aside, which is a shell not a write). One copy: a delegate refused `Write`/`Edit` but
 # granted `MultiEdit` is a delegate refused nothing.
 FILE_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-# Read-only agents deliberately outside `review_guard.py`'s `REVIEW_MODES`: each investigates for
-# /sy:plan or /sy:spec rather than reviewing a change it must not touch, so the guard's deny-lists buy
-# nothing there. Declared, not inferred, so that adding a read-only agent forces the guarded-or-not
-# choice: `gate-triage` shipped unguarded precisely because nothing made anyone make it.
-UNGUARDED_READ_ONLY_AGENTS = {"sweep", "seam", "trace", "debate", "debater", "spec-gate", "img-inspector"}
+# Read-only agents deliberately outside `review_guard.py`'s `REVIEW_MODES`, each for its own stated reason
+# rather than one blanket claim: an exemption that reads as generic is one the next author appends a name to
+# instead of guarding the agent. `debate` and `debater` argue an approach not yet built for /sy:plan,
+# /sy:spec, or /sy:spike, from the caller's own live checkout rather than a tree pinned for review;
+# `img-inspector` runs inside the BUILD worker's write phase as well as inside GATE, and probes image files
+# with third-party tooling this deny-list has never been exercised against, where a wrong deny leaves a
+# figure verifiable only by the in-context image `Read` that `image-inspection.md` forbids outright. Both are
+# declared gaps, not arguments that the deny-lists would buy nothing. Declared, not inferred, so that adding
+# a read-only agent forces the guarded-or-not choice: `gate-triage` shipped unguarded precisely because
+# nothing made anyone make it.
+UNGUARDED_READ_ONLY_AGENTS = {"debate", "debater", "img-inspector"}
 # Exactly the tracker-mutation verbs each `/sy:ship` worker's own procedure names: `start-resume.md`
 # step 7 sets status and self-assigns, `immutable-gate.md`'s promote step sets status, and
 # `implementation.md` names no tracker verb at all. Exact sets, not floors — a worker gaining or
@@ -1034,9 +1040,20 @@ def check_read_only_agents_are_guarded(errors: list[str]) -> None:
         stems.add(p.stem)
         tools = _frontmatter_field(p.read_text(encoding="utf-8"), "tools").strip()
         granted = {entry.strip() for entry in tools.split(",")}
-        # An absent or empty `tools:` inherits every tool, writers included, so such an agent is not
-        # read-only at all; `check_agent_mcp_allowlists` is what refuses that shape.
-        if not tools or granted & set(FILE_WRITE_TOOLS) or p.stem in modes or p.stem in UNGUARDED_READ_ONLY_AGENTS:
+        if not tools:
+            # An absent or empty `tools:` inherits every tool, writers included, so such an agent is not
+            # read-only at all. `check_agent_mcp_allowlists` refuses that shape for the /sy:ship workers
+            # alone, so for a guarded or declared-unguarded agent deleting the field is otherwise the one
+            # edit that silently drops it out of every check here.
+            if p.stem in modes | UNGUARDED_READ_ONLY_AGENTS:
+                fail(
+                    f"{p.relative_to(ROOT)}: is a `REVIEW_MODES` entry in {guard_rel} or named in "
+                    "`UNGUARDED_READ_ONLY_AGENTS`, but declares no tools:, so it inherits every tool "
+                    "including the file writers; declare an explicit allowlist or drop it from that set",
+                    errors,
+                )
+            continue
+        if granted & set(FILE_WRITE_TOOLS) or p.stem in modes or p.stem in UNGUARDED_READ_ONLY_AGENTS:
             continue
         fail(
             f"{p.relative_to(ROOT)}: grants no file-write tool but is neither a `REVIEW_MODES` entry in "
@@ -1048,6 +1065,13 @@ def check_read_only_agents_are_guarded(errors: list[str]) -> None:
         fail(
             f"{guard_rel}: `REVIEW_MODES` names {mode!r}, which is no agent under agents/; the guard selects on "
             "the dispatched agent_type, so a name no agent carries guards nothing",
+            errors,
+        )
+    for name in sorted(UNGUARDED_READ_ONLY_AGENTS - stems):
+        fail(
+            f"scripts/validate.py: `UNGUARDED_READ_ONLY_AGENTS` names {name!r}, which is no agent under "
+            "agents/; a renamed or deleted agent leaves a dead exemption that whatever next takes that stem "
+            "inherits without anyone choosing it",
             errors,
         )
 

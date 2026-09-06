@@ -46,7 +46,11 @@ import sys
 
 # `scripts/validate.py`'s `check_read_only_agents_are_guarded` cross-checks this set against every agent
 # under `agents/` granted no file-write tool: the guard fails open on an agent_type absent from here.
-REVIEW_MODES = {'gate', 'gate-triage', 'hunt', 'repo-standards', 'repo-review'}
+# The read-only investigators are here because each is dispatched into a tree it must not touch --
+# `sy:gate` runs `sweep` inside its own pinned worktree, `repo-review` runs `seam`, a `/sy:ship` parent
+# runs `trace`, and `spec-gate` reads a plan's anchors against a pinned base commit -- and none of them
+# holds a write tool, so only the Bash deny-list newly applies to them.
+REVIEW_MODES = {'gate', 'gate-triage', 'hunt', 'repo-standards', 'repo-review', 'seam', 'spec-gate', 'sweep', 'trace'}
 # The subset that may write into the resolved scratch root. Everything in REVIEW_MODES but not here is
 # read-only; anything here but not in REVIEW_MODES would be unguarded entirely, which `_self_test` pins.
 SANDBOX_WRITE_MODES = {'hunt', 'repo-review'}

@@ -135,6 +135,8 @@ def test_every_review_mode_keeps_a_read_whose_argument_merely_contains_the_opera
     "sed --in-place 's/a/b/' src/a.py",
     "perl -pi -e 's/a/b/' src/a.py",
     "xargs sed -i 's/a/b/' < list.txt",
+    # Bash's combined-stdout-and-stderr shorthand for `> out.txt 2>&1` -- it names a file, unlike `>&2`.
+    'echo foo >& out.txt',
 ])
 def test_every_review_mode_is_still_refused_a_real_write(mode, command):
     """The other half of the fix above: narrowing both checks to real operators must not fail open."""

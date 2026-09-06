@@ -106,6 +106,11 @@ _GH_VALUE_FLAGS = {
 _SHELL_SEPARATORS = {';', ';;', '|', '||', '&', '&&', '|&', '(', ')', '{', '}', '\n'}
 # `>&`/`>&2` duplicate a descriptor and write no file, so they are deliberately absent.
 _WRITE_REDIRECTS = {'>', '>>', '>|'}
+# `>&N` duplicates onto an already-open descriptor and writes no new file (`cmd >&2`); `>&name` is bash's
+# combined-stdout-and-stderr shorthand for `> name 2>&1` and does write `name` -- the two are
+# indistinguishable until the token after `>&` is inspected, so `_redirect_targets` treats it specially
+# rather than folding it into `_WRITE_REDIRECTS`.
+_FD_DUP_REDIRECT = '>&'
 # The cluster has to end at the `i`, bar a backup suffix: `perl -Mstrict` and `perl -Ilib` glue an argument
 # carrying an `i` onto a flag that edits nothing.
 _INPLACE_SHORT = re.compile(r'''-[A-Za-z]*i([.~'"][A-Za-z0-9._~'"-]*)?''')
@@ -319,6 +324,10 @@ def _redirect_targets(tokens: list[str]) -> list[str]:
         if tok in _WRITE_REDIRECTS:
             if nxt is not None and nxt not in _SHELL_SEPARATORS:
                 targets.append(_unquote(nxt))
+        elif tok == _FD_DUP_REDIRECT:
+            target = _unquote(nxt) if nxt is not None else None
+            if target is not None and target not in _SHELL_SEPARATORS and not target.isdigit():
+                targets.append(target)
         # Only a `tee` the shell would run as a command: `rg -n tee src/` names it as an argument.
         elif _basename(tok) == 'tee' and _is_command_word(tokens, i):
             j = i + 1

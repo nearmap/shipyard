@@ -2328,11 +2328,16 @@ def test_applying_the_same_fields_twice_leaves_the_file_byte_identical(ship_stat
         (None, {"phase": "GATE"}, "no ship state file"),
         ("- one\n- two\n", {"phase": "GATE"}, "not a mapping"),
         ("phase: BUILD\n", {}, "'fields' is required"),
+        ("phase: BUILD\nsummary: AM-1442: cut the token cost\n", {"phase": "GATE"}, "not parseable YAML"),
     ],
-    ids=["missing file", "root is not a mapping", "nothing to write"],
+    ids=["missing file", "root is not a mapping", "nothing to write", "unparseable YAML"],
 )
 def test_ship_state_update_refuses_rather_than_writing_a_state_nothing_seeded(tmp_path, seed, fields, message):
-    """Creating a state at a mistyped path is the drift this tool exists to avoid, so it never creates one."""
+    """Creating a state at a mistyped path is the drift this tool exists to avoid, so it never creates one.
+
+    A file it cannot parse refuses the same way rather than escaping as a raw `yaml.YAMLError`: an unquoted
+    `: ` inside a plain scalar is how real runs' seeded state files fail to load.
+    """
     path = tmp_path / "ship-state.yaml"
     if seed is not None:
         path.write_text(seed, encoding="utf-8")

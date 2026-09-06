@@ -1171,7 +1171,12 @@ def ship_state_update(
         raise ToolError(
             f"no ship state file at {path!r}; the ship START phase seeds it and this tool never creates one"
         )
-    loaded = yaml.safe_load(state.read_text(encoding="utf-8"))
+    try:
+        loaded = yaml.safe_load(state.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ToolError(
+            f"ship state at {path!r} is not parseable YAML, so there is nothing to merge into: {exc}"
+        ) from None
     if not isinstance(loaded, dict):
         raise ToolError(f"ship state at {path!r} is not a mapping, so there is nothing to merge into")
     atomic_write(state, yaml.safe_dump({**loaded, **fields}, sort_keys=False))

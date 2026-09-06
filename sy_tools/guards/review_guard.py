@@ -44,7 +44,7 @@ import re
 import shlex
 import sys
 
-REVIEW_MODES = {'gate', 'hunt', 'repo-standards', 'repo-review'}
+REVIEW_MODES = {'gate', 'gate-triage', 'hunt', 'repo-standards', 'repo-review'}
 # The subset that may write into the resolved scratch root. Everything in REVIEW_MODES but not here is
 # read-only; anything here but not in REVIEW_MODES would be unguarded entirely, which `_self_test` pins.
 SANDBOX_WRITE_MODES = {'hunt', 'repo-review'}
@@ -485,6 +485,11 @@ def _run_cases(root: Path) -> None:
         ('repo-standards', 'Bash', {'command': 'rm -rf src'}, True),
         ('repo-standards', 'Bash', {'command': "grep -rn 'foo' skills/"}, False),
         ('gate', 'Write', {'file_path': str(root / 'repro.py')}, True),
+        # `gate-triage` is guarded and ungranted like `repo-standards`: it authors dispositions its caller
+        # applies, so a write from it is a fix no caller recorded.
+        ('gate-triage', 'Write', {'file_path': str(root / 'findings.md')}, True),
+        ('gate-triage', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, True),
+        ('gate-triage', 'Bash', {'command': 'git diff HEAD~1 -- src/'}, False),
         ('gate', 'Bash', {'command': 'git log --oneline -5'}, False),
         ('gate', 'Bash', {'command': 'git diff HEAD~1 -- src/'}, False),
         ('gate', 'Bash', {'command': "rg -n 'foo' src/"}, False),

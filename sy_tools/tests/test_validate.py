@@ -6,6 +6,7 @@ than the real one, so the allowlist cases can be synthetic and the real agents s
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import importlib.util
 import inspect
 import json
@@ -1090,7 +1091,7 @@ def test_a_fix_cycle_that_bails_on_any_recorded_key_is_refused(tmp_path, monkeyp
 def _guard_tree(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    agents: dict[str, str | None],
+    agents: Mapping[str, str | None],
     modes: tuple[str, ...],
     unguarded: tuple[str, ...] = (),
 ) -> list[str]:

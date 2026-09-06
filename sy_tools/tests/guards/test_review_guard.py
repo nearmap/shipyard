@@ -103,6 +103,20 @@ def test_every_review_mode_keeps_its_remote_reads(mode, command):
     "sed -n '1,40p' pixi.toml",
     'grep -c "=>" src/a.ts',
     'pytest -q > /dev/null',
+    # An argument that is *itself* the operator or the command word, which the quote-dropping tokenizer
+    # could not tell from the real thing.
+    "rg -n '>>>>>>>' src/",
+    "grep -c '>>>' docs/repl.md",
+    "awk -F '>' bench.txt",
+    "cut -d '>' -f2 notes.txt",
+    "rg -n '>' -g '*.md' .",
+    "rg -n 'tee' src/",
+    # Descriptor duplication: neither spelling names a file to write.
+    'pytest -q >&2',
+    'pytest -q 2>&1 | tail -5',
+    # A perl flag whose glued argument merely contains an `i`.
+    "perl -Mstrict -e 'print 1'",
+    "perl -Ilib -e 'print 1'",
 ])
 def test_every_review_mode_keeps_a_read_whose_argument_merely_contains_the_operator(mode, command):
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None
@@ -113,12 +127,31 @@ def test_every_review_mode_keeps_a_read_whose_argument_merely_contains_the_opera
     'echo foo > bar.txt',
     'echo foo >>bar.txt',
     'echo foo | tee bar.txt',
+    'cat a.txt | sudo tee /etc/hosts',
     "sed -i 's/a/b/' src/a.py",
     "sed -i.bak 's/a/b/' src/a.py",
+    "sed -Ei 's/a/b/' src/a.py",
     # The long spelling the old `sed -<flag>...i` pattern never matched at all.
     "sed --in-place 's/a/b/' src/a.py",
     "perl -pi -e 's/a/b/' src/a.py",
+    "xargs sed -i 's/a/b/' < list.txt",
 ])
 def test_every_review_mode_is_still_refused_a_real_write(mode, command):
     """The other half of the fix above: narrowing both checks to real operators must not fail open."""
+    assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is not None
+
+
+@pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))
+@pytest.mark.parametrize('command', [
+    "for f in *.py ; do sed -i 's/a/b/' $f ; done",
+    "while read f ; do sed -i 's/a/b/' $f ; done",
+    "if [ -f x ] ; then sed -i 's/a/b/' x ; fi",
+    "(sed -i 's/a/b/' f.py)",
+    "{ sed -i 's/a/b/' f.py ; }",
+    "for f in *.py ; do perl -pi -e 's/a/b/' $f ; done",
+    "find . -name '*.py' -exec sed -i 's/a/b/' {} +",
+])
+def test_every_review_mode_is_refused_an_in_place_edit_inside_a_wrapping_construct(mode, command):
+    """None of these shapes puts `sed` in a segment's own command-word position, which is where a
+    per-segment check looks -- and each one still edits the file in place."""
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is not None

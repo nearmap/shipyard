@@ -1131,7 +1131,6 @@ def test_a_guarded_or_declared_read_only_agent_passes_and_a_phantom_mode_is_refu
 
 
 def test_a_stale_exemption_naming_no_agent_is_refused(tmp_path, monkeypatch):
-    """Pins the `UNGUARDED_READ_ONLY_AGENTS - stems` refusal to the stale name alone, named in the message."""
     agents = {"gate": "Read, Grep", "sweep": "Read, Grep"}
     errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep", "img-inspector"))
     assert len(errors) == 1 and "img-inspector" in errors[0] and "UNGUARDED_READ_ONLY_AGENTS" in errors[0], \
@@ -1148,8 +1147,8 @@ def test_a_name_in_both_the_guarded_and_the_exempt_set_is_refused(tmp_path, monk
 
 @pytest.mark.parametrize("target", ["mode", "exempt"])
 def test_dropping_the_tools_field_of_a_guarded_or_exempt_agent_is_refused(tmp_path, monkeypatch, target):
-    """Pins the no-`tools:` refusal on both sides of the cross-check: a guarded mode and a declared-exempt
-    agent are each refused for it, naming the file."""
+    """An absent `tools:` inherits every tool, so it is the one edit that silently drops an agent out of
+    both sides of the cross-check."""
     agents = {"gate": None if target == "mode" else "Read, Grep", "sweep": None if target == "exempt" else "Read"}
     errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep",))
     stem = "gate" if target == "mode" else "sweep"

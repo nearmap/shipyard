@@ -57,8 +57,8 @@ MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
 # `Bash` leg aside, which is a shell not a write). One copy: a delegate refused `Write`/`Edit` but
 # granted `MultiEdit` is a delegate refused nothing.
 FILE_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-# Read-only agents deliberately outside `review_guard.py`'s `REVIEW_MODES`, each for its own stated reason
-# rather than one blanket claim: an exemption that reads as generic is one the next author appends a name to
+# Read-only agents deliberately outside `review_guard.py`'s `REVIEW_MODES`, with a stated reason and never
+# one blanket claim: an exemption that reads as generic is one the next author appends a name to
 # instead of guarding the agent. `debate` and `debater` argue an approach not yet built for /sy:plan,
 # /sy:spec, or /sy:spike, from the caller's own live checkout rather than a tree pinned for review --
 # a declared gap, not an argument that the deny-lists would buy nothing. Declared, not inferred, so that
@@ -1033,8 +1033,7 @@ def check_read_only_agents_are_guarded(errors: list[str]) -> None:
         return
     modes = set(re.findall(r"['\"]([^'\"]+)['\"]", declared.group(1)))
     for name in sorted(modes & UNGUARDED_READ_ONLY_AGENTS):
-        # Moving a name between the two sets is exactly the edit that leaves the other copy behind, and the
-        # leftover reads as a deliberate exemption for an agent the guard is in fact gating.
+        # Moving a name between the two sets is exactly the edit that leaves the other copy behind.
         fail(
             f"scripts/validate.py: `UNGUARDED_READ_ONLY_AGENTS` names {name!r}, which {guard_rel} also lists "
             "in `REVIEW_MODES`; the two sets are the guarded and the deliberately unguarded, so a name in "

@@ -46,13 +46,8 @@ import sys
 
 # `scripts/validate.py`'s `check_read_only_agents_are_guarded` cross-checks this set against every agent
 # under `agents/` granted no file-write tool: the guard fails open on an agent_type absent from here.
-# The read-only investigators are here because each is dispatched into a tree it must not touch, one
-# representative site apiece: `sy:gate` runs `sweep` inside its own pinned worktree, `repo-review` runs
-# `seam`, a `/sy:ship` parent runs `trace`, `spec-gate` reads a plan's anchors against a pinned base commit,
-# and `img-inspector` probes figures inside the BUILD worktree. Those are examples, not the whole list --
-# most of these run from a live checkout too (`sweep` from `/sy:ci`, `/sy:pr`, `/sy:plan`, `/sy:spec`,
-# `/sy:spike` and BUILD), which a reader must not mutate either. None of them holds a write tool, so only
-# the Bash deny-list newly applies to them.
+# Each is dispatched into a tree it must not touch -- pinned worktree or live checkout alike -- and holds
+# no write tool, so only the Bash deny-list newly applies to it.
 REVIEW_MODES = {
     'gate', 'gate-triage', 'hunt', 'img-inspector', 'repo-standards', 'repo-review', 'seam', 'spec-gate',
     'sweep', 'trace',
@@ -108,6 +103,12 @@ _GH_VALUE_FLAGS = {
     *GH_API_FIELD_FLAGS,
 }
 
+_SHELL_SEPARATORS = {';', ';;', '|', '||', '&', '&&', '|&', '(', ')', '{', '}', '\n'}
+# `>&`/`>&2` duplicate a descriptor and write no file, so they are deliberately absent.
+_WRITE_REDIRECTS = {'>', '>>', '>|'}
+# The cluster has to end at the `i`, bar a backup suffix: `perl -Mstrict` and `perl -Ilib` glue an argument
+# carrying an `i` onto a flag that edits nothing.
+_INPLACE_SHORT = re.compile(r'''-[A-Za-z]*i([.~'"][A-Za-z0-9._~'"-]*)?''')
 _ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=.*')
 """A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
 
@@ -225,8 +226,12 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         reason = _segment_reason(segment)
         if reason:
             return f'{mode} review: {reason}'
+    tokens = _operator_tokens(command)
+    editor = _inplace_editor(tokens)
+    if editor:
+        return f'{mode} review: {editor} edits in place, which mutates files'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    for target in _redirect_targets(_tokens(command)):
+    for target in _redirect_targets(tokens):
         if target == '/dev/null':
             continue
         if mode in SANDBOX_WRITE_MODES and under_scratch(target, cwd, root):
@@ -242,25 +247,15 @@ def _segment_reason(segment: str) -> str | None:
     tokens = _tokens(segment)
     i = 0
     while i < len(tokens):
-        tok = tokens[i]
-        base = tok.lstrip('\\').rsplit('/', 1)[-1]
-        if (
-            _ASSIGNMENT.fullmatch(tok)
-            or base in WRAPPERS
-            or base.startswith('-')
-            or re.fullmatch(r'\d+[smhd]?', base)
-        ):
-            i += 1
-            continue
-        break
+        if not _skippable(tokens[i]):
+            break
+        i += 1
     else:
         return None
-    cmd = tokens[i].lstrip('\\').rsplit('/', 1)[-1]
+    cmd = _basename(tokens[i])
     rest = tokens[i + 1:]
     if cmd in MUTATING_COMMANDS:
         return f'{cmd} mutates files'
-    if cmd in {'sed', 'perl'} and any(_inplace_flag(tok) for tok in rest):
-        return f'{cmd} edits in place, which mutates files'
     if cmd == 'git':
         sub = _git_subcommand(rest)
         if sub in MUTATING_GIT:
@@ -272,7 +267,7 @@ def _segment_reason(segment: str) -> str | None:
             return 'find -delete mutates files'
         for flag in ('-exec', '-execdir', '-ok', '-okdir'):
             if flag in rest and flag != rest[-1]:
-                exe = rest[rest.index(flag) + 1].lstrip('\\').rsplit('/', 1)[-1]
+                exe = _basename(rest[rest.index(flag) + 1])
                 if exe in MUTATING_COMMANDS or exe == 'git':
                     return f'find {flag} {exe} mutates files'
     return None
@@ -318,48 +313,80 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
 
 
 def _redirect_targets(tokens: list[str]) -> list[str]:
-    """Every path this command writes through a redirection operator or `tee`.
-
-    Over tokens rather than the raw string, because a `>` is a redirection only when the shell sees it as
-    its own word: matching ` >` anywhere in the command text denied `rg -n 'if x > 0' src/`,
-    `awk '$3 > 1000 {print $1}' bench.txt` and `gh api ... --jq '[.[] | select(.comments > 5)]'`, each a
-    read whose `>` is inside a single quoted argument (verified before the fix). `>>` and a glued
-    `>out.txt` are redirections; a `>` fused to the word before it (`foo>bar`) is missed here as it was
-    before, on this module's deny-list terms.
-    """
     targets: list[str] = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok in {'>', '>>'}:
-            if i + 1 < len(tokens):
-                targets.append(tokens[i + 1])
-            i += 2
-            continue
-        if tok.startswith('>'):
-            targets.append(tok.lstrip('>'))
-        elif tok.rsplit('|', 1)[-1].lstrip('\\').rsplit('/', 1)[-1] == 'tee':
+    for i, tok in enumerate(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if tok in _WRITE_REDIRECTS:
+            if nxt is not None and nxt not in _SHELL_SEPARATORS:
+                targets.append(_unquote(nxt))
+        # Only a `tee` the shell would run as a command: `rg -n tee src/` names it as an argument.
+        elif _basename(tok) == 'tee' and _is_command_word(tokens, i):
             j = i + 1
             while j < len(tokens) and tokens[j].startswith('-'):
                 j += 1
-            if j < len(tokens):
-                targets.append(tokens[j])
-            i = j
-        i += 1
+            if j < len(tokens) and tokens[j] not in _SHELL_SEPARATORS:
+                targets.append(_unquote(tokens[j]))
     return targets
 
 
-def _inplace_flag(tok: str) -> bool:
-    """Whether a token is a real `-i`/`--in-place` flag of `sed`/`perl`, rather than an argument holding an `i`.
+def _inplace_editor(tokens: list[str]) -> str | None:
+    for i, tok in enumerate(tokens):
+        cmd = _basename(tok)
+        if cmd not in {'sed', 'perl'}:
+            continue
+        # Over the whole command rather than one segment of it: `sed -i` inside a loop or conditional body,
+        # a subshell, a brace group or a `find -exec` argument list starts no segment of its own.
+        for arg in tokens[i + 1:]:
+            if arg in _SHELL_SEPARATORS:
+                break
+            if _inplace_flag(arg):
+                return cmd
+    return None
 
-    Read per token and anchored to the whole of it, because the flag is the only thing that edits in place:
-    matching an `i`-ending word anywhere after `sed -<flag>` denied `sed -n '18,26p' skills/ci/SKILL.md`
-    (the path's `ci`) and `sed -n '1,40p' pixi.toml` (the file's `pixi`) as in-place edits, both plain reads
-    (verified before the fix). `--in-place` is named because the long spelling matched nothing at all before.
-    """
+
+def _inplace_flag(tok: str) -> bool:
+    # Only the full `--in-place` long spelling, not GNU sed's `--in-pl` abbreviations of it.
     if tok.startswith('--'):
         return tok == '--in-place' or tok.startswith('--in-place=')
-    return re.fullmatch(r'-[A-Za-z]*i[A-Za-z0-9._~-]*', tok) is not None
+    return _INPLACE_SHORT.fullmatch(tok) is not None
+
+
+def _is_command_word(tokens: list[str], i: int) -> bool:
+    for tok in reversed(tokens[:i]):
+        if tok in _SHELL_SEPARATORS:
+            return True
+        if not _skippable(tok):
+            return False
+    return True
+
+
+def _skippable(tok: str) -> bool:
+    base = _basename(tok)
+    return bool(
+        _ASSIGNMENT.fullmatch(tok)
+        or base in WRAPPERS
+        or base.startswith('-')
+        or re.fullmatch(r'\d+[smhd]?', base)
+    )
+
+
+def _basename(tok: str) -> str:
+    return tok.lstrip('\\').rsplit('/', 1)[-1]
+
+
+def _unquote(tok: str) -> str:
+    return tok.strip('\'"')
+
+
+def _operator_tokens(command: str) -> list[str]:
+    # Quote-preserving, unlike `_tokens`: `shlex.split` drops the quotes, leaving a quoted `'>'` or `'tee'`
+    # argument identical to the bare operator, which denied `awk -F '>' bench.txt` and `rg -n 'tee' src/`.
+    lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return command.split()
 
 
 def _tokens(segment: str) -> list[str]:

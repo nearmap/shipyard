@@ -3,7 +3,7 @@ name: ship-start
 description: >-
   START worker for /sy:ship: read the plan file the parent materialised, delegate standards
   resolution, branch and worktree, seed resume state, and return the state brief.
-tools: Read, Write, Edit, Glob, Grep, Bash, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__fingerprint_config, mcp__sy__fingerprint_config, mcp__plugin_sy_sy__memory_list, mcp__sy__memory_list, mcp__plugin_sy_sy__memory_search, mcp__sy__memory_search, mcp__plugin_sy_sy__set-status, mcp__sy__set-status, mcp__plugin_sy_sy__assign, mcp__sy__assign, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Write, Edit, Glob, Grep, Bash, Agent, Skill, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__ship_state_update, mcp__sy__ship_state_update, mcp__plugin_sy_sy__fingerprint_config, mcp__sy__fingerprint_config, mcp__plugin_sy_sy__memory_list, mcp__sy__memory_list, mcp__plugin_sy_sy__memory_search, mcp__sy__memory_search, mcp__plugin_sy_sy__set-status, mcp__sy__set-status, mcp__plugin_sy_sy__assign, mcp__sy__assign, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: sonnet
 effort: high
 ---

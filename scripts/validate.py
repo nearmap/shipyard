@@ -15,7 +15,8 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_AGENTS = {
-    "sweep", "seam", "trace", "slice", "hunt", "gate", "ship-start", "ship-build", "ship-gate",
+    "sweep", "seam", "trace", "slice", "hunt", "gate", "gate-triage",
+    "ship-start", "ship-build", "ship-gate",
     "img-inspector", "explain-author", "debate", "debater", "spec-gate",
     "repo-standards", "repo-review",
 }

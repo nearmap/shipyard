@@ -2,7 +2,7 @@
 
 Nothing else in the suite imports `scripts/`; it is a standalone CLI, not a package, and it is loaded
 once here for every case below. `ROOT` is monkeypatched onto a throwaway `agents/` directory rather
-than the real one, so the allowlist cases can be synthetic and the real 16 agents stay untouched.
+than the real one, so the allowlist cases can be synthetic and the real agents stay untouched.
 """
 from __future__ import annotations
 

@@ -4,6 +4,11 @@
     "min_effort": "max",
     "why": "the independent reviewer is the one thing cost-scaling may never touch; a weaker reviewer silently weakens every verdict"
   },
+  "gate-triage": {
+    "min_model": "standard",
+    "min_effort": "high",
+    "why": "triage decides which of the reviewer's findings are acted on and which are rejected with reasoning; below standard tier it returns agreeable dispositions rather than judgment"
+  },
   "ship-build": {
     "min_model": "standard",
     "min_effort": "high",

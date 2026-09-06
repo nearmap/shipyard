@@ -60,14 +60,11 @@ FILE_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 # Read-only agents deliberately outside `review_guard.py`'s `REVIEW_MODES`, each for its own stated reason
 # rather than one blanket claim: an exemption that reads as generic is one the next author appends a name to
 # instead of guarding the agent. `debate` and `debater` argue an approach not yet built for /sy:plan,
-# /sy:spec, or /sy:spike, from the caller's own live checkout rather than a tree pinned for review;
-# `img-inspector` runs inside the BUILD worker's write phase as well as inside GATE, and probes image files
-# with third-party tooling this deny-list has never been exercised against, where a wrong deny leaves a
-# figure verifiable only by the in-context image `Read` that `image-inspection.md` forbids outright. Both are
-# declared gaps, not arguments that the deny-lists would buy nothing. Declared, not inferred, so that adding
-# a read-only agent forces the guarded-or-not choice: `gate-triage` shipped unguarded precisely because
-# nothing made anyone make it.
-UNGUARDED_READ_ONLY_AGENTS = {"debate", "debater", "img-inspector"}
+# /sy:spec, or /sy:spike, from the caller's own live checkout rather than a tree pinned for review --
+# a declared gap, not an argument that the deny-lists would buy nothing. Declared, not inferred, so that
+# adding a read-only agent forces the guarded-or-not choice: `gate-triage` shipped unguarded precisely
+# because nothing made anyone make it.
+UNGUARDED_READ_ONLY_AGENTS = {"debate", "debater"}
 # Exactly the tracker-mutation verbs each `/sy:ship` worker's own procedure names: `start-resume.md`
 # step 7 sets status and self-assigns, `immutable-gate.md`'s promote step sets status, and
 # `implementation.md` names no tracker verb at all. Exact sets, not floors — a worker gaining or
@@ -1035,6 +1032,15 @@ def check_read_only_agents_are_guarded(errors: list[str]) -> None:
         fail(f"{guard_rel} must declare `REVIEW_MODES` as a set literal; it is the set every check here reads", errors)
         return
     modes = set(re.findall(r"['\"]([^'\"]+)['\"]", declared.group(1)))
+    for name in sorted(modes & UNGUARDED_READ_ONLY_AGENTS):
+        # Moving a name between the two sets is exactly the edit that leaves the other copy behind, and the
+        # leftover reads as a deliberate exemption for an agent the guard is in fact gating.
+        fail(
+            f"scripts/validate.py: `UNGUARDED_READ_ONLY_AGENTS` names {name!r}, which {guard_rel} also lists "
+            "in `REVIEW_MODES`; the two sets are the guarded and the deliberately unguarded, so a name in "
+            "both declares an exemption that is not one",
+            errors,
+        )
     stems = set()
     for p in sorted((ROOT / "agents").glob("*.md")):
         stems.add(p.stem)

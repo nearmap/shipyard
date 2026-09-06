@@ -1097,8 +1097,7 @@ def _guard_tree(
 ) -> list[str]:
     """Build an agents/ tree, a `REVIEW_MODES` declaration and an exemption set, and return the errors.
 
-    A `None` tools value writes the agent with no `tools:` line at all -- the frontmatter shape that
-    inherits every tool, file writers included.
+    A `None` tools value writes the agent with no `tools:` line at all.
     """
     for stem, tools in agents.items():
         target = tmp_path / "agents" / f"{stem}.md"
@@ -1132,17 +1131,25 @@ def test_a_guarded_or_declared_read_only_agent_passes_and_a_phantom_mode_is_refu
 
 
 def test_a_stale_exemption_naming_no_agent_is_refused(tmp_path, monkeypatch):
-    """A renamed or deleted agent must not leave the exemption behind for whatever next takes its stem."""
+    """Pins the `UNGUARDED_READ_ONLY_AGENTS - stems` refusal to the stale name alone, named in the message."""
     agents = {"gate": "Read, Grep", "sweep": "Read, Grep"}
     errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep", "img-inspector"))
     assert len(errors) == 1 and "img-inspector" in errors[0] and "UNGUARDED_READ_ONLY_AGENTS" in errors[0], \
         f"only the stale exemption may be refused, naming it: {errors}"
 
 
+def test_a_name_in_both_the_guarded_and_the_exempt_set_is_refused(tmp_path, monkeypatch):
+    """A move between the sets that leaves the old copy behind declares an exemption for a guarded agent."""
+    agents = {"gate": "Read, Grep", "sweep": "Read, Grep"}
+    errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate", "sweep"), unguarded=("sweep",))
+    assert len(errors) == 1 and "sweep" in errors[0] and "an exemption that is not one" in errors[0], \
+        f"a name in both sets must be refused, naming it: {errors}"
+
+
 @pytest.mark.parametrize("target", ["mode", "exempt"])
 def test_dropping_the_tools_field_of_a_guarded_or_exempt_agent_is_refused(tmp_path, monkeypatch, target):
-    """Deleting `tools:` is the one edit that would otherwise drop an agent out of every check here: it reads
-    as absent, so the read-only premise is gone, and only a /sy:ship worker is refused for it elsewhere."""
+    """Pins the no-`tools:` refusal on both sides of the cross-check: a guarded mode and a declared-exempt
+    agent are each refused for it, naming the file."""
     agents = {"gate": None if target == "mode" else "Read, Grep", "sweep": None if target == "exempt" else "Read"}
     errors = _guard_tree(tmp_path, monkeypatch, agents, modes=("gate",), unguarded=("sweep",))
     stem = "gate" if target == "mode" else "sweep"

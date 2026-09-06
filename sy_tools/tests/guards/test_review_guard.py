@@ -90,3 +90,35 @@ def test_every_review_mode_keeps_its_remote_reads(mode, command):
     which were absent from the skip set and so denied this read outright.
     """
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None
+
+
+@pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))
+@pytest.mark.parametrize('command', [
+    # A `>` inside a quoted argument is not a redirection operator, and an `i` inside an argument is not
+    # `sed -i`. Every one of these plain reads was denied while both checks read the raw command string.
+    "rg -n 'if x > 0' src/",
+    "awk '$3 > 1000 {print $1}' bench.txt",
+    "gh api repos/o/r/issues --jq '[.[] | select(.comments > 5)]'",
+    "sed -n '18,26p' skills/ci/SKILL.md",
+    "sed -n '1,40p' pixi.toml",
+    'grep -c "=>" src/a.ts',
+    'pytest -q > /dev/null',
+])
+def test_every_review_mode_keeps_a_read_whose_argument_merely_contains_the_operator(mode, command):
+    assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is None
+
+
+@pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))
+@pytest.mark.parametrize('command', [
+    'echo foo > bar.txt',
+    'echo foo >>bar.txt',
+    'echo foo | tee bar.txt',
+    "sed -i 's/a/b/' src/a.py",
+    "sed -i.bak 's/a/b/' src/a.py",
+    # The long spelling the old `sed -<flag>...i` pattern never matched at all.
+    "sed --in-place 's/a/b/' src/a.py",
+    "perl -pi -e 's/a/b/' src/a.py",
+])
+def test_every_review_mode_is_still_refused_a_real_write(mode, command):
+    """The other half of the fix above: narrowing both checks to real operators must not fail open."""
+    assert review_guard.decision(mode, 'Bash', {'command': command}, cwd='/repo') is not None

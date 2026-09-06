@@ -46,11 +46,17 @@ import sys
 
 # `scripts/validate.py`'s `check_read_only_agents_are_guarded` cross-checks this set against every agent
 # under `agents/` granted no file-write tool: the guard fails open on an agent_type absent from here.
-# The read-only investigators are here because each is dispatched into a tree it must not touch --
-# `sy:gate` runs `sweep` inside its own pinned worktree, `repo-review` runs `seam`, a `/sy:ship` parent
-# runs `trace`, and `spec-gate` reads a plan's anchors against a pinned base commit -- and none of them
-# holds a write tool, so only the Bash deny-list newly applies to them.
-REVIEW_MODES = {'gate', 'gate-triage', 'hunt', 'repo-standards', 'repo-review', 'seam', 'spec-gate', 'sweep', 'trace'}
+# The read-only investigators are here because each is dispatched into a tree it must not touch, one
+# representative site apiece: `sy:gate` runs `sweep` inside its own pinned worktree, `repo-review` runs
+# `seam`, a `/sy:ship` parent runs `trace`, `spec-gate` reads a plan's anchors against a pinned base commit,
+# and `img-inspector` probes figures inside the BUILD worktree. Those are examples, not the whole list --
+# most of these run from a live checkout too (`sweep` from `/sy:ci`, `/sy:pr`, `/sy:plan`, `/sy:spec`,
+# `/sy:spike` and BUILD), which a reader must not mutate either. None of them holds a write tool, so only
+# the Bash deny-list newly applies to them.
+REVIEW_MODES = {
+    'gate', 'gate-triage', 'hunt', 'img-inspector', 'repo-standards', 'repo-review', 'seam', 'spec-gate',
+    'sweep', 'trace',
+}
 # The subset that may write into the resolved scratch root. Everything in REVIEW_MODES but not here is
 # read-only; anything here but not in REVIEW_MODES would be unguarded entirely, which `_self_test` pins.
 SANDBOX_WRITE_MODES = {'hunt', 'repo-review'}
@@ -215,15 +221,12 @@ def _mode_from_event(event: dict) -> str | None:
 
 
 def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str | None:
-    if re.search(r'\bsed\s+-[^\n;]*i\b', command) or re.search(r'\bperl\s+-[^\n;]*pi\b', command):
-        return f'{mode} review: in-place edit mutates files'
     for segment in re.split(r'[;&|\n]+', command):
         reason = _segment_reason(segment)
         if reason:
             return f'{mode} review: {reason}'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    for target in re.findall(r'(?:^|\s)(?:>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
-        target = target.strip('"\'')
+    for target in _redirect_targets(_tokens(command)):
         if target == '/dev/null':
             continue
         if mode in SANDBOX_WRITE_MODES and under_scratch(target, cwd, root):
@@ -256,6 +259,8 @@ def _segment_reason(segment: str) -> str | None:
     rest = tokens[i + 1:]
     if cmd in MUTATING_COMMANDS:
         return f'{cmd} mutates files'
+    if cmd in {'sed', 'perl'} and any(_inplace_flag(tok) for tok in rest):
+        return f'{cmd} edits in place, which mutates files'
     if cmd == 'git':
         sub = _git_subcommand(rest)
         if sub in MUTATING_GIT:
@@ -310,6 +315,51 @@ def _remote_reason(cmd: str, rest: list[str]) -> str | None:
         if flag in REMOTE_BODY_FLAGS[cmd]:
             return f'{cmd} {flag} sends a request body, which writes to the remote'
     return None
+
+
+def _redirect_targets(tokens: list[str]) -> list[str]:
+    """Every path this command writes through a redirection operator or `tee`.
+
+    Over tokens rather than the raw string, because a `>` is a redirection only when the shell sees it as
+    its own word: matching ` >` anywhere in the command text denied `rg -n 'if x > 0' src/`,
+    `awk '$3 > 1000 {print $1}' bench.txt` and `gh api ... --jq '[.[] | select(.comments > 5)]'`, each a
+    read whose `>` is inside a single quoted argument (verified before the fix). `>>` and a glued
+    `>out.txt` are redirections; a `>` fused to the word before it (`foo>bar`) is missed here as it was
+    before, on this module's deny-list terms.
+    """
+    targets: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in {'>', '>>'}:
+            if i + 1 < len(tokens):
+                targets.append(tokens[i + 1])
+            i += 2
+            continue
+        if tok.startswith('>'):
+            targets.append(tok.lstrip('>'))
+        elif tok.rsplit('|', 1)[-1].lstrip('\\').rsplit('/', 1)[-1] == 'tee':
+            j = i + 1
+            while j < len(tokens) and tokens[j].startswith('-'):
+                j += 1
+            if j < len(tokens):
+                targets.append(tokens[j])
+            i = j
+        i += 1
+    return targets
+
+
+def _inplace_flag(tok: str) -> bool:
+    """Whether a token is a real `-i`/`--in-place` flag of `sed`/`perl`, rather than an argument holding an `i`.
+
+    Read per token and anchored to the whole of it, because the flag is the only thing that edits in place:
+    matching an `i`-ending word anywhere after `sed -<flag>` denied `sed -n '18,26p' skills/ci/SKILL.md`
+    (the path's `ci`) and `sed -n '1,40p' pixi.toml` (the file's `pixi`) as in-place edits, both plain reads
+    (verified before the fix). `--in-place` is named because the long spelling matched nothing at all before.
+    """
+    if tok.startswith('--'):
+        return tok == '--in-place' or tok.startswith('--in-place=')
+    return re.fullmatch(r'-[A-Za-z]*i[A-Za-z0-9._~-]*', tok) is not None
 
 
 def _tokens(segment: str) -> list[str]:

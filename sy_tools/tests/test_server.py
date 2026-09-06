@@ -11,13 +11,16 @@ unchanged, so a direct call keeps a gate assertion about *not doing work* readab
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import time
 from typing import Any
 
 import anyio
 import mcp
 import pytest
+import yaml
 
 from sy_tools import SERVER_NAME, server
 from sy_tools.ship_metrics import SCHEMA_ID
@@ -49,6 +52,7 @@ TOOL_NAMES = {
     "reload_config",
     "scratch_dir",
     "set-status",
+    "ship_state_update",
     "show_config",
     "type-convert",
     "update-issue",
@@ -2198,3 +2202,150 @@ async def test_plan_file_refuses_a_plan_carrying_neither_boundary(monkeypatch, s
     assert result.is_error is True, result.content
     assert "neither boundary" in _text(result), _text(result)
     assert not list(scratch_root.rglob("plan-v*.md")), "a refusal must not leave a plan file behind"
+
+
+# ---- configuration reads and ship state -------------------------------------------------------
+
+_UNREAD = object()
+"""Stands in for the resolver's own private unset-default sentinel, so the stub below can tell an
+omitted `default` from an explicit one exactly as `config.get` does."""
+
+
+@pytest.fixture
+def fixed_config(monkeypatch) -> dict[str, Any]:
+    """A resolver answering a fixed handful of keys and refusing every other one."""
+    values = {"columns.ready": "Fixture Ready", "worktree.root": "/fixture/worktrees", "ci.poll_timeout": 900}
+
+    def get(key: str, *, default: Any = _UNREAD) -> Any:
+        if key in values:
+            return values[key]
+        if default is _UNREAD:
+            raise server.config.ConfigError(f"config key {key!r} is not set")
+        return default
+
+    monkeypatch.setattr(server.config, "get", get)
+    return values
+
+
+def test_get_config_reads_a_list_of_keys_in_one_call_and_leaves_the_single_key_return_alone(fixed_config):
+    """The list form is additive: every caller parsing `key`/`value` today has to keep working."""
+    keys = ["ci.poll_timeout", "columns.ready"]
+    assert server.get_config(keys) == {"values": {k: fixed_config[k] for k in keys}}, (
+        "a list must report every key it was given, in the order it was given them"
+    )
+    assert server.get_config("columns.ready") == {"key": "columns.ready", "value": "Fixture Ready"}, (
+        "the single-key return shape must be unchanged"
+    )
+
+
+def test_get_config_refuses_an_unknown_key_anywhere_in_a_list_and_defaults_every_key_alike(fixed_config):
+    """Per-key behaviour is what the single form already does, applied to each entry rather than the first."""
+    with pytest.raises(server.ToolError, match=re.escape("ghost.key")):
+        server.get_config(["columns.ready", "ghost.key"])
+    assert server.get_config(["ghost.key", "columns.ready"], default="fallback") == {
+        "values": {"ghost.key": "fallback", "columns.ready": "Fixture Ready"}
+    }, "a default must cover every key in the list, not only the ones the resolver knows first"
+
+
+@pytest.mark.parametrize("key", [[], ["columns.ready", " "]], ids=["empty list", "blank entry"])
+def test_get_config_refuses_a_list_that_names_no_readable_key(fixed_config, key):
+    with pytest.raises(server.ToolError, match="'key' is required"):
+        server.get_config(key)
+
+
+def test_agent_model_resolves_a_list_of_agents_in_one_call_and_leaves_the_single_name_return_alone(monkeypatch):
+    """Dispatching a phase reads several bindings at once; one binding still comes back as the binding itself."""
+    bindings = {
+        "gate": {"model": "opus", "effort": "high", "clamped": False},
+        "ship-build": {"model": "sonnet", "effort": "medium", "clamped": True},
+    }
+    monkeypatch.setattr(server.config, "agent_binding", lambda name: bindings[name])
+    assert server.agent_model(["ship-build", "gate"]) == {
+        "agents": {"ship-build": bindings["ship-build"], "gate": bindings["gate"]}
+    }, "a list must report one binding per name, in the order it was given them"
+    assert server.agent_model("gate") == bindings["gate"], "the single-name return shape must be unchanged"
+
+
+SEEDED_SHIP_STATE = """ticket: PROJ-1
+phase: BUILD
+gate_round_log:
+- round: 1
+  verdict: CHANGES
+worktree: null
+field_from_another_build: keep me
+"""
+"""A run's state as the ship START phase seeds it, carrying the shapes an update must survive: a
+list of mappings, an explicit null, and a field this build knows nothing about."""
+
+
+@pytest.fixture
+def ship_state(tmp_path) -> Path:
+    path = tmp_path / "ship-state.yaml"
+    path.write_text(SEEDED_SHIP_STATE, encoding="utf-8")
+    return path
+
+
+def test_ship_state_update_writes_only_the_named_fields_and_appends_rather_than_resorting(ship_state):
+    """A field this build never names — an older or newer one's — has to come back out with its value."""
+    before = yaml.safe_load(ship_state.read_text(encoding="utf-8"))
+    result = server.ship_state_update(str(ship_state), {"phase": "GATE", "gate_verdict": "PASS"})
+    after = yaml.safe_load(ship_state.read_text(encoding="utf-8"))
+    assert result == {"path": str(ship_state), "fields": ["phase", "gate_verdict"]}, result
+    assert after["phase"] == "GATE", after
+    untouched = {k: v for k, v in before.items() if k != "phase"}
+    assert {k: after[k] for k in untouched} == untouched, "an unnamed field was rewritten or dropped"
+    assert list(after) == [*before, "gate_verdict"], "the seeded order must survive and a new key must append"
+
+
+def test_an_interrupted_ship_state_write_leaves_the_previous_state_byte_identical(ship_state, monkeypatch):
+    """A resume reads this file, so a write that dies mid-flight must not leave a half-updated state."""
+    original = ship_state.read_bytes()
+
+    def crash(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("interrupted before the rename")
+
+    monkeypatch.setattr(os, "replace", crash)
+    with pytest.raises(OSError, match="interrupted"):
+        server.ship_state_update(str(ship_state), {"phase": "GATE"})
+    assert ship_state.read_bytes() == original, "an interrupted write must not touch the file it replaces"
+    assert yaml.safe_load(ship_state.read_text(encoding="utf-8")) == yaml.safe_load(original.decode()), (
+        "the state a resume reads back must still be the one that was there before the call"
+    )
+
+
+def test_applying_the_same_fields_twice_leaves_the_file_byte_identical(ship_state):
+    """A retried phase re-applies what it already wrote; the second write must change nothing on disk."""
+    fields = {"phase": "GATE", "gate_round_log": [{"round": 1, "verdict": "CHANGES"}]}
+    server.ship_state_update(str(ship_state), fields)
+    once = ship_state.read_bytes()
+    server.ship_state_update(str(ship_state), fields)
+    assert ship_state.read_bytes() == once, "a repeated update must be a no-op on disk"
+
+
+@pytest.mark.parametrize(
+    ("seed", "fields", "message"),
+    [
+        (None, {"phase": "GATE"}, "no ship state file"),
+        ("- one\n- two\n", {"phase": "GATE"}, "not a mapping"),
+        ("phase: BUILD\n", {}, "'fields' is required"),
+    ],
+    ids=["missing file", "root is not a mapping", "nothing to write"],
+)
+def test_ship_state_update_refuses_rather_than_writing_a_state_nothing_seeded(tmp_path, seed, fields, message):
+    """Creating a state at a mistyped path is the drift this tool exists to avoid, so it never creates one."""
+    path = tmp_path / "ship-state.yaml"
+    if seed is not None:
+        path.write_text(seed, encoding="utf-8")
+    before = path.read_bytes() if seed is not None else None
+    with pytest.raises(server.ToolError, match=message):
+        server.ship_state_update(str(path), fields)
+    assert (path.read_bytes() if path.exists() else None) == before, "a refusal must leave the path as it found it"
+
+
+def test_appending_a_gate_round_round_trips_through_the_yaml_dump(ship_state):
+    """The list of mappings a later phase resumes from has to read back with its keys and values intact."""
+    rounds = yaml.safe_load(ship_state.read_text(encoding="utf-8"))["gate_round_log"]
+    appended = {"round": 2, "verdict": "PASS", "findings": []}
+    server.ship_state_update(str(ship_state), {"gate_round_log": [*rounds, appended]})
+    written = yaml.safe_load(ship_state.read_text(encoding="utf-8"))["gate_round_log"]
+    assert written == [*rounds, appended], f"the appended round did not survive the round trip: {written}"

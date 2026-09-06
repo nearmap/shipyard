@@ -600,6 +600,16 @@ def test_repo_scratch_dir_refuses_an_overlap_on_a_plain_separate_git_dir_checkou
         config.repo_scratch_dir(detached_work)
 
 
+def _git_takes_relative_paths() -> bool:
+    """Whether the local `git worktree add` offers `--relative-paths`, asked of git rather than of a version."""
+    usage = subprocess.run(["git", "worktree", "add", "-h"], capture_output=True, text=True, check=False)
+    return "relative-paths" in usage.stdout + usage.stderr
+
+
+@pytest.mark.skipif(
+    not _git_takes_relative_paths(),
+    reason="`git worktree add --relative-paths` landed in git 2.48 and this git does not offer it",
+)
 def test_all_worktrees_resolves_a_relative_gitdir_record(fixture_repo):
     """`git worktree add --relative-paths` (or `worktree.useRelativePaths`) writes the linked
     worktree's `gitdir` record as a path relative to `<common>/worktrees/<id>/` itself, not absolute

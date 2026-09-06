@@ -32,9 +32,11 @@ from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from pydantic import Field, ValidationError
+import yaml
 
 from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, tracker, usage
 from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
+from .atomic import atomic_write
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 
 mcp = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
@@ -54,12 +56,13 @@ IssueId = Annotated[
 """The one argument nearly every verb takes, described once so all of them describe it the same way."""
 
 
-def _required(**fields: str) -> None:
-    """Reject an empty or whitespace-only required string argument before any tracker call happens."""
+def _required(**fields: str | list[str]) -> None:
+    """Reject an empty or whitespace-only required string argument, or a list holding one, before any tracker call."""
     for name, value in fields.items():
         # Whitespace counts as empty: a title of `"\n"` passes schema validation and would make a
         # permanently blank issue that no search can find again.
-        if not value.strip():
+        entries = value if isinstance(value, list) else [value]
+        if not entries or any(not entry.strip() for entry in entries):
             raise ToolError(f"{name!r} is required and must be a non-empty string")
 
 
@@ -1044,8 +1047,11 @@ def validate_config() -> dict[str, Any]:
 @mcp.tool(name="get_config")
 def get_config(
     key: Annotated[
-        str,
-        Field(description="Dotted config key to read, e.g. `columns.ready`, `worktree.root`, `ci.poll_timeout`."),
+        str | list[str],
+        Field(
+            description="Dotted config key to read, e.g. `columns.ready`, `worktree.root`, `ci.poll_timeout`. "
+            "A list reads every key in one call and reports them, in order, under `values`."
+        ),
     ],
     default: Annotated[
         str | None,
@@ -1055,7 +1061,7 @@ def get_config(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    """Read one resolved configuration value by dotted key.
+    """Read resolved configuration values by dotted key.
 
     Resolution is the merged layer chain, so this is the only correct way to learn a setting: reading a
     layer file directly misses whatever a higher layer overrode. A missing key raises unless a
@@ -1064,11 +1070,12 @@ def get_config(
     config file, and `check_env` is how to ask about one.
     """
     _required(key=key)
+    keys = key if isinstance(key, list) else [key]
     try:
-        value = config.get(key) if default is None else config.get(key, default=default)
+        values = {k: config.get(k) if default is None else config.get(k, default=default) for k in keys}
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
-    return {"key": key, "value": value}
+    return {"values": values} if isinstance(key, list) else {"key": key, "value": values[key]}
 
 
 @mcp.tool(name="show_config")
@@ -1089,11 +1096,14 @@ def show_config() -> dict[str, Any]:
 @mcp.tool(name="agent_model")
 def agent_model(
     name: Annotated[
-        str,
-        Field(description="Agent to resolve, as named under `models.agents`, e.g. `gate`, `ship-build`."),
+        str | list[str],
+        Field(
+            description="Agent to resolve, as named under `models.agents`, e.g. `gate`, `ship-build`. A list "
+            "resolves every name in one call and reports them, in order, under `agents`."
+        ),
     ],
 ) -> dict[str, Any]:
-    """The model and effort one agent must be dispatched with, after floor clamping.
+    """The model and effort each named agent must be dispatched with, after floor clamping.
 
     Dispatch with what this returns, never with the configured value read raw: a per-agent floor is a
     quality floor rather than a cost dial, so cost-scaling may raise one and never lower it, and the
@@ -1101,6 +1111,8 @@ def agent_model(
     """
     _required(name=name)
     try:
+        if isinstance(name, list):
+            return {"agents": {n: config.agent_binding(n) for n in name}}
         return config.agent_binding(name)
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
@@ -1132,6 +1144,38 @@ def scratch_dir(
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
     return {"path": str(directory)}
+
+
+@mcp.tool(name="ship_state_update")
+def ship_state_update(
+    path: Annotated[
+        str,
+        Field(description="Absolute path of one run's `ship-state.yaml`, which must already exist."),
+    ],
+    fields: Annotated[
+        dict[str, Any],
+        Field(description="The fields to write, by name. Only these are written; the rest of the file is left alone."),
+    ],
+) -> dict[str, Any]:
+    """Merge named fields into a run's `ship-state.yaml`, leaving every other field in the file untouched.
+
+    The round trip drops YAML comments, so the file has to stay comment-free. A path with no file at it is
+    an error and never a new file: the ship START phase seeds the state, and creating one at a mistyped
+    path strands the run's real state where nothing will read it.
+    """
+    _required(path=path)
+    if not fields:
+        raise ToolError("'fields' is required and must name at least one field to write")
+    state = Path(path)
+    if not state.is_file():
+        raise ToolError(
+            f"no ship state file at {path!r}; the ship START phase seeds it and this tool never creates one"
+        )
+    loaded = yaml.safe_load(state.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ToolError(f"ship state at {path!r} is not a mapping, so there is nothing to merge into")
+    atomic_write(state, yaml.safe_dump({**loaded, **fields}, sort_keys=False))
+    return {"path": path, "fields": list(fields)}
 
 
 @mcp.tool(name="fingerprint_config")

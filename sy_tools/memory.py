@@ -16,10 +16,10 @@ skills/shared/references/memory.md.
 from __future__ import annotations
 
 from datetime import date
-import os
 from pathlib import Path
 import re
 
+from .atomic import atomic_write
 from .config import get as config_get
 
 INDEX_NAME = "index.md"
@@ -66,7 +66,7 @@ def add(title: str, scope: str, tags: str, body: str) -> Path:
         f"---\ntitle: {title.strip()}\nscope: {scope.strip()}\ntags: {tags.strip()}\n"
         f"date: {date.today().isoformat()}\n---\n\n{body.strip()}\n"
     )
-    _atomic_write(path, text)
+    atomic_write(path, text)
     _rebuild_index(directory)
     return path
 
@@ -89,7 +89,7 @@ def refute(title: str, evidence: str, correction: str = "") -> Path:
         raise ValueError(f"no lesson is stored under title {title.strip()!r}, so there is nothing to refute")
     text = path.read_text(encoding="utf-8")
     status = "corrected" if correction.strip() else "tombstoned"
-    _atomic_write(
+    atomic_write(
         path,
         f"---\ntitle: {_frontmatter_value(text, 'title') or title.strip()}\n"
         f"scope: {_frontmatter_value(text, 'scope')}\ntags: {_frontmatter_value(text, 'tags')}\n"
@@ -200,7 +200,7 @@ def _rebuild_index(directory: Path) -> None:
         lines.append(f"- [{path.stem}]({path.name}) — {_title_of(text, path)} ({detail})")
     if len(lines) == 2:
         lines.append("(no entries)")
-    _atomic_write(directory / INDEX_NAME, "\n".join(lines) + "\n")
+    atomic_write(directory / INDEX_NAME, "\n".join(lines) + "\n")
 
 
 def _ensure_index() -> None:
@@ -221,9 +221,3 @@ def _ensure_index() -> None:
     # a restored backup) stays invisible to both.
     if entries != len(lessons) or any(p.stat().st_mtime > index.stat().st_mtime for p in lessons):
         _rebuild_index(directory)
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)

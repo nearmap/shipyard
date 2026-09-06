@@ -87,6 +87,29 @@ HUMAN_TEXT_PINS = {
     "short_text_floor": "Do not touch short text, at any destination.",
     "post_comment_pass": "tighten it with `/sy:tighten` before posting",
 }
+# Every literal `check_gate_loop` pins, and the headings it scopes them to, one copy each for the same
+# reason `HUMAN_TEXT_PINS` is one copy.
+GATE_LOOP_PINS = {
+    "handover_code": "`handover`",
+    "handover": "handover",
+    "handover_block": "HANDOVER",
+    "gate_only": "(GATE only)",
+    "round_log": "gate_round_log",
+    "round_log_seed": "gate_round_log: []",
+    "root_cause_key": "root_cause_key",
+    "bail_to_spec": "bail-to-spec",
+    "triage_agent": "sy:gate-triage",
+    "stopping_rule": "undispositioned actionable finding",
+    "cost_boundary": "Cost comes out of the loop, never the reviewer",
+    "gate_min_model": "frontier",
+    "gate_min_effort": "max",
+}
+GATE_LOOP_SECTIONS = {
+    "worker_contract": "## Worker contract",
+    "pre_gate": "## Pre-gate checkpoint",
+    "fix_cycle": "## Fix cycle",
+    "return_contract": "## Return contract",
+}
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
 _SCRATCH_REF_PATTERN = re.compile(r"(?<![\w.-])\.scratch\b")
@@ -414,6 +437,174 @@ def _json_path(obj: object, *keys: str) -> object | None:
             return None
         obj = obj[key]
     return obj
+
+
+def check_gate_loop(errors: list[str]) -> None:
+    """GATE's one-round-per-dispatch shape: the `handover` return, its triage delegate, and cross-round recurrence.
+
+    Standalone rather than a leg of `check_invariants` for the reason `check_gate_justification` is:
+    that function's `read()` raises on any missing file, so a synthetic tree exercising this rule would
+    have to carry every path it reads.
+    """
+    skill_rel = "skills/ship/SKILL.md"
+    gate_ref_rel = "skills/ship/references/immutable-gate.md"
+    start_rel = "skills/ship/references/start-resume.md"
+    build_rel = "skills/ship/references/implementation.md"
+    worker_rel = "agents/ship-gate.md"
+    triage_rel = "agents/gate-triage.md"
+    skill = (ROOT / skill_rel).read_text(encoding="utf-8")
+    gate_ref = (ROOT / gate_ref_rel).read_text(encoding="utf-8")
+    start = (ROOT / start_rel).read_text(encoding="utf-8")
+    build = (ROOT / build_rel).read_text(encoding="utf-8")
+    worker = (ROOT / worker_rel).read_text(encoding="utf-8")
+    triage = (ROOT / triage_rel).read_text(encoding="utf-8")
+
+    contract = _bounded_section(skill, GATE_LOOP_SECTIONS["worker_contract"], skill_rel, errors)
+    if contract is not None:
+        if GATE_LOOP_PINS["handover_code"] not in contract:
+            fail(
+                f"{skill_rel} § Worker contract must name the {GATE_LOOP_PINS['handover_code']} return; the "
+                "parent has no handling for a return its own contract never names, so GATE's sixth return "
+                "arrives as an unrecognised string",
+                errors,
+            )
+        if GATE_LOOP_PINS["gate_only"] not in contract:
+            fail(
+                f"{skill_rel} § Worker contract must qualify that return {GATE_LOOP_PINS['gate_only']}; "
+                "unqualified, nothing bars START or BUILD from returning it the way `needs-trace`'s own "
+                "qualifier bars every phase but BUILD",
+                errors,
+            )
+    pre_gate = _bounded_section(skill, GATE_LOOP_SECTIONS["pre_gate"], skill_rel, errors)
+    if pre_gate is not None and GATE_LOOP_PINS["handover"] in pre_gate.lower():
+        fail(
+            f"{skill_rel} § Pre-gate checkpoint must not name `handover`: it enumerates what BUILD returns "
+            "from a request-changes continuation, and naming a GATE-only return there tells the parent to "
+            "expect it from BUILD",
+            errors,
+        )
+    if GATE_LOOP_PINS["handover"] in build.lower():
+        fail(
+            f"{build_rel} must not name `handover`: it is BUILD's own procedure end to end, and a GATE-only "
+            "return named inside it is one BUILD reads as available to itself",
+            errors,
+        )
+
+    # `## Return contract` is the last section of this file, so `_bounded_section` -- which refuses an
+    # unterminated section because that is normally a pin widening past its scope -- cannot express it.
+    return_start = re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['return_contract'])}", worker, re.M)
+    if return_start is None:
+        fail(
+            f"{worker_rel} must keep its `{GATE_LOOP_SECTIONS['return_contract']}` heading; the return forms "
+            "this worker may emit are scoped to it",
+            errors,
+        )
+    elif GATE_LOOP_PINS["handover_block"] not in worker[return_start.end():]:
+        fail(
+            f"{worker_rel} § Return contract must show the `{GATE_LOOP_PINS['handover_block']}` form; a return "
+            "the worker's own brief never shows is one it never emits",
+            errors,
+        )
+
+    if GATE_LOOP_PINS["round_log_seed"] not in start:
+        fail(
+            f"{start_rel} must seed `{GATE_LOOP_PINS['round_log_seed']}` into the fresh-run state file; an "
+            "undeclared field is one a fresh run never seeds and a resume reads as absent",
+            errors,
+        )
+    if GATE_LOOP_PINS["root_cause_key"] not in start:
+        fail(
+            f"{start_rel} must say that a `{GATE_LOOP_PINS['round_log']}` entry carries a "
+            f"`{GATE_LOOP_PINS['root_cause_key']}`; entries with no stable key recognise no recurrence",
+            errors,
+        )
+
+    # Scoped from the heading to the end of the file, and not whole-file, for the reason `## Return
+    # contract` above is: `## Fix cycle` is the last section of its own file too.
+    fix_cycle_start = re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['fix_cycle'])}\s*$", gate_ref, re.M)
+    if fix_cycle_start is None:
+        fail(
+            f"{gate_ref_rel} must keep its `{GATE_LOOP_SECTIONS['fix_cycle']}` heading; the round's whole "
+            "contract is scoped to it",
+            errors,
+        )
+    else:
+        fix_cycle = gate_ref[fix_cycle_start.end():]
+        for key in ("round_log", "root_cause_key", "bail_to_spec"):
+            if GATE_LOOP_PINS[key] not in fix_cycle:
+                fail(
+                    f"{gate_ref_rel} § Fix cycle must keep the recurrence clause whole, and "
+                    f"`{GATE_LOOP_PINS[key]}` is missing from it; per-round dispatch destroyed the in-context "
+                    "memory that used to catch a root cause an earlier round already treated, so reading the "
+                    "log and bailing is the only thing left that catches it",
+                    errors,
+                )
+        if GATE_LOOP_PINS["triage_agent"] not in fix_cycle:
+            fail(
+                f"{gate_ref_rel} § Fix cycle must source every disposition from `{GATE_LOOP_PINS['triage_agent']}`; "
+                "a fix cycle that never names the delegate is one the controller dispositions itself",
+                errors,
+            )
+        if GATE_LOOP_PINS["handover"] not in fix_cycle:
+            fail(
+                f"{gate_ref_rel} § Fix cycle must name `{GATE_LOOP_PINS['handover']}` as the round's "
+                "non-converged exit; with only `done` to return, the loop silently becomes an in-worker loop "
+                "again",
+                errors,
+            )
+        if GATE_LOOP_PINS["stopping_rule"] not in fix_cycle:
+            fail(
+                f"{gate_ref_rel} § Fix cycle must state the stopping rule (no "
+                f"{GATE_LOOP_PINS['stopping_rule']}); without it a round converges over a finding nobody "
+                "dispositioned",
+                errors,
+            )
+    if GATE_LOOP_PINS["cost_boundary"] not in gate_ref:
+        fail(
+            f"{gate_ref_rel} must keep '{GATE_LOOP_PINS['cost_boundary']}'; it is the standing statement of "
+            "what cost-scaling may never touch, and taking cost out of the GATE controller is exactly the "
+            "change that would reach for the reviewer next",
+            errors,
+        )
+
+    if GATE_LOOP_PINS["root_cause_key"] not in triage:
+        fail(
+            f"{triage_rel} must name `{GATE_LOOP_PINS['root_cause_key']}`, the key its caller matches against "
+            f"`{GATE_LOOP_PINS['round_log']}`; a triage brief that never mentions it returns dispositions the "
+            "caller cannot match across rounds",
+            errors,
+        )
+    declared = re.search(r"^tools:[ \t]*(.*)$", _frontmatter_block(triage), re.M)
+    granted = [entry.strip() for entry in (declared.group(1) if declared else "").split(",") if entry.strip()]
+    for tool in ("Write", "Edit"):
+        if tool in granted:
+            fail(
+                f"{triage_rel}: tools: grants {tool!r}; triage authors dispositions its caller applies, so a "
+                "delegate that can edit is one that can land a fix no caller recorded",
+                errors,
+            )
+    for entry in granted:
+        verb = _sy_verb(entry)
+        if verb in CANONICAL_VERBS:
+            fail(
+                f"{triage_rel}: tools: grants the tracker verb {verb!r}; triage decides nothing but "
+                "dispositions, so a tracker write from here is a record no caller authored",
+                errors,
+            )
+
+    try:
+        floors = json.loads((ROOT / "config/floors.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"config/floors.json unreadable: {exc}", errors)
+        return
+    for field, required in (("min_model", "gate_min_model"), ("min_effort", "gate_min_effort")):
+        found = _json_path(floors, "gate", field)
+        if found != GATE_LOOP_PINS[required]:
+            fail(
+                f"config/floors.json: gate {field} is {found!r}, not {GATE_LOOP_PINS[required]!r}; nothing in "
+                "a cost-reduction change may lower the independent reviewer",
+                errors,
+            )
 
 
 def check_human_text_routing(errors: list[str]) -> None:
@@ -1378,8 +1569,6 @@ def check_invariants(errors: list[str]) -> None:
     if "tracker ticket" not in pr:
         fail("pr description contract must require a link to the tracker ticket", errors)
 
-    if "undispositioned actionable finding" not in gate_ref:
-        fail("immutable-gate fix cycle must state the stopping rule (no undispositioned actionable finding)", errors)
     if "drift re-check" not in gate_ref.lower():
         fail("immutable-gate loop must include the periodic target-branch drift re-check", errors)
     if "ci_poll.sh" not in gate_ref:
@@ -1819,6 +2008,7 @@ def main() -> int:
     check_invariants(errors)
     check_poller_argv(errors)
     check_gate_justification(errors)
+    check_gate_loop(errors)
     check_human_text_routing(errors)
 
     # Here rather than in pytest because neither is reachable there: one is bash, and the other sits

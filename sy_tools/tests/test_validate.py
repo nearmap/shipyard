@@ -796,3 +796,234 @@ def test_a_frontmatter_name_drifted_from_its_filename_stem_is_refused(tmp_path, 
     """Floors key on the stem while dispatch and `agent_model` key on the name; drift mis-floors silently."""
     errors = _tier_check(tmp_path, monkeypatch, "repo-review", "repo_review")
     assert any("is not the filename stem" in e for e in errors), errors
+
+
+_LOOP_PINS = validate.GATE_LOOP_PINS
+_LOOP_SECTIONS = validate.GATE_LOOP_SECTIONS
+
+
+def _loop_skill() -> str:
+    """`skills/ship/SKILL.md` as `check_gate_loop` reads it: a complete worker contract, a BUILD-only pre-gate."""
+    return (
+        f"{_LOOP_SECTIONS['worker_contract']}\n"
+        f"- {_LOOP_PINS['handover_code']} {_LOOP_PINS['gate_only']} — the round is complete, redispatch me.\n"
+        f"{_LOOP_SECTIONS['pre_gate']}\n"
+        "Whatever BUILD returns next — `done`, `needs-decision`, `bail-to-spec`, or `blocked`.\n"
+        "## State router\n"
+    )
+
+
+def _loop_gate_ref() -> str:
+    """`immutable-gate.md`: the cost boundary above the heading, the whole round contract inside § Fix cycle."""
+    return (
+        "## Pin scope\n"
+        f"{_LOOP_PINS['cost_boundary']}: the reviewer keeps its frontier model and max effort.\n"
+        f"{_LOOP_SECTIONS['fix_cycle']}\n"
+        f"A round returns `done` or `{_LOOP_PINS['handover']}`; every disposition comes from one "
+        f"`{_LOOP_PINS['triage_agent']}` delegate and carries a `{_LOOP_PINS['root_cause_key']}` matched "
+        f"against `{_LOOP_PINS['round_log']}`, a match returning `{_LOOP_PINS['bail_to_spec']}`.\n"
+        f"It converges only with no {_LOOP_PINS['stopping_rule']} standing.\n"
+    )
+
+
+def _loop_start() -> str:
+    return (
+        f"```yaml\n{_LOOP_PINS['round_log_seed']}\n```\n"
+        f"Each entry carries a stable `{_LOOP_PINS['root_cause_key']}` and its disposition.\n"
+    )
+
+
+def _loop_build() -> str:
+    return "## Delegated slice protocol\nBUILD integrates every slice and returns `done`.\n"
+
+
+def _loop_worker() -> str:
+    return (
+        f"{_LOOP_SECTIONS['return_contract']} — target 700 tokens\n"
+        f"`{_LOOP_PINS['handover_block']}: round <n> complete, loop not converged; CHECKPOINT: <…>`\n"
+    )
+
+
+def _loop_triage() -> str:
+    return (
+        "---\nname: gate-triage\ntools: Read, Grep, Glob, mcp__sy__check_env\nmodel: opus\neffort: high\n---\n"
+        f"Every finding gets one disposition and a `{_LOOP_PINS['root_cause_key']}`.\n"
+    )
+
+
+def _loop_floors() -> str:
+    return json.dumps(
+        {"gate": {"min_model": _LOOP_PINS["gate_min_model"], "min_effort": _LOOP_PINS["gate_min_effort"]}}
+    )
+
+
+def _loop_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    skill: str | None = None,
+    gate_ref: str | None = None,
+    start: str | None = None,
+    build: str | None = None,
+    worker: str | None = None,
+    triage: str | None = None,
+    floors: str | None = None,
+) -> list[str]:
+    """Build the seven-file tree `check_gate_loop` reads and return its errors; each override replaces one file."""
+    files = {
+        "skills/ship/SKILL.md": _loop_skill() if skill is None else skill,
+        "skills/ship/references/immutable-gate.md": _loop_gate_ref() if gate_ref is None else gate_ref,
+        "skills/ship/references/start-resume.md": _loop_start() if start is None else start,
+        "skills/ship/references/implementation.md": _loop_build() if build is None else build,
+        "agents/ship-gate.md": _loop_worker() if worker is None else worker,
+        "agents/gate-triage.md": _loop_triage() if triage is None else triage,
+        "config/floors.json": _loop_floors() if floors is None else floors,
+    }
+    for rel, text in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_gate_loop(errors)
+    return errors
+
+
+def test_a_complete_gate_loop_tree_passes(tmp_path, monkeypatch):
+    """Also the standing evidence for the two negative legs: neither region names `handover` here."""
+    errors = _loop_check(tmp_path, monkeypatch)
+    assert not errors, f"a tree carrying every pinned span must pass: {errors}"
+
+
+def test_a_worker_contract_that_never_names_handover_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(tmp_path, monkeypatch, skill=_loop_skill().replace(_LOOP_PINS["handover"], "done"))
+    assert any("arrives as an unrecognised string" in e for e in errors), \
+        f"a worker contract missing GATE's sixth return must be refused: {errors}"
+
+
+def test_a_handover_return_without_its_gate_only_qualifier_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(tmp_path, monkeypatch, skill=_loop_skill().replace(_LOOP_PINS["gate_only"], ""))
+    assert any("nothing bars START or BUILD from returning it" in e for e in errors), \
+        f"an unqualified GATE-only return must be refused: {errors}"
+
+
+def test_a_gate_worker_whose_return_contract_omits_the_handover_form_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(tmp_path, monkeypatch, worker=_loop_worker().replace(_LOOP_PINS["handover_block"], "DONE"))
+    assert any("is one it never emits" in e for e in errors), \
+        f"a worker brief that never shows the handover form must be refused: {errors}"
+
+
+def test_a_fresh_run_that_declares_neither_the_log_nor_its_key_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(tmp_path, monkeypatch, start="```yaml\ngate_rounds_total: 0\n```\n")
+    assert any("a resume reads as absent" in e for e in errors), \
+        f"a fresh run that never seeds the round log must be refused: {errors}"
+    assert any("recognise no recurrence" in e for e in errors), \
+        f"a round log whose entries carry no stable key must be refused: {errors}"
+
+
+def test_a_fix_cycle_missing_a_recurrence_term_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(
+        tmp_path, monkeypatch, gate_ref=_loop_gate_ref().replace(_LOOP_PINS["round_log"], "the earlier rounds")
+    )
+    assert any("the recurrence clause whole" in e for e in errors), \
+        f"a fix cycle that no longer reads the round log must be refused: {errors}"
+
+
+def test_a_fix_cycle_that_never_names_the_triage_delegate_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(
+        tmp_path, monkeypatch, gate_ref=_loop_gate_ref().replace(_LOOP_PINS["triage_agent"], "sy:gate")
+    )
+    assert any("the controller dispositions itself" in e for e in errors), \
+        f"a fix cycle with no delegated triage must be refused: {errors}"
+
+
+def test_a_fix_cycle_without_the_handover_exit_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(
+        tmp_path, monkeypatch, gate_ref=_loop_gate_ref().replace(_LOOP_PINS["handover"], "another round")
+    )
+    assert any("becomes an in-worker loop again" in e for e in errors), \
+        f"a round with no non-converged exit must be refused: {errors}"
+
+
+def test_a_fix_cycle_without_the_stopping_rule_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(
+        tmp_path, monkeypatch, gate_ref=_loop_gate_ref().replace(_LOOP_PINS["stopping_rule"], "open finding")
+    )
+    assert any("converges over a finding nobody dispositioned" in e for e in errors), \
+        f"a fix cycle with no stopping rule must be refused: {errors}"
+
+
+def test_a_gate_reference_that_drops_the_cost_boundary_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(
+        tmp_path, monkeypatch, gate_ref=_loop_gate_ref().replace(_LOOP_PINS["cost_boundary"], "Cost is bounded")
+    )
+    assert any("what cost-scaling may never touch" in e for e in errors), \
+        f"dropping the standing cost boundary must be refused: {errors}"
+
+
+def test_a_lowered_gate_reviewer_floor_is_refused(tmp_path, monkeypatch):
+    floors = json.dumps({"gate": {"min_model": "standard", "min_effort": _LOOP_PINS["gate_min_effort"]}})
+    errors = _loop_check(tmp_path, monkeypatch, floors=floors)
+    assert any("may lower the independent reviewer" in e and "'standard'" in e for e in errors), \
+        f"a gate floor below frontier must be refused, naming what it found: {errors}"
+
+
+def test_a_pre_gate_checkpoint_that_names_handover_is_refused(tmp_path, monkeypatch):
+    skill = _loop_skill().replace("or `blocked`", f"or `{_LOOP_PINS['handover']}`")
+    errors = _loop_check(tmp_path, monkeypatch, skill=skill)
+    assert any("expect it from BUILD" in e for e in errors), \
+        f"a BUILD enumeration naming a GATE-only return must be refused: {errors}"
+
+
+def test_a_build_procedure_that_names_handover_is_refused(tmp_path, monkeypatch):
+    build = _loop_build() + f"A slice that cannot converge returns `{_LOOP_PINS['handover']}`.\n"
+    errors = _loop_check(tmp_path, monkeypatch, build=build)
+    assert any("BUILD reads as available to itself" in e for e in errors), \
+        f"BUILD's own procedure naming a GATE-only return must be refused: {errors}"
+
+
+def test_a_triage_brief_that_never_names_the_root_cause_key_is_refused(tmp_path, monkeypatch):
+    triage = _loop_triage().replace(_LOOP_PINS["root_cause_key"], "label")
+    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    assert any("cannot match across rounds" in e for e in errors), \
+        f"a triage brief with no stable key must be refused: {errors}"
+
+
+def test_a_triage_brief_granting_an_edit_or_a_tracker_verb_is_refused(tmp_path, monkeypatch):
+    triage = _loop_triage().replace("tools: Read, Grep", "tools: Read, Edit, mcp__sy__set-status, Grep")
+    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    assert any("land a fix no caller recorded" in e for e in errors), \
+        f"a read-only delegate granted Edit must be refused: {errors}"
+    assert any("a record no caller authored" in e for e in errors), \
+        f"a read-only delegate granted a tracker verb must be refused: {errors}"
+
+
+def test_the_fix_cycle_pins_do_not_widen_above_their_heading(tmp_path, monkeypatch):
+    """The section is last in its file, so a heading-to-EOF scope is the only one available; prove it is a scope."""
+    heading = _LOOP_SECTIONS["fix_cycle"] + "\n"
+    head, _, body = _loop_gate_ref().partition(heading)
+    errors = _loop_check(tmp_path, monkeypatch, gate_ref=head + body + heading)
+    assert any("becomes an in-worker loop again" in e for e in errors), \
+        f"round contract moved above its own heading must still be refused: {errors}"
+
+
+def test_the_gate_worker_handover_pin_does_not_widen_above_its_heading(tmp_path, monkeypatch):
+    """Same proof for the other end-of-file section: `agents/ship-gate.md` § Return contract."""
+    intro, _, block = _loop_worker().partition("\n")
+    errors = _loop_check(tmp_path, monkeypatch, worker=block + intro + "\n")
+    assert any("is one it never emits" in e for e in errors), \
+        f"a handover form shown above the return contract must still be refused: {errors}"
+
+
+def test_a_worker_contract_with_no_terminating_heading_is_refused(tmp_path, monkeypatch):
+    """The `_bounded_section` legs report the missing boundary rather than scanning to the end of the file."""
+    skill = _loop_skill().partition(_LOOP_SECTIONS["pre_gate"])[0]
+    errors = _loop_check(tmp_path, monkeypatch, skill=skill)
+    assert any("has no following `## ` heading to bound it" in e for e in errors), \
+        f"an unterminated worker contract must be refused rather than widened: {errors}"
+
+
+def test_the_gate_loop_check_is_registered_in_main(tmp_path):
+    """A check nothing calls protects nothing, and `main()` is its only caller."""
+    assert "check_gate_loop(errors)" in inspect.getsource(validate.main), \
+        "the gate-loop check must be registered in main()"

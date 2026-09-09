@@ -1631,7 +1631,7 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (
         ("gate", read("agents/gate.md")), ("debate", read("agents/debate.md")),
         ("ship-build", read("agents/ship-build.md")), ("ship-gate", read("agents/ship-gate.md")),
-        ("ship-start", read("agents/ship-start.md")), ("repo-review", repo_review),
+        ("ship-start", read("agents/ship-start.md")),
     ):
         if "model-dispatch.md" not in text:
             fail(f"agent {name} dispatches subagents and must cite model-dispatch.md", errors)
@@ -1757,7 +1757,6 @@ def check_invariants(errors: list[str]) -> None:
     config_values_ref = read("skills/shared/references/config-values.md")
     for name, text in (
         ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),
-        ("repo-review", repo_review),
     ):
         if "limits.max_depth_agents" not in text:
             fail(f"{name} must name limits.max_depth_agents rather than a hardcoded depth-agent cap", errors)
@@ -1868,20 +1867,36 @@ def check_invariants(errors: list[str]) -> None:
             "there; the GATE worker's carve-out cannot fire on a finding it cannot tell apart from gate's own",
             errors,
         )
-    # Vetting is what makes repo-review more than a relay, and every half of it is silently droppable:
-    # the tool grant, the bounded primitives, and the degrade-not-drop rule on a dispatch that never lands.
-    if not re.search(r"^tools:.*\bAgent\b", repo_review, re.M):
+    # repo-review runs at the harness's three-level nesting cap, where the Agent tool is not exposed at all
+    # (model-dispatch § Nesting is capped). Granting it there re-creates a vetting step that silently never
+    # runs; the refutation it cannot do lives one level up, and both halves are droppable on their own.
+    if re.search(r"^tools:.*\bAgent\b", repo_review, re.M):
         fail(
-            "agents/repo-review.md must grant the Agent tool: it vets findings with depth agents, and "
-            "`check_agent_mcp_allowlists` never checks that a tool an agent needs is present",
+            "agents/repo-review.md must not grant the Agent tool: it runs at the agent-nesting cap, where "
+            "the tool is withheld whatever the frontmatter lists, so every dispatch it is told to make is "
+            "an instruction that silently never runs",
             errors,
         )
     for token, why in (
-        ("sy:hunt", "refute mode is the primary vetting primitive"),
-        ("unvetted", "a finding whose depth agent never dispatched degrades to unvetted rather than dropped"),
+        ("Nesting is capped", "the reason it dispatches nothing must be the structural cap, not load"),
+        ("unverified", "a finding it could not confirm from source is returned marked, never dropped"),
+        ("CONTESTED", "gate needs the refutation targets named to pick them up"),
     ):
         if token not in repo_review:
             fail(f"agents/repo-review.md must name `{token}`: {why}", errors)
+    if gate_review is not None and ("CONTESTED" not in gate_review or "sy:hunt" not in gate_review):
+        fail(
+            "agents/gate.md § Review must refute repo-review's HIGH and CONTESTED findings with sy:hunt "
+            "before promotion; the reviewer cannot dispatch at its depth, so refutation dropped here is "
+            "refutation nothing in the pipeline performs",
+            errors,
+        )
+    if "three levels of subagent nesting" not in dispatch_ref:
+        fail(
+            "model-dispatch must state the three-level nesting cap: an agent told to dispatch from the "
+            "third level loses the Agent tool with no error, and nothing else records that",
+            errors,
+        )
     # Four hops, each pinned where it is written: the field's definition, the condition on asking for it,
     # the composition out of the plan file, and the append at the only site that dispatches the reviewer.
     # Whole-file containment at any one hop passes while the sentence stops threading at another.

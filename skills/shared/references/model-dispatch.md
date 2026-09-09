@@ -18,6 +18,14 @@ Three properties of the mechanism make this non-optional rather than a nicety:
 - **Frontmatter is the load-time fallback, not the operative value.** It is what runs when nobody passes an override, so it must never sit below the agent's declared floor — `scripts/validate.py` checks that — but the resolved value is what should actually run.
 - **The resolver has already clamped the value to the agent's declared floor.** `config/floors.json` holds a `min_model`/`min_effort` per agent that no config layer can lower, so a config trying to drop `sy:gate` below the frontier tier is refused by name before it reaches you. You do not need to re-check the floor at the dispatch site — but you must not substitute a weaker model of your own either.
 
+## Nesting is capped
+
+Claude Code allows three levels of subagent nesting, and the cap is silent. An agent at the third level is not given the `Agent` tool at all — its frontmatter `tools:` list is not honoured, no error is raised, and nothing in its return says a dispatch was refused rather than skipped. Measured across 1,776 subagent runs of this plugin: 654 at depth 1, 685 at depth 2, 437 at depth 3, and none anywhere at depth 4.
+
+So an agent may be instructed to dispatch only when every path that reaches it lands at depth 1 or 2. Count the path, not the intent: `/sy:ship` → `sy:ship-gate` (1) → `sy:gate` (2) → `sy:repo-review` (3) puts the reviewer at the cap, which is why it dispatches nothing and `sy:gate` refutes its candidates instead. A `fork` spends a level like any other dispatch, so dispatching `sy:gate` from a forked worker puts gate itself at the cap and costs it every `sy:hunt` it was going to run, with no sign in its verdict that depth was the reason.
+
+An agent that hits this reports it as the structural fact it is, never as a transient. "Nested dispatch is unreliable under load" reads as bad luck and invites a retry that cannot work; a finding whose confidence is lower because nothing could ever check it must say so in those terms, so the caller can check it one level up.
+
 ## Requested is not observed
 
 `CLAUDE_CODE_SUBAGENT_MODEL` outranks the per-invocation parameter, and an org model allowlist can silently drop an excluded model back to the inherited one. Both mean a dispatch can run on a model nobody asked for, with no error. So requested and observed are separate facts:

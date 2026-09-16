@@ -218,9 +218,14 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         if reason:
             return f'{mode} review: {reason}'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    # `)` and a backtick end the target: inside `$(cmd 2>/dev/null)` a greedy class captures `/dev/null)`.
-    for operator, target in re.findall(r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
-        target = target.strip('"\'').rstrip(')`')
+    # `)`/backtick can open *or* close the target: `$(cmd 2>/dev/null)` and `` `cmd 2>/dev/null` `` both
+    # close on one, and a leading `` `mktemp` `` opens on one -- so both ends are consumed outside the
+    # captured class rather than trimmed off it after the fact. A trailer *inside* the target survives
+    # (`"$(... 2>/dev/null)/suffix"`), so the class still excludes `)`/backtick, not just skips leading ones.
+    for operator, target in re.findall(
+        r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*[`()]*([^\s;&|)`]+)', command
+    ):
+        target = target.strip('"\'')
         # Only `>&`/`2>&` *plus* a bare-digit target is fd duplication; `2>1` writes a file named `1`,
         # and `>& out` writes a file named `out`. The `[&|]` also covers `>|`/`n>|` clobber-override and
         # the `2>&-` fd-close form.
@@ -558,8 +563,15 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': 'cat x > `pwd`/out.txt'}, True),
         ('gate', 'Bash', {'command': 'echo x | tee `mktemp`'}, True),
         ('gate', 'Bash', {'command': 'pytest -q > `mktemp`'}, True),
+        # An interior `)` -- one that closes the substitution but is followed by more target text -- must
+        # still be read as a write to that trailing path, not as the end of the target.
+        ('gate', 'Bash', {'command': 'cat "$(git rev-parse --show-toplevel 2>/dev/null)/pyproject.toml"'}, False),
+        ('gate', 'Bash', {'command': 'cat `git rev-parse --show-toplevel 2>/dev/null`/pyproject.toml'}, False),
+        ('gate', 'Bash', {'command': 'echo x > )/tmp/o'}, True),
         # A quoted separator inside the target defeats the /dev/null exemption entirely -- a known,
-        # accepted bypass (see module docstring), not fixed by the backtick-stripping change above.
+        # accepted bypass (see module docstring, "quoted-separator" limit), not fixed by this change.
+        # This pins that accepted limit as the current behaviour, not a required one: closing it should
+        # update this case rather than being blocked by it.
         ('gate', 'Bash', {'command': 'echo x > "/dev/null)"'}, False),
         ('gate', 'Bash', {'command': 'echo x | tee src/a.py'}, True),
         ('gate', 'Bash', {'command': 'cd /tmp && git commit -m x'}, True),

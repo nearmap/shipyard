@@ -191,6 +191,22 @@ def test_render_keeps_a_genuine_user_turn_after_an_enqueue_and_remove(session_tr
     assert "[2026-07-09 10:00:06] USER" in rendered, "genuine user turn after enqueue+remove must render"
 
 
+def test_render_warns_about_a_transcript_it_could_not_parse(session_tree):
+    """A transcript that will not parse must say so in the render; an empty section reads as a quiet agent."""
+    broken = session_tree.with_suffix("") / "subagents" / "agent-broken.jsonl"
+    broken.write_text("{not json\n", encoding="utf-8")
+    rendered = usage.render(session_tree, task="PROJ-1")
+    assert any(
+        line.startswith("warning:") and "agent-broken.jsonl" in line for line in rendered.splitlines()
+    ), rendered
+
+
+def test_summarize_always_carries_a_warnings_key(session_tree):
+    """An absent key on a clean tree is indistinguishable from a consumer forgetting to look for it."""
+    result = usage.summarize(session_tree, phase="ship", task="PROJ-1")
+    assert result["warnings"] == [], result
+
+
 @pytest.fixture
 def config_layers(tmp_path, monkeypatch):
     """A live but throwaway config layer chain, with `render_limits()`'s cache reset around each use.

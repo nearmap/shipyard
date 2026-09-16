@@ -218,7 +218,8 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         if reason:
             return f'{mode} review: {reason}'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    for operator, target in re.findall(r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
+    # `)` and a backtick end the target: inside `$(cmd 2>/dev/null)` a greedy class captures `/dev/null)`.
+    for operator, target in re.findall(r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|)`]+)', command):
         target = target.strip('"\'')
         # Only `>&`/`2>&` *plus* a bare-digit target is fd duplication; `2>1` writes a file named `1`,
         # and `>& out` writes a file named `out`. The `[&|]` also covers `>|`/`n>|` clobber-override and
@@ -544,6 +545,12 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': "grep -rnoE '2>|&>' sy_tools/"}, False),
         ('gate', 'Bash', {'command': "rg -n 'x;>y' src/"}, False),
         ('gate', 'Bash', {'command': f'echo x 2> {root / "err.log"}'}, False),
+        # A redirect inside a command substitution ends at the `)` or backtick, not at the next whitespace:
+        # a greedy target class captured `/dev/null)` and lost the exemption.
+        ('gate', 'Bash', {'command': 'x=$(command -v gh 2>/dev/null)'}, False),
+        ('gate', 'Bash', {'command': '[ -n "$(git status --porcelain 2>/dev/null)" ]'}, False),
+        ('gate', 'Bash', {'command': 'x=`git rev-parse HEAD 2>/dev/null`'}, False),
+        ('gate', 'Bash', {'command': 'x=$(cmd 2>/tmp/out.txt)'}, True),
         ('gate', 'Bash', {'command': 'echo x | tee src/a.py'}, True),
         ('gate', 'Bash', {'command': 'cd /tmp && git commit -m x'}, True),
         ('gate', 'Bash', {'command': "sed -i 's/a/b/' src/a.py"}, True),

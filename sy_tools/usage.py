@@ -408,8 +408,8 @@ def summarize(
     }
     if task:
         result["task"] = task
-    if warnings:
-        result["warnings"] = sorted(set(warnings))
+    # Always present: an absent key once made an unreadable tree look like a healthy zero.
+    result["warnings"] = sorted(set(warnings))
     return result
 
 
@@ -614,8 +614,8 @@ def _render_row(
 
 
 def _first_timestamp(path: Path) -> str:
-    warnings: list[str] = []
-    for record in _iter_jsonl(path, warnings):
+    # Ordering only; a read failure here is reported when the section for this transcript is rendered.
+    for record in _iter_jsonl(path, []):
         ts = record.get("timestamp")
         if ts:
             return str(ts)
@@ -665,9 +665,10 @@ def render(main: Path, *, task: str | None) -> str:
         out += ["=" * 78, header, "=" * 78]
         tool_names: dict[str, str] = {}
         pending_interjections: dict[str, int] = {}
-        warnings: list[str] = []
+        already_reported = len(warnings)
         for record in _iter_jsonl(path, warnings):
             _render_row(record, tool_names, pending_interjections, out)
+        out += [f"warning: {w}" for w in warnings[already_reported:]]
         out.append("")
     return "\n".join(out) + "\n"
 

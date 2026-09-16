@@ -847,27 +847,49 @@ def _loop_start() -> str:
 
 
 def _loop_build() -> str:
+    """The durability rule in its own slice-manifest paragraph, and a later paragraph echoing the wording."""
     return (
-        "## Delegated slice protocol\nBUILD integrates every slice and returns `done`.\n"
-        f"Its slice manifest is {_LOOP_PINS['checkpoint_before_return']}.\n"
+        "## Delegated slice protocol\nBUILD integrates every slice and returns `done`.\n\n"
+        f"{_LOOP_SECTIONS['slice_manifest']} in `phase_checkpoint`, written after each integration and so "
+        f"{_LOOP_PINS['checkpoint_before_return']}, so a return that never arrives resumes at the next "
+        "pending slice.\n\n"
+        f"The manifest being {_LOOP_PINS['checkpoint_before_return']} is why a set request field no longer "
+        "means \"not folded in yet\".\n"
     )
 
 
 def _loop_worker() -> str:
+    """The status block fenced, with the prose below it naming every field the block names."""
     return (
         f"{_LOOP_SECTIONS['return_contract']} — target 700 tokens\n"
-        f"`{_LOOP_PINS['handover_block']}: round <n> complete, loop not converged; CHECKPOINT: <…>; "
-        f"{_LOOP_PINS['worker_verdict_field']} none|<absolute path(s)>`\n"
+        "End with exactly one status block:\n\n"
+        "```text\n"
+        "DONE: promoted to `in-review`\n"
+        f"{_LOOP_PINS['worker_verdict_field']} none|<absolute path(s)>\n"
+        f"{_LOOP_PINS['worker_dispositions_field']} none|<absolute path(s)>\n"
+        "```\n\n"
+        f"or `{_LOOP_PINS['handover_block']}: round <n> complete, loop not converged; CHECKPOINT: <…>; "
+        f"{_LOOP_PINS['worker_verdict_field']} none|<path>; "
+        f"{_LOOP_PINS['worker_dispositions_field']} none|<path>`.\n"
     )
 
 
 def _loop_gate() -> str:
-    """`agents/gate.md`: the persisted-verdict pin, under a heading carrying a token-target suffix."""
+    """`agents/gate.md`: the persisted-verdict pin in a fence, under a heading carrying a token-target suffix."""
     return (
         f"---\nname: gate\ntools: {_SANDBOX_TOOLS}\nmodel: fable\neffort: max\n---\n"
         f"{_LOOP_SECTIONS['return_contract']} — target ≤1,200 tokens\n"
         f"Write the verdict to the scratch root and name its path as `{_LOOP_PINS['gate_verdict_file']}` below.\n"
+        "\n```text\n"
+        "TL;DR: <safe to ship | not safe to ship, and why>\n"
+        f"{_LOOP_PINS['gate_verdict_file']} <absolute path>\n"
+        "```\n"
     )
+
+
+def _loop_standards() -> str:
+    """`agents/repo-standards.md`: guarded by `REVIEW_MODES`, granted no sandbox, so it holds no write."""
+    return "---\nname: repo-standards\ntools: Read, Grep, mcp__sy__check_env\n---\nbody\n"
 
 
 def _loop_guard() -> str:
@@ -908,8 +930,8 @@ def _loop_check(
 ) -> list[str]:
     """Build the tree `check_gate_loop` reads and return its errors; each override replaces one file.
 
-    `standards` is the one file the default tree omits: a guarded-but-ungranted mode is only cross-checked
-    when a brief for it exists at all.
+    Every mode the guard names carries a brief, `repo-standards` included: a guarded mode with no brief is
+    itself a failure now, so the default tree cannot omit one.
     """
     files = {
         "skills/ship/SKILL.md": _loop_skill() if skill is None else skill,
@@ -921,9 +943,8 @@ def _loop_check(
         "agents/gate.md": _loop_gate() if gate is None else gate,
         "sy_tools/guards/review_guard.py": _loop_guard() if guard is None else guard,
         "config/floors.json": _loop_floors() if floors is None else floors,
+        "agents/repo-standards.md": _loop_standards() if standards is None else standards,
     }
-    if standards is not None:
-        files["agents/repo-standards.md"] = standards
     for rel, text in files.items():
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1172,6 +1193,83 @@ def test_a_reviewer_return_contract_naming_no_verdict_file_is_refused(tmp_path, 
     errors = _loop_check(tmp_path, monkeypatch, gate=gate)
     assert any("only inside a return the caller may compress away" in e for e in errors), \
         f"a reviewer that persists no named verdict must be refused: {errors}"
+
+
+def test_a_reviewer_block_losing_its_verdict_file_field_while_the_prose_keeps_it_is_refused(tmp_path, monkeypatch):
+    """The decoy occurrence: the sentence above the fence names the field, so a section-wide pin stays green."""
+    gate = _loop_gate().replace(f"{_LOOP_PINS['gate_verdict_file']} <absolute path>\n", "")
+    errors = _loop_check(tmp_path, monkeypatch, gate=gate)
+    assert any("only inside a return the caller may compress away" in e for e in errors), \
+        f"a return block with no verdict path must be refused even while the prose names one: {errors}"
+
+
+def test_a_gate_worker_block_renaming_its_verdict_field_while_the_prose_keeps_it_is_refused(tmp_path, monkeypatch):
+    """Same decoy shape: the HANDOVER sentence below the fence names `VERDICT:` whatever the block carries."""
+    worker = _loop_worker().replace(
+        f"{_LOOP_PINS['worker_verdict_field']} none|<absolute path(s)>", "REPORT: none|<absolute path(s)>"
+    )
+    errors = _loop_check(tmp_path, monkeypatch, worker=worker)
+    assert any("nothing to point a human at" in e for e in errors), \
+        f"a renamed verdict field must be refused even while the prose names the old one: {errors}"
+
+
+def test_a_gate_worker_block_losing_its_dispositions_field_is_refused(tmp_path, monkeypatch):
+    """The verdict says what the round judged; only the dispositions say what each finding was judged to be."""
+    worker = _loop_worker().replace(
+        f"{_LOOP_PINS['worker_dispositions_field']} none|<absolute path(s)>\n", ""
+    )
+    errors = _loop_check(tmp_path, monkeypatch, worker=worker)
+    assert any("finding by finding" in e for e in errors), \
+        f"a return block naming only the verdict must be refused: {errors}"
+
+
+def test_a_build_procedure_whose_manifest_paragraph_drops_the_durability_rule_is_refused(tmp_path, monkeypatch):
+    """The later paragraph quotes the rule back; only the paragraph defining the manifest states it."""
+    manifest, sep, echo = _loop_build().rpartition("\n\n")
+    build = manifest.replace(_LOOP_PINS["checkpoint_before_return"], "written once the phase ends") + sep + echo
+    errors = _loop_check(tmp_path, monkeypatch, build=build)
+    assert any("the rule binds every phase" in e for e in errors), \
+        f"a manifest paragraph with no durability rule must be refused: {errors}"
+
+
+def test_a_build_procedure_with_no_slice_manifest_paragraph_is_refused(tmp_path, monkeypatch):
+    """The scope must fail loudly rather than pass on a file the anchor no longer appears in."""
+    build = _loop_build().replace(_LOOP_SECTIONS["slice_manifest"], "Keep a record of each slice")
+    errors = _loop_check(tmp_path, monkeypatch, build=build)
+    assert any("has nowhere to look" in e for e in errors), \
+        f"a build procedure with no manifest paragraph must be refused: {errors}"
+
+
+def test_a_guarded_mode_with_no_brief_at_all_is_refused(tmp_path, monkeypatch):
+    """Skipping it passed every grant check on a fabricated or typo'd mode name."""
+    guard = _loop_guard().replace("'repo-standards',", "'repo-standards', 'bogus-mode',").replace(
+        "SANDBOX_WRITE_MODES = {'gate', 'gate-triage'}",
+        "SANDBOX_WRITE_MODES = {'gate', 'gate-triage', 'bogus-mode'}",
+    )
+    errors = _loop_check(tmp_path, monkeypatch, guard=guard)
+    assert any("bogus-mode" in e and "does not exist" in e for e in errors), \
+        f"a guarded mode with no brief must be refused, not skipped: {errors}"
+
+
+def test_a_sandbox_grant_for_a_mode_no_dispatch_resolves_is_refused(tmp_path, monkeypatch):
+    """`REVIEW_MODES` is what a dispatch resolves; a grant outside it is licensed by nothing."""
+    guard = _loop_guard().replace(" 'repo-standards',", "").replace(
+        "SANDBOX_WRITE_MODES = {'gate', 'gate-triage'}",
+        "SANDBOX_WRITE_MODES = {'gate', 'gate-triage', 'repo-standards'}",
+    )
+    standards = f"---\nname: repo-standards\ntools: {_SANDBOX_TOOLS}\n---\nbody\n"
+    errors = _loop_check(tmp_path, monkeypatch, guard=guard, standards=standards)
+    assert any("the grant is dead" in e for e in errors), \
+        f"a sandbox grant for an undispatched mode must be refused: {errors}"
+
+
+def test_a_guard_mode_set_built_from_a_union_of_literals_reads_as_unparseable():
+    """Stopping at the first `}` returned one operand and silently exempted every mode in the others."""
+    source = "SANDBOX_WRITE_MODES = {'gate'} | {'gate-triage'}\n"
+    assert validate._guard_mode_set(source, "SANDBOX_WRITE_MODES") is None, \
+        "a union literal must read as unparseable, never as its first operand"
+    assert validate._guard_mode_set("MODES = {\n    'gate',\n}\n", "MODES") == {"gate"}, \
+        "the guard's own multi-line literal must still parse"
 
 
 def test_a_reviewer_return_contract_heading_that_is_gone_is_refused(tmp_path, monkeypatch):

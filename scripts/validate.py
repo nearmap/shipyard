@@ -91,8 +91,8 @@ HUMAN_TEXT_PINS = {
     "short_text_floor": "Do not touch short text, at any destination.",
     "post_comment_pass": "tighten it with `/sy:tighten` before posting",
 }
-# Every literal `check_gate_loop` and `check_agent_returns` pin, and the headings they scope them to, one
-# copy each for the same reason `HUMAN_TEXT_PINS` is one copy.
+# Every literal `check_gate_loop` and `check_agent_returns` pin, and the headings and paragraph anchors they
+# scope them to, one copy each for the same reason `HUMAN_TEXT_PINS` is one copy.
 GATE_LOOP_PINS = {
     "handover_code": "`handover`",
     "handover": "handover",
@@ -117,6 +117,7 @@ GATE_LOOP_PINS = {
     "reconcile_ground_truth": "ground truth wins",
     "gate_verdict_file": "VERDICT_FILE:",
     "worker_verdict_field": "VERDICT:",
+    "worker_dispositions_field": "DISPOSITIONS:",
     "verdict_not_parsed": "names its path and never reads it",
 }
 GATE_LOOP_SECTIONS = {
@@ -125,6 +126,7 @@ GATE_LOOP_SECTIONS = {
     "fix_cycle": "## Fix cycle",
     "return_contract": "## Return contract",
     "state_router": "## State router",
+    "slice_manifest": "Track build progress as a slice manifest",
 }
 _SCRATCH_HINT = "the `sy` server's `scratch_dir` tool"
 _SCRATCH_REF_SUFFIXES = {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".toml"}
@@ -444,6 +446,36 @@ def _bounded_section(text: str, heading: str, rel: str, errors: list[str]) -> st
     return text[start.end() : start.end() + terminator.start()]
 
 
+def _fenced_block(text: str, section_heading: str) -> str | None:
+    """The first fenced code block under `section_heading`, or None when its section carries no fence.
+
+    A field pin reads the block a reader copies, never the section: the same literal appears in the prose
+    around it -- a sentence naming `VERDICT:` while explaining the form -- and a substring pin over the whole
+    section stays satisfied by that sentence long after the field it names is gone.
+    """
+    start = re.search(rf"^{re.escape(section_heading)}", text, re.M)
+    if start is None:
+        return None
+    section = text[start.end():]
+    terminator = re.search(r"^## ", section, re.M)
+    if terminator is not None:
+        section = section[:terminator.start()]
+    fence = re.search(r"^```[^\n]*\n(.*?)^```", section, re.M | re.S)
+    return fence.group(1) if fence else None
+
+
+def _paragraph(text: str, anchor: str) -> str | None:
+    """The blank-line-delimited paragraph carrying `anchor`, or None when no paragraph carries it.
+
+    Scoped for the reason `_fenced_block` is: a later paragraph back-referencing the rule repeats its
+    wording, and a whole-file pin cannot tell that echo from the normative clause it is quoting.
+    """
+    for paragraph in re.split(r"\n\s*\n", text):
+        if anchor in paragraph:
+            return paragraph
+    return None
+
+
 def _json_path(obj: object, *keys: str) -> object | None:
     """The value at a chain of mapping keys, or None the moment a hop is missing or is not a mapping.
 
@@ -487,8 +519,11 @@ def _guard_mode_set(source: str, name: str) -> set[str] | None:
 
     The guard is read as text rather than imported, as `check_gate_justification` reads `sy_tools/server.py`:
     importing it to read two constants would run a hook module's import side effects inside the validator.
+
+    The whole statement must be one set literal: a `{...} | {...}` union returns None rather than the first
+    operand, because a partial set silently exempts every mode in the operands the pin never read.
     """
-    match = re.search(rf"^{name}\s*=\s*\{{(.*?)\}}", source, re.M | re.S)
+    match = re.search(rf"^{name}\s*=\s*(\{{[^{{}}]*\}})\s*$", source, re.M)
     if match is None:
         return None
     return set(re.findall(r"['\"]([\w-]+)['\"]", match.group(1)))
@@ -550,11 +585,20 @@ def check_gate_loop(errors: list[str]) -> None:
             "expect it from BUILD",
             errors,
         )
-    if GATE_LOOP_PINS["checkpoint_before_return"] not in build:
+    manifest = _paragraph(build, GATE_LOOP_SECTIONS["slice_manifest"])
+    if manifest is None:
+        fail(
+            f"{build_rel} must keep the paragraph anchored on "
+            f"`{GATE_LOOP_SECTIONS['slice_manifest']}`; BUILD's durability rule is scoped to it, and with "
+            "no such paragraph the pin has nowhere to look",
+            errors,
+        )
+    elif GATE_LOOP_PINS["checkpoint_before_return"] not in manifest:
         fail(
             f"{build_rel} must require BUILD's checkpoint to be "
-            f"`{GATE_LOOP_PINS['checkpoint_before_return']}`; the rule binds every phase, and a procedure "
-            "that omits it leaves its own worker writing the checkpoint only into a return",
+            f"`{GATE_LOOP_PINS['checkpoint_before_return']}` where it defines the slice manifest; the rule "
+            "binds every phase, and a procedure that omits it leaves its own worker writing the checkpoint "
+            "only into a return",
             errors,
         )
     if GATE_LOOP_PINS["handover"] in build.lower():
@@ -593,28 +637,50 @@ def check_gate_loop(errors: list[str]) -> None:
                 "return the worker's own brief never shows is one it never emits",
                 errors,
             )
-        if GATE_LOOP_PINS["worker_verdict_field"] not in return_contract:
+        done_block = _fenced_block(worker, GATE_LOOP_SECTIONS["return_contract"])
+        if done_block is None:
             fail(
-                f"{worker_rel} § Return contract must carry a `{GATE_LOOP_PINS['worker_verdict_field']}` field; "
-                "the persisted verdict and dispositions are the round's only durable record of what was "
-                "judged, and a return form that names no path leaves the parent nothing to point a human at",
+                f"{worker_rel} § Return contract must show its status block in a fenced code block; the field "
+                "pins below read the block a worker copies, and with no fence they would pass on any sentence "
+                "of the surrounding prose that happens to name the field",
                 errors,
             )
+        else:
+            if GATE_LOOP_PINS["worker_verdict_field"] not in done_block:
+                fail(
+                    f"{worker_rel} § Return contract's block must carry a "
+                    f"`{GATE_LOOP_PINS['worker_verdict_field']}` field; the persisted verdict is the round's "
+                    "only durable record of what was judged, and a return form that names no path leaves the "
+                    "parent nothing to point a human at",
+                    errors,
+                )
+            if GATE_LOOP_PINS["worker_dispositions_field"] not in done_block:
+                fail(
+                    f"{worker_rel} § Return contract's block must carry a "
+                    f"`{GATE_LOOP_PINS['worker_dispositions_field']}` field; the dispositions file is the only "
+                    "durable record of what each finding was judged to be, and a block naming only the verdict "
+                    "sends the parent a round it cannot account for finding by finding",
+                    errors,
+                )
 
-    # `agents/gate.md`'s own heading carries a token-target suffix, so it is matched by prefix and bounded by
-    # `_last_section` rather than by `_bounded_section`'s exact-line anchor.
-    gate_return_start = re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['return_contract'])}", gate, re.M)
-    if gate_return_start is None:
+    # `agents/gate.md`'s own heading carries a token-target suffix, so it is matched by prefix; the pin under
+    # it needs no `_last_section` bound, because `_fenced_block` ends its own scope at the next `## `.
+    if re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['return_contract'])}", gate, re.M) is None:
         fail(
             f"{gate_rel} must keep its `{GATE_LOOP_SECTIONS['return_contract']}` heading; the reviewer's "
             "persisted-verdict pin is scoped to it",
             errors,
         )
     else:
-        gate_return = _last_section(
-            gate[gate_return_start.end():], gate_rel, GATE_LOOP_SECTIONS["return_contract"], errors
-        )
-        if GATE_LOOP_PINS["gate_verdict_file"] not in gate_return:
+        gate_block = _fenced_block(gate, GATE_LOOP_SECTIONS["return_contract"])
+        if gate_block is None:
+            fail(
+                f"{gate_rel} § Return contract must show its return block in a fenced code block; the "
+                f"`{GATE_LOOP_PINS['gate_verdict_file']}` pin reads the block the reviewer copies, and the "
+                "prose above it names the same literal while explaining the field",
+                errors,
+            )
+        elif GATE_LOOP_PINS["gate_verdict_file"] not in gate_block:
             fail(
                 f"{gate_rel} § Return contract must name `{GATE_LOOP_PINS['gate_verdict_file']}`; the reviewer "
                 "holds `Write` so its caller never re-runs the pass to recover the report, and a verdict with "
@@ -743,9 +809,22 @@ def check_gate_loop(errors: list[str]) -> None:
             errors,
         )
     else:
+        for dead in sorted(sandbox_modes - review_modes):
+            fail(
+                f"{guard_rel}: {dead!r} may write the sandbox but is absent from `REVIEW_MODES`, so no "
+                "dispatch ever resolves it as a mode; the grant is dead, and the brief holding the write it "
+                "licenses is guarded by nothing",
+                errors,
+            )
         for mode in sorted(sandbox_modes | review_modes):
             brief = ROOT / "agents" / f"{mode}.md"
             if not brief.is_file():
+                fail(
+                    f"{guard_rel}: {mode!r} is guarded as a review mode but `agents/{mode}.md` does not "
+                    "exist; a mode with no brief is a typo or a deleted agent, and skipping it passes every "
+                    "grant check on a name nothing dispatches",
+                    errors,
+                )
                 continue
             entries = _tools_entries(brief.read_text(encoding="utf-8"))
             if mode in sandbox_modes:

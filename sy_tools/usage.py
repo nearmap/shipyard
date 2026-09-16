@@ -107,22 +107,26 @@ def record_hook_event(payload: dict[str, Any]) -> None:
         os.close(fd)
 
 
-def _iter_jsonl(path: Path, warnings: list[str]) -> Iterable[dict[str, Any]]:
+def _iter_lines(path: Path, warnings: list[str]) -> Iterable[tuple[int, str]]:
     try:
         raw = path.read_bytes()
     except OSError as exc:
         warnings.append(f"read_error:{path.name}:{exc.__class__.__name__}")
         return
     # Decoded per line rather than by a text-mode reader, so one line of invalid UTF-8 is a warning
-    # about that line instead of a UnicodeDecodeError out of the whole read.
+    # about that line instead of a UnicodeDecodeError out of the whole read. Shared by every caller that
+    # walks a transcript line-by-line, so this is the one place that promise has to hold.
     for lineno, raw_line in enumerate(raw.splitlines(), 1):
         if not raw_line.strip():
             continue
         try:
-            line = raw_line.decode("utf-8")
+            yield lineno, raw_line.decode("utf-8")
         except UnicodeDecodeError:
             warnings.append(f"decode_error:{path.name}:{lineno}")
-            continue
+
+
+def _iter_jsonl(path: Path, warnings: list[str]) -> Iterable[dict[str, Any]]:
+    for lineno, line in _iter_lines(path, warnings):
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
@@ -267,44 +271,35 @@ def _extract_file_usage(
     inferred_agent_type: str | None = None
     inferred_agent_id: str | None = None
 
-    try:
-        fh = path.open("r", encoding="utf-8")
-    except OSError as exc:
-        warnings.append(f"read_error:{path.name}:{exc.__class__.__name__}")
-        return total, by_model, inferred_agent_type, inferred_agent_id
-
-    with fh:
-        for line_no, line in enumerate(fh, 1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                warnings.append(f"malformed_json:{path.name}:{line_no}")
-                continue
-            if not isinstance(record, dict):
-                continue
-            inferred_agent_type = inferred_agent_type or _first_string(
-                record, "agent_type", "agentType"
-            )
-            inferred_agent_id = inferred_agent_id or _first_string(
-                record, "agent_id", "agentId"
-            )
-            message = record.get("message")
-            if not isinstance(message, dict):
-                continue
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            identity = _record_identity(record, message, path, line_no)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            item = Usage()
-            item.add_mapping(usage)
-            total.add(item)
-            model = str(message.get("model") or record.get("model") or "unknown")
-            by_model[model].add(item)
+    for line_no, line in _iter_lines(path, warnings):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            warnings.append(f"malformed_json:{path.name}:{line_no}")
+            continue
+        if not isinstance(record, dict):
+            continue
+        inferred_agent_type = inferred_agent_type or _first_string(
+            record, "agent_type", "agentType"
+        )
+        inferred_agent_id = inferred_agent_id or _first_string(
+            record, "agent_id", "agentId"
+        )
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        identity = _record_identity(record, message, path, line_no)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        item = Usage()
+        item.add_mapping(usage)
+        total.add(item)
+        model = str(message.get("model") or record.get("model") or "unknown")
+        by_model[model].add(item)
     return total, by_model, inferred_agent_type, inferred_agent_id
 
 

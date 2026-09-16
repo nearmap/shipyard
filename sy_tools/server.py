@@ -1318,8 +1318,8 @@ def worker_handbacks(session_id: SessionId = "", transcript: TranscriptPath = ""
     `SubagentHandback` delivers one report per agent: a second call is refused, and the refusal reaches
     only the worker that made it, so a caller otherwise never learns that a worker's real return was
     thrown away. This reads the on-disk transcript tree after the fact and names those workers, one row
-    per agent with the number of refusals and the transcript they were read from. A hand-back that was
-    delivered is not reported.
+    per agent id (or per transcript, when no agent id surfaces) with the number of refusals and the
+    transcript they were read from. A hand-back that was delivered is not reported.
 
     Caller-read only: it reports, and never changes a return, a transcript or a state file. A transcript
     that cannot be resolved or read is an empty report carrying the reason in `warnings`, not an error.

@@ -469,3 +469,22 @@ def test_a_line_of_invalid_utf8_warns_instead_of_killing_the_read(tmp_path, monk
 
     assert result["refused"] == 1, result
     assert result["warnings"] == ["decode_error:s1.jsonl:2"], result
+
+
+def test_summarize_warns_instead_of_raising_on_a_line_of_invalid_utf8(tmp_path, monkeypatch):
+    """`summarize()`'s own doc promises this never fails; its token-counting path is a separate read
+    from `handbacks()`'s and regressed independently of it."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    usage_record = {"type": "assistant", "message": {"model": "claude", "usage": {"input_tokens": 3}}}
+    main.write_bytes(
+        json.dumps(usage_record).encode("utf-8")
+        + b'\n{"type": "assistant", "note": "\xff\xfe not utf-8"}\n'
+        + json.dumps(usage_record).encode("utf-8")
+        + b"\n"
+    )
+
+    result = usage.summarize(main, phase="ship", task="PROJ-1")
+
+    assert result["totals"]["input_tokens"] == 6, result
+    assert result["warnings"] == ["decode_error:s1.jsonl:2"], result

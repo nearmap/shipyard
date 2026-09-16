@@ -6,7 +6,6 @@ written by the test, so nothing depends on whichever session happens to be runni
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -305,7 +304,6 @@ def test_handbacks_counts_a_replayed_refusal_once(tmp_path, monkeypatch):
     assert result["refused"] == 1, result
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the chmod that makes the tree unreadable")
 def test_handbacks_reports_an_unreadable_subagent_tree_instead_of_a_clean_zero(tmp_path, monkeypatch):
     """An unreadable subagent dir must name itself in `warnings`; a bare zero reads as health."""
     monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
@@ -316,11 +314,14 @@ def test_handbacks_reports_an_unreadable_subagent_tree_instead_of_a_clean_zero(t
     (subdir / "agent-a.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in _refusal_records("call-1")), encoding="utf-8"
     )
-    (tmp_path / "s1").chmod(0o000)
-    try:
-        result = usage.handbacks(main)
-    finally:
-        (tmp_path / "s1").chmod(0o755)
+
+    # Injected rather than chmod'd: root ignores the permissions that would otherwise make the tree unreadable.
+    def denied_walk(top, onerror=None, **kwargs):
+        onerror(PermissionError(13, "Permission denied", str(top)))
+        return iter(())
+
+    monkeypatch.setattr(usage.os, "walk", denied_walk)
+    result = usage.handbacks(main)
 
     assert result["refused"] == 0, result
     assert any(str(tmp_path / "s1") in warning for warning in result["warnings"]), result
@@ -351,7 +352,6 @@ def test_handbacks_does_not_count_a_delivered_handback_as_refused(tmp_path, monk
     assert usage.handbacks(main)["refused"] == 0
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the chmod that makes the file unreadable")
 def test_an_unreadable_legacy_layout_transcript_warns_instead_of_vanishing(tmp_path, monkeypatch):
     """The legacy sibling layout drops a file that claims no session; an unreadable one must say so."""
     monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
@@ -361,10 +361,17 @@ def test_an_unreadable_legacy_layout_transcript_warns_instead_of_vanishing(tmp_p
     legacy.mkdir()
     unreadable = legacy / "agent-b.jsonl"
     unreadable.write_text("", encoding="utf-8")
-    unreadable.chmod(0o000)
-    try:
-        result = usage.handbacks(main)
-    finally:
-        unreadable.chmod(0o644)
+
+    # Injected rather than chmod'd: root ignores the permissions that would otherwise make the file unreadable.
+    target = unreadable.resolve()
+    real_open = Path.open
+
+    def denied_open(self, *args, **kwargs):
+        if self.resolve() == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_open)
+    result = usage.handbacks(main)
 
     assert any("agent-b.jsonl" in warning for warning in result["warnings"]), result

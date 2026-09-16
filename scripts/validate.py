@@ -70,6 +70,10 @@ SHIP_WORKER_AGENTS = frozenset(SHIP_WORKER_TRACKER_VERBS)
 # Every agent must be able to ask whether a credential is present without ever reading its value;
 # `sy_tools/guards/secret_guard.py` names this tool as the remedy it steers shell probes toward.
 CHECK_ENV_TOOL = "check_env"
+# Claude Code's built-in language-server tool, granted only where a repository declares its own servers,
+# and the single copy of the guidance every grant of it is coupled to.
+LSP_TOOL = "LSP"
+LSP_REFERENCE = "skills/shared/references/lsp.md"
 # The lowest number an adapter's `body_limit` could plausibly be. Both real limits are 32k and 64k, and
 # no tracker documents anything near this floor, so a declaration under it is a typo, not a limit.
 BODY_LIMIT_FLOOR = 8_192
@@ -207,6 +211,7 @@ REQUIRED = {
     "skills/ship/references/handoff-accounting.md",
     "skills/ship/references/merge-accounting.md",
     "skills/shared/references/image-inspection.md",
+    "skills/shared/references/lsp.md",
     "skills/shared/references/memory.md",
     "skills/shared/references/user-interaction.md",
     "skills/shared/references/write-integrity.md",
@@ -1306,6 +1311,48 @@ def check_agent_mcp_allowlists(errors: list[str]) -> None:
                     )
 
 
+def check_lsp_grants(errors: list[str]) -> None:
+    """The `LSP` grant and the reference governing it travel together, in both directions.
+
+    Standalone rather than a leg of `check_agent_mcp_allowlists`: every rule there is about the `sy`
+    server's own tools under their two deployment prefixes, and this one couples a built-in grant to a
+    file outside `agents/`.
+    """
+    # Read here rather than through `check_invariants`'s `read()`, which raises on any missing file: a
+    # synthetic tree exercising this rule would then have to carry every path that function reads.
+    reference = ROOT / LSP_REFERENCE
+    if not reference.is_file():
+        # Reported by the REQUIRED sweep too, and stated again here rather than skipped: a pin that goes
+        # quiet on the file it reads is how a grant keeps citing guidance nobody has.
+        fail(f"{LSP_REFERENCE} is missing, and every grant below cites it", errors)
+        return
+    body = reference.read_text(encoding="utf-8")
+    if not ("absent" in body and "`Grep`" in body):
+        fail(
+            f"{LSP_REFERENCE} must keep saying that the tool is absent where a repository declares no "
+            "server and that `Grep`/`Read` is the fallback; without both, the grants below cite a file "
+            "that leaves an agent reading a missing language server as a fault to fix",
+            errors,
+        )
+    for p in sorted((ROOT / "agents").glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        granted = LSP_TOOL in _tools_entries(text)
+        cited = LSP_REFERENCE in text
+        if granted and not cited:
+            fail(
+                f"{p.relative_to(ROOT)}: tools grants {LSP_TOOL!r} but the brief never cites "
+                f"{LSP_REFERENCE}; an unguided grant is one an agent reaches for as a `Grep` substitute "
+                "and reports as broken wherever no server is configured",
+                errors,
+            )
+        elif cited and not granted:
+            fail(
+                f"{p.relative_to(ROOT)}: the brief cites {LSP_REFERENCE} but tools grants no "
+                f"{LSP_TOOL!r}, so it describes navigation this agent can never perform",
+                errors,
+            )
+
+
 def check_contract_completeness(errors: list[str]) -> None:
     contract = (ROOT / "skills/tracker/CONTRACT.md").read_text(encoding="utf-8")
     jira = (ROOT / "skills/tracker/jira/ADAPTER.md").read_text(encoding="utf-8")
@@ -2355,6 +2402,7 @@ def main() -> int:
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
     check_agent_mcp_allowlists(errors)
+    check_lsp_grants(errors)
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)

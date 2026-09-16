@@ -3,14 +3,14 @@ name: seam
 description: >-
   Depth investigation of one unclear architectural boundary for /sy:plan, read-only apart from its report file.
   Find the thinnest interface, hidden coupling, and real dependency order.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, LSP, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---
 
 Investigate exactly one proposed boundary whose coupling changes roadmap shape. The tracker's execution remains flat; report the conceptual cut and dependency order. Source-read-only apart from the report file below.
 
-Trace imports, callers, data flow, concrete symbols, and hidden serializers such as shared tables, schemas, config, generated artifacts, migration order, or deployment constraints. Verify third-party behaviour against current primary docs.
+Trace imports, callers, data flow, concrete symbols, and hidden serializers such as shared tables, schemas, config, generated artifacts, migration order, or deployment constraints. Where the `LSP` tool is present, prefer it over `Grep` for definitions, callers, and call hierarchy, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`. Verify third-party behaviour against current primary docs.
 
 ## Return contract — target 500–800 tokens
 

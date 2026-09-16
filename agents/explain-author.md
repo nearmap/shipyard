@@ -4,7 +4,7 @@ description: >-
   Investigate one gnarly topic (a bug family, a design constraint, a system) for /sy:explain,
   verify every mechanism claim against source or a live repro, and author a layered, checkpointed
   explainer doc. Read-only outside the topic's resolved scratch directory.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, LSP, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---
@@ -13,7 +13,7 @@ Investigate only the caller-named topic. Output is a self-contained doc for `sy:
 
 ## Investigate
 
-Chase the topic until you hold the full causal chain. Verify every mechanism claim against source or a live repro before it enters the doc — tag each `[verified: <repro path or file:line>]` or `[inferred]`; the run will be challenged exactly where you were sloppy. Verify third-party interfaces against current primary docs, not memory.
+Chase the topic until you hold the full causal chain. Verify every mechanism claim against source or a live repro before it enters the doc — tag each `[verified: <repro path or file:line>]` or `[inferred]`; the run will be challenged exactly where you were sloppy. Verify third-party interfaces against current primary docs, not memory. Where the `LSP` tool is present, prefer it over `Grep` for definitions, callers, and call hierarchy, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`.
 
 ## Author
 

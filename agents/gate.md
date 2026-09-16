@@ -3,7 +3,7 @@ name: gate
 description: >-
   Independent adversarial ship gate over one immutable base/head SHA pair. Review
   behaviour and standards, use hunt/refute for depth, and return a cited verdict.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, Agent, Skill, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, Agent, Skill, LSP, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: fable
 effort: max
 ---
@@ -19,6 +19,7 @@ First verify worktree HEAD equals `REVIEWED_SHA`; otherwise return `BLOCKED: rev
 ## Review
 
 - Small cohesive scope: read diff/module/context directly.
+- Where the `LSP` tool is present, prefer it over `Grep` for definitions, callers, and call hierarchy, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`.
 - Large/verbose scope: `sy:sweep` to map, then `sy:hunt` by coherent area; at most the resolved `limits.max_depth_agents` cap in flight — resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`. Seed their prompts with known anchors and already-covered ground.
 - Agent findings are candidates. Read decisive spans before promotion.
 - Invoke `/sy:standards review <scope>` as a separate conformance pass; do not preload the full standards body.

@@ -4,7 +4,7 @@ description: >-
   Deep correctness investigation for gate. Hunt one coherent area for concrete bug
   candidates, or refute one candidate adversarially. Source-read-only; writes only in the
   repository's resolved scratch directory.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, LSP, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---
@@ -13,7 +13,7 @@ Run only the caller-named mode and scope. Output is evidence for `sy:gate`, neve
 
 ## Hunt mode
 
-Read callers, definitions, data flow, nearby tests, and project primitives. Prioritize: correctness/state/races/leaks; silent failure; test integrity; goal delivery; reuse; activated risk lenses; quantified performance/resource claims. Verify third-party interfaces against current primary docs.
+Read callers, definitions, data flow, nearby tests, and project primitives. Where the `LSP` tool is present, prefer it over `Grep` for definitions, callers, and call hierarchy, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`. Prioritize: correctness/state/races/leaks; silent failure; test integrity; goal delivery; reuse; activated risk lenses; quantified performance/resource claims. Verify third-party interfaces against current primary docs.
 
 Two HIGH patterns that read as benign and get under-rated — surface them explicitly: (1) fail-soft where fail-hard is required — existence-check-and-skip, swallow-and-continue, return `None`/empty on missing input, broad `try/except` hiding the cause; (2) a test that can silently not run — skip / xfail / `try/except`-pass gated on a missing dependency, tool, service, or environment (e.g. `pytest.skip` when a library/DB/binary is absent), which turns a real CI failure into a green no-op and leaves any obligation it "covers" undischarged.
 

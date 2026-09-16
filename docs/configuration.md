@@ -227,6 +227,10 @@ The preflight cache invalidates itself: its fingerprint folds in the resolved co
 
 `validate_config` proves the config is *present* and internally consistent. It cannot prove a credential still works — a token can be set and revoked. Each adapter declares a real, minimal read for that, which the `preflight` tool runs and caches with a short TTL. See `skills/shared/references/preflight.md`.
 
+## Language servers are not a Shipyard setting
+
+Claude Code, not Shipyard, runs language servers: a repository declares them in its own `lspServers` block — a plugin manifest, a plugin-root `.lsp.json`, or `.claude/settings.json` — and Claude Code exposes whatever it started to an agent as one built-in tool named `LSP`. There is deliberately no key for this here and none to add: Shipyard starts no processes, so a server list in this file could never take effect, and it would compete with the repository's real declaration. What Shipyard owns is which of its agents may call that tool — a `tools:` grant in `agents/*.md`, governed by `skills/shared/references/lsp.md` — and where a repository declares no server the tool is simply absent from the agents granted it, which is not a fault to configure around.
+
 ## Trigger/trace event log
 
 With `debug.evals` true, every hook firing appends one compact JSON line to `~/.claude/shipyard/eval-events/<session_id>.jsonl`: which skill or subagent triggered, and the tool-call sequence around it. Off by default and zero-cost when off. Useful for building eval harnesses against real runs.

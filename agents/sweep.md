@@ -3,14 +3,14 @@ name: sweep
 description: >-
   Read-only breadth reconnaissance. Map large code, PR, ticket, docs, or CI surfaces
   into pointer-dense leads for caller verification. Not for depth or verdicts.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, LSP, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: sonnet
 effort: high
 ---
 
 Sweep only the named large or verbose surface. Return leads, not verdicts. Read-only: Bash may interrogate state and run existing read-only commands; never write or mutate git.
 
-Cover as applicable: code map, PR/ticket tail, current third-party docs, or CI failure log. For CI, quote only the few root-cause lines needed; otherwise prefer pointers over pasted content.
+Cover as applicable: code map, PR/ticket tail, current third-party docs, or CI failure log. For CI, quote only the few root-cause lines needed; otherwise prefer pointers over pasted content. Where the `LSP` tool is present, prefer it over `Grep` for definitions, callers, and call hierarchy, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`.
 
 ## Return contract — target 500–900 tokens
 

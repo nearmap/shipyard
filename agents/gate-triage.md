@@ -17,7 +17,7 @@ Accept means the finding is real and worth this branch: return a fix spec bounde
 
 ## Return contract — target ≤700 tokens
 
-Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so resolve the repo-keyed scratch root with `scratch_dir {"repo": true}` and write it there as `gate-triage-<REVIEWED_SHA>-<UTC basic timestamp>.md` with the `Write` tool — never a shell redirect — before returning, and name its absolute path as `DISPOSITIONS_FILE:` in the block below. A `SPLIT_REQUIRED` return writes and names its file the same way, so an incomplete pass is recognisably incomplete on disk rather than absent.
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so persist it before returning per that file's § Persisting a report — `kind` `gate-triage`, `scope` `<REVIEWED_SHA>` — and name its absolute path as `DISPOSITIONS_FILE:` on the trailing line below, including on a `SPLIT_REQUIRED` return, so an incomplete pass is recognisably incomplete on disk rather than absent.
 
 No preamble, narration, praise, pasted findings, or tool recap. One block per finding in the order given, nothing around them:
 
@@ -26,7 +26,11 @@ FINDING: <id>; DISPOSITION: accept|reject; ROOT_CAUSE_KEY: <slug>
 FIX: <anchors + change + verification>    # accept only
 WHY: <reasoning citing contract or code>  # reject only
 ESCALATE: none|plan-contract
+```
 
+Then, after the last block:
+
+```text
 DISPOSITIONS_FILE: <absolute path>
 ```
 

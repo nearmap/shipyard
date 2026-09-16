@@ -22,7 +22,7 @@ Stop there. Do not loop toward consensus or run a second exchange — a debate t
 
 ## Return contract — target ≤500 tokens
 
-Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so resolve the repo-keyed scratch root with `scratch_dir {"repo": true}` and write it there as `debate-<slug>-<UTC basic timestamp>.md` with the `Write` tool — never a shell redirect — before returning, and name its absolute path as `DEBATE_FILE:` in the block below. A `SPLIT_REQUIRED` return writes and names its file the same way, so an incomplete pass is recognisably incomplete on disk rather than absent.
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so persist it before returning per that file's § Persisting a report — `kind` `debate`, `scope` `<slug>` — and name its absolute path as `DEBATE_FILE:` in the block below, including on a `SPLIT_REQUIRED` return, so an incomplete pass is recognisably incomplete on disk rather than absent.
 
 No preamble, narration, praise, or pasted rounds — the caller never sees the raw exchange, only this:
 

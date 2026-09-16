@@ -34,7 +34,7 @@ First verify worktree HEAD equals `REVIEWED_SHA`; otherwise return `BLOCKED: rev
 
 ## Return contract — target ≤1,200 tokens
 
-Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so resolve the repo-keyed scratch root with `scratch_dir {"repo": true}` and write it there as `gate-verdict-<REVIEWED_SHA>-<UTC basic timestamp>.md` with the `Write` tool — never a shell redirect — before returning, and name its absolute path as `VERDICT_FILE:` in the block below. A `SPLIT_REQUIRED` return writes and names its file the same way, so an incomplete pass is recognisably incomplete on disk rather than absent.
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so persist it before returning per that file's § Persisting a report — `kind` `gate-verdict`, `scope` `<REVIEWED_SHA>` — and name its absolute path as `VERDICT_FILE:` in the block below, including on a `SPLIT_REQUIRED` return, so an incomplete pass is recognisably incomplete on disk rather than absent.
 
 No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap. Group by severity. Each finding must include `file:line`, issue, evidence/failure mode, concrete fix, and standards rule pointer only when applicable.
 

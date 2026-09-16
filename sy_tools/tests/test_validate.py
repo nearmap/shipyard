@@ -802,14 +802,23 @@ _LOOP_PINS = validate.GATE_LOOP_PINS
 _LOOP_SECTIONS = validate.GATE_LOOP_SECTIONS
 
 
+# Every sandbox-write mode's brief carries the same three grants, so one copy renders them all.
+_SANDBOX_TOOLS = (
+    "Read, Grep, Glob, Write, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__sy__check_env"
+)
+
+
 def _loop_skill() -> str:
     """`skills/ship/SKILL.md` as `check_gate_loop` reads it: a complete worker contract, a BUILD-only pre-gate."""
     return (
         f"{_LOOP_SECTIONS['worker_contract']}\n"
         f"- {_LOOP_PINS['handover_code']} {_LOOP_PINS['gate_only']} — the round is complete, redispatch me.\n"
+        f"- The worker makes its own checkpoint {_LOOP_PINS['checkpoint_before_return']}.\n"
         f"{_LOOP_SECTIONS['pre_gate']}\n"
         "Whatever BUILD returns next — `done`, `needs-decision`, `bail-to-spec`, or `blocked`.\n"
-        "## State router\n"
+        f"{_LOOP_SECTIONS['state_router']}\n"
+        f"Where the state file and a return disagree, {_LOOP_PINS['reconcile_ground_truth']}.\n"
+        "## Completion bar\n"
     )
 
 
@@ -824,6 +833,9 @@ def _loop_gate_ref() -> str:
         f"against `{_LOOP_PINS['round_log']}`, a match {_LOOP_PINS['accept_recurrence']} returning "
         f"`{_LOOP_PINS['bail_to_spec']}`.\n"
         f"It converges only with no {_LOOP_PINS['stopping_rule']} standing.\n"
+        f"The round's state write lands {_LOOP_PINS['round_write_ordering']}, never at end of round.\n"
+        f"It carries the round's checkpoint, so the checkpoint is {_LOOP_PINS['checkpoint_before_return']}.\n"
+        f"For the persisted verdict and dispositions alike, this worker {_LOOP_PINS['verdict_not_parsed']}.\n"
     )
 
 
@@ -835,19 +847,40 @@ def _loop_start() -> str:
 
 
 def _loop_build() -> str:
-    return "## Delegated slice protocol\nBUILD integrates every slice and returns `done`.\n"
+    return (
+        "## Delegated slice protocol\nBUILD integrates every slice and returns `done`.\n"
+        f"Its slice manifest is {_LOOP_PINS['checkpoint_before_return']}.\n"
+    )
 
 
 def _loop_worker() -> str:
     return (
         f"{_LOOP_SECTIONS['return_contract']} — target 700 tokens\n"
-        f"`{_LOOP_PINS['handover_block']}: round <n> complete, loop not converged; CHECKPOINT: <…>`\n"
+        f"`{_LOOP_PINS['handover_block']}: round <n> complete, loop not converged; CHECKPOINT: <…>; "
+        f"{_LOOP_PINS['worker_verdict_field']} none|<absolute path(s)>`\n"
+    )
+
+
+def _loop_gate() -> str:
+    """`agents/gate.md`: the persisted-verdict pin, under a heading carrying a token-target suffix."""
+    return (
+        f"---\nname: gate\ntools: {_SANDBOX_TOOLS}\nmodel: fable\neffort: max\n---\n"
+        f"{_LOOP_SECTIONS['return_contract']} — target ≤1,200 tokens\n"
+        f"Write the verdict to the scratch root and name its path as `{_LOOP_PINS['gate_verdict_file']}` below.\n"
+    )
+
+
+def _loop_guard() -> str:
+    """`review_guard.py` as the cross-check reads it: two mode sets, one of them guarded but ungranted."""
+    return (
+        "REVIEW_MODES = {\n    'gate', 'gate-triage', 'repo-standards',\n}\n"
+        "SANDBOX_WRITE_MODES = {'gate', 'gate-triage'}\n"
     )
 
 
 def _loop_triage() -> str:
     return (
-        "---\nname: gate-triage\ntools: Read, Grep, Glob, mcp__sy__check_env\nmodel: opus\neffort: high\n---\n"
+        f"---\nname: gate-triage\ntools: {_SANDBOX_TOOLS}\nmodel: opus\neffort: high\n---\n"
         f"Every finding gets one disposition and a `{_LOOP_PINS['root_cause_key']}`.\n"
     )
 
@@ -868,9 +901,16 @@ def _loop_check(
     build: str | None = None,
     worker: str | None = None,
     triage: str | None = None,
+    gate: str | None = None,
+    guard: str | None = None,
     floors: str | None = None,
+    standards: str | None = None,
 ) -> list[str]:
-    """Build the seven-file tree `check_gate_loop` reads and return its errors; each override replaces one file."""
+    """Build the tree `check_gate_loop` reads and return its errors; each override replaces one file.
+
+    `standards` is the one file the default tree omits: a guarded-but-ungranted mode is only cross-checked
+    when a brief for it exists at all.
+    """
     files = {
         "skills/ship/SKILL.md": _loop_skill() if skill is None else skill,
         "skills/ship/references/immutable-gate.md": _loop_gate_ref() if gate_ref is None else gate_ref,
@@ -878,8 +918,12 @@ def _loop_check(
         "skills/ship/references/implementation.md": _loop_build() if build is None else build,
         "agents/ship-gate.md": _loop_worker() if worker is None else worker,
         "agents/gate-triage.md": _loop_triage() if triage is None else triage,
+        "agents/gate.md": _loop_gate() if gate is None else gate,
+        "sy_tools/guards/review_guard.py": _loop_guard() if guard is None else guard,
         "config/floors.json": _loop_floors() if floors is None else floors,
     }
+    if standards is not None:
+        files["agents/repo-standards.md"] = standards
     for rel, text in files.items():
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -990,29 +1034,19 @@ def test_a_triage_brief_that_never_names_the_root_cause_key_is_refused(tmp_path,
         f"a triage brief with no stable key must be refused: {errors}"
 
 
-def test_a_triage_brief_granting_an_edit_or_a_tracker_verb_is_refused(tmp_path, monkeypatch):
-    triage = _loop_triage().replace("tools: Read, Grep", "tools: Read, Edit, mcp__sy__set-status, Grep")
+def test_a_triage_brief_granting_a_tracker_verb_is_refused(tmp_path, monkeypatch):
+    triage = _loop_triage().replace("tools: Read, Grep", "tools: Read, mcp__sy__set-status, Grep")
     errors = _loop_check(tmp_path, monkeypatch, triage=triage)
-    assert any("land a fix no caller recorded" in e for e in errors), \
-        f"a read-only delegate granted Edit must be refused: {errors}"
     assert any("a record no caller authored" in e for e in errors), \
-        f"a read-only delegate granted a tracker verb must be refused: {errors}"
+        f"a delegate granted a tracker verb must be refused: {errors}"
 
 
 def test_a_triage_brief_with_no_tools_field_at_all_is_refused(tmp_path, monkeypatch):
-    """An absent `tools:` inherits every tool, so the Write/Edit and tracker-verb legs pass on an empty grant."""
-    triage = _loop_triage().replace("tools: Read, Grep, Glob, mcp__sy__check_env\n", "")
+    """An absent `tools:` inherits every tool, so the tracker-verb leg passes on an empty grant."""
+    triage = _loop_triage().replace(f"tools: {_SANDBOX_TOOLS}\n", "")
     errors = _loop_check(tmp_path, monkeypatch, triage=triage)
     assert any("must be an explicit, non-empty allowlist" in e for e in errors), \
         f"a triage brief declaring no tools at all must be refused: {errors}"
-
-
-def test_a_triage_brief_granting_multiedit_is_refused(tmp_path, monkeypatch):
-    """The refusal covers every write-capable tool `hooks/hooks.json` guards, not just `Write` and `Edit`."""
-    triage = _loop_triage().replace("tools: Read, Grep", "tools: Read, MultiEdit, Grep")
-    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
-    assert any("land a fix no caller recorded" in e and "MultiEdit" in e for e in errors), \
-        f"a read-only delegate granted MultiEdit must be refused: {errors}"
 
 
 def test_a_section_appended_after_the_fix_cycle_is_refused(tmp_path, monkeypatch):
@@ -1073,6 +1107,8 @@ def test_the_gate_loop_check_is_registered_in_main(tmp_path):
     """A check nothing calls protects nothing, and `main()` is its only caller."""
     assert "check_gate_loop(errors)" in inspect.getsource(validate.main), \
         "the gate-loop check must be registered in main()"
+    assert "check_agent_returns(errors)" in inspect.getsource(validate.main), \
+        "the agent-returns check must be registered in main()"
 
 
 def test_a_fix_cycle_that_bails_on_any_recorded_key_is_refused(tmp_path, monkeypatch):
@@ -1085,3 +1121,139 @@ def test_a_fix_cycle_that_bails_on_any_recorded_key_is_refused(tmp_path, monkeyp
     errors = _loop_check(tmp_path, monkeypatch, gate_ref=gate_ref)
     assert any("the recurrence clause whole" in e for e in errors), \
         f"a recurrence clause matching a rejected key too must be refused: {errors}"
+
+
+@pytest.mark.parametrize(
+    "carrier, fragment",
+    [
+        ("skill", "lost with any hand-back the parent never receives"),
+        ("build", "the rule binds every phase"),
+        ("gate_ref", "takes an in-return-only checkpoint with it"),
+    ],
+)
+def test_a_checkpoint_left_only_in_the_return_is_refused(tmp_path, monkeypatch, carrier, fragment):
+    """All three carriers state the same durability rule; a return that never arrives is the loss it prevents."""
+    builder = {"skill": _loop_skill, "build": _loop_build, "gate_ref": _loop_gate_ref}[carrier]
+    text = builder().replace(_LOOP_PINS["checkpoint_before_return"], "written once the round ends")
+    errors = _loop_check(tmp_path, monkeypatch, **{carrier: text})
+    assert any(fragment in e for e in errors), f"a checkpoint left only in the return must be refused: {errors}"
+
+
+def test_a_round_state_write_deferred_past_the_fixes_is_refused(tmp_path, monkeypatch):
+    gate_ref = _loop_gate_ref().replace(_LOOP_PINS["round_write_ordering"], "once the round is complete")
+    errors = _loop_check(tmp_path, monkeypatch, gate_ref=gate_ref)
+    assert any("the round that died applying a fix" in e for e in errors), \
+        f"a round log written only at end of round must be refused: {errors}"
+
+
+def test_a_fix_cycle_that_never_forbids_reading_the_persisted_verdict_is_refused(tmp_path, monkeypatch):
+    gate_ref = _loop_gate_ref().replace(_LOOP_PINS["verdict_not_parsed"], "reads it back for the details")
+    errors = _loop_check(tmp_path, monkeypatch, gate_ref=gate_ref)
+    assert any("recorded fake-green shape" in e for e in errors), \
+        f"a controller allowed to re-read the verdict must be refused: {errors}"
+
+
+def test_a_state_router_that_states_no_reconcile_rule_is_refused(tmp_path, monkeypatch):
+    skill = _loop_skill().replace(_LOOP_PINS["reconcile_ground_truth"], "either may be used")
+    errors = _loop_check(tmp_path, monkeypatch, skill=skill)
+    assert any("no rule for which one it acts on" in e for e in errors), \
+        f"a state router with no reconcile rule must be refused: {errors}"
+
+
+def test_a_gate_worker_return_form_naming_no_verdict_field_is_refused(tmp_path, monkeypatch):
+    worker = _loop_worker().replace(_LOOP_PINS["worker_verdict_field"], "REPORT:")
+    errors = _loop_check(tmp_path, monkeypatch, worker=worker)
+    assert any("nothing to point a human at" in e for e in errors), \
+        f"a return form carrying no verdict path must be refused: {errors}"
+
+
+def test_a_reviewer_return_contract_naming_no_verdict_file_is_refused(tmp_path, monkeypatch):
+    gate = _loop_gate().replace(_LOOP_PINS["gate_verdict_file"], "the verdict")
+    errors = _loop_check(tmp_path, monkeypatch, gate=gate)
+    assert any("only inside a return the caller may compress away" in e for e in errors), \
+        f"a reviewer that persists no named verdict must be refused: {errors}"
+
+
+def test_a_reviewer_return_contract_heading_that_is_gone_is_refused(tmp_path, monkeypatch):
+    """The heading carries a token-target suffix, so the pin is prefix-matched and its absence must be loud."""
+    gate = _loop_gate().replace(_LOOP_SECTIONS["return_contract"], "## What to return")
+    errors = _loop_check(tmp_path, monkeypatch, gate=gate)
+    assert any("persisted-verdict pin is scoped to it" in e for e in errors), \
+        f"a reviewer with no return contract heading must be refused: {errors}"
+
+
+def test_a_sandbox_write_mode_whose_brief_holds_no_write_grant_is_refused(tmp_path, monkeypatch):
+    triage = _loop_triage().replace("Write, ", "")
+    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    assert any("names no `Write`" in e for e in errors), \
+        f"a sandbox-write mode with no write grant must be refused: {errors}"
+
+
+def test_a_sandbox_write_mode_naming_only_one_scratch_dir_twin_is_refused(tmp_path, monkeypatch):
+    """The grant must resolve under either deployment prefix; one twin leaves the other deployment broken."""
+    triage = _loop_triage().replace("mcp__plugin_sy_sy__scratch_dir, ", "")
+    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    assert any("cannot" in e and "resolve the root it is allowed to write" in e for e in errors), \
+        f"a sandbox-write mode missing a scratch_dir twin must be refused: {errors}"
+
+
+def test_a_guarded_but_ungranted_mode_whose_brief_holds_a_write_is_refused(tmp_path, monkeypatch):
+    standards = "---\nname: repo-standards\ntools: Read, Grep, Write, mcp__sy__check_env\n---\nbody\n"
+    errors = _loop_check(tmp_path, monkeypatch, standards=standards)
+    assert any("guards this mode" in e and "without granting it the sandbox" in e for e in errors), \
+        f"a guarded, ungranted mode holding a write must be refused: {errors}"
+
+
+def test_a_guard_source_with_no_parseable_mode_set_is_refused(tmp_path, monkeypatch):
+    """Parsed out of the guard's text; an unreadable source must fail loudly rather than cross-check nothing."""
+    errors = _loop_check(tmp_path, monkeypatch, guard="MODES = frozenset(_load_modes())\n")
+    assert any("could not both be read out of the guard source" in e for e in errors), \
+        f"an unparseable guard source must be refused: {errors}"
+
+
+_HANDBACK_PINS = ("handback_is_one_shot", "no_midround_channel", "persist_before_return", "return_terminates")
+
+
+def _returns_reference() -> str:
+    return "## The rules\n" + "".join(f"- **{_LOOP_PINS[key]}** — why.\n" for key in _HANDBACK_PINS)
+
+
+def _returns_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reference: str | None = None,
+    brief: str | None = None,
+) -> list[str]:
+    """Build the two-file tree `check_agent_returns` reads and return its errors."""
+    citation = "Hand back once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.\n"
+    files = {
+        "skills/shared/references/agent-returns.md": _returns_reference() if reference is None else reference,
+        "agents/probe.md": citation if brief is None else brief,
+    }
+    for rel, text in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_agent_returns(errors)
+    return errors
+
+
+def test_a_reference_carrying_every_rule_and_a_brief_citing_it_pass(tmp_path, monkeypatch):
+    assert _returns_check(tmp_path, monkeypatch) == []
+
+
+@pytest.mark.parametrize("pin", _HANDBACK_PINS)
+def test_a_reference_missing_one_hand_back_rule_is_refused(tmp_path, monkeypatch, pin):
+    reference = _returns_reference().replace(_LOOP_PINS[pin], "something else")
+    errors = _returns_check(tmp_path, monkeypatch, reference=reference)
+    assert any(_LOOP_PINS[pin] in e for e in errors), f"a dropped hand-back rule must be refused: {errors}"
+
+
+def test_a_brief_that_restates_the_rules_instead_of_citing_the_path_is_refused(tmp_path, monkeypatch):
+    """The citation is what is pinned: a copy of the text drifts from the reference without ever failing."""
+    brief = f"Hand back once. {_LOOP_PINS['handback_is_one_shot']}, and {_LOOP_PINS['return_terminates']}.\n"
+    errors = _returns_check(tmp_path, monkeypatch, brief=brief)
+    assert any("forks it" in e for e in errors), f"a brief citing no reference must be refused: {errors}"

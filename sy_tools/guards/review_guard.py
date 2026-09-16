@@ -218,11 +218,12 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         if reason:
             return f'{mode} review: {reason}'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    for operator, target in re.findall(r'(?:^|[\s;&|])(\d*>>?&?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
+    for operator, target in re.findall(r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
         target = target.strip('"\'')
         # Only `>&`/`2>&` *plus* a bare-digit target is fd duplication; `2>1` writes a file named `1`,
-        # and `>& out` writes a file named `out`.
-        if target == '/dev/null' or (operator.rstrip().endswith('&') and target.isdigit()):
+        # and `>& out` writes a file named `out`. The `[&|]` also covers `>|`/`n>|` clobber-override and
+        # the `2>&-` fd-close form.
+        if target == '/dev/null' or (operator.endswith('&') and (target.isdigit() or target == '-')):
             continue
         if mode in SANDBOX_WRITE_MODES and under_scratch(target, cwd, root):
             continue
@@ -532,8 +533,16 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': 'echo x &> /etc/o'}, True),
         ('gate', 'Bash', {'command': 'echo x >& /etc/o'}, True),
         ('gate', 'Bash', {'command': 'echo x 2>> /etc/o'}, True),
+        ('gate', 'Bash', {'command': 'echo x >| /etc/o'}, True),
+        ('gate', 'Bash', {'command': 'echo x 2>| /etc/o'}, True),
         ('gate', 'Bash', {'command': 'pytest -q 2>&1'}, False),
         ('gate', 'Bash', {'command': 'pytest -q > /dev/null 2>&1'}, False),
+        ('gate', 'Bash', {'command': 'echo x >&2'}, False),
+        ('gate', 'Bash', {'command': 'echo x 2>&-'}, False),
+        # A redirect operator only reads as one after start-of-line or whitespace: widening that prefix to
+        # `[\s;&|]` made every `>` inside a quoted alternation look like a write.
+        ('gate', 'Bash', {'command': "grep -rnoE '2>|&>' sy_tools/"}, False),
+        ('gate', 'Bash', {'command': "rg -n 'x;>y' src/"}, False),
         ('gate', 'Bash', {'command': f'echo x 2> {root / "err.log"}'}, False),
         ('gate', 'Bash', {'command': 'echo x | tee src/a.py'}, True),
         ('gate', 'Bash', {'command': 'cd /tmp && git commit -m x'}, True),

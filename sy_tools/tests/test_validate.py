@@ -1388,10 +1388,14 @@ def test_a_brief_that_cites_the_path_and_restates_a_rule_anyway_is_refused(tmp_p
     )
 
 
+# The rule the grants lean on, under the heading the pin is scoped to, plus the `## ` heading that bounds it.
+_LSP_RULE = (
+    "The tool is absent where a repository declares no server, and dead where its command is off the session "
+    "PATH; fall back to `Grep`/`Read` and say which navigation you could not do type-aware.\n"
+)
+_LSP_TERMINATOR = "## Prefer it where types beat text\n\nUse it for symbol questions.\n"
 _LSP_REFERENCE = (
-    "# Language-server navigation\n\nThe tool is absent where a repository declares no server, and dead "
-    "where its command is off the session PATH; fall back to `Grep`/`Read` and say which navigation you "
-    "could not do type-aware.\n"
+    f"# Language-server navigation\n\n{validate.LSP_AVAILABILITY_HEADING}\n\n{_LSP_RULE}\n{_LSP_TERMINATOR}"
 )
 
 
@@ -1445,6 +1449,24 @@ def test_a_reference_that_lost_the_unavailable_case_is_refused(tmp_path, monkeyp
     reference = _LSP_REFERENCE.replace(dropped, "elsewhere")
     errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
     assert any("fallback" in error for error in errors), f"dropping {dropped!r} must be refused: {errors}"
+
+
+def test_a_reference_whose_rule_moved_out_of_its_section_is_refused(tmp_path, monkeypatch):
+    """Every pinned word survives elsewhere in the file while the section stating the rule is empty."""
+    reference = (
+        f"# Language-server navigation\n\n{_LSP_RULE}\n{validate.LSP_AVAILABILITY_HEADING}\n\n"
+        f"Use the tool.\n\n{_LSP_TERMINATOR}"
+    )
+    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
+    assert any("fallback" in error for error in errors), \
+        f"a hollowed section whose words survive outside it must still be refused: {errors}"
+
+
+def test_a_reference_missing_the_availability_heading_is_refused(tmp_path, monkeypatch):
+    """The pin has nowhere to look once the heading is renamed, which is a loud failure, not a pass."""
+    reference = _LSP_REFERENCE.replace(validate.LSP_AVAILABILITY_HEADING, "## Something else")
+    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
+    assert any("heading" in error for error in errors), f"a renamed heading must be refused: {errors}"
 
 
 def test_the_lsp_grant_check_is_registered_in_main():

@@ -74,6 +74,8 @@ CHECK_ENV_TOOL = "check_env"
 # and the single copy of the guidance every grant of it is coupled to.
 LSP_TOOL = "LSP"
 LSP_REFERENCE = "skills/shared/references/lsp.md"
+# The reference section carrying both unavailable cases and the fallback, which every grant leans on.
+LSP_AVAILABILITY_HEADING = "## Availability is discovered, never assumed"
 # The lowest number an adapter's `body_limit` could plausibly be. Both real limits are 32k and 64k, and
 # no tracker documents anything near this floor, so a declaration under it is a typo, not a limit.
 BODY_LIMIT_FLOOR = 8_192
@@ -1327,7 +1329,12 @@ def check_lsp_grants(errors: list[str]) -> None:
         fail(f"{LSP_REFERENCE} is missing, and every grant below cites it", errors)
         return
     body = reference.read_text(encoding="utf-8")
-    if not all(term in body for term in ("absent", "PATH", "`Grep`", "`Read`")):
+    # Scoped to the section that carries the rule, as `_bounded_section`'s other callers are: the same four
+    # words appear in the prose around it -- the opening paragraph names `lspServers`, the navigation section
+    # names `Grep` -- so an unscoped containment pin stays satisfied by that prose long after the rule it is
+    # meant to protect has been hollowed out.
+    section = _bounded_section(body, LSP_AVAILABILITY_HEADING, LSP_REFERENCE, errors)
+    if section is not None and not all(term in section for term in ("absent", "PATH", "`Grep`", "`Read`")):
         fail(
             f"{LSP_REFERENCE} must keep both unavailable cases — no server declared, and a server whose "
             "command is not on the session PATH — and name `Grep`/`Read` as the fallback; short of that, "

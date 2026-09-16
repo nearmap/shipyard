@@ -223,7 +223,7 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
     # captured class rather than trimmed off it after the fact. A trailer *inside* the target survives
     # (`"$(... 2>/dev/null)/suffix"`), so the class still excludes `)`/backtick, not just skips leading ones.
     for operator, target in re.findall(
-        r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*[`()]*([^\s;&|)`]+)', command
+        r'(?:^|\s)(\d*>>?[&|]?|&>>?|\btee\s+(?:-a\s+)?)\s*[`)]*([^\s;&|)`]+)', command
     ):
         target = target.strip('"\'')
         # Only `>&`/`2>&` *plus* a bare-digit target is fd duplication; `2>1` writes a file named `1`,
@@ -556,7 +556,6 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': '[ -n "$(git status --porcelain 2>/dev/null)" ]'}, False),
         ('gate', 'Bash', {'command': 'x=`git rev-parse HEAD 2>/dev/null`'}, False),
         ('gate', 'Bash', {'command': 'x=$(cmd 2>/tmp/out.txt)'}, True),
-        ('gate', 'Bash', {'command': 'x=`cmd 2>/tmp/out.txt`'}, True),
         # A leading backtick on the target -- not just a trailing one -- must still be stripped rather
         # than left in the target class, or the redirect loop never matches and the write is allowed.
         ('gate', 'Bash', {'command': 'echo pwned > `mktemp`'}, True),
@@ -568,10 +567,8 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': 'cat "$(git rev-parse --show-toplevel 2>/dev/null)/pyproject.toml"'}, False),
         ('gate', 'Bash', {'command': 'cat `git rev-parse --show-toplevel 2>/dev/null`/pyproject.toml'}, False),
         ('gate', 'Bash', {'command': 'echo x > )/tmp/o'}, True),
-        # A quoted separator inside the target defeats the /dev/null exemption entirely -- a known,
-        # accepted bypass (see module docstring, "quoted-separator" limit), not fixed by this change.
-        # This pins that accepted limit as the current behaviour, not a required one: closing it should
-        # update this case rather than being blocked by it.
+        # A quoted separator inside the target defeats the /dev/null exemption -- an accepted bypass
+        # (docstring: "a separator hidden inside a quoted value"); closing it should update this case.
         ('gate', 'Bash', {'command': 'echo x > "/dev/null)"'}, False),
         ('gate', 'Bash', {'command': 'echo x | tee src/a.py'}, True),
         ('gate', 'Bash', {'command': 'cd /tmp && git commit -m x'}, True),

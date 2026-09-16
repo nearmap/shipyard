@@ -1327,11 +1327,12 @@ def check_lsp_grants(errors: list[str]) -> None:
         fail(f"{LSP_REFERENCE} is missing, and every grant below cites it", errors)
         return
     body = reference.read_text(encoding="utf-8")
-    if not ("absent" in body and "`Grep`" in body and "`Read`" in body):
+    if not all(term in body for term in ("absent", "PATH", "`Grep`", "`Read`")):
         fail(
-            f"{LSP_REFERENCE} must keep saying that the tool is absent where a repository declares no "
-            "server and that `Grep`/`Read` is the fallback; without both, the grants below cite a file "
-            "that leaves an agent reading a missing language server as a fault to fix",
+            f"{LSP_REFERENCE} must keep both unavailable cases — no server declared, and a server whose "
+            "command is not on the session PATH — and name `Grep`/`Read` as the fallback; short of that, "
+            "the grants below cite a file that leaves an agent reading an unreachable language server as "
+            "a fault to fix",
             errors,
         )
     for p in sorted((ROOT / "agents").glob("*.md")):

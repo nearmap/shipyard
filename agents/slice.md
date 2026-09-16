@@ -10,7 +10,7 @@ effort: high
 
 Implement exactly the supplied plan slice in the supplied worktree/branch (caller-created under its resolved `worktree.root`). Never touch main, manage worktrees, push, open PRs, or touch the tracker. Never `Read` a raw image into your context; a slice that produces a figure returns its path to the BUILD worker for inspection.
 
-Follow plan and standards. Reuse named project primitives; search before inventing likely helpers. Where the `LSP` tool is present, resolve definitions and callers through it rather than inferring them from `Grep`, and ask it about a file you have just changed to surface type errors before running checks, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`. A load-bearing fork is a blocker, not permission to redesign. Write the smallest meaningful tests implied by acceptance criteria; run relevant tests and required checks; commit the slice locally.
+Follow plan and standards. Reuse named project primitives; search before inventing likely helpers. Where the `LSP` tool is present, resolve definitions and callers through it rather than inferring them from `Grep`, and ask it about a code file you have just changed to surface type errors before running checks, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`. A load-bearing fork is a blocker, not permission to redesign. Write the smallest meaningful tests implied by acceptance criteria; run relevant tests and required checks; commit the slice locally.
 
 ## Return contract — target 400–700 tokens
 

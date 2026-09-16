@@ -8,7 +8,7 @@ The tool is absent in a repository that declares no server, and present-but-dead
 
 ## Prefer it where types beat text
 
-Use it for the symbol questions `Grep` answers badly: which definition a call actually binds to, every real caller of a re-exported or overloaded name, where a symbol lives given only its name (`workspaceSymbol`), and the blast radius of a signature change (call hierarchy). `Grep` stays right for text, config, comments, and non-code surfaces, and for any pattern no symbol names.
+Use it for the symbol questions `Grep` answers badly: which definition a call actually binds to, every real caller of a re-exported or overloaded name, where a symbol lives given only its name (`workspaceSymbol`), and the blast radius of a signature change (call hierarchy). `Grep` stays right for text, config, comments, and non-code surfaces, and for any pattern that no symbol names.
 
 ## Diagnostics arrive when you ask
 

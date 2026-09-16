@@ -1389,8 +1389,9 @@ def test_a_brief_that_cites_the_path_and_restates_a_rule_anyway_is_refused(tmp_p
 
 
 _LSP_REFERENCE = (
-    "# Language-server navigation\n\nThe tool is absent where a repository declares no server; fall back to "
-    "`Grep`/`Read` and say which navigation you could not do type-aware.\n"
+    "# Language-server navigation\n\nThe tool is absent where a repository declares no server, and dead "
+    "where its command is off the session PATH; fall back to `Grep`/`Read` and say which navigation you "
+    "could not do type-aware.\n"
 )
 
 
@@ -1438,7 +1439,7 @@ def test_a_citation_without_the_grant_is_refused(tmp_path, monkeypatch):
         f"guidance for a tool the agent can never call must be refused: {errors}"
 
 
-@pytest.mark.parametrize("dropped", ["absent", "`Grep`", "`Read`"])
+@pytest.mark.parametrize("dropped", ["absent", "PATH", "`Grep`", "`Read`"])
 def test_a_reference_that_lost_the_unavailable_case_is_refused(tmp_path, monkeypatch, dropped):
     """A hollowed reference is what turns a missing language server into a fault an agent tries to fix."""
     reference = _LSP_REFERENCE.replace(dropped, "elsewhere")

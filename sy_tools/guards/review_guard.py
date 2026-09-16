@@ -218,9 +218,10 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         if reason:
             return f'{mode} review: {reason}'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    for target in re.findall(r'(?:^|\s)(?:>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
+    for target in re.findall(r'(?:^|[\s;&|])(?:\d*>>?&?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
         target = target.strip('"\'')
-        if target == '/dev/null':
+        # A bare digit is fd duplication (`2>&1`), which names no file to contain.
+        if target == '/dev/null' or target.isdigit():
             continue
         if mode in SANDBOX_WRITE_MODES and under_scratch(target, cwd, root):
             continue
@@ -524,6 +525,15 @@ def _run_cases(root: Path) -> None:
         ('gate', 'Bash', {'command': 'dd if=/dev/zero of=src/a.py'}, True),
         ('gate', 'Bash', {'command': 'touch src/a.py'}, True),
         ('gate', 'Bash', {'command': 'echo hi > src/a.py'}, True),
+        # Redirection spelled with an fd prefix or `&>`/`>&` is the same write; only the bare `>` was read.
+        ('gate', 'Bash', {'command': 'echo x 2> /etc/o'}, True),
+        ('gate', 'Bash', {'command': 'echo x 1>/etc/o'}, True),
+        ('gate', 'Bash', {'command': 'echo x &> /etc/o'}, True),
+        ('gate', 'Bash', {'command': 'echo x >& /etc/o'}, True),
+        ('gate', 'Bash', {'command': 'echo x 2>> /etc/o'}, True),
+        ('gate', 'Bash', {'command': 'pytest -q 2>&1'}, False),
+        ('gate', 'Bash', {'command': 'pytest -q > /dev/null 2>&1'}, False),
+        ('gate', 'Bash', {'command': f'echo x 2> {root / "err.log"}'}, False),
         ('gate', 'Bash', {'command': 'echo x | tee src/a.py'}, True),
         ('gate', 'Bash', {'command': 'cd /tmp && git commit -m x'}, True),
         ('gate', 'Bash', {'command': "sed -i 's/a/b/' src/a.py"}, True),

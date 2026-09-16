@@ -52,6 +52,31 @@ def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
     assert review_guard.decision('repo-standards', 'Bash', {'command': 'grep -rn x skills/'}, cwd=cwd) is None
 
 
+@pytest.mark.parametrize('mode', sorted(review_guard.SANDBOX_WRITE_MODES))
+@pytest.mark.parametrize('command', [
+    'echo x 2> /etc/o',
+    'echo x 1>/etc/o',
+    'echo x &> /etc/o',
+    'echo x >& /etc/o',
+    'echo x 2>> /etc/o',
+])
+def test_fd_prefixed_redirection_out_of_the_sandbox_is_refused(mode, command):
+    """`2>`, `&>` and `>&` write a file exactly as `>` does; reading only the bare `>` let them escape."""
+    cwd = str(Path(__file__).resolve().parent)
+    assert review_guard.decision(mode, 'Bash', {'command': command}, cwd=cwd) is not None
+
+
+@pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))
+@pytest.mark.parametrize('command', [
+    'pytest -q 2>&1',
+    'pytest -q > /dev/null 2>&1',
+])
+def test_fd_duplication_is_not_read_as_a_redirect_to_a_file(mode, command):
+    """The captured target is a bare digit, so there is no file to contain and nothing to refuse."""
+    cwd = str(Path(__file__).resolve().parent)
+    assert review_guard.decision(mode, 'Bash', {'command': command}, cwd=cwd) is None
+
+
 @pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))
 @pytest.mark.parametrize('command', [
     'gh pr comment 32 --body-file report.md',

@@ -109,19 +109,27 @@ def record_hook_event(payload: dict[str, Any]) -> None:
 
 def _iter_jsonl(path: Path, warnings: list[str]) -> Iterable[dict[str, Any]]:
     try:
-        with path.open("r", encoding="utf-8") as fh:
-            for lineno, line in enumerate(fh, 1):
-                if not line.strip():
-                    continue
-                try:
-                    value = json.loads(line)
-                except json.JSONDecodeError:
-                    warnings.append(f"malformed_json:{path.name}:{lineno}")
-                    continue
-                if isinstance(value, dict):
-                    yield value
+        raw = path.read_bytes()
     except OSError as exc:
         warnings.append(f"read_error:{path.name}:{exc.__class__.__name__}")
+        return
+    # Decoded per line rather than by a text-mode reader, so one line of invalid UTF-8 is a warning
+    # about that line instead of a UnicodeDecodeError out of the whole read.
+    for lineno, raw_line in enumerate(raw.splitlines(), 1):
+        if not raw_line.strip():
+            continue
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            warnings.append(f"decode_error:{path.name}:{lineno}")
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            warnings.append(f"malformed_json:{path.name}:{lineno}")
+            continue
+        if isinstance(value, dict):
+            yield value
 
 
 def resolve_main_transcript(session_id: str | None, transcript: str | None) -> Path:
@@ -425,8 +433,8 @@ def handbacks(main: Path) -> dict[str, Any]:
     warnings: list[str] = []
     transcripts = _discover_transcripts(main, warnings)
     by_path, by_id = _load_agent_map(session_id)
-    grouped: dict[tuple[str, str], int] = defaultdict(int)
-    transcript_of: dict[tuple[str, str], str] = {}
+    grouped: dict[tuple[str, str, str], int] = defaultdict(int)
+    transcript_of: dict[tuple[str, str, str], str] = {}
 
     main_resolved = main.resolve()
     for path in transcripts:
@@ -442,18 +450,20 @@ def handbacks(main: Path) -> dict[str, Any]:
                 or _normalize_agent_type(inferred_type)
                 or "unknown_subagent"
             )
-        key = (agent_type, inferred_id or "")
+        # Without an agent id the path keys the row: same-typed transcripts would otherwise merge onto
+        # one row whose single `transcript` hides every other transcript behind the summed count.
+        key = (agent_type, inferred_id or "", "" if inferred_id else str(path))
         grouped[key] += refused
         transcript_of.setdefault(key, str(path))
 
     by_agent = [
         {
-            "agent_type": agent_type,
-            "agent_id": agent_id,
-            "refused": grouped[(agent_type, agent_id)],
-            "transcript": transcript_of[(agent_type, agent_id)],
+            "agent_type": key[0],
+            "agent_id": key[1],
+            "refused": refused,
+            "transcript": transcript_of[key],
         }
-        for agent_type, agent_id in sorted(grouped)
+        for key, refused in sorted(grouped.items())
     ]
     result: dict[str, Any] = {
         "schema": "shipyard.worker_handbacks.v1",

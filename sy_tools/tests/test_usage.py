@@ -392,3 +392,80 @@ def test_an_unreadable_legacy_layout_transcript_warns_instead_of_vanishing(tmp_p
     result = usage.handbacks(main)
 
     assert any("agent-b.jsonl" in warning for warning in result["warnings"]), result
+
+
+def test_handbacks_keeps_a_row_per_transcript_when_no_agent_id_surfaces(tmp_path, monkeypatch):
+    """Same-typed transcripts with no agent id must not merge: one row's `transcript` hides the rest."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    main.write_text("", encoding="utf-8")
+    subdir = tmp_path / "s1" / "subagents"
+    subdir.mkdir(parents=True)
+    first = subdir / "agent-a.jsonl"
+    second = subdir / "agent-b.jsonl"
+    first.write_text(
+        "".join(json.dumps(r) + "\n" for r in [{"agent_type": "sy:slice"}, *_refusal_records("call-1")]),
+        encoding="utf-8",
+    )
+    second.write_text(
+        "".join(
+            json.dumps(r) + "\n"
+            for r in [{"agent_type": "sy:slice"}, *_refusal_records("call-2"), *_refusal_records("call-3")]
+        ),
+        encoding="utf-8",
+    )
+
+    result = usage.handbacks(main)
+
+    assert result["refused"] == 3, result
+    rows = {row["transcript"]: row for row in result["by_agent"]}
+    assert set(rows) == {str(first.resolve()), str(second.resolve())}, result
+    assert rows[str(first.resolve())]["refused"] == 1, result
+    assert rows[str(second.resolve())]["refused"] == 2, result
+    assert all(row["agent_type"] == "slice" and row["agent_id"] == "" for row in result["by_agent"]), result
+
+
+def test_handbacks_still_merges_two_transcripts_of_one_agent_id(tmp_path, monkeypatch):
+    """The common case is unchanged: one agent's id groups its transcripts onto a single row."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    main.write_text("", encoding="utf-8")
+    subdir = tmp_path / "s1" / "subagents"
+    subdir.mkdir(parents=True)
+    for name, call in (("agent-a.jsonl", "call-1"), ("agent-b.jsonl", "call-2")):
+        (subdir / name).write_text(
+            "".join(
+                json.dumps(r) + "\n"
+                for r in [{"agent_type": "sy:slice", "agent_id": "ag-1"}, *_refusal_records(call)]
+            ),
+            encoding="utf-8",
+        )
+
+    result = usage.handbacks(main)
+
+    assert result["by_agent"] == [
+        {
+            "agent_type": "slice",
+            "agent_id": "ag-1",
+            "refused": 2,
+            "transcript": str((subdir / "agent-a.jsonl").resolve()),
+        }
+    ], result
+
+
+def test_a_line_of_invalid_utf8_warns_instead_of_killing_the_read(tmp_path, monkeypatch):
+    """Text-mode iteration raised `UnicodeDecodeError` out of `handbacks`; only that line may be lost."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    records = _refusal_records("call-1")
+    main.write_bytes(
+        json.dumps(records[0]).encode("utf-8")
+        + b'\n{"type": "assistant", "note": "\xff\xfe not utf-8"}\n'
+        + json.dumps(records[1]).encode("utf-8")
+        + b"\n"
+    )
+
+    result = usage.handbacks(main)
+
+    assert result["refused"] == 1, result
+    assert result["warnings"] == ["decode_error:s1.jsonl:2"], result

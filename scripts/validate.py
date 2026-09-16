@@ -119,7 +119,19 @@ GATE_LOOP_PINS = {
     "worker_verdict_field": "VERDICT:",
     "worker_dispositions_field": "DISPOSITIONS:",
     "verdict_not_parsed": "names its path and never reads it",
+    "persist_scratch_root": 'scratch_dir {"repo": true}',
+    "persist_name_shape": "<kind>-<scope>-<UTC basic timestamp>.md",
 }
+# The hand-back rules and the persist recipe, stated once in `skills/shared/references/agent-returns.md`
+# and cited from every brief: `check_agent_returns` pins each present there and absent everywhere else.
+AGENT_RETURN_PINS = (
+    "handback_is_one_shot",
+    "no_midround_channel",
+    "persist_before_return",
+    "return_terminates",
+    "persist_scratch_root",
+    "persist_name_shape",
+)
 GATE_LOOP_SECTIONS = {
     "worker_contract": "## Worker contract",
     "pre_gate": "## Pre-gate checkpoint",
@@ -877,33 +889,45 @@ def check_agent_returns(errors: list[str]) -> None:
     """
     returns_rel = "skills/shared/references/agent-returns.md"
     returns = (ROOT / returns_rel).read_text(encoding="utf-8")
-    for key, why in (
-        (
-            "handback_is_one_shot",
+    whys = {
+        "handback_is_one_shot":
             "a second hand-back is refused and reaches nobody, so one spent on a status note is the contract "
             "return thrown away",
-        ),
-        (
-            "no_midround_channel",
+        "no_midround_channel":
             "most delegates hold no `SendMessage`, and an agent that believes otherwise waits for an exchange "
             "that never comes instead of returning",
-        ),
-        (
-            "persist_before_return",
+        "persist_before_return":
             "an expensive report that exists only inside a return is lost with the return, and re-running the "
             "pass is the only recovery",
-        ),
-        ("return_terminates", "work after a return lands nowhere, because the turn it would report in is over"),
-    ):
+        "return_terminates":
+            "work after a return lands nowhere, because the turn it would report in is over",
+        "persist_scratch_root":
+            "a recipe that does not name the repo-keyed root sends the report to a task-keyed sibling the "
+            "caller never looks in",
+        "persist_name_shape":
+            "an unstamped report name is clobbered by the second run over the same scope, which is the run "
+            "that had something new to say",
+    }
+    for key in AGENT_RETURN_PINS:
         if GATE_LOOP_PINS[key] not in returns:
-            fail(f"{returns_rel} must keep its `{GATE_LOOP_PINS[key]}` rule: {why}", errors)
+            fail(f"{returns_rel} must keep its `{GATE_LOOP_PINS[key]}` rule: {whys[key]}", errors)
     for p in sorted((ROOT / "agents").glob("*.md")):
-        if returns_rel not in p.read_text(encoding="utf-8"):
+        brief = p.read_text(encoding="utf-8")
+        if returns_rel not in brief:
             fail(
                 f"{p.relative_to(ROOT)} must cite `{returns_rel}` by path for its hand-back rules; a brief "
                 "that restates one instead forks it, and the copy stops tracking the reference silently",
                 errors,
             )
+        # Citing the path does not stop a brief restating a rule beside the citation, and the restated copy
+        # is the one that drifts: absence is the half that actually holds the single statement.
+        for key in AGENT_RETURN_PINS:
+            if GATE_LOOP_PINS[key] in brief:
+                fail(
+                    f"{p.relative_to(ROOT)} must not restate `{GATE_LOOP_PINS[key]}` from {returns_rel}; "
+                    "cite the path instead, or the copy and the reference drift apart silently",
+                    errors,
+                )
 
 
 def check_human_text_routing(errors: list[str]) -> None:

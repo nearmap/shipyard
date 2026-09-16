@@ -270,7 +270,7 @@ def test_a_non_numeric_configured_limit_falls_back_instead_of_crashing_the_rende
     )
 
 
-def _refusal_records(tool_use_id: str) -> list[dict]:
+def _refusal_records(tool_use_id: str, payload: object = None) -> list[dict]:
     return [
         {
             "type": "assistant",
@@ -286,7 +286,7 @@ def _refusal_records(tool_use_id: str) -> list[dict]:
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
-                        "content": '{"success":false,"reason":"already delivered"}',
+                        "content": '{"success":false,"reason":"already delivered"}' if payload is None else payload,
                     }
                 ]
             },
@@ -324,3 +324,47 @@ def test_handbacks_reports_an_unreadable_subagent_tree_instead_of_a_clean_zero(t
 
     assert result["refused"] == 0, result
     assert any(str(tmp_path / "s1") in warning for warning in result["warnings"]), result
+
+
+@pytest.mark.parametrize("payload", [
+    '{"reason": "already delivered", "success": false}',
+    '{\n  "success": false,\n  "reason": "already delivered"\n}',
+    [{"type": "text", "text": '{"success": false, "reason": "already delivered"}'}],
+])
+def test_handbacks_counts_a_refusal_however_its_payload_is_serialized(tmp_path, monkeypatch, payload):
+    """Spacing, key order and content-block wrapping are all valid JSON; only a substring match cares."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    records = _refusal_records("call-1", payload)
+    main.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    assert usage.handbacks(main)["refused"] == 1, payload
+
+
+def test_handbacks_does_not_count_a_delivered_handback_as_refused(tmp_path, monkeypatch):
+    """The other half of parsing the payload: `success: true` must stay uncounted."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    records = _refusal_records("call-1", '{"success": true, "note": "success:false is not the verdict"}')
+    main.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    assert usage.handbacks(main)["refused"] == 0
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the chmod that makes the file unreadable")
+def test_an_unreadable_legacy_layout_transcript_warns_instead_of_vanishing(tmp_path, monkeypatch):
+    """The legacy sibling layout drops a file that claims no session; an unreadable one must say so."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    main.write_text("", encoding="utf-8")
+    legacy = tmp_path / "subagents"
+    legacy.mkdir()
+    unreadable = legacy / "agent-b.jsonl"
+    unreadable.write_text("", encoding="utf-8")
+    unreadable.chmod(0o000)
+    try:
+        result = usage.handbacks(main)
+    finally:
+        unreadable.chmod(0o644)
+
+    assert any("agent-b.jsonl" in warning for warning in result["warnings"]), result

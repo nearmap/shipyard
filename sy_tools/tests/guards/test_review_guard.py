@@ -70,11 +70,24 @@ def test_fd_prefixed_redirection_out_of_the_sandbox_is_refused(mode, command):
 @pytest.mark.parametrize('command', [
     'pytest -q 2>&1',
     'pytest -q > /dev/null 2>&1',
+    'pytest -q >&1',
 ])
 def test_fd_duplication_is_not_read_as_a_redirect_to_a_file(mode, command):
-    """The captured target is a bare digit, so there is no file to contain and nothing to refuse."""
+    """An `&`-form operator with a bare-digit target names no file, so there is nothing to contain."""
     cwd = str(Path(__file__).resolve().parent)
     assert review_guard.decision(mode, 'Bash', {'command': command}, cwd=cwd) is None
+
+
+@pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))
+@pytest.mark.parametrize('command', [
+    'echo x > 1',
+    'echo x 2> 1',
+    'echo x 2>>1',
+])
+def test_a_digit_target_without_the_ampersand_is_a_file_named_for_that_digit(mode, command):
+    """`2>1` writes a file called `1` in the cwd; exempting every bare digit let that escape the sandbox."""
+    cwd = str(Path(__file__).resolve().parent)
+    assert review_guard.decision(mode, 'Bash', {'command': command}, cwd=cwd) is not None
 
 
 @pytest.mark.parametrize('mode', sorted(review_guard.REVIEW_MODES))

@@ -1309,7 +1309,7 @@ def test_a_guard_source_with_no_parseable_mode_set_is_refused(tmp_path, monkeypa
         f"an unparseable guard source must be refused: {errors}"
 
 
-_HANDBACK_PINS = ("handback_is_one_shot", "no_midround_channel", "persist_before_return", "return_terminates")
+_HANDBACK_PINS = validate.AGENT_RETURN_PINS
 
 
 def _returns_reference() -> str:
@@ -1355,3 +1355,13 @@ def test_a_brief_that_restates_the_rules_instead_of_citing_the_path_is_refused(t
     brief = f"Hand back once. {_LOOP_PINS['handback_is_one_shot']}, and {_LOOP_PINS['return_terminates']}.\n"
     errors = _returns_check(tmp_path, monkeypatch, brief=brief)
     assert any("forks it" in e for e in errors), f"a brief citing no reference must be refused: {errors}"
+
+
+@pytest.mark.parametrize("pin", _HANDBACK_PINS)
+def test_a_brief_that_cites_the_path_and_restates_a_rule_anyway_is_refused(tmp_path, monkeypatch, pin):
+    """Citation presence is not restatement absence; a brief can carry both, and the copy is what drifts."""
+    citation = "Hand back once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.\n"
+    errors = _returns_check(tmp_path, monkeypatch, brief=f"{citation}Also: {_LOOP_PINS[pin]}.\n")
+    assert any("must not restate" in e and _LOOP_PINS[pin] in e for e in errors), (
+        f"a cited brief restating {pin} must still be refused: {errors}"
+    )

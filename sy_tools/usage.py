@@ -167,7 +167,9 @@ def _discover_transcripts(main: Path, warnings: list[str]) -> list[Path]:
     # files whose records claim this session.
     sibling_subagents = main.parent / "subagents"
     if sibling_subagents.is_dir():
-        paths.extend(p for p in _walk_jsonl(sibling_subagents, warnings) if _claims_session(p, main.stem))
+        paths.extend(
+            p for p in _walk_jsonl(sibling_subagents, warnings) if _claims_session(p, main.stem, warnings)
+        )
     return sorted(set(paths), key=lambda p: (p != main, str(p)))
 
 
@@ -182,7 +184,7 @@ def _walk_jsonl(root: Path, warnings: list[str]) -> list[Path]:
     return found
 
 
-def _claims_session(path: Path, session_id: str) -> bool:
+def _claims_session(path: Path, session_id: str, warnings: list[str]) -> bool:
     checked = 0
     try:
         with path.open("r", encoding="utf-8") as fh:
@@ -201,7 +203,10 @@ def _claims_session(path: Path, session_id: str) -> bool:
                 checked += 1
                 if checked >= 20:
                     break
-    except OSError:
+    except OSError as exc:
+        # Dropping the file is right (nothing here claims the session), but a silent drop is the clean
+        # zero `_walk_jsonl`'s `onerror` exists to prevent.
+        warnings.append(f"read_error:{path.name}:{exc.__class__.__name__}")
         return False
     # No record claims any session: keep the file rather than silently dropping usage.
     return True
@@ -331,7 +336,7 @@ def _refused_handbacks(path: Path, warnings: list[str]) -> tuple[int, str | None
             elif (
                 kind == "tool_result"
                 and str(block.get("tool_use_id")) in calls
-                and '"success":false' in _tool_result_text(block.get("content"))
+                and _reports_refusal(block.get("content"))
             ):
                 refused.add(str(block.get("tool_use_id")))
     return len(refused), inferred_agent_type, inferred_agent_id
@@ -508,6 +513,33 @@ def _content_blocks(content: Any) -> Iterable[dict[str, Any]]:
         for block in content:
             if isinstance(block, dict):
                 yield block
+
+
+def _reports_refusal(content: Any) -> bool:
+    """Whether a `SubagentHandback` tool result carries a `success: false` payload.
+
+    The payload is JSON inside an MCP content block, so it is parsed: a substring match on one
+    serialization misses the same object with a space after the colon or its keys in another order.
+    """
+    return any(isinstance(payload, dict) and payload.get("success") is False for payload in _payloads(content))
+
+
+def _payloads(content: Any) -> Iterable[Any]:
+    for block in _content_blocks(content):
+        yield block
+        if block.get("type") == "text":
+            yield from _parsed_json(str(block.get("text", "")))
+        nested = block.get("content")
+        if isinstance(nested, (str, list)):
+            yield from _payloads(nested)
+
+
+def _parsed_json(text: str) -> list[Any]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
 def _tool_result_text(content: Any) -> str:

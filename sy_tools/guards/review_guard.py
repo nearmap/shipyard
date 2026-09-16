@@ -218,10 +218,11 @@ def _classify_bash(command: str, mode: str, cwd: str, root: Path | None) -> str 
         if reason:
             return f'{mode} review: {reason}'
     # Shell redirection is allowed to /dev/null, and for a sandbox-write mode to the resolved sandbox root.
-    for target in re.findall(r'(?:^|[\s;&|])(?:\d*>>?&?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
+    for operator, target in re.findall(r'(?:^|[\s;&|])(\d*>>?&?|&>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|]+)', command):
         target = target.strip('"\'')
-        # A bare digit is fd duplication (`2>&1`), which names no file to contain.
-        if target == '/dev/null' or target.isdigit():
+        # Only `>&`/`2>&` *plus* a bare-digit target is fd duplication; `2>1` writes a file named `1`,
+        # and `>& out` writes a file named `out`.
+        if target == '/dev/null' or (operator.rstrip().endswith('&') and target.isdigit()):
             continue
         if mode in SANDBOX_WRITE_MODES and under_scratch(target, cwd, root):
             continue

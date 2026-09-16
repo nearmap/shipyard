@@ -517,7 +517,7 @@ def repo_scratch_dir(start: Path | None = None) -> Path:
                 f"the resolved scratch directory {directory.resolve()} contains a worktree of this "
                 f"repository ({guarded}). scratch.dir must not resolve to that worktree or an ancestor "
                 "of it — every file inside it would then satisfy the containment check that is "
-                "supposed to keep hunt out of it; check for a misconfigured scratch.dir or "
+                "supposed to keep a sandbox-write agent out of it; check for a misconfigured scratch.dir or "
                 "worktree.root in a committed or local .shipyard/config.json."
             )
     return directory

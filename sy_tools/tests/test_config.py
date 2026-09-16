@@ -445,12 +445,12 @@ def test_logical_repo_resolves_a_plain_separate_git_dir_checkout_without_raising
 
 
 def test_scratch_dir_refuses_a_non_absolute_root(fixture_repo):
-    """`review_guard.py`'s hunt-mode write sandbox is exactly `scratch_dir()`'s containment check, and
+    """`review_guard.py`'s `SANDBOX_WRITE_MODES` sandbox is exactly `scratch_dir()`'s containment check, and
     `scratch.dir` is one of the values a repo-committed `.shipyard/config.json` can set. A relative
     value resolves against whatever the calling process's cwd happens to be rather than any fixed
     location -- a committed `{"scratch": {"dir": ".."}}` can silently put the "sandbox" root at an
     ancestor of the checkout itself, so every file inside the checkout would satisfy the containment
-    check that was supposed to keep hunt out of it. Refused outright rather than resolved.
+    check that was supposed to keep a sandbox-write agent out of it. Refused outright rather than resolved.
     """
     layer = {**FIXTURE_LAYER, "scratch": {"dir": ".."}}
     (fixture_repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
@@ -485,7 +485,7 @@ def test_repo_scratch_dir_refuses_a_root_that_overlaps_the_checkout(fixture_repo
 
     `scratch_dir()`'s own containment check constrains the *identifier* relative to the root, not the
     root itself, so a repo-committed `.shipyard/config.json` pointing `scratch.dir` at (or above) its
-    own checkout would otherwise hand `review_guard.py`'s hunt-mode write sandbox the checkout's source.
+    own checkout would otherwise hand `review_guard.py`'s `SANDBOX_WRITE_MODES` sandbox the checkout's source.
     """
     # The vacuous spelling: pytest's `tmp_path` is already resolved, so this one passes without
     # comparing resolved paths at all. The others are what `Path.resolve()` alone does not normalize.

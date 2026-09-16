@@ -6,6 +6,7 @@ written by the test, so nothing depends on whichever session happens to be runni
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -267,3 +268,59 @@ def test_a_non_numeric_configured_limit_falls_back_instead_of_crashing_the_rende
     assert limits == usage._DEFAULT_RENDER_LIMITS, (
         "a non-numeric resolved value must fall back to shipped defaults, not crash the render"
     )
+
+
+def _refusal_records(tool_use_id: str) -> list[dict]:
+    return [
+        {
+            "type": "assistant",
+            "message": {
+                "id": "h1",
+                "content": [{"type": "tool_use", "id": tool_use_id, "name": "SubagentHandback", "input": {}}],
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": '{"success":false,"reason":"already delivered"}',
+                    }
+                ]
+            },
+        },
+    ]
+
+
+def test_handbacks_counts_a_replayed_refusal_once(tmp_path, monkeypatch):
+    """A verbatim-replayed transcript span is one refusal, not two; the reader must dedup by tool_use_id."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    records = _refusal_records("call-1") * 2
+    main.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    result = usage.handbacks(main)
+    assert result["refused"] == 1, result
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the chmod that makes the tree unreadable")
+def test_handbacks_reports_an_unreadable_subagent_tree_instead_of_a_clean_zero(tmp_path, monkeypatch):
+    """An unreadable subagent dir must name itself in `warnings`; a bare zero reads as health."""
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    main.write_text("", encoding="utf-8")
+    subdir = tmp_path / "s1" / "subagents"
+    subdir.mkdir(parents=True)
+    (subdir / "agent-a.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in _refusal_records("call-1")), encoding="utf-8"
+    )
+    (tmp_path / "s1").chmod(0o000)
+    try:
+        result = usage.handbacks(main)
+    finally:
+        (tmp_path / "s1").chmod(0o755)
+
+    assert result["refused"] == 0, result
+    assert any(str(tmp_path / "s1") in warning for warning in result["warnings"]), result

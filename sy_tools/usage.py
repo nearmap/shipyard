@@ -157,22 +157,29 @@ def _session_id_from_path(main: Path) -> str:
     return main.stem
 
 
-def _discover_transcripts(main: Path) -> list[Path]:
+def _discover_transcripts(main: Path, warnings: list[str]) -> list[Path]:
     main = main.resolve()
     paths = [main]
     session_dir = main.with_suffix("")
     if session_dir.is_dir():
-        paths.extend(p.resolve() for p in session_dir.rglob("*.jsonl"))
+        paths.extend(_walk_jsonl(session_dir, warnings))
     # Older layouts put subagents beside the main file; that directory is project-level, so admit only
     # files whose records claim this session.
     sibling_subagents = main.parent / "subagents"
     if sibling_subagents.is_dir():
-        paths.extend(
-            p.resolve()
-            for p in sibling_subagents.rglob("*.jsonl")
-            if _claims_session(p, main.stem)
-        )
+        paths.extend(p for p in _walk_jsonl(sibling_subagents, warnings) if _claims_session(p, main.stem))
     return sorted(set(paths), key=lambda p: (p != main, str(p)))
+
+
+def _walk_jsonl(root: Path, warnings: list[str]) -> list[Path]:
+    # `Path.rglob` swallows scandir errors, which turns an unreadable subagent tree into a clean zero.
+    def note(error: OSError) -> None:
+        warnings.append(f"{error.filename}: {error.strerror}")
+
+    found: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=note):
+        found.extend(Path(dirpath, name).resolve() for name in filenames if name.endswith(".jsonl"))
+    return found
 
 
 def _claims_session(path: Path, session_id: str) -> bool:
@@ -306,7 +313,7 @@ def _normalize_agent_type(agent_type: str | None) -> str | None:
 
 def _refused_handbacks(path: Path, warnings: list[str]) -> tuple[int, str | None, str | None]:
     calls: set[str] = set()
-    refused = 0
+    refused: set[str] = set()
     inferred_agent_type: str | None = None
     inferred_agent_id: str | None = None
     for record in _iter_jsonl(path, warnings):
@@ -326,8 +333,8 @@ def _refused_handbacks(path: Path, warnings: list[str]) -> tuple[int, str | None
                 and str(block.get("tool_use_id")) in calls
                 and '"success":false' in _tool_result_text(block.get("content"))
             ):
-                refused += 1
-    return refused, inferred_agent_type, inferred_agent_id
+                refused.add(str(block.get("tool_use_id")))
+    return len(refused), inferred_agent_type, inferred_agent_id
 
 
 def summarize(
@@ -342,9 +349,9 @@ def summarize(
     that cannot be read, or a line that will not parse, becomes a `warnings` entry, never a failure.
     """
     session_id = _session_id_from_path(main)
-    transcripts = _discover_transcripts(main)
-    by_path, by_id = _load_agent_map(session_id)
     warnings: list[str] = []
+    transcripts = _discover_transcripts(main, warnings)
+    by_path, by_id = _load_agent_map(session_id)
     seen: set[str] = set()
     total = Usage()
     grouped: dict[tuple[str, str], Usage] = defaultdict(Usage)
@@ -410,9 +417,9 @@ def handbacks(main: Path) -> dict[str, Any]:
     entry, never a failure.
     """
     session_id = _session_id_from_path(main)
-    transcripts = _discover_transcripts(main)
-    by_path, by_id = _load_agent_map(session_id)
     warnings: list[str] = []
+    transcripts = _discover_transcripts(main, warnings)
+    by_path, by_id = _load_agent_map(session_id)
     grouped: dict[tuple[str, str], int] = defaultdict(int)
     transcript_of: dict[tuple[str, str], str] = {}
 
@@ -453,9 +460,9 @@ def handbacks(main: Path) -> dict[str, Any]:
         },
         "refused": sum(grouped.values()),
         "by_agent": by_agent,
+        # Always present: an absent key once made an unreadable tree look like a healthy zero.
+        "warnings": sorted(set(warnings)),
     }
-    if warnings:
-        result["warnings"] = sorted(set(warnings))
     return result
 
 
@@ -604,7 +611,8 @@ def render(main: Path, *, task: str | None) -> str:
     Tool inputs, tool results and thinking blocks are truncated to `render_limits()`.
     """
     session_id = _session_id_from_path(main)
-    transcripts = _discover_transcripts(main)
+    warnings: list[str] = []
+    transcripts = _discover_transcripts(main, warnings)
     by_path, _ = _load_agent_map(session_id)
     main_resolved = main.resolve()
     subs = sorted(
@@ -616,6 +624,7 @@ def render(main: Path, *, task: str | None) -> str:
     if task:
         out.append(f"task: {task}")
     out.append(f"transcripts: 1 main + {len(subs)} subagents")
+    out += [f"warning: {w}" for w in sorted(set(warnings))]
     out.append("")
 
     sections = [(main_resolved, f"MAIN SESSION {session_id}")]

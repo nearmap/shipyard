@@ -1208,7 +1208,7 @@ SessionId = Annotated[
         "not both and not neither."
     ),
 ]
-"""Both transcript tools take the same source pair, described once so they describe it the same way."""
+"""The transcript tools take the same source pair, described once so they describe it the same way."""
 
 TranscriptPath = Annotated[
     str,
@@ -1216,17 +1216,22 @@ TranscriptPath = Annotated[
 ]
 
 
-def _transcript_source(session_id: str, transcript: str) -> Path:
-    """The main transcript the caller named, refusing both-or-neither before any file is read."""
+def _require_one_transcript_source(session_id: str, transcript: str) -> None:
+    """Refuse both-or-neither before any file is read, identically for every tool taking the pair."""
     if bool(session_id.strip()) == bool(transcript.strip()):
         raise ToolError("give either session_id or transcript, not both and not neither")
+
+
+def _transcript_source(session_id: str, transcript: str) -> Path:
+    """The main transcript the caller named, refusing both-or-neither before any file is read."""
+    _require_one_transcript_source(session_id, transcript)
     try:
         return usage.resolve_main_transcript(session_id.strip() or None, transcript.strip() or None)
     except (OSError, ValueError, RuntimeError) as exc:
         raise ToolError(str(exc)) from None
 
 
-# This and `export_transcript` stay synchronous: local disk reads bounded by the calling session's own
+# The transcript tools stay synchronous: local disk reads bounded by the calling session's own
 # transcript tree, with no network in them, so a thread offload would buy only interleaving.
 @mcp.tool(name="usage_summarize")
 def usage_summarize(
@@ -1304,6 +1309,35 @@ def export_transcript(
     except OSError as exc:
         raise ToolError(f"transcript could not be written to {output}: {exc}") from None
     return {"path": str(destination), "bytes": len(text.encode("utf-8")), "lines": text.count("\n")}
+
+
+@mcp.tool(name="worker_handbacks")
+def worker_handbacks(session_id: SessionId = "", transcript: TranscriptPath = "") -> dict[str, Any]:
+    """Report every worker hand-back this session refused as a duplicate, with the agent it was lost from.
+
+    `SubagentHandback` delivers one report per agent: a second call is refused, and the refusal reaches
+    only the worker that made it, so a caller otherwise never learns that a worker's real return was
+    thrown away. This reads the on-disk transcript tree after the fact and names those workers, one row
+    per agent with the number of refusals and the transcript they were read from. A hand-back that was
+    delivered is not reported.
+
+    Caller-read only: it reports, and never changes a return, a transcript or a state file. A transcript
+    that cannot be resolved or read is an empty report carrying the reason in `warnings`, not an error.
+    """
+    _require_one_transcript_source(session_id, transcript)
+    try:
+        main = usage.resolve_main_transcript(session_id.strip() or None, transcript.strip() or None)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {
+            "schema": "shipyard.worker_handbacks.v1",
+            "session_id": session_id.strip(),
+            "scope": "main_plus_subagents",
+            "transcripts": {"main": 0, "subagents": 0},
+            "refused": 0,
+            "by_agent": [],
+            "warnings": [str(exc)],
+        }
+    return usage.handbacks(main)
 
 
 MEMORY_REFUSALS = (ValueError, config.ConfigError)

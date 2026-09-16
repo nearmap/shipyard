@@ -58,6 +58,7 @@ TOOL_NAMES = {
     "update-issue",
     "usage_summarize",
     "validate_config",
+    "worker_handbacks",
 }
 
 WIRING = [
@@ -1817,6 +1818,80 @@ async def test_export_transcript_writes_the_render_and_never_returns_its_text(tm
     assert "rendered body" not in str(result), f"the rendered transcript reached the tool result: {result}"
 
 
+def _handback_session(root: Path) -> Path:
+    """Session `h1`: one subagent refused twice, another delivered once. Returns the main transcript."""
+    main = root / "h1.jsonl"
+    main.write_text(
+        json.dumps({
+            "type": "assistant", "sessionId": "h1",
+            "message": {"id": "m1", "model": "probe-model", "content": [{"type": "text", "text": "dispatching"}]},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    subagents = root / "h1" / "subagents"
+    subagents.mkdir(parents=True)
+
+    def _call(tool_use_id: str) -> dict[str, Any]:
+        return {
+            "type": "assistant", "sessionId": "h1",
+            "message": {"content": [{"type": "tool_use", "id": tool_use_id, "name": "SubagentHandback"}]},
+        }
+
+    def _result(tool_use_id: str, *, success: bool) -> dict[str, Any]:
+        body = json.dumps({"success": success, "message": "delivered" if success else "already delivered"},
+                          separators=(",", ":"))
+        return {
+            "type": "user", "sessionId": "h1",
+            "message": {"content": [{
+                "type": "tool_result", "tool_use_id": tool_use_id,
+                "content": [{"type": "text", "text": body}],
+            }]},
+        }
+
+    def _write(name: str, agent_id: str, agent_type: str, records: list[dict[str, Any]]) -> None:
+        (subagents / name).write_text(
+            "".join(json.dumps({**r, "agentId": agent_id, "agentType": agent_type}) + "\n" for r in records),
+            encoding="utf-8",
+        )
+
+    _write("gate.jsonl", "agent-gate", "sy:gate", [
+        _call("toolu_1"), _result("toolu_1", success=False),
+        _call("toolu_2"), _result("toolu_2", success=False),
+    ])
+    _write("slice.jsonl", "agent-slice", "sy:slice", [_call("toolu_3"), _result("toolu_3", success=True)])
+    return main
+
+
+@pytest.mark.anyio
+async def test_worker_handbacks_names_only_the_refused_hand_backs(tmp_path, monkeypatch):
+    """The whole point: a report a delivered hand-back never reaches, accumulated per agent, named bare."""
+    monkeypatch.setattr(server.usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = _handback_session(tmp_path)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("worker_handbacks", {"transcript": str(main)})
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert payload["schema"] == "shipyard.worker_handbacks.v1", payload
+    assert payload["session_id"] == "h1", payload
+    assert payload["transcripts"] == {"main": 1, "subagents": 2}, payload
+    assert payload["refused"] == 2, payload
+    assert [{k: row[k] for k in ("agent_type", "agent_id", "refused")} for row in payload["by_agent"]] == [
+        {"agent_type": "gate", "agent_id": "agent-gate", "refused": 2}
+    ], payload["by_agent"]
+    assert payload["by_agent"][0]["transcript"].endswith("gate.jsonl"), payload["by_agent"]
+
+
+@pytest.mark.anyio
+async def test_worker_handbacks_reports_an_unresolvable_transcript_as_a_warning(tmp_path):
+    """A missing transcript must read as empty *and* say why; a silent empty report reads as "no refusals"."""
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("worker_handbacks", {"transcript": str(tmp_path / "absent.jsonl")})
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert payload["refused"] == 0 and payload["by_agent"] == [], payload
+    assert any("absent.jsonl" in warning for warning in payload["warnings"]), payload
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("tool", "arguments"),
@@ -1825,8 +1900,13 @@ async def test_export_transcript_writes_the_render_and_never_returns_its_text(tm
         ("usage_summarize", {"session_id": "t1", "transcript": "/tmp/t1.jsonl"}),
         ("export_transcript", {"output": "/tmp/out.txt"}),
         ("export_transcript", {"session_id": "t1", "transcript": "/tmp/t1.jsonl", "output": "/tmp/out.txt"}),
+        ("worker_handbacks", {}),
+        ("worker_handbacks", {"session_id": "t1", "transcript": "/tmp/t1.jsonl"}),
     ],
-    ids=["summarize-neither", "summarize-both", "export-neither", "export-both"],
+    ids=[
+        "summarize-neither", "summarize-both", "export-neither", "export-both",
+        "handbacks-neither", "handbacks-both",
+    ],
 )
 async def test_the_transcript_tools_take_exactly_one_source(tool, arguments):
     """Neither source means nothing to read; both means the tool would silently pick one."""

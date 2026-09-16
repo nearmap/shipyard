@@ -5,9 +5,9 @@ The parser is deliberately tolerant of transcript schema additions. It counts AP
 attached to assistant messages, de-duplicates by message/request id, and scans the main transcript
 plus the documented nested subagent transcript tree.
 
-`summarize()` and `render()` are the surfaces the `sy` MCP server exposes as the `usage_summarize` and
-`export_transcript` tools; `summarize`'s output is compact JSON suitable for a standalone tracker
-comment. The one command is the hook:
+`summarize()`, `handbacks()` and `render()` are the surfaces the `sy` MCP server exposes as the
+`usage_summarize`, `worker_handbacks` and `export_transcript` tools; `summarize`'s output is compact
+JSON suitable for a standalone tracker comment. The one command is the hook:
 
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.usage hook
       Read Claude Code hook JSON from stdin and record agent-id/type/transcript mapping.
@@ -304,6 +304,32 @@ def _normalize_agent_type(agent_type: str | None) -> str | None:
     return agent_type.split(":")[-1]
 
 
+def _refused_handbacks(path: Path, warnings: list[str]) -> tuple[int, str | None, str | None]:
+    calls: set[str] = set()
+    refused = 0
+    inferred_agent_type: str | None = None
+    inferred_agent_id: str | None = None
+    for record in _iter_jsonl(path, warnings):
+        inferred_agent_type = inferred_agent_type or _first_string(
+            record, "agent_type", "agentType", "attributionAgent"
+        )
+        inferred_agent_id = inferred_agent_id or _first_string(record, "agent_id", "agentId")
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        for block in _content_blocks(message.get("content")):
+            kind = block.get("type")
+            if kind == "tool_use" and block.get("name") == "SubagentHandback":
+                calls.add(str(block.get("id")))
+            elif (
+                kind == "tool_result"
+                and str(block.get("tool_use_id")) in calls
+                and '"success":false' in _tool_result_text(block.get("content"))
+            ):
+                refused += 1
+    return refused, inferred_agent_type, inferred_agent_id
+
+
 def summarize(
     main: Path,
     *,
@@ -370,6 +396,64 @@ def summarize(
     }
     if task:
         result["task"] = task
+    if warnings:
+        result["warnings"] = sorted(set(warnings))
+    return result
+
+
+def handbacks(main: Path) -> dict[str, Any]:
+    """The `shipyard.worker_handbacks.v1` report for one session: every refused `SubagentHandback` call.
+
+    `main` is the main transcript; the whole subagent tree beneath it is read with it, because a refusal
+    is recorded only in the refused agent's own transcript. A hand-back that was delivered is not
+    reported. A transcript that cannot be read, or a line that will not parse, becomes a `warnings`
+    entry, never a failure.
+    """
+    session_id = _session_id_from_path(main)
+    transcripts = _discover_transcripts(main)
+    by_path, by_id = _load_agent_map(session_id)
+    warnings: list[str] = []
+    grouped: dict[tuple[str, str], int] = defaultdict(int)
+    transcript_of: dict[tuple[str, str], str] = {}
+
+    main_resolved = main.resolve()
+    for path in transcripts:
+        refused, inferred_type, inferred_id = _refused_handbacks(path, warnings)
+        if not refused:
+            continue
+        if path == main_resolved:
+            agent_type = "main"
+        else:
+            agent_type = (
+                by_path.get(path)
+                or (by_id.get(inferred_id) if inferred_id else None)
+                or _normalize_agent_type(inferred_type)
+                or "unknown_subagent"
+            )
+        key = (agent_type, inferred_id or "")
+        grouped[key] += refused
+        transcript_of.setdefault(key, str(path))
+
+    by_agent = [
+        {
+            "agent_type": agent_type,
+            "agent_id": agent_id,
+            "refused": grouped[(agent_type, agent_id)],
+            "transcript": transcript_of[(agent_type, agent_id)],
+        }
+        for agent_type, agent_id in sorted(grouped)
+    ]
+    result: dict[str, Any] = {
+        "schema": "shipyard.worker_handbacks.v1",
+        "session_id": session_id,
+        "scope": "main_plus_subagents",
+        "transcripts": {
+            "main": 1,
+            "subagents": max(len(transcripts) - 1, 0),
+        },
+        "refused": sum(grouped.values()),
+        "by_agent": by_agent,
+    }
     if warnings:
         result["warnings"] = sorted(set(warnings))
     return result

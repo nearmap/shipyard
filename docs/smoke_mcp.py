@@ -121,7 +121,7 @@ created, so it touches nothing of the operator's the way a live `scratch_dir`, `
 
 UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
-    "fingerprint_config", "usage_summarize", "export_transcript",
+    "fingerprint_config", "usage_summarize", "export_transcript", "worker_handbacks",
     "memory_add", "memory_search", "memory_list", "memory_refute",
     "ship_state_update",
 })

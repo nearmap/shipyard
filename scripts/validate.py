@@ -1327,7 +1327,7 @@ def check_lsp_grants(errors: list[str]) -> None:
         fail(f"{LSP_REFERENCE} is missing, and every grant below cites it", errors)
         return
     body = reference.read_text(encoding="utf-8")
-    if not ("absent" in body and "`Grep`" in body):
+    if not ("absent" in body and "`Grep`" in body and "`Read`" in body):
         fail(
             f"{LSP_REFERENCE} must keep saying that the tool is absent where a repository declares no "
             "server and that `Grep`/`Read` is the fallback; without both, the grants below cite a file "

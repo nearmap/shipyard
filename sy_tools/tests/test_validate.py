@@ -1438,9 +1438,15 @@ def test_a_citation_without_the_grant_is_refused(tmp_path, monkeypatch):
         f"guidance for a tool the agent can never call must be refused: {errors}"
 
 
-@pytest.mark.parametrize("dropped", ["absent", "`Grep`"])
+@pytest.mark.parametrize("dropped", ["absent", "`Grep`", "`Read`"])
 def test_a_reference_that_lost_the_unavailable_case_is_refused(tmp_path, monkeypatch, dropped):
     """A hollowed reference is what turns a missing language server into a fault an agent tries to fix."""
     reference = _LSP_REFERENCE.replace(dropped, "elsewhere")
     errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
     assert any("fallback" in error for error in errors), f"dropping {dropped!r} must be refused: {errors}"
+
+
+def test_the_lsp_grant_check_is_registered_in_main():
+    """A check nothing calls protects nothing, and `main()` is its only caller."""
+    assert "check_lsp_grants(errors)" in inspect.getsource(validate.main), \
+        "the LSP-grant check must be registered in main()"

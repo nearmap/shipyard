@@ -4,7 +4,7 @@ description: >-
   Independent pre-sign-off review of one fully drafted /sy:spec plan against the six-axis
   spec-gate checklist. Reports plan defects, never re-argues the core decision the debate
   pass already settled. Read-only apart from its report file.
-tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, LSP, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---
@@ -22,7 +22,7 @@ When the plan's base commit or the repo to read against was not supplied, do not
 ## Review
 
 - Read the plan first, whole, before reading any code. Its own claims are what you are testing.
-- Verify a load-bearing claim against the cited anchor: does the file/symbol exist at that path, and can the step's stated effect actually land there? A step resting on an anchor that does not say what the plan claims is a correctness finding, not a nit.
+- Verify a load-bearing claim against the cited anchor: does the file/symbol exist at that path, and can the step's stated effect actually land there? A step resting on an anchor that does not say what the plan claims is a correctness finding, not a nit. Where the `LSP` tool is present, prefer it over `Grep` for definitions, callers, and call hierarchy, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`.
 - Check the three completeness fields mechanically, then honestly: present-and-`none` on work that plainly touches docs or a rendered visual is a finding; a `none` pre-gate checkpoint is never one — that call is the plan author's alone (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md`'s own axis-6 note).
 - Weight findings by what they cost at ship time: a defect that stalls or misdirects the build outranks one the builder resolves in passing.
 - Report only what you can point at. A worry with no anchor is not a finding, and padding a clean review is worse than returning a short one.

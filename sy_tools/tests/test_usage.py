@@ -317,6 +317,7 @@ def test_handbacks_reports_an_unreadable_subagent_tree_instead_of_a_clean_zero(t
 
     # Injected rather than chmod'd: root ignores the permissions that would otherwise make the tree unreadable.
     def denied_walk(top, onerror=None, **kwargs):
+        assert onerror is not None
         onerror(PermissionError(13, "Permission denied", str(top)))
         return iter(())
 

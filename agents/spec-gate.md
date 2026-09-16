@@ -4,7 +4,7 @@ description: >-
   Independent pre-sign-off review of one fully drafted /sy:spec plan against the six-axis
   spec-gate checklist. Reports plan defects, never re-argues the core decision the debate
   pass already settled. Read-only.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---
@@ -30,12 +30,15 @@ When the plan's base commit or the repo to read against was not supplied, do not
 
 ## Return contract — target ≤600 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so resolve the repo-keyed scratch root with `scratch_dir {"repo": true}` and write it there as `spec-gate-<slug>-<UTC basic timestamp>.md` with the `Write` tool — never a shell redirect — before returning, and name its absolute path as `REVIEW_FILE:` in the block below. A `SPLIT_REQUIRED` return writes and names its file the same way, so an incomplete pass is recognisably incomplete on disk rather than absent.
+
 No preamble, narration, praise, pasted plan text, or tool recap. Group findings by severity. Each finding names the axis, the plan element or `file:line` it concerns, the concrete defect, and the concrete revision that fixes it.
 
 End exactly with:
 
 ```text
 TL;DR: <plan ready for sign-off | needs revision, and why | blocked — what the caller must supply>
+REVIEW_FILE: <absolute path>
 ```
 
 Never silently truncate findings. If complete reporting cannot fit, return `SPLIT_REQUIRED` with the plan sections still unreviewed and `TL;DR: needs revision — review incomplete`; the caller must re-run complete coverage.

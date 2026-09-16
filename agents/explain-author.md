@@ -35,6 +35,8 @@ Close with an appendix: quick facts for anticipated questions, file/commit ancho
 
 ## Return contract — target 300–500 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, repeated conclusions, file bodies, or tool-call recap.
 
 ```text

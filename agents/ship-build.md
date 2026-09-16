@@ -12,6 +12,8 @@ You are the BUILD worker for `/sy:ship`. Follow `${CLAUDE_PLUGIN_ROOT}/skills/sh
 
 ## Return contract — target ≤800 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, pasted diffs, or tool recap. Any load-bearing claim (diff scope, invariants preserved, "nothing else affected", lockfile/dependency effects) appears under `CLAIMS`, backed by the command run and where its output lives — verified against the artifact, not asserted from intent. End with exactly one status block:
 
 ```text

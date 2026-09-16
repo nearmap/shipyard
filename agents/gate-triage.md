@@ -16,6 +16,8 @@ Accept means the finding is real and worth this branch: return a fix spec bounde
 
 ## Return contract — target ≤700 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, pasted findings, or tool recap. One block per finding in the order given, nothing around them:
 
 ```text

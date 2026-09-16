@@ -14,6 +14,8 @@ Follow plan and standards. Reuse named project primitives; search before inventi
 
 ## Return contract — target 400–700 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, repeated conclusions, pasted diffs, or tool recap. Never omit divergence or an open fork.
 
 ```text

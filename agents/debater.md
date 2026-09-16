@@ -24,6 +24,8 @@ Given your own opening argument and the adversary's attack, both pasted in full,
 
 ## Return contract — target 300–500 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, praise, or tool recap.
 
 ```text

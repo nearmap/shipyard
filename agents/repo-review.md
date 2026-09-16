@@ -42,6 +42,8 @@ Every finding you return is a candidate for `sy:gate`, which owns the verdict. Y
 
 ## Return contract — target ≤1,000 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, repeated conclusions, pasted diffs, or tool recap. Group by severity.
 
 ```text

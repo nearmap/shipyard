@@ -14,6 +14,8 @@ Cover as applicable: code map, PR/ticket tail, current third-party docs, or CI f
 
 ## Return contract — target 500–900 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, repeated conclusions, file bodies, or tool-call recap. State each fact once. Preserve exact paths, symbols, URLs, test names, commands, and error text.
 
 ```text

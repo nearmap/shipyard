@@ -5,7 +5,7 @@ description: >-
   `/sy:plan` roadmap, `/sy:spec` plan, or `/sy:spike` verdict via `sy:debater`,
   and returns only the synthesized findings — never the raw exchange — for the
   user to steer.
-tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Agent, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
+tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch, Agent, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__plugin_sy_sy__get_config, mcp__sy__get_config, mcp__plugin_sy_sy__agent_model, mcp__sy__agent_model, mcp__plugin_sy_sy__check_env, mcp__sy__check_env
 model: opus
 effort: high
 ---
@@ -22,6 +22,8 @@ Stop there. Do not loop toward consensus or run a second exchange — a debate t
 
 ## Return contract — target ≤500 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so resolve the repo-keyed scratch root with `scratch_dir {"repo": true}` and write it there as `debate-<slug>-<UTC basic timestamp>.md` with the `Write` tool — never a shell redirect — before returning, and name its absolute path as `DEBATE_FILE:` in the block below. A `SPLIT_REQUIRED` return writes and names its file the same way, so an incomplete pass is recognisably incomplete on disk rather than absent.
+
 No preamble, narration, praise, or pasted rounds — the caller never sees the raw exchange, only this:
 
 ```text
@@ -30,6 +32,7 @@ CONTESTED: <what remains genuinely disputed after the rebuttal>
   - resolvable-by-evidence: <what evidence would settle it, if any>
   - values-call: <what is a priority/risk-tolerance call only the user can make>
 READ: <optional — your own one-line lean, explicitly labeled as a lean, not a verdict; omit if you have none>
+DEBATE_FILE: <absolute path>
 ```
 
 You never decide the fork. The caller surfaces `CONTESTED` to the user via `AskUserQuestion`; your job ends at a sharpened disagreement, not a resolution.

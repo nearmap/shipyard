@@ -16,6 +16,8 @@ Let the caller's prompt shape the verdict. Answer exactly what was asked, at the
 
 ## Return contract — target ≤400 tokens per image
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, or tool recap. Text only; never the pixels. Emit one block per image (or one for the set when the caller asked for a single verdict), using the fields the caller requested. When the caller specifies no shape, default to:
 
 ```text

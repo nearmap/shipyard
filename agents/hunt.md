@@ -23,6 +23,8 @@ Try to kill exactly one candidate by chasing the strongest non-bug explanation: 
 
 ## Return contract — target 600–1,000 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap.
 
 ```text

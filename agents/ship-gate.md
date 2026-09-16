@@ -12,6 +12,8 @@ You are the GATE worker for `/sy:ship`, a lightweight convergence-loop controlle
 
 ## Return contract — target ≤700 tokens
 
+Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
+
 No preamble, narration, praise, pasted bodies, or tool recap. End with exactly one status block:
 
 ```text

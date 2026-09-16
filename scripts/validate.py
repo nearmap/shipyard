@@ -458,12 +458,15 @@ def _bounded_section(text: str, heading: str, rel: str, errors: list[str]) -> st
     return text[start.end() : start.end() + terminator.start()]
 
 
-def _fenced_block(text: str, section_heading: str) -> str | None:
-    """The first fenced code block under `section_heading`, or None when its section carries no fence.
+def _fenced_blocks(text: str, section_heading: str) -> str | None:
+    """Every fenced code block under `section_heading` joined, or None when its section carries no fence.
 
     A field pin reads the block a reader copies, never the section: the same literal appears in the prose
     around it -- a sentence naming `VERDICT:` while explaining the form -- and a substring pin over the whole
     section stays satisfied by that sentence long after the field it names is gone.
+
+    Every fence in the section, not its first: a section that grows a second block otherwise decides the
+    pin's scope by ordering, and the pin fails on where the field sits rather than on whether it is there.
     """
     start = re.search(rf"^{re.escape(section_heading)}", text, re.M)
     if start is None:
@@ -472,14 +475,13 @@ def _fenced_block(text: str, section_heading: str) -> str | None:
     terminator = re.search(r"^## ", section, re.M)
     if terminator is not None:
         section = section[:terminator.start()]
-    fence = re.search(r"^```[^\n]*\n(.*?)^```", section, re.M | re.S)
-    return fence.group(1) if fence else None
+    return "\n".join(m.group(1) for m in re.finditer(r"^```[^\n]*\n(.*?)^```", section, re.M | re.S)) or None
 
 
 def _paragraph(text: str, anchor: str) -> str | None:
     """The blank-line-delimited paragraph carrying `anchor`, or None when no paragraph carries it.
 
-    Scoped for the reason `_fenced_block` is: a later paragraph back-referencing the rule repeats its
+    Scoped for the reason `_fenced_blocks` is: a later paragraph back-referencing the rule repeats its
     wording, and a whole-file pin cannot tell that echo from the normative clause it is quoting.
     """
     for paragraph in re.split(r"\n\s*\n", text):
@@ -649,7 +651,7 @@ def check_gate_loop(errors: list[str]) -> None:
                 "return the worker's own brief never shows is one it never emits",
                 errors,
             )
-        done_block = _fenced_block(worker, GATE_LOOP_SECTIONS["return_contract"])
+        done_block = _fenced_blocks(worker, GATE_LOOP_SECTIONS["return_contract"])
         if done_block is None:
             fail(
                 f"{worker_rel} § Return contract must show its status block in a fenced code block; the field "
@@ -676,7 +678,7 @@ def check_gate_loop(errors: list[str]) -> None:
                 )
 
     # `agents/gate.md`'s own heading carries a token-target suffix, so it is matched by prefix; the pin under
-    # it needs no `_last_section` bound, because `_fenced_block` ends its own scope at the next `## `.
+    # it needs no `_last_section` bound, because `_fenced_blocks` ends its own scope at the next `## `.
     if re.search(rf"^{re.escape(GATE_LOOP_SECTIONS['return_contract'])}", gate, re.M) is None:
         fail(
             f"{gate_rel} must keep its `{GATE_LOOP_SECTIONS['return_contract']}` heading; the reviewer's "
@@ -684,7 +686,7 @@ def check_gate_loop(errors: list[str]) -> None:
             errors,
         )
     else:
-        gate_block = _fenced_block(gate, GATE_LOOP_SECTIONS["return_contract"])
+        gate_block = _fenced_blocks(gate, GATE_LOOP_SECTIONS["return_contract"])
         if gate_block is None:
             fail(
                 f"{gate_rel} § Return contract must show its return block in a fenced code block; the "
@@ -839,6 +841,14 @@ def check_gate_loop(errors: list[str]) -> None:
                 )
                 continue
             entries = _tools_entries(brief.read_text(encoding="utf-8"))
+            if not entries:
+                fail(
+                    f"agents/{mode}.md: tools: must be an explicit, non-empty allowlist; absent it inherits "
+                    f"every tool including {'/'.join(FILE_WRITE_TOOLS)}, and the grant/mode cross-check below "
+                    "passes vacuously on the empty list it reads",
+                    errors,
+                )
+                continue
             if mode in sandbox_modes:
                 if "Write" not in entries:
                     fail(
@@ -881,7 +891,7 @@ def check_gate_loop(errors: list[str]) -> None:
 
 
 def check_agent_returns(errors: list[str]) -> None:
-    """The four hand-back rules live in one reference, and every agent brief reaches them by citation.
+    """The hand-back rules and the persist recipe live in one reference, reached by citation from every brief.
 
     Standalone rather than a leg of `check_invariants` for the reason `check_gate_justification` is: that
     function's `read()` raises on any missing file, so a synthetic tree exercising this rule would have to

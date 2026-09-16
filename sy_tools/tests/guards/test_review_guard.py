@@ -31,6 +31,17 @@ def test_repo_review_writes_into_the_root_the_resolver_itself_reports():
     assert review_guard.decision('repo-review', 'Write', sibling, cwd=cwd) is not None
 
 
+@pytest.mark.parametrize('mode', sorted(review_guard.SANDBOX_WRITE_MODES))
+def test_every_sandbox_write_mode_is_contained_by_the_resolved_root(mode):
+    """Parametrized over the live set, so a mode granted `Write` later inherits containment automatically."""
+    cwd = str(Path(__file__).resolve().parent)
+    root = config.repo_scratch_dir(Path(cwd))
+    assert review_guard.decision(mode, 'Write', {'file_path': str(root / 'findings.md')}, cwd=cwd) is None
+    assert review_guard.decision(mode, 'Write', {'file_path': '/tmp/out.txt'}, cwd=cwd) is not None
+    escape = {'file_path': str(root / '..' / 'elsewhere' / 'a.py')}
+    assert review_guard.decision(mode, 'Write', escape, cwd=cwd) is not None
+
+
 def test_repo_standards_is_refused_a_write_even_inside_the_sandbox_root():
     """In `REVIEW_MODES` but not `SANDBOX_WRITE_MODES`; keying either write site on the wrong set inverts this."""
     cwd = str(Path(__file__).resolve().parent)

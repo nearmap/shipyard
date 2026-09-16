@@ -44,10 +44,12 @@ import re
 import shlex
 import sys
 
-REVIEW_MODES = {'gate', 'gate-triage', 'hunt', 'repo-standards', 'repo-review'}
+REVIEW_MODES = {
+    'gate', 'gate-triage', 'trace', 'spec-gate', 'debate', 'seam', 'hunt', 'repo-standards', 'repo-review',
+}
 # The subset that may write into the resolved scratch root. Everything in REVIEW_MODES but not here is
 # read-only; anything here but not in REVIEW_MODES would be unguarded entirely, which `_self_test` pins.
-SANDBOX_WRITE_MODES = {'hunt', 'repo-review'}
+SANDBOX_WRITE_MODES = {'gate', 'gate-triage', 'trace', 'spec-gate', 'debate', 'seam', 'hunt', 'repo-review'}
 WRAPPERS = {'sudo', 'env', 'nice', 'ionice', 'nohup', 'time', 'timeout', 'stdbuf', 'xargs', 'command'}
 MUTATING_COMMANDS = {
     'rm', 'mv', 'cp', 'install', 'truncate', 'touch', 'dd', 'rsync', 'ln',
@@ -456,24 +458,26 @@ def _run_remote_cases() -> None:
 
 def _run_cases(root: Path) -> None:
     cases = [
-        # The hunt sandbox: only paths that resolve strictly inside the root are writable.
-        ('hunt', 'Write', {'file_path': str(root / 'repro.py')}, False),
+        # Containment for every sandbox-write mode, generated from the set rather than hand-written for
+        # whichever modes happened to hold the grant when these cases were written.
+        *[
+            case
+            for mode in sorted(SANDBOX_WRITE_MODES)
+            for case in (
+                (mode, 'Write', {'file_path': str(root / 'repro.py')}, False),
+                (mode, 'Write', {'file_path': str(root / '..' / 'elsewhere' / 'a.py')}, True),
+                (mode, 'Write', {'file_path': 'src/a.py'}, True),
+                (mode, 'Bash', {'command': f'echo data > {root / "out.txt"}'}, False),
+                (mode, 'Bash', {'command': 'echo data > /tmp/out.txt'}, True),
+            )
+        ],
+        # Shapes the generated set does not model: a nested path, a symlink pointing out of the root, and
+        # the root itself.
         ('hunt', 'Write', {'file_path': str(root / 'a' / 'b' / 'repro.py')}, False),
-        ('hunt', 'Write', {'file_path': str(root / '..' / 'elsewhere' / 'a.py')}, True),
-        ('hunt', 'Write', {'file_path': 'src/a.py'}, True),
         ('hunt', 'Write', {'file_path': '/tmp/out.txt'}, True),
         ('hunt', 'Write', {'file_path': str(root / 'link' / 'a.py')}, True),
         ('hunt', 'Write', {'file_path': str(root)}, False),
-        ('hunt', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, False),
-        ('hunt', 'Bash', {'command': 'echo data > /tmp/out.txt'}, True),
         ('hunt', 'Bash', {'command': f'echo data > {root / "link" / "out.txt"}'}, True),
-        # `repo-review` is the second sandbox-write mode: the same containment, keyed on the set and not on
-        # the one mode name the two write sites used to compare against.
-        ('repo-review', 'Write', {'file_path': str(root / 'repro.py')}, False),
-        ('repo-review', 'Write', {'file_path': str(root / '..' / 'elsewhere' / 'a.py')}, True),
-        ('repo-review', 'Write', {'file_path': 'src/a.py'}, True),
-        ('repo-review', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, False),
-        ('repo-review', 'Bash', {'command': 'echo data > /tmp/out.txt'}, True),
         ('repo-review', 'Bash', {'command': 'git commit -m x'}, True),
         ('repo-review', 'Bash', {'command': 'git rev-parse HEAD'}, False),
         # `repo-standards` is guarded but ungranted: being in REVIEW_MODES and not SANDBOX_WRITE_MODES has to
@@ -484,11 +488,6 @@ def _run_cases(root: Path) -> None:
         ('repo-standards', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, True),
         ('repo-standards', 'Bash', {'command': 'rm -rf src'}, True),
         ('repo-standards', 'Bash', {'command': "grep -rn 'foo' skills/"}, False),
-        ('gate', 'Write', {'file_path': str(root / 'repro.py')}, True),
-        # `gate-triage` is guarded and ungranted like `repo-standards`: it authors dispositions its caller
-        # applies, so a write from it is a fix no caller recorded.
-        ('gate-triage', 'Write', {'file_path': str(root / 'findings.md')}, True),
-        ('gate-triage', 'Bash', {'command': f'echo data > {root / "out.txt"}'}, True),
         ('gate-triage', 'Bash', {'command': 'git diff HEAD~1 -- src/'}, False),
         ('gate', 'Bash', {'command': 'git log --oneline -5'}, False),
         ('gate', 'Bash', {'command': 'git diff HEAD~1 -- src/'}, False),

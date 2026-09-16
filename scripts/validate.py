@@ -458,24 +458,25 @@ def _bounded_section(text: str, heading: str, rel: str, errors: list[str]) -> st
     return text[start.end() : start.end() + terminator.start()]
 
 
-def _fenced_blocks(text: str, section_heading: str) -> str | None:
-    """Every fenced code block under `section_heading` joined, or None when its section carries no fence.
+def _fenced_blocks(text: str, section_heading: str) -> list[str]:
+    """The bodies of the fenced code blocks under `section_heading`, in the order they appear.
 
     A field pin reads the block a reader copies, never the section: the same literal appears in the prose
     around it -- a sentence naming `VERDICT:` while explaining the form -- and a substring pin over the whole
     section stays satisfied by that sentence long after the field it names is gone.
 
-    Every fence in the section, not its first: a section that grows a second block otherwise decides the
-    pin's scope by ordering, and the pin fails on where the field sits rather than on whether it is there.
+    The blocks are returned rather than resolved because a pinned section carrying more than one is refused,
+    not read: taking the first decides the pin's scope by ordering, and joining them lets a decoy fence
+    carrying the field satisfy a pin the block a reader copies has already lost.
     """
     start = re.search(rf"^{re.escape(section_heading)}", text, re.M)
     if start is None:
-        return None
+        return []
     section = text[start.end():]
     terminator = re.search(r"^## ", section, re.M)
     if terminator is not None:
         section = section[:terminator.start()]
-    return "\n".join(m.group(1) for m in re.finditer(r"^```[^\n]*\n(.*?)^```", section, re.M | re.S)) or None
+    return [m.group(1) for m in re.finditer(r"^```[^\n]*\n(.*?)^```", section, re.M | re.S)]
 
 
 def _paragraph(text: str, anchor: str) -> str | None:
@@ -651,15 +652,17 @@ def check_gate_loop(errors: list[str]) -> None:
                 "return the worker's own brief never shows is one it never emits",
                 errors,
             )
-        done_block = _fenced_blocks(worker, GATE_LOOP_SECTIONS["return_contract"])
-        if done_block is None:
+        done_blocks = _fenced_blocks(worker, GATE_LOOP_SECTIONS["return_contract"])
+        if len(done_blocks) != 1:
             fail(
-                f"{worker_rel} § Return contract must show its status block in a fenced code block; the field "
-                "pins below read the block a worker copies, and with no fence they would pass on any sentence "
-                "of the surrounding prose that happens to name the field",
+                f"{worker_rel} § Return contract must show its status block in exactly one fenced code block, "
+                f"and carries {len(done_blocks)}; the field pins below read the block a worker copies -- with "
+                "no fence they would pass on any sentence of the surrounding prose that happens to name the "
+                "field, and with a second fence on a decoy block the copied one no longer has to carry it",
                 errors,
             )
         else:
+            done_block = done_blocks[0]
             if GATE_LOOP_PINS["worker_verdict_field"] not in done_block:
                 fail(
                     f"{worker_rel} § Return contract's block must carry a "
@@ -686,15 +689,16 @@ def check_gate_loop(errors: list[str]) -> None:
             errors,
         )
     else:
-        gate_block = _fenced_blocks(gate, GATE_LOOP_SECTIONS["return_contract"])
-        if gate_block is None:
+        gate_blocks = _fenced_blocks(gate, GATE_LOOP_SECTIONS["return_contract"])
+        if len(gate_blocks) != 1:
             fail(
-                f"{gate_rel} § Return contract must show its return block in a fenced code block; the "
-                f"`{GATE_LOOP_PINS['gate_verdict_file']}` pin reads the block the reviewer copies, and the "
-                "prose above it names the same literal while explaining the field",
+                f"{gate_rel} § Return contract must show its return block in exactly one fenced code block, "
+                f"and carries {len(gate_blocks)}; the `{GATE_LOOP_PINS['gate_verdict_file']}` pin reads the "
+                "block the reviewer copies -- the prose around it names the same literal while explaining the "
+                "field, and a second fence is a second candidate for the block being pinned",
                 errors,
             )
-        elif GATE_LOOP_PINS["gate_verdict_file"] not in gate_block:
+        elif GATE_LOOP_PINS["gate_verdict_file"] not in gate_blocks[0]:
             fail(
                 f"{gate_rel} § Return contract must name `{GATE_LOOP_PINS['gate_verdict_file']}`; the reviewer "
                 "holds `Write` so its caller never re-runs the pass to recover the report, and a verdict with "

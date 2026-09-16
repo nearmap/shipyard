@@ -1203,6 +1203,27 @@ def test_a_reviewer_block_losing_its_verdict_file_field_while_the_prose_keeps_it
         f"a return block with no verdict path must be refused even while the prose names one: {errors}"
 
 
+def test_a_second_fence_in_the_reviewer_return_contract_is_refused(tmp_path, monkeypatch):
+    """A decoy fence ahead of the real one carries the field the copied block has lost -- joining reads green."""
+    field = f"{_LOOP_PINS['gate_verdict_file']} <absolute path>\n"
+    gate = _loop_gate().replace(field, "").replace("\n```text\n", f"\n```text\n{field}```\n\n```text\n", 1)
+    errors = _loop_check(tmp_path, monkeypatch, gate=gate)
+    assert any("exactly one fenced code block" in e and "carries 2" in e for e in errors), \
+        f"a pinned section carrying two fences must be refused rather than read: {errors}"
+
+
+def test_a_second_fence_in_the_gate_worker_return_contract_is_refused(tmp_path, monkeypatch):
+    """Same shape on the other pinned section: the fields sit in a decoy block no worker copies."""
+    fields = (
+        f"{_LOOP_PINS['worker_verdict_field']} none|<absolute path(s)>\n"
+        f"{_LOOP_PINS['worker_dispositions_field']} none|<absolute path(s)>\n"
+    )
+    worker = _loop_worker().replace(fields, "").replace("```text\n", f"```text\n{fields}```\n\n```text\n", 1)
+    errors = _loop_check(tmp_path, monkeypatch, worker=worker)
+    assert any("exactly one fenced code block" in e and "carries 2" in e for e in errors), \
+        f"a pinned section carrying two fences must be refused rather than read: {errors}"
+
+
 def test_a_gate_worker_block_renaming_its_verdict_field_while_the_prose_keeps_it_is_refused(tmp_path, monkeypatch):
     """Same decoy shape: the HANDOVER sentence below the fence names `VERDICT:` whatever the block carries."""
     worker = _loop_worker().replace(

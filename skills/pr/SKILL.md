@@ -91,7 +91,7 @@ Merging is never part of the create/promote/cleanup flow. Two callers reach it: 
 1. wait for CI on the current head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <the PR's base repository> --head <head SHA>`, run in the background, adding `--allow-no-checks` only for a repository already known to have no CI, never inferred from an empty check set); a failure stops and reports;
 2. when `ship.request_ci_reviewer` resolves true and the automated reviewer has not reviewed the current head, request it per §3 and wait in the background for its review of that head, bounded by `ci.poll_timeout`;
 3. reconcile every thread per §3. A thread asking for a code change stops the merge and reports it: this mode pushes nothing. So does a requested review still pending at `ci.poll_timeout`, or any reviewer whose latest review is `CHANGES_REQUESTED`, inline threads or not; `--admin` never bypasses either;
-4. re-read the head. If it moved since step 1, start again from step 1; otherwise merge that SHA below.
+4. re-read the head and its checks. If the head moved since step 1, start again from step 1; a check on the same head that is now pending is waited for with the poller, and one that failed stops the merge; otherwise merge that SHA below.
 
 This mode runs no `sy:gate`: the merge rests on CI and on the reviewers the PR already has.
 
@@ -113,7 +113,7 @@ gh pr merge <pr> --rebase --match-head-commit <CI-green + reviewed SHA>
 - `--match-head-commit` aborts the merge if the head moved since validation, so only the reviewed/CI-green commit can land, never a race-pushed one — true for every strategy. Composing a message never relaxes that guard — drop the subject and body before you drop the head match.
 - Only `squash` composes a subject/body; stage it from the description's why plus its summary bullets, so the squashed commit reads as the changelog entry for the change rather than as build noise. `merge` and `rebase` pass neither flag.
 - `gh pr merge -F/--body-file` takes a **plain file path**, a different convention from the `-F key=@file` form used for comment bodies in §3 above; conflating the two silently posts the wrong thing.
-- add `--admin` when `ship.merge_admin` resolves true (`get_config {"key": "ship.merge_admin"}`), the repo's standing choice; otherwise only with the owner's explicit go-ahead for this PR. It clears a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give) and bypasses the ruleset, not CI/review freshness.
+- add `--admin` when `ship.merge_admin` resolves true (`get_config {"key": "ship.merge_admin"}`), the repo's standing choice; otherwise only when the owner's go-ahead names the admin bypass itself, since a plain `merge` authorizes the merge, not the bypass. It clears a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give) and bypasses the ruleset, not CI/review freshness.
 
 This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates, and session transcripts belong on the task via `/sy:ship`. End by printing the PR URL and what state change/comment action occurred.
 

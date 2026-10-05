@@ -149,7 +149,7 @@ Most agents have permissive floors, so economising is expected — `{"models": {
 - Changing it and reloading changes nothing about a dispatch. Do not expect otherwise.
 - Per-agent effort cannot vary per repo at all. Frontmatter ships with the plugin.
 
-This is a limitation of the current runtime, stated plainly rather than papered over. Claude Code's native plugin config (`userConfig`) is not a way around it: `${user_config.KEY}` does not substitute inside agent frontmatter — the load-time validator receives the literal string and rejects it — and `pluginConfigs` is ignored from project settings anyway, so it could never carry a per-repo value.
+This is a limitation of the current runtime, stated plainly rather than papered over, and not a design choice: dynamic per-agent effort is wanted, and the resolver will apply `models.agents.<name>.effort` at dispatch as soon as Claude Code accepts an effort per invocation. Claude Code's native plugin config (`userConfig`) is not a way around it: `${user_config.KEY}` does not substitute inside agent frontmatter — the load-time validator receives the literal string and rejects it — and `pluginConfigs` is ignored from project settings anyway, so it could never carry a per-repo value.
 
 One related trap the resolver does guard: effort is silently dropped for a model Claude Code does not treat as effort-capable, so an agent pinned to such a model loses its declared effort with no error and inherits the session's. Binding an agent with a declared effort to a non-effort-capable model is refused by name.
 

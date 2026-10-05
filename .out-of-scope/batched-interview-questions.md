@@ -1,11 +1,11 @@
-# Asking several questions in one turn
+# Asking a list of questions in prose
 
-Every Shipyard skill that interviews the user asks one question per turn, even where `AskUserQuestion` could carry up to four.
+No Shipyard skill asks the user several questions as a prose list and expects a matching list of answers back.
 
 ## Why
 
-Several questions at once overload the person answering, and no real conversation works that way: the answer to the first usually reshapes the second. Batching saves turns at the cost of worse answers. `skills/shared/references/user-interaction.md` § Question is the rule.
+A prose list asks the person to hold every question at once and compose a reply that maps back onto it, and a skipped or merged answer goes unnoticed. Batching belongs in `AskUserQuestion`: up to four questions in one call, each with its own options and a free-text "Other", so every answer arrives attached to its question. `skills/shared/references/user-interaction.md` § Question is the rule.
 
 ## Prior requests
 
-- AM-1607: proposed from the mattpocock/skills `grilling` skill (rounds of every question whose prerequisites are settled).
+- AM-1607: proposed from the mattpocock/skills `grilling` skill, which asks numbered rounds of questions in prose with a recommended answer under each.

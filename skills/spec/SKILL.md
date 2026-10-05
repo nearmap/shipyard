@@ -25,7 +25,7 @@ $ARGUMENTS
 
 Agent output is a lead. Verify decisive spans and own the plan. Seed every agent prompt with known anchors — paths, symbols, entry points, keys — and name ground already covered; agents must not rediscover what the caller knows. Resolve standards early (in a delegate, per step 3) so the plan reflects authoritative repository policy and risk lenses.
 
-Ask one question at a time, via `AskUserQuestion`, only when research cannot settle a decision that changes scope, design, or acceptance — see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`.
+Ask through `AskUserQuestion` only when research cannot settle a decision that changes scope, design, or acceptance — see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`.
 
 ## 1. Surface scan and interview
 

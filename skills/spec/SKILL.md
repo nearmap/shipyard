@@ -82,7 +82,7 @@ Verification obligations
 
 An obligation with no realistic evidence is a plan risk to surface, not a silent drop.
 
-A Bug carries one standing obligation beyond its lenses — lens: regression; claim: the reported defect is reproduced and fixed; evidence: one named test that fails on the reported symptom at `PLAN_BASE_SHA` and passes at head. Name the seam it runs at: the one that exercises the bug as it occurs at the call site. When no seam reaches it, that is a plan risk to surface, never a reason to settle for a shallower test that cannot fail on this bug.
+A Bug carries one standing obligation beyond its lenses — lens: regression; claim: the reported defect is reproduced and fixed; evidence: one named test that fails on the reported symptom on the unfixed code `/sy:ship` builds from and passes at head. Name the seam it runs at: the one that exercises the bug as it occurs at the call site. When no seam reaches it, that is a plan risk to surface, never a reason to settle for a shallower test that cannot fail on this bug.
 
 When the task generates or reviews images (figures, screenshots, plots, marketing visuals), add the standing image-inspection invariant to the plan's design invariants and a verification obligation whose named evidence is a `sy:img-inspector` text verdict: visual inspection is delegated to a short-lived inspector and never `Read` into a long-running context. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`.
 

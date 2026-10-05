@@ -75,6 +75,25 @@ def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
     `_validate_machine_log`, on the scrubbed text — the body that gets validated has to be the body
     that gets sent, or a scrub rewriting values inside a machine log ships a body no check ever saw.
     """
+    known, absent, too_short = _known_secrets()
+    scrubbed: list[str] = []
+    totals: Counter[str] = Counter()
+    # Variadic because a per-field helper got wired to the body alone: `create-issue`'s title reached the
+    # adapter unscrubbed while the report still said `redactions: 1`, which reads as full coverage.
+    for text in texts:
+        clean, counts = secrets.scrub_text(text, known)
+        scrubbed.append(clean)
+        totals.update(counts)
+    return scrubbed, {
+        "scrubbed_vars": sorted(totals),  # names only, never a value
+        "redactions": sum(totals.values()),
+        "declared_absent_from_env": absent,
+        "declared_below_length_floor": too_short,
+    }
+
+
+def _known_secrets() -> tuple[dict[str, str], list[str], list[str]]:
+    """Every credential value this process holds, plus the declared names absent or below the length floor."""
     known = secrets.discover_secret_vars(extra_words=config.extra_secret_words())
     absent: list[str] = []
     too_short: list[str] = []
@@ -93,20 +112,7 @@ def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
             # Reported, never raised: a value this environment lacks cannot be in a body composed here, and
             # raising would refuse every tracker write.
             absent.append(name)
-    scrubbed: list[str] = []
-    totals: Counter[str] = Counter()
-    # Variadic because a per-field helper got wired to the body alone: `create-issue`'s title reached the
-    # adapter unscrubbed while the report still said `redactions: 1`, which reads as full coverage.
-    for text in texts:
-        clean, counts = secrets.scrub_text(text, known)
-        scrubbed.append(clean)
-        totals.update(counts)
-    return scrubbed, {
-        "scrubbed_vars": sorted(totals),  # names only, never a value
-        "redactions": sum(totals.values()),
-        "declared_absent_from_env": sorted(absent),
-        "declared_below_length_floor": sorted(too_short),
-    }
+    return known, sorted(absent), sorted(too_short)
 
 
 @mcp.tool(name="create-issue")
@@ -837,9 +843,10 @@ async def attach_artifact(
 ) -> dict[str, Any]:
     """Attach a local file — a text, HTML, PDF, image or archive artifact — to a tracker issue.
 
-    Canonical verb `attach-artifact`. A UTF-8 payload has every credential value this process holds
-    replaced by a marker, in place, before it leaves the machine; `scrub` names what it redacted. Any
-    other payload is uploaded byte-for-byte and `scrub` says it was not scrubbed.
+    Canonical verb `attach-artifact`. A text payload has every credential value this process holds
+    replaced by a marker, in place, before it leaves the machine; `scrub` names what it redacted. A binary
+    payload is uploaded byte-for-byte and `scrub` says it was not scrubbed, unless it carries one of those
+    values verbatim, which is refused rather than uploaded or rewritten.
     """
     _required(issue=issue, path=path)
     artifact, scrub = _scrubbed_artifact(path)
@@ -847,15 +854,29 @@ async def attach_artifact(
     return {"issue": issue, "scrub": scrub, "evidence": evidence}
 
 
+_ASCII_COMPATIBLE_BINARY = (b"%PDF-", b"PK\x03\x04")
+"""Signatures of binary formats that can decode as UTF-8, where a rewrite would shift offsets and corrupt them."""
+
+
 def _scrubbed_artifact(path: str) -> tuple[Path, dict[str, Any]]:
-    """The artifact at `path`, known-value scrubbed in place when it is UTF-8 text."""
+    """The artifact at `path`, scrubbed in place when it is text, refused when binary carries a known value."""
     artifact = Path(path)
     if not artifact.is_file():
         raise ToolError(f"artifact not found: {artifact}")
+    data = artifact.read_bytes()
     try:
-        text = artifact.read_text(encoding="utf-8")
+        text = None if data.startswith(_ASCII_COMPATIBLE_BINARY) else data.decode("utf-8")
     except UnicodeDecodeError:
-        return artifact, {"scrubbed": False, "reason": "not UTF-8 text"}
+        text = None
+    if text is None:
+        known, _, _ = _known_secrets()
+        carried = sorted(name for name, value in known.items() if value.encode() in data)
+        if carried:
+            raise ToolError(
+                f"{artifact.name} is binary and carries the value of {', '.join(carried)} verbatim; it cannot be "
+                "scrubbed without corrupting it, so it was not uploaded"
+            )
+        return artifact, {"scrubbed": False, "reason": "binary"}
     (clean,), scrub = _scrub_texts(text)
     if scrub["redactions"]:
         artifact.write_text(clean, encoding="utf-8")

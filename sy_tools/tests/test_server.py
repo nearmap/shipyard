@@ -666,7 +666,41 @@ async def test_attachment_writers_scrub_text_before_upload_and_pass_binary_throu
     image.write_bytes(b"\x89PNG\r\n\x1a\n\xff")
     binary_result = await tool(issue="PROJ-1", path=str(image))
     assert uploaded["plot.png"] == b"\x89PNG\r\n\x1a\n\xff", "a binary artifact must upload unchanged"
-    assert binary_result["scrub"] == {"scrubbed": False, "reason": "not UTF-8 text"}, binary_result["scrub"]
+    assert binary_result["scrub"] == {"scrubbed": False, "reason": "binary"}, binary_result["scrub"]
+
+    ascii_pdf = tmp_path / "plain.pdf"
+    ascii_pdf.write_bytes(b"%PDF-1.4\nno credential here\n")
+    await tool(issue="PROJ-1", path=str(ascii_pdf))
+    assert uploaded["plain.pdf"] == b"%PDF-1.4\nno credential here\n", "a UTF-8-decodable PDF is still binary"
+
+    leaky_pdf = tmp_path / "leaky.pdf"
+    leaky_pdf.write_bytes(b"%PDF-1.4\n" + secret.encode())
+    with pytest.raises(server.ToolError, match="SY_TEST_ATTACH_TOKEN"):
+        await tool(issue="PROJ-1", path=str(leaky_pdf))
+    assert "leaky.pdf" not in uploaded, "a binary artifact carrying a known value must not be uploaded"
+    assert leaky_pdf.read_bytes().endswith(secret.encode()), "a refused binary artifact must not be rewritten"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("tool", ["attach-artifact", "attachment-update"])
+async def test_attachment_writers_accept_the_retired_gate_arguments(tool, monkeypatch, tmp_path):
+    """Callers still passing `kind`, `caller`, `process_tier` or `allow_opaque` must not be refused."""
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    monkeypatch.setattr(server.config, "extra_secret_words", lambda: frozenset())
+
+    class _Backend:
+        async def attach_artifact(self, issue: str, path: Path) -> dict:
+            return {"filename": path.name}
+
+        attachment_update = attach_artifact
+
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Backend())
+    artifact = tmp_path / "report.html"
+    artifact.write_text("<p>findings</p>", encoding="utf-8")
+    legacy = {"kind": "report", "caller": "spike", "process_tier": "full", "allow_opaque": True}
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(tool, {"issue": "PROJ-1", "path": str(artifact), **legacy})
+    assert result.is_error is False, result.content
 
 
 @pytest.mark.anyio

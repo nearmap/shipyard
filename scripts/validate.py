@@ -967,7 +967,7 @@ def check_human_text_routing(errors: list[str]) -> None:
     # Legs (a) and (h) share one region, computed once: re-deriving it per leg lets the two drift onto
     # different bounds while both still read like the same scope.
     step_one = None
-    section_seven = spec.partition("## 7.")[2].partition("## 8.")[0]
+    section_seven = spec.partition("## 7.")[2].partition("\n## ")[0]
     if "### Step 1" not in section_seven:
         fail(f"{spec_rel} §7 must keep its Step 1 sign-off step; the sign-off pins anchor on it", errors)
     elif "### Step 2" not in section_seven.partition("### Step 1")[2]:
@@ -1627,6 +1627,13 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec sign-off must name the mutations its approval authorizes", errors)
     if "name the mutations the go-ahead covers" not in plan:
         fail("plan approval must name the mutations the go-ahead covers", errors)
+    if (
+        "Name the follow-on mutations in the question" not in handoff
+        or "which named the follow-on mutations" not in merge
+        or "set the task done" not in handoff
+        or "set the task done" not in merge
+    ):
+        fail("merge authorization must name its follow-on mutations at the consent point", errors)
     for name, text in (
         ("ship", ship + start + handoff), ("spec", spec), ("plan", plan), ("spike", spike),
         ("pr", pr), ("explain", explain), ("init-repo", init_repo),
@@ -1754,7 +1761,7 @@ def check_invariants(errors: list[str]) -> None:
         )
     # Section-scoped on purpose: a whole-file check passes on §2's prose (which legitimately permits a
     # research-phase body edit), a whole-§7 one on Step 1's consent sentence. Widening either disables it.
-    spec_s7 = spec.partition("## 7.")[2].partition("## 8.")[0]
+    spec_s7 = spec.partition("## 7.")[2].partition("\n## ")[0]
     if "update-issue" in spec_s7:
         fail("spec §7 must not reach for update-issue; after approval it posts comments and sets status only", errors)
     if "never writes the Task body" not in spec_s7.partition("### Step 2")[2]:
@@ -1943,7 +1950,7 @@ def check_invariants(errors: list[str]) -> None:
     # hand-built ```json block teaches the caller-composed shape the separate tool exists to remove.
     for name, text in (
         ("handoff-accounting's usage section", handoff.partition("## 2.")[2].partition("## 3.")[0]),
-        ("handoff-accounting's metrics section", handoff.partition("## 3.")[2].partition("## 4.")[0]),
+        ("handoff-accounting's metrics section", handoff.partition("## 3.")[2].partition("\n## ")[0]),
         ("merge-accounting", merge),
     ):
         if "post-log" not in text or "title" not in text or "payload" not in text:
@@ -2240,7 +2247,7 @@ def check_invariants(errors: list[str]) -> None:
         )
     # Section-scoped to §7, where the plan half is drafted: `skills.reviewer` appears in §3's own prose, so
     # a whole-file pin here would be satisfied by a mention that has nothing to do with when to ask.
-    if "skills.reviewer" not in spec.partition("## 7.")[2].partition("## 8.")[0]:
+    if "skills.reviewer" not in spec.partition("## 7.")[2].partition("\n## ")[0]:
         fail(
             "spec §7 must gate the `reviewer orientation` question on `skills.reviewer` resolving non-null; "
             "an unconditional question puts an extra call in front of every repository that names no reviewer",

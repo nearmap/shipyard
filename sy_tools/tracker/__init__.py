@@ -139,7 +139,7 @@ class TrackerAdapter(Protocol):
         ...
 
     async def attach_artifact(self, issue: str, path: Path) -> dict:
-        """Upload an artifact the caller sanitised, or declared opaque, to `issue`; returns its evidence."""
+        """Upload an artifact the server has already checked to `issue`; returns its evidence."""
         ...
 
     async def type_convert(self, issue: str, issue_type: str) -> dict:
@@ -164,7 +164,7 @@ class TrackerAdapter(Protocol):
         """Replace the attachment(s) on `issue` named `path.name` with `path`; zero existing is fine.
 
         Takes no id and resolves purely by filename — a corrective overwrite, since the caller
-        regenerating a transcript knows the name it writes and not the id the tracker minted (see
+        regenerating an artifact knows the name it writes and not the id the tracker minted (see
         `../../skills/tracker/CONTRACT.md`, "Attachment lifecycle has no delete"). How many namesakes
         one call replaces is adapter-specific, documented in each `ADAPTER.md`; the returned evidence
         says how many were, so a caller can see whether it superseded anything.

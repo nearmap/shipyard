@@ -782,7 +782,7 @@ ALL_NULLS = {
     "rollback": None,
     "lead_time_seconds": None,
 }
-"""Every optional field explicitly null — the shape a `light`-tier run with nothing yet known posts.
+"""Every optional field explicitly null — the shape a run with nothing yet known posts.
 
 Pinned as a whole rather than field by field because the design invariant is about the set: a field
 that stopped accepting `null` would make an honest unknown unrecordable, and the workflow's documented

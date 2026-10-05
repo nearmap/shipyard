@@ -137,11 +137,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "light_tier_max_files": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "File-count proxy for \"small\": the light process tier is allowed only when the plan's declared file set is at most this many files and no risk lenses are activated."
-        },
         "max_spec_gate_rounds": {
           "type": "integer",
           "minimum": 1,
@@ -221,33 +216,13 @@
         }
       }
     },
-    "transcript": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "attach": {
-          "type": "boolean",
-          "description": "Whether /sy:plan, /sy:spec, and (full-tier) /sy:ship render and attach the session transcript to the tracker. A debug/observability tool for measuring Shipyard itself, not something most users need on by default."
-        },
-        "truncation_limits": {
-          "type": "object",
-          "additionalProperties": false,
-          "description": "Per-block character limits applied when sy_tools/usage.py renders a readable transcript.",
-          "properties": {
-            "tool_input": { "type": "integer", "minimum": 1 },
-            "tool_result": { "type": "integer", "minimum": 1 },
-            "thinking": { "type": "integer", "minimum": 1 }
-          }
-        }
-      }
-    },
     "redaction": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "extra_words": {
           "type": "array",
-          "description": "Org-specific credential-name fragments merged into the built-in secret-word list (sy_tools/secrets.py) used by sy_tools/guards/secret_guard.py and sy_tools/secrets.py's transcript scrub pass. Each entry must be a single alphanumeric word (the matcher is word-based, not substring-based, so a multi-word entry like 'ID_RSA' would silently never match anything).",
+          "description": "Org-specific credential-name fragments merged into the built-in secret-word list (sy_tools/secrets.py) used to scrub tracker writes and to refuse credential-shaped config keys. Each entry must be a single alphanumeric word (the matcher is word-based, not substring-based, so a multi-word entry like 'ID_RSA' would silently never match anything).",
           "items": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9]+$" }
         }
       }

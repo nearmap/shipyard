@@ -63,12 +63,8 @@ async def test_a_failing_call_leaves_the_stdio_stream_usable():
     mid-frame and desynchronise this client.
     """
     async with mcp.Client(stdio_client(_server_process())) as client:
-        # `report` clears the artifact gate, so the missing path is reached whatever
-        # `transcript.attach` resolves to in the environment this runs in.
-        failed = await client.call_tool(
-            "attach-artifact", {"issue": "PROJ-1", "path": "/nonexistent/x", "kind": "report"}
-        )
-        assert failed.is_error is True, "a missing artifact must surface as a tool error"
+        failed = await client.call_tool("usage_summarize", {"transcript": "/nonexistent/x.jsonl"})
+        assert failed.is_error is True, "a missing transcript must surface as a tool error"
 
         after = await client.call_tool("validate_config", {})
         assert after.is_error is False, "a logged traceback corrupted the protocol stream"

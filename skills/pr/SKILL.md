@@ -3,8 +3,7 @@ name: pr
 description: >-
   Create, promote, or clean up the GitHub PR for the current branch; keep the description
   brutally short, preserve durable acceptance evidence in comments, and handle review threads.
-  On an explicit `merge`, merge it once CI is green and reviewers are settled. Never carries transcripts — the exported /sy:ship session is attached to the task by /sy:ship,
-  not posted to the PR.
+  On an explicit `merge`, merge it once CI is green and reviewers are settled.
 argument-hint: "[optional emphasis, draft, or merge]"
 ---
 
@@ -115,6 +114,6 @@ gh pr merge <pr> --rebase --match-head-commit <CI-green + reviewed SHA>
 - `gh pr merge -F/--body-file` takes a **plain file path**, a different convention from the `-F key=@file` form used for comment bodies in §3 above; conflating the two silently posts the wrong thing.
 - add `--admin` when `ship.merge_admin` resolves true (`get_config {"key": "ship.merge_admin"}`), the repo's standing choice; otherwise only when the owner's go-ahead names the admin bypass itself, since a plain `merge` authorizes the merge, not the bypass. It clears a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give) and bypasses the ruleset, not CI/review freshness.
 
-This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates, and session transcripts belong on the task via `/sy:ship`. End by printing the PR URL and what state change/comment action occurred.
+This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates. End by printing the PR URL and what state change/comment action occurred.
 
 Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

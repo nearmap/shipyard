@@ -37,7 +37,7 @@ claude plugin install sy@shipyard                     # global (default): every 
 cd /path/to/shipyard && ./install.sh
 ```
 
-Required tools: Claude Code ≥ 2.1.218 (see `docs/installation.md` for the floor's rationale), Python 3.10+ on PATH as `python`, `gh` ≥ 2.94.0 authenticated (every tracker uses it for PRs/CI), and `gitleaks` (scans transcripts before they're attached/gisted). Jira additionally needs `acli`.
+Required tools: Claude Code ≥ 2.1.218 (see `docs/installation.md` for the floor's rationale), Python 3.10+ on PATH as `python`, `gh` ≥ 2.94.0 authenticated (every tracker uses it for PRs/CI). Jira additionally needs `acli`.
 
 ## Configuring a repo
 
@@ -88,7 +88,6 @@ Once the plugin is loaded, a question about Shipyard itself — not the recipes 
 - `/sy:ship` refuses to build: the plan's base commit has drifted from `origin/main` — re-run `/sy:spec` to refresh it.
 - The reviewer seems to be running the wrong model: check `CLAUDE_CODE_SUBAGENT_MODEL` isn't set — it outranks the per-invocation model parameter and silently reroutes every agent off whatever the resolver decided. `validate_config` and `./install.sh` both fail on it. Otherwise call `agent_model {"name": "gate"}`, which reports the resolved model, what config asked for, and whether a floor clamped it.
 - A tracker verb is missing or behaves oddly: it belongs in `skills/tracker/<name>/ADAPTER.md` — never in a core skill or agent.
-- Ship stops before attaching a transcript: `gitleaks` isn't installed — it's a hard gate, not a warning.
 - The GitHub tracker preflight fails on a missing `gh`: hard error for `"tracker": "github"` (soft warning for `jira`).
 
 ## Key rules for guidance

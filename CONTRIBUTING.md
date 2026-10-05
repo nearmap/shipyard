@@ -52,7 +52,7 @@ Tests mirror the package they cover from one root: `sy_tools/tests/`, never co-l
 ## Adding a new tracker adapter
 
 1. Create `skills/tracker/<name>/ADAPTER.md` and `sy_tools/tracker/<name>/adapter.py`, one per zone above.
-2. Implement **every** contract verb from `CONTRACT.md` on the `TrackerAdapter` protocol in `sy_tools/tracker/__init__.py`, mapping each to the native system, and document what the native system does with it in `ADAPTER.md`. Document any deliberate asymmetry (e.g. GitHub's transcript attachment is a private gist, not a native file; its `done` transition is native project automation). `sy_tools/tests/tracker/test_canonical.py` fails the build on a missing verb.
+2. Implement **every** contract verb from `CONTRACT.md` on the `TrackerAdapter` protocol in `sy_tools/tracker/__init__.py`, mapping each to the native system, and document what the native system does with it in `ADAPTER.md`. Document any deliberate asymmetry (e.g. GitHub's attachments are a private gist, not a native file; its `done` transition is native project automation). `sy_tools/tests/tracker/test_canonical.py` fails the build on a missing verb.
 3. Include a **status mapping table** (canonical → native) and a **type mapping table** (`epic`/`task`/`bug` → native), matching the existing adapters' layout (`jira/ADAPTER.md`, `github/ADAPTER.md`).
 4. Keep all tracker-native names, helper scripts, and node-id juggling inside `skills/tracker/<name>/` — never in core.
 5. Declare the adapter's required config in `skills/tracker/<name>/config-map.json` (`legacy_env`, `required`, `secret_env`) so the `validate_config` tool enforces it, and fail fast when it is missing. Select it at runtime with `"tracker": "<name>"` in `.shipyard/config.json`.

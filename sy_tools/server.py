@@ -28,7 +28,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from pydantic import Field, ValidationError
@@ -84,22 +84,20 @@ def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
         name = str(declared)
         value = os.environ.get(name, "")
         # A declaration overrides the name heuristic, never the length floor: forcing a sub-floor value in
-        # redacted every space in a body (measured), and `secrets.sanitize` treats one as absent anyway.
+        # redacted every space in a body (measured).
         if len(value) >= secrets.DEFAULT_MIN_LENGTH:
             known[name] = value
         elif value:
             too_short.append(name)
         else:
-            # Reported, never raised as `secrets.sanitize`'s `require=` does: a value this environment
-            # lacks cannot be in a body composed here, and raising would refuse every tracker write.
+            # Reported, never raised: a value this environment lacks cannot be in a body composed here, and
+            # raising would refuse every tracker write.
             absent.append(name)
     scrubbed: list[str] = []
     totals: Counter[str] = Counter()
     # Variadic because a per-field helper got wired to the body alone: `create-issue`'s title reached the
     # adapter unscrubbed while the report still said `redactions: 1`, which reads as full coverage.
     for text in texts:
-        # The in-memory known-value pass only, never `sanitize`'s scanner pass: that shells out over a
-        # *file*, and a body is a string composed here that no file exists for.
         clean, counts = secrets.scrub_text(text, known)
         scrubbed.append(clean)
         totals.update(counts)
@@ -832,79 +830,36 @@ async def preflight(
     return {**confirmed, "tracker": name, "cached": False, "ttl_hours": ttl_hours}
 
 
-# Declared once and shared, so both attachment writers describe this the same way.
-AllowOpaque = Annotated[
-    bool,
-    Field(
-        description="Upload a payload that is not UTF-8 text — the known-value scrub cannot decode it. "
-        "The pattern scanner still runs as a best-effort check and a finding still blocks the "
-        "upload, but some binary content is invisible to it, so use this only for an artifact "
-        "you have separately established carries no credential."
-    ),
-]
-
-
 @mcp.tool(name="attach-artifact")
 async def attach_artifact(
     issue: IssueId,
     path: Annotated[str, Field(description="Path to the artifact to attach.")],
-    kind: Annotated[
-        str, Field(description="Artifact kind. `transcript` is gated; anything else is ungated.")
-    ] = "transcript",
-    process_tier: Annotated[
-        Literal["full", "light"] | None,
-        Field(description="The calling workflow's process tier. `ship` requires `full`."),
-    ] = None,
-    caller: Annotated[
-        str, Field(description="Workflow asking for the attachment, e.g. ship, spec, plan.")
-    ] = "",
-    allow_opaque: AllowOpaque = False,
 ) -> dict[str, Any]:
-    """Sanitise a local file and attach it to a tracker issue as a durable artifact.
+    """Attach a local file — a text, HTML, PDF, image or archive artifact — to a tracker issue.
 
-    Canonical verb `attach-artifact`. Runs the known-value scrub and then the pattern scanner over a
-    text payload, in that order, before anything leaves the machine. Gated by the `transcript.attach`
-    config key, with the `full` process tier required on top of it for `ship` callers; with the gate off
-    the call is a silent no-op skip rather than a failure — nothing is read, scrubbed, scanned or
-    uploaded.
-
-    `allow_opaque` is a declaration rather than a permission: the result never credits either pass with
-    a clean result, since some binary content is invisible to the scanner too, and reports only the
-    declaration, exactly as if neither pass had run. Without it, such a payload is refused outright.
+    Canonical verb `attach-artifact`. A UTF-8 payload has every credential value this process holds
+    replaced by a marker, in place, before it leaves the machine; `scrub` names what it redacted. Any
+    other payload is uploaded byte-for-byte and `scrub` says it was not scrubbed.
     """
-    _required(issue=issue)
+    _required(issue=issue, path=path)
+    artifact, scrub = _scrubbed_artifact(path)
+    evidence = await tracker.adapter().attach_artifact(issue, artifact)
+    return {"issue": issue, "scrub": scrub, "evidence": evidence}
 
-    skip = _gate_skip_reason(kind, caller, process_tier)
-    if skip is not None:
-        return {"attached": False, "skipped": True, "reason": skip, "issue": issue}
 
-    _required(path=path)
+def _scrubbed_artifact(path: str) -> tuple[Path, dict[str, Any]]:
+    """The artifact at `path`, known-value scrubbed in place when it is UTF-8 text."""
     artifact = Path(path)
     if not artifact.is_file():
         raise ToolError(f"artifact not found: {artifact}")
-    backend = tracker.adapter()
-    required = tuple(config.adapter_map().get("secret_env", []))
-    # Synchronous inside the async tool on purpose: the scrub must strictly precede the upload, and making
-    # it awaitable would buy nothing while adding a way to interleave the two.
-    report = secrets.sanitize(
-        artifact, require=required, extra_words=config.extra_secret_words(), allow_opaque=allow_opaque
-    )
-    evidence = await backend.attach_artifact(issue, artifact)
-    return {"attached": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
-
-
-def _gate_skip_reason(kind: str, caller: str, tier: object) -> str | None:
-    """Why this attachment must not happen, or None to proceed.
-
-    The rules mirror the adapter attachments reference under `skills/tracker/`.
-    """
-    if kind != "transcript":
-        return None
-    if not config.get("transcript.attach"):
-        return "transcript.attach is false"
-    if caller == "ship" and tier != "full":
-        return f"ship requires the full process tier; got {tier!r}"
-    return None
+    try:
+        text = artifact.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return artifact, {"scrubbed": False, "reason": "not UTF-8 text"}
+    (clean,), scrub = _scrub_texts(text)
+    if scrub["redactions"]:
+        artifact.write_text(clean, encoding="utf-8")
+    return artifact, {"scrubbed": True, **scrub}
 
 
 @mcp.tool(name="type-convert")
@@ -944,45 +899,19 @@ async def attachment_download(
 async def attachment_update(
     issue: IssueId,
     path: Annotated[str, Field(description="Path to the replacement artifact. Its filename picks the target.")],
-    kind: Annotated[
-        str, Field(description="Artifact kind. `transcript` is gated; anything else is ungated.")
-    ] = "transcript",
-    process_tier: Annotated[
-        Literal["full", "light"] | None,
-        Field(description="The calling workflow's process tier. `ship` requires `full`."),
-    ] = None,
-    caller: Annotated[
-        str, Field(description="Workflow asking for the replacement, e.g. ship, spec, plan.")
-    ] = "",
-    allow_opaque: AllowOpaque = False,
 ) -> dict[str, Any]:
-    """Replace an issue's attachment of the same filename, sanitising the replacement first.
+    """Replace an issue's attachment of the same filename, scrubbing the replacement as `attach-artifact` does.
 
     Canonical verb `attachment-update`. Destructive: the artifact it replaces is irrecoverable once the
     replacement lands and there is no undo, so confirm the target first. Replace-by-filename, taking no
     id: calling it where nothing already matches `path`'s filename is a plain upload, and where more
     than one existing attachment shares that filename what happens is adapter-specific (see the
-    tracker's own `ADAPTER.md`). It runs the same gate and the same sanitisation, in the same order, as
-    `attach-artifact`, `allow_opaque` included.
+    tracker's own `ADAPTER.md`).
     """
-    _required(issue=issue)
-
-    skip = _gate_skip_reason(kind, caller, process_tier)
-    if skip is not None:
-        return {"updated": False, "skipped": True, "reason": skip, "issue": issue}
-
-    _required(path=path)
-    artifact = Path(path)
-    if not artifact.is_file():
-        raise ToolError(f"artifact not found: {artifact}")
-    backend = tracker.adapter()
-    required = tuple(config.adapter_map().get("secret_env", []))
-    # Synchronous before the await for the same reason as `attach-artifact`: scrub, then upload.
-    report = secrets.sanitize(
-        artifact, require=required, extra_words=config.extra_secret_words(), allow_opaque=allow_opaque
-    )
-    evidence = await backend.attachment_update(issue, artifact)
-    return {"updated": True, "skipped": False, "issue": issue, "sanitize": report, "evidence": evidence}
+    _required(issue=issue, path=path)
+    artifact, scrub = _scrubbed_artifact(path)
+    evidence = await tracker.adapter().attachment_update(issue, artifact)
+    return {"issue": issue, "scrub": scrub, "evidence": evidence}
 
 
 @mcp.tool(name="reload_config")
@@ -1007,10 +936,8 @@ def check_env(
     """Report whether an environment variable is set, without ever returning or logging its value.
 
     For diagnosing a missing credential without printing one: dumping the environment or echoing a
-    variable writes the value into permanent transcript history, so the `PreToolUse` guard in
-    `sy_tools/guards/secret_guard.py` denies those commands and names this tool as the safe alternative.
-    Neither the result nor any error it raises can carry the value, and a variable exported empty reports
-    as unset.
+    variable writes the value into the session transcript. Neither the result nor any error it raises can
+    carry the value, and a variable exported empty reports as unset.
     """
     _required(name=name)
     return {"name": name, "present": config.env_present(name)}
@@ -1275,40 +1202,6 @@ def usage_summarize(
         except OSError as exc:
             raise ToolError(f"summary could not be written to {output}: {exc}") from None
     return result
-
-
-@mcp.tool(name="export_transcript")
-def export_transcript(
-    output: Annotated[
-        str,
-        Field(description="Path to write the rendered transcript to. Required; the text is never returned."),
-    ],
-    session_id: SessionId = "",
-    transcript: TranscriptPath = "",
-    task: Annotated[
-        str | None,
-        Field(description="Issue id to record in the rendered header, when the export belongs to one."),
-    ] = None,
-) -> dict[str, Any]:
-    """Render one session's whole transcript tree as readable text on disk, and report where it landed.
-
-    Replaces the manual `/export` step for the attachment flow: bulky tool output is truncated per
-    `transcript.truncation_limits` and raw JSONL noise is dropped, so the result is audit-readable
-    rather than a machine dump. Run it as late as possible so the captured tail is maximal; it reads
-    the on-disk transcript tree, so it also works on a resumed session.
-
-    The rendered text is never part of the result: the transcript is meant to be scanned, redacted and
-    attached by path without ever being read back into the caller's context.
-    """
-    _required(output=output)
-    main = _transcript_source(session_id, transcript)
-    text = usage.render(main, task=task)
-    destination = Path(output)
-    try:
-        destination.write_text(text, encoding="utf-8")
-    except OSError as exc:
-        raise ToolError(f"transcript could not be written to {output}: {exc}") from None
-    return {"path": str(destination), "bytes": len(text.encode("utf-8")), "lines": text.count("\n")}
 
 
 @mcp.tool(name="worker_handbacks")

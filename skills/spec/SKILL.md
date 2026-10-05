@@ -105,7 +105,6 @@ Not every spec ends in a plan. When research shows the premise is already delive
 1. Present the evidence as a status update, then close the turn with a single `AskUserQuestion` (shelve as described / keep researching / other), naming the mutations the go-ahead covers: post the evidence comment and set the Task's terminal status.
 2. Post a durable evidence comment on the Task: `human` is what was found and why no plan should exist, `agent_detail` is the decisive pointers (commits, PRs, work items, spans).
 3. Set an **existing** status via the `tracker` skill — `done` when the premise was already delivered or the item should close, `backlog` when it is merely premature — never a new status; the evidence comment is what distinguishes this closure from delivery (decomposed/superseded/invalidated closure is not delivery).
-4. Capture the session per §8 as on every run.
 
 ## 7. Capture the plan as the highest version
 
@@ -141,11 +140,11 @@ The docs-sync, visual-debug, and pre-gate-checkpoint fields are all required and
 
 `reviewer orientation` is the one field collected by asking, and only when there is a reviewer to orient: resolve `skills.reviewer` (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) while drafting this half and, when it is non-null, close that drafting step with one `AskUserQuestion` — the sentence you would write / a different sentence / none — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. When it resolves `null` the question is never asked and the field is never written, so a repository naming no reviewer skill sees no extra question and no extra field. Ask it here, while drafting, never folded into Step 1's sign-off call below, which stays a single question about the plan itself.
 
-End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier> / process <full|light>`, such as `START opus / BUILD opus / GATE frontier / effort high / process full`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
+End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that names every phase's model explicitly: `START <model> / BUILD <model> / GATE <model> / effort <tier>`, such as `START opus / BUILD opus / GATE frontier / effort high`. Naming the phases individually leaves `/sy:ship` nothing to infer — a single-word tier forced it to guess which phases the word applied to, and `/sy:ship` passes each stated model straight through as that phase's model override.
 
-Model tier is a quality floor, not a cost lever. Each phase's floor is declared in `config/floors.json` — `ship-start` cheap, `ship-build` standard, `sy:gate` frontier (frontier is absolute and cost-scaling-exempt, and the `GATE` model names the reviewer's tier rather than the lightweight GATE controller's) — and a plan may state a higher model for a phase when its own judgment calls for it. A stated model below a phase's floor is clamped up to the floor, never honored downward, by the resolver rather than by anyone remembering to. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Tune cost through **effort**: request lower effort only with evidence the work is mechanical end to end, and never lower review effort. Process tier `light` (no transcript attachment at handoff) is allowed only when no risk lenses are activated and the plan's declared file set is at most the resolved `spec.light_tier_max_files` cap (resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`); default `full`.
+Model tier is a quality floor, not a cost lever. Each phase's floor is declared in `config/floors.json` — `ship-start` cheap, `ship-build` standard, `sy:gate` frontier (frontier is absolute and cost-scaling-exempt, and the `GATE` model names the reviewer's tier rather than the lightweight GATE controller's) — and a plan may state a higher model for a phase when its own judgment calls for it. A stated model below a phase's floor is clamped up to the floor, never honored downward, by the resolver rather than by anyone remembering to. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Tune cost through **effort**: request lower effort only with evidence the work is mechanical end to end, and never lower review effort.
 
-The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus (the profile may raise it, never lower it), and immutable CI/review coverage is identical in both process tiers.
+The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus (the profile may raise it, never lower it).
 
 ### Step 1 — ask for sign-off on the judgment, not the mechanics
 
@@ -174,7 +173,3 @@ Supersedes: v<N-1>   # omit for v1
 4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
 
 The bar: a fresh session reading the Task and its highest plan version can implement and open the PR without missing design decisions.
-
-## 8. Capture the session
-
-When `transcript.attach` resolves true, render and attach this session's transcript to the Task (`$KIND=spec`) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/transcript-attach.md`.

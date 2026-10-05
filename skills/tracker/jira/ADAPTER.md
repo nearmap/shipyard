@@ -14,7 +14,7 @@ Required config (`.shipyard/config.json`): `tracker_config.email`, `tracker_conf
 
 **Preflight (the adapter's declared hook for `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`).** A credential can be present and still be dead, and a project key can be set and still name a board this account cannot see, so the canonical `preflight` verb performs two real authenticated reads rather than a presence check — `/myself` for the account, and the configured project itself — and reports the site, account id and project key without ever naming a secret value. The project read is not decoration: Jira answers a search naming an unknown or invisible project with zero issues rather than an error, so nothing else here notices a wrong key. The two reads do not repeat on every invocation — the `preflight` tool's shared cache covers it (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`), keyed here on the plugin build, `jira`, the resolved config and `ACLI_TOKEN`, with a short TTL.
 
-A missing or invalid `ACLI_TOKEN`, `tracker_config.email`, `tracker_config.site`, or `tracker_config.project` fails `preflight` with an error naming which one, and that text is exactly what `preflight.md`'s `## Action needed` block relays — never a bare crash discovered later inside an attachment upload.
+A missing or invalid `ACLI_TOKEN`, `tracker_config.email`, `tracker_config.site`, or `tracker_config.project` fails `preflight` with an error naming which one, and that text is exactly what `preflight.md`'s `## Action needed` block relays — never a bare crash discovered later inside a write.
 
 ## Type mapping
 
@@ -68,9 +68,9 @@ Deleting a dependency link is not a contract verb: no workflow drives it, so it 
 
 ## `attach-artifact` and the attachment lifecycle
 
-Jira supports native work-item attachments. Render the artifact, then hand the path to the `attach-artifact` tool: it checks the gate, sanitises on the rule `../CONTRACT.md` states, and uploads over this adapter's REST path, so no pass can be skipped at the call site and `ACLI_TOKEN` never reaches argv or stdout. This adapter uploads bytes, so a payload the scrub cannot read reaches it as far as the transport is concerned; whether it may is the caller's declaration, not this adapter's. Load `references/attachments.md` for the gate, the two passes, and the verification the caller still owns.
+Jira supports native work-item attachments. Hand the path to the `attach-artifact` tool: it scrubs a text payload on the rule `../CONTRACT.md` states and uploads over this adapter's REST path, so `ACLI_TOKEN` never reaches argv or stdout. This adapter uploads bytes, so an HTML, PDF, image or archive artifact attaches as-is. Name artifacts `<task>-<kind>.<ext>`; if the site's size limit rejects one, split it into numbered parts and attach every part.
 
-`attachment-update` is the other uploading verb and runs the identical gate and the identical sanitisation before it writes. The only upload the scrub has not looked at is one the caller declared with `allow_opaque` on a payload it cannot decode -- what the scanner still does and what the report carries then is stated once in `../CONTRACT.md`.
+`attachment-update` is the other uploading verb and applies the identical scrub before it writes.
 
 `attachment-download` resolves the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 
@@ -78,5 +78,4 @@ Jira supports native work-item attachments. Render the artifact, then hand the p
 
 ## References
 
-- `references/attachments.md` — transcript render/scan/redact/upload/verify.
 - `references/migration.md` — GitHub-issue → Jira migration (separate workflow, not used in the loop).

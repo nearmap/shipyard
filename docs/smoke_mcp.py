@@ -121,7 +121,7 @@ created, so it touches nothing of the operator's the way a live `scratch_dir`, `
 
 UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
-    "fingerprint_config", "usage_summarize", "export_transcript", "worker_handbacks",
+    "fingerprint_config", "usage_summarize", "worker_handbacks",
     "memory_add", "memory_search", "memory_list", "memory_refute",
     "ship_state_update",
 })
@@ -365,13 +365,13 @@ class Smoke:
 
     async def _attachments(self, run_tag: str, tmp: Path, issue: str) -> None:
         """Attach a scrubbed artifact, then round-trip it through download and update."""
-        artifact = tmp / f"{run_tag}-transcript.txt"
-        artifact.write_text(f"shipyard smoke transcript for {run_tag}\nno secrets here.\n", encoding="utf-8")
+        artifact = tmp / f"{run_tag}-report.txt"
+        artifact.write_text(f"shipyard smoke report for {run_tag}\nno secrets here.\n", encoding="utf-8")
         attached = await self.call("attach-artifact", {
-            "issue": issue, "path": str(artifact), "kind": "report", "caller": "smoke",
+            "issue": issue, "path": str(artifact),
         })
         if attached is not None:
-            self.check("attach-artifact", bool(attached.get("attached")), f"not attached: {attached}")
+            self.check("attach-artifact", bool(attached.get("evidence")), f"no upload evidence: {attached}")
 
         # Compared by content: a download that wrote the wrong bytes once passed an existence check.
         sent = artifact.read_text(encoding="utf-8")
@@ -386,18 +386,16 @@ class Smoke:
             f"what came back is not what was attached: sent {sent.strip()!r}, got {landed.strip()!r}",
         )
 
-        # `kind` and `caller` mirror the attach above: `attachment-update` defaults to the gated
-        # `transcript` kind, whose `{"updated": false, "skipped": true}` is a success that replaced nothing.
-        revised = f"shipyard smoke transcript for {run_tag}\nrevised, still no secrets.\n"
+        revised = f"shipyard smoke report for {run_tag}\nrevised, still no secrets.\n"
         artifact.write_text(revised, encoding="utf-8")
         updated = await self.call("attachment-update", {
-            "issue": issue, "path": str(artifact), "kind": "report", "caller": "smoke",
+            "issue": issue, "path": str(artifact),
         })
         if updated is not None:
             replaced = await self._read_back(issue, artifact.name, tmp / "replaced.txt")
             self.check(
                 "attachment-update",
-                bool(updated.get("updated")) and replaced is not None and replaced.strip() == revised.strip(),
+                bool(updated.get("evidence")) and replaced is not None and replaced.strip() == revised.strip(),
                 f"the replacement did not land: sent {revised.strip()!r}, the issue holds {replaced!r} ({updated})",
             )
 

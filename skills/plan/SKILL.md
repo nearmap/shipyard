@@ -53,7 +53,7 @@ Load only the reference for the current state. Do not preload mutually exclusive
 
 ## Completion bar
 
-The Epic body must show North Star, conceptual horizon ladder, completed branches, current active set (≤ the resolved `plan.max_active_tasks` cap) with keys/kickoffs, queued conceptual work, critical path, blockers, and parallel-safe set. Every planning run that changes the tracker adds one decision-log delta ending in a `Plan checkpoint` footer. A roadmap entry or checkpoint that shipped evidence later overrules is corrected on its own surface, not left stale — the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`. When `transcript.attach` resolves true, render and attach this session's transcript to the Epic (`$KIND=plan`) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/transcript-attach.md`.
+The Epic body must show North Star, conceptual horizon ladder, completed branches, current active set (≤ the resolved `plan.max_active_tasks` cap) with keys/kickoffs, queued conceptual work, critical path, blockers, and parallel-safe set. Every planning run that changes the tracker adds one decision-log delta ending in a `Plan checkpoint` footer. A roadmap entry or checkpoint that shipped evidence later overrules is corrected on its own surface, not left stale — the retroactive-honesty invariant in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`.
 
 When every horizon is delivered and every child is `done` for delivered reasons, set the Epic `done`.
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 # A hook runs this on whatever bare `python` is on `PATH` (3.9 on some machines), so the import graph
 # stays stdlib-only, must import on 3.9, and reaches nothing the MCP server needs. `sy_tools/usage.py`
-# and `sy_tools/guards/secret_guard.py` are the siblings under the same constraint.
+# is the sibling under the same constraint.
 from datetime import datetime, timezone
 import json
 import os

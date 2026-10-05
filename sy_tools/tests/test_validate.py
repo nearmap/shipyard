@@ -421,7 +421,6 @@ def _spec_md(step_one: str = _STEP_ONE, step_two: str = "### Step 2 - post the p
         "## 7. Capture the plan as the highest version\n"
         "### Step 1 - ask for sign-off on the judgment\n"
         f"{step_one}{step_two}"
-        "## 8. Capture the session\n"
     )
 
 

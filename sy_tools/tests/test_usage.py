@@ -1,6 +1,6 @@
-"""`usage`'s parser and renderer, against a synthetic transcript tree built here.
+"""`usage`'s parser, against a synthetic transcript tree built here.
 
-Deterministic by construction: every transcript, ledger entry and config layer these tests read is
+Deterministic by construction: every transcript and ledger entry these tests read is
 written by the test, so nothing depends on whichever session happens to be running them.
 """
 from __future__ import annotations
@@ -164,125 +164,10 @@ def test_summarize_attributes_a_subagent_from_the_hook_ledger(session_tree):
     assert any(row["agent_type"] == "slice" for row in result["by_agent"]), result["by_agent"]
 
 
-def test_render_covers_the_main_session_and_each_subagent(session_tree):
-    rendered = usage.render(session_tree, task="PROJ-1")
-    assert "MAIN SESSION s1" in rendered
-    assert "hello world" in rendered
-    assert "SUBAGENT slice" in rendered
-
-
-def test_render_shows_each_queued_interjection_exactly_once(session_tree):
-    """A queued interjection renders at enqueue; its later delivery must not duplicate it."""
-    rendered = usage.render(session_tree, task="PROJ-1")
-    assert rendered.count("(queued interjection)") == 2
-    assert rendered.count("please also check the logs") == 1
-
-
-def test_render_marks_a_cancelled_interjection_without_reprinting_it(session_tree):
-    rendered = usage.render(session_tree, task="PROJ-1")
-    assert "cancelled interjection" not in rendered
-    assert rendered.count("cancelled before delivery") == 1
-
-
-def test_render_keeps_a_genuine_user_turn_after_an_enqueue_and_remove(session_tree):
-    """The cancellation bookkeeping must not swallow an identical user turn that really happened."""
-    rendered = usage.render(session_tree, task="PROJ-1")
-    assert rendered.count("please continue") == 2, "cancelled queue must not eat the later genuine user turn"
-    assert "[2026-07-09 10:00:06] USER" in rendered, "genuine user turn after enqueue+remove must render"
-
-
-def test_render_warns_about_a_transcript_it_could_not_parse(session_tree):
-    """A transcript that will not parse must say so in the render; an empty section reads as a quiet agent."""
-    broken = session_tree.with_suffix("") / "subagents" / "agent-broken.jsonl"
-    broken.write_text("{not json\n", encoding="utf-8")
-    rendered = usage.render(session_tree, task="PROJ-1")
-    assert any(
-        line.startswith("warning:") and "agent-broken.jsonl" in line for line in rendered.splitlines()
-    ), rendered
-
-
 def test_summarize_always_carries_a_warnings_key(session_tree):
     """An absent key on a clean tree is indistinguishable from a consumer forgetting to look for it."""
     result = usage.summarize(session_tree, phase="ship", task="PROJ-1")
     assert result["warnings"] == [], result
-
-
-@pytest.fixture
-def config_layers(tmp_path, monkeypatch):
-    """A live but throwaway config layer chain, with `render_limits()`'s cache reset around each use.
-
-    Yields the repo layer directory to write `config.json` into. Both resolvers are pointed at the
-    fixture so the real per-leaf resolution path runs, rather than a mock of it.
-    """
-    from sy_tools import config as sy_config
-
-    home = tmp_path / "home"
-    repo = tmp_path / "repo"
-    (home / ".shipyard").mkdir(parents=True)
-    (repo / ".shipyard").mkdir(parents=True)
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
-    monkeypatch.setattr(sy_config, "repo_root", lambda: repo)
-    monkeypatch.setattr(usage, "_RENDER_LIMITS", None)
-    sy_config.reset_cache()
-    yield repo / ".shipyard" / "config.json"
-    sy_config.reset_cache()
-
-
-def _reresolve(layer: Path, values: dict | None) -> dict[str, int]:
-    """Write (or skip writing) a config layer, drop both caches, and resolve the limits again."""
-    from sy_tools import config as sy_config
-
-    if values is not None:
-        layer.write_text(json.dumps(values), encoding="utf-8")
-    sy_config.reset_cache()
-    usage._RENDER_LIMITS = None
-    return usage.render_limits()
-
-
-def test_render_limits_fall_back_to_the_shipped_defaults_without_an_override(config_layers):
-    assert _reresolve(config_layers, None) == usage._DEFAULT_RENDER_LIMITS, (
-        "no override must fall back to shipped defaults"
-    )
-
-
-def test_a_config_override_reaches_render_limits_leaf_by_leaf(config_layers):
-    """`_flatten()` only stores leaf keys, so a naive whole-object `get()` would silently be swallowed."""
-    overridden = _reresolve(config_layers, {"transcript": {"truncation_limits": {"tool_result": 99}}})
-    assert overridden["tool_result"] == 99, "a config override must actually change render_limits()"
-    assert overridden["tool_input"] == usage._DEFAULT_RENDER_LIMITS["tool_input"], (
-        "an unset sibling keeps its default"
-    )
-
-
-def test_an_unresolvable_config_falls_back_instead_of_crashing_the_render(tmp_path, monkeypatch):
-    """A render usually happens late in a session, so a broken config must cost the override, not the run."""
-    from sy_tools import config as sy_config
-
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))  # exists, but is no checkout
-    monkeypatch.setattr(usage, "_RENDER_LIMITS", None)
-    sy_config.reset_cache()
-    try:
-        # Refused first, so the degradation is pinned against the exception actually thrown rather
-        # than passing vacuously because nothing was raised.
-        with pytest.raises(sy_config.ConfigError):
-            sy_config.get("transcript.truncation_limits.tool_result")
-        assert usage.render_limits() == usage._DEFAULT_RENDER_LIMITS, (
-            "an unresolvable config must fall back to shipped defaults, not crash the render"
-        )
-    finally:
-        sy_config.reset_cache()
-
-
-def test_a_non_numeric_configured_limit_falls_back_instead_of_crashing_the_render(config_layers):
-    """`get()` does not itself enforce the schema (only `validate` does).
-
-    A hand-edited layer bypassing `validate` can still reach here with a non-numeric value; `int(...)`
-    must not crash the render, same as an unresolvable config.
-    """
-    limits = _reresolve(config_layers, {"transcript": {"truncation_limits": {"tool_result": "not-a-number"}}})
-    assert limits == usage._DEFAULT_RENDER_LIMITS, (
-        "a non-numeric resolved value must fall back to shipped defaults, not crash the render"
-    )
 
 
 def _refusal_records(tool_use_id: str, payload: object = None) -> list[dict]:

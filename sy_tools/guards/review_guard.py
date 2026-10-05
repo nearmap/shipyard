@@ -101,10 +101,10 @@ _GH_VALUE_FLAGS = {
 _ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=.*')
 """A leading `NAME=VALUE` or `NAME+=VALUE` assignment prefix, which names no command to check.
 
-`+=` is here because `secret_guard.py` was found missing it and this file carried the same narrow
-pattern: both bash and zsh run `NAME+=VALUE cmd` as an assignment prefix (verified live in both,
-while `-=`/`*=`/`/=` are not assignment syntax to either), so the walk below stopped on `FOO+=bar`,
-read *that* as the command, matched it against nothing, and allowed whatever followed --
+`+=` is here because this file once carried a narrower pattern: both bash and zsh run
+`NAME+=VALUE cmd` as an assignment prefix (verified live in both, while `-=`/`*=`/`/=` are not
+assignment syntax to either), so the walk below stopped on `FOO+=bar`, read *that* as the command,
+matched it against nothing, and allowed whatever followed --
 `FOO+=bar rm -rf src` and `FOO+=bar git commit -m x` both went through this guard untouched
 (verified before the fix). A missed assignment prefix disarms the mutation check entirely rather
 than narrowing it, which is why it is worth fixing here rather than deferring with this file's other

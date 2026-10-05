@@ -364,7 +364,7 @@ class Smoke:
         )
 
     async def _attachments(self, run_tag: str, tmp: Path, issue: str) -> None:
-        """Attach a scrubbed artifact, then round-trip it through download and update."""
+        """Attach an artifact, then round-trip it through download and update."""
         artifact = tmp / f"{run_tag}-report.txt"
         artifact.write_text(f"shipyard smoke report for {run_tag}\nno secrets here.\n", encoding="utf-8")
         attached = await self.call("attach-artifact", {

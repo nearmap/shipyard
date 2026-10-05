@@ -844,8 +844,7 @@ async def attach_artifact(
     """Attach a local file — a text, HTML, PDF, image or archive artifact — to a tracker issue.
 
     Canonical verb `attach-artifact`. The file is uploaded byte-for-byte and never rewritten: one that
-    carries a credential value this process holds, verbatim, is refused instead, since a rewrite could
-    corrupt a binary format.
+    carries a credential value this process holds, verbatim, is refused instead.
     """
     _required(issue=issue, path=path)
     evidence = await tracker.adapter().attach_artifact(issue, _checked_artifact(path))
@@ -906,7 +905,7 @@ async def attachment_update(
     issue: IssueId,
     path: Annotated[str, Field(description="Path to the replacement artifact. Its filename picks the target.")],
 ) -> dict[str, Any]:
-    """Replace an issue's attachment of the same filename, refusing the replacement as `attach-artifact` does.
+    """Replace an issue's attachment of the same filename, under the same known-value refusal as `attach-artifact`.
 
     Canonical verb `attachment-update`. Destructive: the artifact it replaces is irrecoverable once the
     replacement lands and there is no undo, so confirm the target first. Replace-by-filename, taking no

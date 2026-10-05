@@ -58,7 +58,7 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `post-log` | Post a **standalone** machine log comment from a `title` and a `payload` object, which the tool serialises and fences itself. It can carry nothing else — see below. |
 | `attach-artifact` | Attach a durable file (an HTML, PDF, image, archive or text artifact) to the issue — see below. |
 | `attachment-download` | Fetch an artifact already attached to an issue to a local path, named by filename or the tracker-native id (the disambiguator when two attachments share a filename). |
-| `attachment-update` | Replace the attached artifact of the same filename. Destructive; refused like `attach-artifact`. |
+| `attachment-update` | Replace the attached artifact of the same filename. Destructive; under the same known-value refusal as `attach-artifact`. |
 | `link-pr` | Associate a PR with an issue: `human` is a short note that a PR now exists for this work, `agent_detail` is the PR URL. |
 
 ### Every verb is one MCP tool call

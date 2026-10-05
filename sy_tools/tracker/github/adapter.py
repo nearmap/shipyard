@@ -1550,7 +1550,7 @@ def _safe(text: str) -> str:
 
     Three passes, and none can do the others' job. Scrubbing catches the credentials this process holds in its
     own environment, honouring `redaction.extra_words` so an org-specific credential name redacts here exactly
-    as on the attach-artifact sanitisation path. Stripping catches a credential this process cannot recognise
+    as on every tracker text write. Stripping catches a credential this process cannot recognise
     by value, by its shape in free text. Neither reaches a bare `<token>@host` with no path, port or colon in
     it, which is shape-identical to a real email address: no pattern can tell those two apart in *free* text
     without also mangling every genuine address a `gh` error or a comment body carries.

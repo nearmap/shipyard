@@ -427,7 +427,7 @@ async def test_a_credential_in_the_command_arguments_never_reaches_the_error_mes
 
 @pytest.mark.anyio
 async def test_extra_redaction_words_apply_to_error_messages(tmp_path, monkeypatch):
-    """`redaction.extra_words` must redact command output here exactly as on the attach path."""
+    """`redaction.extra_words` must redact command output here exactly as on tracker text writes."""
     monkeypatch.setenv("NM_BEARER", "org-secret-value-9f8e7d6c")
     monkeypatch.setattr(adapter.config, "extra_secret_words", lambda: frozenset({"BEARER"}))
     _install(monkeypatch, (1, "", "bad credentials: org-secret-value-9f8e7d6c"))

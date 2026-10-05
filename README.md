@@ -18,11 +18,15 @@ Point Shipyard at a task and it produces a PR that is ready to merge: the change
 
 ## Why it works this way
 
-Two convictions shape everything, and both exist to earn your trust in the output.
+Three disciplines shape the workflow: challenge the decision, independently inspect the plan and result, and keep working context focused.
 
-**The review is adversarial, and it reviews exactly what you'll merge.** A separate `sy:gate` agent — running on a frontier-tier model, in its own read-only checkout pinned to the pushed commits — reviews the plan's obligations and design invariants, not just the diff, and every bug it suspects must survive an attempt to refute it before it is reported. If a fix is pushed, the review scope resets: the PR head, the CI-green commit, and the reviewed commit must be the *same commit* before anything hands off or merges. You are never reviewing one thing and merging another.
+**Disagreement sharpens the decision.** Before a roadmap, execution plan, or spike verdict reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion`; the debate never loops until the agents agree or decides the fork for you.
 
-![The GATE controller coordinates CI, independent immutable review, and fixes until the same commit is ready for handoff](docs/img/immutable-gate.png)
+![The debate coordinator runs three fresh debater calls, synthesizes their disagreement, and returns it to the parent workflow for the user to steer](docs/img/bounded-debate.png)
+
+**Independent scrutiny happens before and after the build.** `sy:spec-gate` checks whether the drafted plan is grounded, complete, and executable before your sign-off. It tests the plan built around the chosen approach rather than reopening the design debate. Later, `sy:gate` checks the implementation against its obligations and invariants. Both reviewers report findings; the callers own plan revisions, triage, and fixes.
+
+![Independent reviewers inspect the plan before sign-off and the implementation at pinned commits; callers own revisions and fixes](docs/img/independent-reviews.png)
 
 **Context holds decisions, not noise.** Reading fifty files to answer one question is fine — but it happens inside a disposable agent, and what comes back is a short brief of pointers backed by checkable evidence, not the raw transcript. The orchestrator stays clear-headed across a long build because it holds compact briefs rather than everything it read. In practice that means sharper decisions late in a task, not just a cheaper one.
 
@@ -67,6 +71,18 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 ![The /sy:ship dispatcher owns state and user decisions; disposable START, BUILD, and GATE workers prepare a reviewable PR](docs/img/ship-states.png)
 
 Arrows show phase order; `/sy:ship` dispatches every worker and owns the optional human checkpoint, handoff, and merge authorization. Within GATE, `sy:ship-gate` coordinates CI, independent `sy:gate` review, and fixes in the build worktree. A new commit requires fresh CI and review coverage. Other decision and escalation paths are omitted.
+
+**The review is adversarial, and it reviews exactly what you'll merge.** A separate `sy:gate` agent — running on a frontier-tier model, in its own read-only checkout pinned to the pushed commits — reviews the plan's obligations and design invariants, not just the diff, and every bug it suspects must survive an attempt to refute it before it is reported. If a fix is pushed, the review scope resets: the PR head, the CI-green commit, and the reviewed commit must be the *same commit* before anything hands off or merges. You are never reviewing one thing and merging another.
+
+![The GATE controller coordinates CI, independent immutable review, and fixes until the same commit is ready for handoff](docs/img/immutable-gate.png)
+
+## Working with you
+
+Good interviewing and clear explanation are separate disciplines. Shipyard supplies the context for a decision, then uses `AskUserQuestion` to offer meaningful choices and wait for your answer, with a free-text alternative kept open. Status updates explain progress without hiding a question in the prose; an **Action needed** block identifies external work that only you can do.
+
+The same work produces complementary communication for different readers. You get the rationale, trade-offs, risks, and decisions in clear prose. Agents get compact actions, constraints, file anchors, and evidence pointers. Facts live where their reader acts on them, with references across the boundary instead of duplicated reports.
+
+![AskUserQuestion makes choices explicit; human-facing explanations and agent-facing instructions carry complementary detail for their readers](docs/img/communication-contract.png)
 
 ## Under the hood
 

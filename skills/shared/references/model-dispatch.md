@@ -26,6 +26,10 @@ So an agent may be instructed to dispatch only when every path that reaches it l
 
 An agent that hits this reports it as the structural fact it is, never as a transient. "Nested dispatch is unreliable under load" reads as bad luck and invites a retry that cannot work; a finding whose confidence is lower because nothing could ever check it must say so in those terms, so the caller can check it one level up.
 
+## Waiting on a dispatch
+
+A dispatched agent or a `run_in_background` command announces its own completion. Wait for that notification, ending the turn when nothing else is left to do; never `sleep`, `until`-loop, or re-list a directory or `tasks/*.output` to detect that it finished. A hand-rolled wait watches whatever path was guessed, and a wrong guess idles to its own timeout after the work is already done.
+
 ## Requested is not observed
 
 `CLAUDE_CODE_SUBAGENT_MODEL` outranks the per-invocation parameter, and an org model allowlist can silently drop an excluded model back to the inherited one. Both mean a dispatch can run on a model nobody asked for, with no error. So requested and observed are separate facts:

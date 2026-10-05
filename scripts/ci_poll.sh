@@ -6,8 +6,13 @@
 #
 # Exit codes for poll: 0 = checks green, or no checks reported when --head was omitted or --allow-no-checks
 # was declared and the expected head matched; 1 = checks terminal with failures; 2 = timed out, including an
-# expected head that never registered checks; 64 = usage error.
+# expected head that never registered checks; 3 = the PR head differed from --head on every one of
+# MISMATCH_POLLS consecutive polls; 64 = usage error.
 set -euo pipefail
+
+# Long enough to ride out the post-push window before the code host reports the new head; any longer and
+# a superseded or mistyped head burns the whole timeout.
+MISMATCH_POLLS=3
 
 # Single reader for every setting; never re-derive a default here. In-process rather than a `python -m`
 # entry point on that module: a bash script cannot make an MCP call, and an argv-shaped second path would
@@ -34,8 +39,9 @@ call spans the whole wait.
 
   --repo OWNER/REPO   the PR's base repository, not the current checkout's origin — from a fork these
                       differ and the PR will not resolve (`gh repo view --json parent` reports the base).
-  --head SHA          expected head: no terminal verdict unless the PR's headRefOid equals it at both
-                      reads of one iteration, so a run that has not registered yet cannot report green.
+  --head SHA          expected head, as a full 40- or 64-hex SHA (`git rev-parse HEAD`): no terminal
+                      verdict unless the PR's headRefOid equals it at both reads of one iteration, so a
+                      run that has not registered yet cannot report green.
   --allow-no-checks   declare this PR legitimately has no CI; only then is an empty check set on a
                       matching head terminal, and only on a second consecutive empty observation.
 
@@ -43,6 +49,7 @@ Exit codes for poll:
   0   checks green; or no checks reported with --head omitted, or --allow-no-checks declared and the head matched
   1   checks terminal with failures
   2   timed out, including an expected head that never registered checks
+  3   the PR head differed from --head on every one of 3 consecutive polls: superseded or mistyped
   64  usage error
 USAGE
 }
@@ -79,13 +86,16 @@ poll() {
         esac
     done
     if [[ -z "$pr" ]]; then usage >&2; return 64; fi
+    if [[ -n "$head" && ! "$head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        echo "ci_poll: --head must be a full SHA, not $head" >&2; return 64
+    fi
     if [[ -z "$interval" ]]; then interval="$(_config ci.poll_interval)"; fi
     if [[ -z "$timeout" ]]; then timeout="$(_config ci.poll_timeout)"; fi
 
     local repo_flag=()
     if [[ -n "$repo" ]]; then repo_flag=(--repo "$repo"); fi
 
-    local start="$SECONDS" failed_once=0 none_once=0
+    local start="$SECONDS" failed_once=0 none_once=0 mismatches=0
     while true; do
         # the head is read before classification exists, so this read can never be conditional on it
         local rc=0 out state downgrade="" head_rc=0 head_first head_second
@@ -97,6 +107,11 @@ poll() {
             downgrade="head read failed for $pr: $head_first"
         elif [[ -n "$head" && "$head_first" != "$head" ]]; then
             downgrade="head $head_first does not match expected $head for $pr"
+            mismatches=$(( mismatches + 1 ))
+            if (( mismatches >= MISMATCH_POLLS )); then
+                echo "ci_poll: head $head_first has differed from expected $head for $pr across $mismatches polls" >&2
+                return 3
+            fi
         elif [[ "$state" != pending ]]; then
             # the sandwich: both reads are compared only within this iteration, never pinned across
             # iterations, or a legitimately advanced head could never re-match
@@ -110,6 +125,7 @@ poll() {
                 downgrade="head $head_second does not match expected $head for $pr"
             fi
         fi
+        if [[ -n "$head" && "$head_first" == "$head" ]]; then mismatches=0; fi
         if [[ -n "$downgrade" ]]; then
             echo "ci_poll: $downgrade; treating as pending" >&2
             state=pending
@@ -206,7 +222,7 @@ self_test() {
     tmp="$(mktemp -d)"
     local green='printf "build\tpass\t1s\thttps://example.test/1\n"'
     local empty='echo "no checks reported on the '"'"'branch'"'"' branch"; exit 1'
-    local head_a='echo aaa111; exit 0'
+    local head_a='echo aaa1110000000000000000000000000000000000; exit 0'
 
     _fake_gh "$tmp/gh" "$head_a" 'if (( n < 2 )); then echo "some checks are still pending"; exit 8; fi
 '"$green"
@@ -225,10 +241,10 @@ self_test() {
     _fake_gh "$tmp/gh" "$head_a" 'echo "some checks failed: build"; exit 1'
     _assert "terminal failure" "$(_poll_rc "$tmp" 99 0 60)" 1
     _assert_has "(i) gh text reaches stderr on exit 1" "$(cat "$tmp/err")" "some checks failed: build"
-    _assert "(o) --allow-no-checks never greens a failure" "$(_poll_rc "$tmp" 99 0 60 --head aaa111 --allow-no-checks)" 1
+    _assert "(o) --allow-no-checks never greens a failure" "$(_poll_rc "$tmp" 99 0 60 --head aaa1110000000000000000000000000000000000 --allow-no-checks)" 1
 
     _fake_gh "$tmp/gh" "$head_a" 'echo "some checks are still pending"; exit 8'
-    _assert "(p) --allow-no-checks never shortens a pending wait" "$(_poll_rc "$tmp" 99 0 0 --head aaa111 --allow-no-checks)" 2
+    _assert "(p) --allow-no-checks never shortens a pending wait" "$(_poll_rc "$tmp" 99 0 0 --head aaa1110000000000000000000000000000000000 --allow-no-checks)" 2
     # an omitted timeout must come from resolved config, not a re-derived local default
     local original_config; original_config="$(declare -f _config)"
     _config() { echo 0; }
@@ -237,8 +253,17 @@ self_test() {
     _assert "omitted timeout resolves from config" "$rc_config" 2
 
     _fake_gh "$tmp/gh" "$head_a" "$green"
-    _assert "(c) green on the wrong head is not terminal" "$(_poll_rc "$tmp" 99 0 0 --head bbb222)" 2
-    _assert_has "(c) disagreement is logged" "$(cat "$tmp/err")" "does not match expected bbb222"
+    _assert "(c) green on the wrong head is not terminal" "$(_poll_rc "$tmp" 99 0 0 --head bbb2220000000000000000000000000000000000)" 2
+    _assert_has "(c) disagreement is logged" "$(cat "$tmp/err")" "does not match expected bbb2220000000000000000000000000000000000"
+    _assert "(s) a persistently different head exits 3 instead of waiting out the timeout" "$(_poll_rc "$tmp" 99 0 60 --head bbb2220000000000000000000000000000000000)" 3
+    _assert "(s) after exactly MISMATCH_POLLS polls" "$(cat "$tmp/state")" "$MISMATCH_POLLS"
+
+    _fake_gh "$tmp/gh" 'v="$(cat "$CI_POLL_FAKE_STATE.view" 2>/dev/null || echo 0)"
+echo $((v + 1)) > "$CI_POLL_FAKE_STATE.view"
+if (( v < 2 )); then echo bbb2220000000000000000000000000000000000; else echo aaa1110000000000000000000000000000000000; fi
+exit 0' "$green"
+    echo 0 > "$tmp/state.view"
+    _assert "(t) a head that lags the push for fewer than MISMATCH_POLLS polls still greens" "$(_poll_rc "$tmp" 99 0 60 --head aaa1110000000000000000000000000000000000)" 0
 
     _fake_gh "$tmp/gh" 'echo "gh: could not resolve the head for 99" >&2; exit 1' "$green"
     _assert "(l) failed head read degrades a green" "$(_poll_rc "$tmp" 99 0 0)" 2
@@ -246,13 +271,13 @@ self_test() {
 
     _fake_gh "$tmp/gh" 'v="$(cat "$CI_POLL_FAKE_STATE.view" 2>/dev/null || echo 0)"
 echo $((v + 1)) > "$CI_POLL_FAKE_STATE.view"
-if (( v % 2 == 0 )); then echo aaa111; else echo bbb222; fi
+if (( v % 2 == 0 )); then echo aaa1110000000000000000000000000000000000; else echo bbb2220000000000000000000000000000000000; fi
 exit 0' "$green"
     echo 0 > "$tmp/state.view"
     _assert "(f) head changing mid-iteration is not terminal" "$(_poll_rc "$tmp" 99 0 0)" 2
-    _assert_has "(f) the change is logged with both SHAs" "$(cat "$tmp/err")" "head changed mid-iteration for 99: aaa111 then bbb222"
+    _assert_has "(f) the change is logged with both SHAs" "$(cat "$tmp/err")" "head changed mid-iteration for 99: aaa1110000000000000000000000000000000000 then bbb2220000000000000000000000000000000000"
 
-    _fake_gh "$tmp/gh" 'if (( $(cat "$CI_POLL_FAKE_STATE") < 2 )); then echo aaa111; else echo bbb222; fi
+    _fake_gh "$tmp/gh" 'if (( $(cat "$CI_POLL_FAKE_STATE") < 2 )); then echo aaa1110000000000000000000000000000000000; else echo bbb2220000000000000000000000000000000000; fi
 exit 0' 'if (( n < 2 )); then echo "some checks are still pending"; exit 8; fi
 '"$green"
     # a 3s bound rather than 0: a head pinned across iterations can never re-match, and must surface as
@@ -260,26 +285,26 @@ exit 0' 'if (( n < 2 )); then echo "some checks are still pending"; exit 8; fi
     _assert "(g) an advancing head still reaches a verdict without --head" "$(_poll_rc "$tmp" 99 0 3)" 0
 
     _fake_gh "$tmp/gh" "$head_a" "$empty"
-    _assert "(d) an empty set on an expected head is not green" "$(_poll_rc "$tmp" 99 0 0 --head aaa111)" 2
+    _assert "(d) an empty set on an expected head is not green" "$(_poll_rc "$tmp" 99 0 0 --head aaa1110000000000000000000000000000000000)" 2
     _assert_has "(d) the timeout names the observed state" "$(cat "$tmp/err")" "last observed check state: none"
     _assert "(e) an empty set without --head keeps today's contract" "$(_poll_rc "$tmp" 99 0 60)" 0
     _assert "(e) --allow-no-checks without --head is a no-op" "$(_poll_rc "$tmp" 99 0 60 --allow-no-checks)" 0
     _assert "(e) that no-op returns on the first iteration" "$(cat "$tmp/state")" 1
-    _assert "(m) --allow-no-checks greens a matching head" "$(_poll_rc "$tmp" 99 0 60 --head aaa111 --allow-no-checks)" 0
+    _assert "(m) --allow-no-checks greens a matching head" "$(_poll_rc "$tmp" 99 0 60 --head aaa1110000000000000000000000000000000000 --allow-no-checks)" 0
     _assert "(m) only on the second observation" "$(cat "$tmp/state")" 2
-    _assert_has "(m) the override is announced" "$(cat "$tmp/err")" "no checks reported for 99 on head aaa111 across two polls"
-    _assert "(n) never on a mismatched head" "$(_poll_rc "$tmp" 99 0 0 --head bbb222 --allow-no-checks)" 2
+    _assert_has "(m) the override is announced" "$(cat "$tmp/err")" "no checks reported for 99 on head aaa1110000000000000000000000000000000000 across two polls"
+    _assert "(n) never on a mismatched head" "$(_poll_rc "$tmp" 99 0 0 --head bbb2220000000000000000000000000000000000 --allow-no-checks)" 2
 
     # `1 2` rather than `0 0`: a shared one-shot flag greens iteration 2, so iteration 2 must be reached,
     # and the third state must not be another empty set or a correct implementation would green there
     _fake_gh "$tmp/gh" "$head_a" 'if (( n < 1 )); then echo "some checks failed"; exit 1; fi
 if (( n > 1 )); then echo "some checks are still pending"; exit 8; fi
 '"$empty"
-    _assert "(q) a fail then an empty set is not green" "$(_poll_rc "$tmp" 99 1 2 --head aaa111 --allow-no-checks)" 2
+    _assert "(q) a fail then an empty set is not green" "$(_poll_rc "$tmp" 99 1 2 --head aaa1110000000000000000000000000000000000 --allow-no-checks)" 2
 
     local usage_text; usage_text="$(usage)"
     local token
-    for token in '--repo' '--head' '--allow-no-checks' '0   checks green' '1   checks terminal with failures' '2   timed out' '64  usage error'; do
+    for token in '--repo' '--head' '--allow-no-checks' '0   checks green' '1   checks terminal with failures' '2   timed out' '3   the PR head differed' '64  usage error'; do
         _assert_has "(k) usage covers $token" "$usage_text" "$token"
     done
 
@@ -289,6 +314,7 @@ if (( n > 1 )); then echo "some checks are still pending"; exit 8; fi
     _assert "(h) unknown flag" "$(_status bash "$shell" poll 12 --nope)" 64
     _assert "(h) --head at argv exhaustion" "$(_status bash "$shell" poll 12 --head)" 64
     _assert "(h) --head followed by a flag" "$(_status bash "$shell" poll 12 --head --allow-no-checks)" 64
+    _assert "(h) a short --head is a usage error, not a wait that can never match" "$(_status bash "$shell" poll 12 --head aaa1110)" 64
     _assert "(r) non-numeric interval is a usage error, not a later arithmetic crash" "$(_status bash "$shell" poll 12 abc 60)" 64
     _assert "(r) non-numeric timeout is a usage error" "$(_status bash "$shell" poll 12 5 abc)" 64
 
@@ -298,7 +324,7 @@ if (( n > 1 )); then echo "some checks are still pending"; exit 8; fi
     fi
     _fake_gh "$tmp/gh" "$head_a" 'echo "some checks are still pending"; exit 8'
     echo 0 > "$tmp/state"
-    CI_POLL_FAKE_STATE="$tmp/state" PATH="$tmp:$PATH" bash "$shell" poll 99 5 60 --repo owner/repo --head aaa111 --allow-no-checks > /dev/null 2>&1 &
+    CI_POLL_FAKE_STATE="$tmp/state" PATH="$tmp:$PATH" bash "$shell" poll 99 5 60 --repo owner/repo --head aaa1110000000000000000000000000000000000 --allow-no-checks > /dev/null 2>&1 &
     local pid=$! waited=0 matched=0
     while (( waited < 50 )) && ! pgrep -f "ci_poll.sh poll 99" > /dev/null; do sleep 0.1; waited=$(( waited + 1 )); done
     if pgrep -f "ci_poll.sh poll 99" > /dev/null; then matched=1; fi

@@ -63,6 +63,8 @@ class ShipMetricsV1(BaseModel):
     post_merge_defect: bool | None = None
     rollback: bool | None = None
     lead_time_seconds: int | None = None
+    # Retired with transcript upload; still accepted so a correction can re-post a record that carries it.
+    transcript_attachment: str | None = None
 
     @model_validator(mode="after")
     def _task_is_not_blank(self) -> ShipMetricsV1:

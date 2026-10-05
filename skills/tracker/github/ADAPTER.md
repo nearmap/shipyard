@@ -70,11 +70,11 @@ This adapter's body limit is **65,536 characters**, applied by the shared whole-
 
 ### `attach-artifact` and the attachment lifecycle — gist + link (deliberate asymmetry)
 
-GitHub issues have no CLI-scriptable file attachment, so the artifact is uploaded as a **secret** (private) gist and linked from a comment on the issue. Hand the path to the `attach-artifact` tool: it scrubs on the rule `../CONTRACT.md` states — the same rule as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter. Privacy is verified by reading the created gist back rather than assumed from the flags passed: a public gist would publish the artifact irrevocably.
+GitHub issues have no CLI-scriptable file attachment, so the artifact is uploaded as a **secret** (private) gist and linked from a comment on the issue. Hand the path to the `attach-artifact` tool: it refuses a payload carrying a known credential on the rule `../CONTRACT.md` states — the same rule as on the Jira path — before creating the gist, and returns the gist URL as its evidence. The caller names no tracker; the asymmetry lives here, in the adapter. Privacy is verified by reading the created gist back rather than assumed from the flags passed: a public gist would publish the artifact irrevocably.
 
 **A gist holds text, so this adapter accepts text only.** A payload that is not UTF-8 text (an image, a PDF, an archive) is refused before any gist exists, on both uploading verbs. Attach a text rendering instead. Jira, whose attachments are bytes, takes such a payload — that asymmetry is real and lives here.
 
-`attachment-update` is the other uploading verb, applies the identical scrub before it writes, and inherits the same refusal.
+`attachment-update` is the other uploading verb, applies the identical check before it writes, and inherits the same text-only refusal.
 
 The lifecycle verbs — `attachment-download` and `attachment-update` — act on that gist, which they locate from the link comment `attach-artifact` posted. `attachment-download` resolves by artifact filename, taking a gist id instead to disambiguate; an ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 

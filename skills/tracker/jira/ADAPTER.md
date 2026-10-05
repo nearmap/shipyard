@@ -68,9 +68,9 @@ Deleting a dependency link is not a contract verb: no workflow drives it, so it 
 
 ## `attach-artifact` and the attachment lifecycle
 
-Jira supports native work-item attachments. Hand the path to the `attach-artifact` tool: it scrubs a text payload on the rule `../CONTRACT.md` states and uploads over this adapter's REST path, so `ACLI_TOKEN` never reaches argv or stdout. This adapter uploads bytes, so an HTML, PDF, image or archive artifact attaches as-is. Name artifacts `<task>-<kind>.<ext>`; if the site's size limit rejects one, split it into numbered parts and attach every part.
+Jira supports native work-item attachments. Hand the path to the `attach-artifact` tool: it refuses a payload carrying a known credential on the rule `../CONTRACT.md` states and uploads over this adapter's REST path, so `ACLI_TOKEN` never reaches argv or stdout. This adapter uploads bytes, so an HTML, PDF, image or archive artifact attaches as-is. Name artifacts `<task>-<kind>.<ext>`; if the site's size limit rejects one, split it into numbered parts and attach every part.
 
-`attachment-update` is the other uploading verb and applies the identical scrub before it writes.
+`attachment-update` is the other uploading verb and applies the identical refusal before it writes.
 
 `attachment-download` resolves the target by filename, taking a Jira attachment id instead to disambiguate duplicates. An ambiguous match (several namesakes, no id given) fails rather than guessing, and so does an absent one.
 

@@ -843,44 +843,29 @@ async def attach_artifact(
 ) -> dict[str, Any]:
     """Attach a local file — a text, HTML, PDF, image or archive artifact — to a tracker issue.
 
-    Canonical verb `attach-artifact`. A text payload has every credential value this process holds
-    replaced by a marker, in place, before it leaves the machine; `scrub` names what it redacted. A binary
-    payload is uploaded byte-for-byte and `scrub` says it was not scrubbed, unless it carries one of those
-    values verbatim, which is refused rather than uploaded or rewritten.
+    Canonical verb `attach-artifact`. The file is uploaded byte-for-byte and never rewritten: one that
+    carries a credential value this process holds, verbatim, is refused instead, since a rewrite could
+    corrupt a binary format.
     """
     _required(issue=issue, path=path)
-    artifact, scrub = _scrubbed_artifact(path)
-    evidence = await tracker.adapter().attach_artifact(issue, artifact)
-    return {"issue": issue, "scrub": scrub, "evidence": evidence}
+    evidence = await tracker.adapter().attach_artifact(issue, _checked_artifact(path))
+    return {"issue": issue, "evidence": evidence}
 
 
-_ASCII_COMPATIBLE_BINARY = (b"%PDF-", b"PK\x03\x04")
-"""Signatures of binary formats that can decode as UTF-8, where a rewrite would shift offsets and corrupt them."""
-
-
-def _scrubbed_artifact(path: str) -> tuple[Path, dict[str, Any]]:
-    """The artifact at `path`, scrubbed in place when it is text, refused when binary carries a known value."""
+def _checked_artifact(path: str) -> Path:
+    """The artifact at `path`, refused when it carries a credential value this process holds, verbatim."""
     artifact = Path(path)
     if not artifact.is_file():
         raise ToolError(f"artifact not found: {artifact}")
     data = artifact.read_bytes()
-    try:
-        text = None if data.startswith(_ASCII_COMPATIBLE_BINARY) else data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = None
-    if text is None:
-        known, _, _ = _known_secrets()
-        carried = sorted(name for name, value in known.items() if value.encode() in data)
-        if carried:
-            raise ToolError(
-                f"{artifact.name} is binary and carries the value of {', '.join(carried)} verbatim; it cannot be "
-                "scrubbed without corrupting it, so it was not uploaded"
-            )
-        return artifact, {"scrubbed": False, "reason": "binary"}
-    (clean,), scrub = _scrub_texts(text)
-    if scrub["redactions"]:
-        artifact.write_text(clean, encoding="utf-8")
-    return artifact, {"scrubbed": True, **scrub}
+    known, _, _ = _known_secrets()
+    carried = sorted(name for name, value in known.items() if value.encode() in data)
+    if carried:
+        raise ToolError(
+            f"{artifact.name} carries the value of {', '.join(carried)} verbatim, so it was not uploaded; "
+            "remove it from the artifact and attach again"
+        )
+    return artifact
 
 
 @mcp.tool(name="type-convert")
@@ -921,7 +906,7 @@ async def attachment_update(
     issue: IssueId,
     path: Annotated[str, Field(description="Path to the replacement artifact. Its filename picks the target.")],
 ) -> dict[str, Any]:
-    """Replace an issue's attachment of the same filename, scrubbing the replacement as `attach-artifact` does.
+    """Replace an issue's attachment of the same filename, refusing the replacement as `attach-artifact` does.
 
     Canonical verb `attachment-update`. Destructive: the artifact it replaces is irrecoverable once the
     replacement lands and there is no undo, so confirm the target first. Replace-by-filename, taking no
@@ -930,9 +915,8 @@ async def attachment_update(
     tracker's own `ADAPTER.md`).
     """
     _required(issue=issue, path=path)
-    artifact, scrub = _scrubbed_artifact(path)
-    evidence = await tracker.adapter().attachment_update(issue, artifact)
-    return {"issue": issue, "scrub": scrub, "evidence": evidence}
+    evidence = await tracker.adapter().attachment_update(issue, _checked_artifact(path))
+    return {"issue": issue, "evidence": evidence}
 
 
 @mcp.tool(name="reload_config")

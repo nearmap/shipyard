@@ -638,8 +638,8 @@ async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("verb", ["attach_artifact", "attachment_update"])
-async def test_attachment_writers_scrub_text_before_upload_and_pass_binary_through(verb, monkeypatch, tmp_path):
-    """A UTF-8 artifact reaches the adapter already scrubbed; a binary one reaches it byte-for-byte."""
+async def test_attachment_writers_upload_unchanged_and_refuse_a_known_value(verb, monkeypatch, tmp_path):
+    """Any artifact reaches the adapter byte-for-byte; one carrying a known value, text or binary, is refused."""
     secret = "s3cr3t-value-for-the-attachment-test"
     monkeypatch.setenv("SY_TEST_ATTACH_TOKEN", secret)
     monkeypatch.setattr(server.config, "adapter_map", lambda: {})
@@ -656,29 +656,18 @@ async def test_attachment_writers_scrub_text_before_upload_and_pass_binary_throu
     monkeypatch.setattr(server.tracker, "adapter", lambda: _Backend())
     tool = getattr(server, verb)
 
-    report = tmp_path / "report.html"
-    report.write_text(f"<p>{secret}</p>", encoding="utf-8")
-    text_result = await tool(issue="PROJ-1", path=str(report))
-    assert secret.encode() not in uploaded["report.html"], "a text artifact must be scrubbed before upload"
-    assert text_result["scrub"]["scrubbed_vars"] == ["SY_TEST_ATTACH_TOKEN"], text_result["scrub"]
+    clean = {"report.html": b"<p>findings</p>", "plot.png": b"\x89PNG\r\n\x1a\n\xff", "plain.pdf": b"%PDF-1.4\n"}
+    for name, data in clean.items():
+        (tmp_path / name).write_bytes(data)
+        await tool(issue="PROJ-1", path=str(tmp_path / name))
+    assert uploaded == clean, "an artifact carrying nothing known must upload unchanged"
 
-    image = tmp_path / "plot.png"
-    image.write_bytes(b"\x89PNG\r\n\x1a\n\xff")
-    binary_result = await tool(issue="PROJ-1", path=str(image))
-    assert uploaded["plot.png"] == b"\x89PNG\r\n\x1a\n\xff", "a binary artifact must upload unchanged"
-    assert binary_result["scrub"] == {"scrubbed": False, "reason": "binary"}, binary_result["scrub"]
-
-    ascii_pdf = tmp_path / "plain.pdf"
-    ascii_pdf.write_bytes(b"%PDF-1.4\nno credential here\n")
-    await tool(issue="PROJ-1", path=str(ascii_pdf))
-    assert uploaded["plain.pdf"] == b"%PDF-1.4\nno credential here\n", "a UTF-8-decodable PDF is still binary"
-
-    leaky_pdf = tmp_path / "leaky.pdf"
-    leaky_pdf.write_bytes(b"%PDF-1.4\n" + secret.encode())
-    with pytest.raises(server.ToolError, match="SY_TEST_ATTACH_TOKEN"):
-        await tool(issue="PROJ-1", path=str(leaky_pdf))
-    assert "leaky.pdf" not in uploaded, "a binary artifact carrying a known value must not be uploaded"
-    assert leaky_pdf.read_bytes().endswith(secret.encode()), "a refused binary artifact must not be rewritten"
+    for name, data in {"leaky.html": f"<p>{secret}</p>".encode(), "leaky.zip": b"PK\x05\x06" + secret.encode()}.items():
+        (tmp_path / name).write_bytes(data)
+        with pytest.raises(server.ToolError, match="SY_TEST_ATTACH_TOKEN"):
+            await tool(issue="PROJ-1", path=str(tmp_path / name))
+        assert name not in uploaded, f"{name} carries a known value and must not be uploaded"
+        assert (tmp_path / name).read_bytes() == data, f"{name} was refused, so it must not be rewritten"
 
 
 @pytest.mark.anyio
@@ -834,6 +823,20 @@ async def test_a_record_from_before_the_gate_round_fields_existed_still_posts(mo
         )
     assert result.is_error is False, f"a pre-change metrics record was refused: {result.content}"
     assert recorder.calls[0][1] == ("PROJ-1", _metrics_comment(**older)), recorder.calls
+
+
+@pytest.mark.anyio
+async def test_a_record_carrying_the_retired_transcript_attachment_still_posts(monkeypatch):
+    """A correction re-posting a record written while transcript upload existed must not be refused."""
+    older = {**ALL_NULLS, "transcript_attachment": None}
+    recorder = _Recorder()
+    monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool(
+            "post-log",
+            {"issue": "PROJ-1", "title": "Claude Code ship metrics", "payload": _metrics_payload(**older)},
+        )
+    assert result.is_error is False, f"a pre-removal metrics record was refused: {result.content}"
 
 
 @pytest.mark.anyio

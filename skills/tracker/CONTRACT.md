@@ -58,7 +58,7 @@ The complete set of tracker operations. An adapter must implement every verb.
 | `post-log` | Post a **standalone** machine log comment from a `title` and a `payload` object, which the tool serialises and fences itself. It can carry nothing else — see below. |
 | `attach-artifact` | Attach a durable file (an HTML, PDF, image, archive or text artifact) to the issue — see below. |
 | `attachment-download` | Fetch an artifact already attached to an issue to a local path, named by filename or the tracker-native id (the disambiguator when two attachments share a filename). |
-| `attachment-update` | Replace the attached artifact of the same filename. Destructive; scrubbed like `attach-artifact`. |
+| `attachment-update` | Replace the attached artifact of the same filename. Destructive; refused like `attach-artifact`. |
 | `link-pr` | Associate a PR with an issue: `human` is a short note that a PR now exists for this work, `agent_detail` is the PR URL. |
 
 ### Every verb is one MCP tool call
@@ -125,7 +125,7 @@ Generate usage from the on-disk transcript tree with the `usage_summarize` tool 
 
 `attach-artifact` uploads a file where the tracker supports it (Jira work-item attachments). Where it does not (GitHub issues have no CLI-scriptable attachment), the adapter substitutes an equivalent durable artifact (a private gist) and links it from a comment. This asymmetry is documented in the adapter's own `ADAPTER.md`, whose "Deliberate asymmetries" section is the list of them. The lifecycle verbs act on whatever the adapter created, so `attachment-download` on a GitHub issue reads the gist back.
 
-`attach-artifact` and `attachment-update` are the two verbs that upload. A text payload gets the same known-value scrub as every tracker text write, rewritten in place when anything is redacted, and the result's `scrub` names the variables it redacted, never a value. A binary payload (an image, a PDF, an archive — a PDF or ZIP counts as binary even when it decodes as UTF-8) is uploaded byte-for-byte and `scrub` says it was not scrubbed, unless it carries a known value verbatim, which is refused since rewriting it would corrupt the file — where the store can hold bytes at all; a store that holds text only refuses it (see the adapter's own `ADAPTER.md`). Never claim an artifact is attached without the tool's response evidence.
+`attach-artifact` and `attachment-update` are the two verbs that upload. Both send the file byte-for-byte and never rewrite it; one that carries a credential value this process holds, verbatim, is refused rather than uploaded, since rewriting it could corrupt a binary format. A store that holds text only refuses a binary payload outright (see the adapter's own `ADAPTER.md`). Never claim an artifact is attached without the tool's response evidence.
 
 ## A comment is immutable; the highest plan version is the plan
 

@@ -15,6 +15,7 @@ Post `# Ship retrospective`. Its `human` part is clear prose:
 - shipped vs plan;
 - divergences and mid-ship decisions — accepted deviations, any parent-resolved `needs-decision`, any memory refutation this run already applied, and any pre-gate-checkpoint outcome (proceeded as-is, or the changes it sent back to BUILD) — and why;
 - what the plan missed;
+- hindsight: knowing what the build showed, whether you would build it the same way from scratch, and what you would change if not;
 - lessons for next `/sy:plan`;
 - a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — when this run surfaced a new team-process decision, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
 - follow-ups.

@@ -13,6 +13,10 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 
 Keep prose (READMEs, roadmaps, docs) clear and unwrapped; keep machine-facing text (agent briefs, contracts, JSON logs) terse and structured. How hard to cut either, and the two tests to cut by, is `skills/shared/references/context-economy.md`; `/sy:tighten` is the pass that applies it to one drafted piece of either kind.
 
+## Declined ideas
+
+Before proposing a change, check `.out-of-scope/`: one file per idea Shipyard deliberately declined, with the reason and every request that raised it. A declined idea can come back when its reason no longer holds; say why and update or delete the file in the same PR. When you decline a proposal for a durable reason, record it there.
+
 ## Comments and docstrings
 
 Two audiences, two places, and the split between them is the whole rule. A **docstring** is written for a caller: what this does and what its contract is, just enough and no more. A **comment** is written for the next person editing this code: the one thing they cannot recover by reading it.

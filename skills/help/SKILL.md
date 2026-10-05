@@ -18,7 +18,8 @@ Every read and grep target below is rooted at `${CLAUDE_PLUGIN_ROOT}` — a norm
 1. `${CLAUDE_PLUGIN_ROOT}/docs/configuration.md` — every setting: layer, default, required?, meaning. Authoritative for "where do I configure X" / "what setting controls Y". For what a given repo *actually* resolves to, call the `show_config` tool rather than quoting a default.
 2. `${CLAUDE_PLUGIN_ROOT}/agent-guide.md` — concepts, install/config walkthrough, **Diagnosis recipes** (symptom → cause → fix).
 3. `${CLAUDE_PLUGIN_ROOT}/README.md`, `${CLAUDE_PLUGIN_ROOT}/docs/usage.md`, `${CLAUDE_PLUGIN_ROOT}/docs/installation.md`, `${CLAUDE_PLUGIN_ROOT}/docs/github-setup.md` — the loop, day-to-day usage, one-time setup.
-4. The specific `${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md` or `${CLAUDE_PLUGIN_ROOT}/agents/<name>.md` the question names or implies — read it directly rather than guessing at its behavior.
+4. `${CLAUDE_PLUGIN_ROOT}/.out-of-scope/` — ideas Shipyard deliberately declined, one file per concept with its reason. Check it for any "why doesn't Shipyard do X" or "can it do X" question before answering that X is missing.
+5. The specific `${CLAUDE_PLUGIN_ROOT}/skills/<name>/SKILL.md` or `${CLAUDE_PLUGIN_ROOT}/agents/<name>.md` the question names or implies — read it directly rather than guessing at its behavior.
 
 If none of the above cover it, grep `${CLAUDE_PLUGIN_ROOT}/skills/` and `${CLAUDE_PLUGIN_ROOT}/agents/` for the topic before giving up.
 

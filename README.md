@@ -52,7 +52,7 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 `/sy:plan` interviews you through `AskUserQuestion`, one question or a small batch at a time, maps the code with read-only agents, and writes a living roadmap onto one Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most a configured cap (`plan.max_active_tasks`) are active at once, and everything further out stays as text until it is close enough to spec. Before the ladder is built, the roadmap's shape goes through a bounded proposer/adversary debate — every time, not only when the shape looks contested — and you steer the disagreement rather than the plan quietly picking one. Re-enter with `/sy:plan <epic>` to read what shipped and reshape the roadmap.
 
-![One Epic contains PR-sized child tasks; four active tasks is the configurable default, and future work stays as text](docs/img/jira-roadmap.png)
+![One Epic contains PR-sized child tasks; a configured cap (`plan.max_active_tasks`) limits how many are active, and future work stays as text](docs/img/jira-roadmap.png)
 
 ### Spec
 

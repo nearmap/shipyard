@@ -1,6 +1,6 @@
 # Explicit merge path
 
-Load only after the user directly authorizes merge. The authorization is the informed go-ahead front-loaded in the handoff `## Action needed` block, which named the follow-on mutations: this path will merge the verified head, reply to any review thread that newly surfaces before merge, apply the retrospective's proposed standards-doc edit when it named one via the bounded-fix sub-flow below, attach the scanned transcript when `transcript.attach` resolves true, and set the task done. Execute exactly those and no more; a mutation the consent point did not name is not covered by this authorization, and the three contingent ones execute only when their trigger actually occurs.
+Load only after the user directly authorizes merge. The authorization is the merge option chosen at the handoff question, or the same go-ahead given in the user's own words, which named the follow-on mutations: this path will merge the verified head, reply to any review thread that newly surfaces before merge, apply the retrospective's proposed standards-doc edit when it named one via the bounded-fix sub-flow below, attach the scanned transcript when `transcript.attach` resolves true, and set the task done. Execute exactly those and no more; a mutation the consent point did not name is not covered by this authorization, and the three contingent ones execute only when their trigger actually occurs.
 
 ## Revalidate
 
@@ -27,10 +27,10 @@ The delta gate runs at the same resolved frontier review model and max effort as
 
 ## Merge
 
-Resolve the configured strategy — `get_config {"key": "ship.merge_strategy"}` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and merge atomically against the verified head:
+Resolve the configured strategy — `get_config {"key": "ship.merge_strategy"}` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and `get_config {"key": "ship.merge_admin"}`, and merge atomically against the verified head, adding `--admin` only when that resolves true:
 
 ```bash
-gh pr merge <pr> --match-head-commit "$VERIFIED_HEAD_SHA" --<resolved strategy>
+gh pr merge <pr> --match-head-commit "$VERIFIED_HEAD_SHA" --<resolved strategy> [--admin]
 ```
 
 For a squash merge, compose the subject and body from the PR's own description per `/sy:pr` §4 rather than letting GitHub concatenate every branch commit subject into the message; a merge/rebase strategy has no subject/body to compose and this step does not apply to it.

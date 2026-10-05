@@ -162,6 +162,10 @@
           "enum": ["squash", "merge", "rebase"],
           "description": "Strategy passed to `gh pr merge`. Only squash composes a subject/body from the PR description; merge and rebase have none to compose."
         },
+        "merge_admin": {
+          "type": "boolean",
+          "description": "Whether an authorized merge passes `--admin` to `gh pr merge`, for a repository whose ruleset the author cannot satisfy alone. It bypasses the ruleset, never CI or review freshness, and never authorizes a merge by itself."
+        },
         "escalation": {
           "type": "object",
           "additionalProperties": false,

@@ -3,12 +3,12 @@ name: pr
 description: >-
   Create, promote, or clean up the GitHub PR for the current branch; keep the description
   brutally short, preserve durable acceptance evidence in comments, and handle review threads.
-  Never carries transcripts — the exported /sy:ship session is attached to the task by /sy:ship,
+  On an explicit `merge`, merge it once CI is green and reviewers are settled. Never carries transcripts — the exported /sy:ship session is attached to the task by /sy:ship,
   not posted to the PR.
-argument-hint: "[optional emphasis or draft]"
+argument-hint: "[optional emphasis, draft, or merge]"
 ---
 
-Create/update the GitHub PR for the **current branch**. `$ARGUMENTS` may provide emphasis or `draft`.
+Create/update the GitHub PR for the **current branch**. `$ARGUMENTS` may provide emphasis, `draft`, or `merge` (§4).
 
 This skill inherits caller model/effort. Assess scope before reading: a handful of short comments can be read directly; long review/thread tails go to `sy:sweep` and return briefs.
 
@@ -86,7 +86,16 @@ Caller reads decisive threads and writes replies. Stage each reply body as a fil
 
 ## 4. Merge (verified-head only)
 
-Merging is `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), not part of the normal create/promote/cleanup flow. Resolve the configured strategy once — `get_config {"key": "ship.merge_strategy"}` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and gate every merge on the exact validated commit regardless of strategy:
+Merging is never part of the create/promote/cleanup flow. Two callers reach it: `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), and `merge` in `$ARGUMENTS` for a PR that never went through `/sy:ship`. That argument is the user's authorization for this one PR, so it counts only when the user typed it or asked for the merge in their own words; never infer it from a request to create or tidy a PR. For it, merge once CI is green and reviewers are settled:
+
+1. wait for CI on the current head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <the PR's base repository> --head <head SHA>`, run in the background); a failure stops and reports;
+2. when `ship.request_ci_reviewer` resolves true and the automated reviewer has not reviewed the current head, request it per §3 and wait in the background for its review of that head, bounded by `ci.poll_timeout`;
+3. reconcile every thread per §3. A thread asking for a code change stops the merge and reports it: this mode pushes nothing;
+4. re-read the head. If it moved since step 1, start again from step 1; otherwise merge that SHA below.
+
+This mode runs no `sy:gate`: the merge rests on CI and on the reviewers the PR already has.
+
+Resolve the configured strategy once — `get_config {"key": "ship.merge_strategy"}` (one of `squash`, `merge`, `rebase`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — and gate every merge on the exact validated commit regardless of strategy:
 
 ```bash
 # squash: compose the message from the PR's own description (§2) rather than accepting GitHub's
@@ -104,7 +113,7 @@ gh pr merge <pr> --rebase --match-head-commit <CI-green + reviewed SHA>
 - `--match-head-commit` aborts the merge if the head moved since validation, so only the reviewed/CI-green commit can land, never a race-pushed one — true for every strategy. Composing a message never relaxes that guard — drop the subject and body before you drop the head match.
 - Only `squash` composes a subject/body; stage it from the description's why plus its summary bullets, so the squashed commit reads as the changelog entry for the change rather than as build noise. `merge` and `rebase` pass neither flag.
 - `gh pr merge -F/--body-file` takes a **plain file path**, a different convention from the `-F key=@file` form used for comment bodies in §3 above; conflating the two silently posts the wrong thing.
-- add `--admin` only to clear a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give), and only with the owner's explicit go-ahead — it bypasses the ruleset, not CI/review freshness.
+- add `--admin` when `ship.merge_admin` resolves true (`get_config {"key": "ship.merge_admin"}`), the repo's standing choice; otherwise only with the owner's explicit go-ahead for this PR. It clears a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give) and bypasses the ruleset, not CI/review freshness.
 
 This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates, and session transcripts belong on the task via `/sy:ship`. End by printing the PR URL and what state change/comment action occurred.
 

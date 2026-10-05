@@ -37,6 +37,7 @@
   "ship": {
     "request_ci_reviewer": true,
     "merge_strategy": "squash",
+    "merge_admin": false,
     "escalation": {
       "max_needs_decision": 3,
       "max_needs_trace": 2,

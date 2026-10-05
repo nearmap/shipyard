@@ -105,6 +105,7 @@ poll() {
 
         if (( head_rc )); then
             downgrade="head read failed for $pr: $head_first"
+            mismatches=0
         elif [[ -n "$head" && "$head_first" != "$head" ]]; then
             downgrade="head $head_first does not match expected $head for $pr"
             mismatches=$(( mismatches + 1 ))
@@ -257,6 +258,14 @@ self_test() {
     _assert_has "(c) disagreement is logged" "$(cat "$tmp/err")" "does not match expected bbb2220000000000000000000000000000000000"
     _assert "(s) a persistently different head exits 3 instead of waiting out the timeout" "$(_poll_rc "$tmp" 99 0 60 --head bbb2220000000000000000000000000000000000)" 3
     _assert "(s) after exactly MISMATCH_POLLS polls" "$(cat "$tmp/state")" "$MISMATCH_POLLS"
+
+    _fake_gh "$tmp/gh" 'v="$(cat "$CI_POLL_FAKE_STATE.view" 2>/dev/null || echo 0)"
+echo $((v + 1)) > "$CI_POLL_FAKE_STATE.view"
+if (( v == 2 )); then echo "gh: transient" >&2; exit 1; fi
+if (( v < 2 || v == 3 )); then echo bbb2220000000000000000000000000000000000; else echo aaa1110000000000000000000000000000000000; fi
+exit 0' "$green"
+    echo 0 > "$tmp/state.view"
+    _assert "(s) an unreadable head breaks the mismatch streak" "$(_poll_rc "$tmp" 99 0 60 --head aaa1110000000000000000000000000000000000)" 0
 
     _fake_gh "$tmp/gh" 'v="$(cat "$CI_POLL_FAKE_STATE.view" 2>/dev/null || echo 0)"
 echo $((v + 1)) > "$CI_POLL_FAKE_STATE.view"

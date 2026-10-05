@@ -88,9 +88,9 @@ Caller reads decisive threads and writes replies. Stage each reply body as a fil
 
 Merging is never part of the create/promote/cleanup flow. Two callers reach it: `/sy:ship`'s explicit-authorization path (`ship/references/merge-accounting.md`), and `merge` in `$ARGUMENTS` for a PR that never went through `/sy:ship`. That argument is the user's authorization for this one PR, so it counts only when the user typed it or asked for the merge in their own words; never infer it from a request to create or tidy a PR. For it, merge once CI is green and reviewers are settled:
 
-1. wait for CI on the current head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <the PR's base repository> --head <head SHA>`, run in the background); a failure stops and reports;
+1. wait for CI on the current head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <the PR's base repository> --head <head SHA>`, run in the background, adding `--allow-no-checks` only for a repository already known to have no CI, never inferred from an empty check set); a failure stops and reports;
 2. when `ship.request_ci_reviewer` resolves true and the automated reviewer has not reviewed the current head, request it per §3 and wait in the background for its review of that head, bounded by `ci.poll_timeout`;
-3. reconcile every thread per §3. A thread asking for a code change stops the merge and reports it: this mode pushes nothing;
+3. reconcile every thread per §3. A thread asking for a code change stops the merge and reports it: this mode pushes nothing. So does a requested review still pending at `ci.poll_timeout`, or any reviewer whose latest review is `CHANGES_REQUESTED`, inline threads or not; `--admin` never bypasses either;
 4. re-read the head. If it moved since step 1, start again from step 1; otherwise merge that SHA below.
 
 This mode runs no `sy:gate`: the merge rests on CI and on the reviewers the PR already has.

@@ -66,7 +66,7 @@ Three disciplines shape the workflow: challenge the decision, independently insp
 
 ### Ship
 
-`/sy:ship <task>` builds the approved plan to a reviewable PR. It branches from fresh `origin/main` into its own worktree, implements the plan in order, discharges each verification obligation with its named evidence, gets CI green, pauses for your look first when the plan declared a pre-gate checkpoint, and runs the immutable gate above. When head, CI-green, and reviewed commits converge, it posts the evidence, moves the task to `in-review`, and stops. You merge; then what shipped feeds the next planning round.
+`/sy:ship <task>` builds the approved plan to a reviewable PR. It branches from fresh `origin/main` into its own worktree, implements the plan in order, discharges each verification obligation with its named evidence, gets CI green, pauses for your look first when the plan declared a pre-gate checkpoint, and runs the immutable gate described below. When head, CI-green, and reviewed commits converge, it posts the evidence, moves the task to `in-review`, and stops. You merge; then what shipped feeds the next planning round.
 
 ![The /sy:ship dispatcher owns state and user decisions; disposable START, BUILD, and GATE workers prepare a reviewable PR](docs/img/ship-states.png)
 

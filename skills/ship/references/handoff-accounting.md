@@ -17,7 +17,7 @@ Post `# Ship retrospective`. Its `human` part is clear prose:
 - what the plan missed;
 - hindsight: knowing what the build showed, whether you would build it the same way from scratch, and what you would change if not;
 - lessons for next `/sy:plan`;
-- a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — when this run surfaced a new team-process decision, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
+- the standards-doc edits this run made in-branch, and a concrete proposed edit to the repo's standards doc — whatever `/sy:standards resolve` names as authority — only for a new team-process decision none of them captured, or "none" otherwise; a proposal lands through the bounded-fix → focused-delta-gate → merge sub-flow in `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md` like any other finding, never special-cased as "just docs";
 - follow-ups.
 
 Its `agent_detail` part is the receipts a later session needs and a reader does not: the PR URL, the coverage SHAs, the CI outcome, and the requested-plus-observed gate coverage. `link-pr`'s durable content lives here rather than in an independent write.

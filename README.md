@@ -1,4 +1,4 @@
-![Shipyard: a roadmap plotted once, above a dry dock that repeats plan → build → launch per task](docs/img/background_1.png)
+![Shipyard harbour: /sy:plan → /sy:spec → /sy:ship](docs/img/background_1.png)
 
 # Shipyard — `/sy:plan → /sy:spec → /sy:ship`
 
@@ -14,7 +14,7 @@ Help me install and configure Shipyard in this repo. Read https://raw.githubuser
 
 Point Shipyard at a task and it produces a PR that is ready to merge: the change is built to an approved plan, CI is green, and an independent reviewer has signed off on the exact commits you are about to merge. Alongside the PR, the ticket carries the full paper trail — the plan it was built against, a retrospective, token and outcome logs, and the session transcript — so the "why" survives long after the diff is gone. Only you merge, and nothing merges without your explicit word.
 
-![The delivery loop](docs/img/delivery-loop.png)
+![Plan the roadmap, then repeat spec, ship, and user-authorized merge per task](docs/img/delivery-loop.png)
 
 ## Why it works this way
 
@@ -22,7 +22,7 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 **The review is adversarial, and it reviews exactly what you'll merge.** A separate `sy:gate` agent — running on a frontier-tier model, in its own read-only checkout pinned to the pushed commits — reviews the plan's obligations and design invariants, not just the diff, and every bug it suspects must survive an attempt to refute it before it is reported. If a fix is pushed, the review scope resets: the PR head, the CI-green commit, and the reviewed commit must be the *same commit* before anything hands off or merges. You are never reviewing one thing and merging another.
 
-![The immutable review gate](docs/img/immutable-gate.png)
+![The GATE controller coordinates CI, independent immutable review, and fixes until the same commit is ready for handoff](docs/img/immutable-gate.png)
 
 **Context holds decisions, not noise.** Reading fifty files to answer one question is fine — but it happens inside a disposable agent, and what comes back is a short brief of pointers backed by checkable evidence, not the raw transcript. The orchestrator stays clear-headed across a long build because it holds compact briefs rather than everything it read. In practice that means sharper decisions late in a task, not just a cheaper one.
 
@@ -52,27 +52,27 @@ Two convictions shape everything, and both exist to earn your trust in the outpu
 
 `/sy:plan` interviews you through `AskUserQuestion`, one question or a small batch at a time, maps the code with read-only agents, and writes a living roadmap onto one Epic. Executable work becomes direct child tasks, each sized to one coherent PR; at most a configured cap (`plan.max_active_tasks`) are active at once, and everything further out stays as text until it is close enough to spec. Before the ladder is built, the roadmap's shape goes through a bounded proposer/adversary debate — every time, not only when the shape looks contested — and you steer the disagreement rather than the plan quietly picking one. Re-enter with `/sy:plan <epic>` to read what shipped and reshape the roadmap.
 
-![The roadmap model](docs/img/jira-roadmap.png)
+![One Epic contains PR-sized child tasks; four active tasks is the configurable default, and future work stays as text](docs/img/jira-roadmap.png)
 
 ### Spec
 
 `/sy:spec <task>` reads the ticket and the code, resolves the repo's engineering standards, and writes a complete plan: the approach and the strongest rejected alternative (pressure-tested by the same proposer/adversary debate, which runs on every plan before sign-off), ordered changes with file anchors, tests and acceptance criteria, and a verification obligation — a claim plus the named evidence that will prove it — for every risk lens the work activates. Before you see it, a separate `sy:spec-gate` reviewer reads the drafted plan for architecture, simplicity and correctness, and for the three things plans quietly omit: which docs the change makes stale, which figures or screenshots need a visual check, and whether a human should look at the result before the independent reviewer does. What you are then asked to approve is a short prose summary — the judgment calls, not the file inventory; the full mechanical plan lands on the ticket as the newest plan version, stamped with the commit it was planned against, once you have said yes. Not every spec ends in a plan: when research shows the premise is already delivered, invalidated, or superseded, spec shelves the task with evidence instead of building on a premise that no longer holds.
 
-![Verification obligations](docs/img/verification-obligations.png)
+![Draft a plan with verification obligations, review it with sy:spec-gate, then obtain user approval](docs/img/verification-obligations.png)
 
 ### Ship
 
 `/sy:ship <task>` builds the approved plan to a reviewable PR. It branches from fresh `origin/main` into its own worktree, implements the plan in order, discharges each verification obligation with its named evidence, gets CI green, pauses for your look first when the plan declared a pre-gate checkpoint, and runs the immutable gate above. When head, CI-green, and reviewed commits converge, it posts the evidence, moves the task to `in-review`, and stops. You merge; then what shipped feeds the next planning round.
 
-![The ship dispatcher](docs/img/ship-states.png)
+![The /sy:ship dispatcher owns state and user decisions; disposable START, BUILD, and GATE workers prepare a reviewable PR](docs/img/ship-states.png)
 
-The diagram shows phase-level sequencing only; it omits every parent-level pause along the way — this one, the START profile guard, `needs-decision` resolution, merge authorization — so a plan that declares no checkpoint runs exactly the arrows shown, and one that does still shows as a plain BUILD→GATE arrow here.
+Arrows show phase order; `/sy:ship` dispatches every worker and owns the optional human checkpoint, handoff, and merge authorization. Within GATE, `sy:ship-gate` coordinates CI, independent `sy:gate` review, and fixes in the build worktree. A new commit requires fresh CI and review coverage. Other decision and escalation paths are omitted.
 
 ## Under the hood
 
 The workflow skills stay small and delegate expensive reads and builds to a fleet of specialist agents, each in its own context with its own model, each returning a compact brief. `/sy:ship` in particular runs each phase — start, build, gate — as a disposable worker, so the orchestrator owns only the durable state and the conversation with you, while the heavy lifting happens in fresh contexts that never accumulate.
 
-![The agent fleet](docs/img/agent-fleet.png)
+![Workflow skills delegate work to specialist agents, which return compact briefs with evidence; ship workers are internal agents, not user commands](docs/img/agent-fleet.png)
 
 The issue tracker is the one pluggable part. Core skills and agents speak a single [tracker contract](skills/tracker/CONTRACT.md) — canonical verbs, five lifecycle statuses (named per repo), and canonical types — and a thin adapter maps that to Jira or to GitHub Projects. The `tracker` config key selects one, and a validator keeps tracker-specific vocabulary out of every core file. The GitHub tracker needs **no organization**: it drives issue Type and Status as Projects v2 fields, which work the same on a personal board.
 

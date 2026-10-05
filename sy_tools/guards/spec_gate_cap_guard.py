@@ -12,8 +12,7 @@ The ledger is one file per session at ~/.claude/shipyard/spec-gate-dispatch-coun
 one JSON line per allowed dispatch, appended with `O_APPEND` so concurrent hook processes cannot lose a
 line. Sessions never share a file, so one session's rounds can never be spent by another.
 
-Failing to reach a decision here allows the dispatch. That is the opposite of `secret_guard.py`'s
-fail-closed stance next door, deliberately: this hook gates the only agent that can review and
+Failing to reach a decision here allows the dispatch, deliberately: this hook gates the only agent that can review and
 disposition a spec, so a wrong deny stops the work outright, while a missed count costs one extra
 review round that the user still sees happen. Every fail-open path therefore reports itself in the
 hook's `systemMessage` — enforcement that has quietly stopped applying is the failure worth naming, and

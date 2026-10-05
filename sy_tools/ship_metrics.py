@@ -63,7 +63,6 @@ class ShipMetricsV1(BaseModel):
     post_merge_defect: bool | None = None
     rollback: bool | None = None
     lead_time_seconds: int | None = None
-    transcript_attachment: str | None = None
 
     @model_validator(mode="after")
     def _task_is_not_blank(self) -> ShipMetricsV1:

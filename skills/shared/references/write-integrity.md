@@ -1,6 +1,6 @@
 # Write integrity
 
-Under auto-mode a skill executes mandated external writes — comments, metrics, attachments, status changes, merges — without a human watching each one. Two failure modes then have no operator to catch them: a record that was true when posted but is no longer, and a write that was denied but still finds a way through.
+Under auto-mode a skill executes mandated external writes — comments, metrics, status changes, merges — without a human watching each one. Two failure modes then have no operator to catch them: a record that was true when posted but is no longer, and a write that was denied but still finds a way through.
 
 **Design invariant (standing; `sy:gate` protects it).** Both rules below hold for every mandated external write, interactive or auto-mode, in every writing skill (`/sy:ship`, `/sy:pr`, `/sy:spec`, `/sy:plan`). They are tracker-agnostic: they constrain how a write is corrected or how a denial is honoured, never which tracker or CLI performs it.
 

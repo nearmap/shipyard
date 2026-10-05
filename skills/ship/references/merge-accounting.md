@@ -1,6 +1,6 @@
 # Explicit merge path
 
-Load only after the user directly authorizes merge. The authorization is the merge option chosen at the handoff question, or the same go-ahead given in the user's own words, which named the follow-on mutations: this path will merge the verified head, reply to any review thread that newly surfaces before merge, apply the retrospective's proposed standards-doc edit when it named one via the bounded-fix sub-flow below, attach the scanned transcript when `transcript.attach` resolves true, and set the task done. Execute exactly those and no more; a mutation the consent point did not name is not covered by this authorization, and the three contingent ones execute only when their trigger actually occurs.
+Load only after the user directly authorizes merge. The authorization is the merge option chosen at the handoff question, or the same go-ahead given in the user's own words, which named the follow-on mutations: this path will merge the verified head, reply to any review thread that newly surfaces before merge, apply the retrospective's proposed standards-doc edit when it named one via the bounded-fix sub-flow below, and set the task done. Execute exactly those and no more; a mutation the consent point did not name is not covered by this authorization, and the two contingent ones execute only when their trigger actually occurs.
 
 ## Revalidate
 
@@ -8,12 +8,9 @@ Load only after the user directly authorizes merge. The authorization is the mer
 2. reconcile every review thread that has surfaced since GATE's last pass — human as well as bot, enumerated by author type per `/sy:pr` §3 — through a `/sy:pr` delegate (added to `agents_used`) that drafts and posts the replies. A thread is never left for the owner to answer by hand; the reply mutation is pre-authorized by the handoff consent point and needs no fresh go-ahead. A thread asking for an actual code change is not a reply-only case: that change routes through the bounded-fix sub-flow below, or re-enters GATE when larger, exactly like any other post-authorization finding. A requested review still pending is waited for in the background up to `ci.poll_timeout`, and any threads it leaves are reconciled the same way; one still pending at that bound, or any reviewer whose latest review is `CHANGES_REQUESTED` with or without inline threads, stops the merge and is reported; `ship.merge_admin` never bypasses either;
 3. verify current head equals `CI_GREEN_SHA` and `REV_REVIEWED_SHA`, and re-read its checks after step 2's wait: a re-run now pending is waited for with the shared poller, and a failing one stops the merge, since a matching SHA alone does not prove the checks still pass;
 4. fetch and compare the current target branch against recorded `TARGET_SHA`. If the target moved: disjoint, uncoupled drift → proceed and note it in the handoff; overlapping or plausibly coupled drift → refresh CI against the current merge result and open a new immutable review scope when reviewed files interact. Target drift never silently downgrades coverage;
-5. verify recorded `REVIEW_BASE_SHA`, requested review model, standalone usage comment, standalone ship-metrics comment, and transcript attachment (full tier);
+5. verify recorded `REVIEW_BASE_SHA`, requested review model, standalone usage comment, and standalone ship-metrics comment;
 6. inspect the usage JSON's `by_agent` entry for `sy:gate` and record the transcript-observed gate model in local state/handoff. If the observed model conflicts with the requested model, stop and investigate rather than claiming the requested reviewer ran;
-7. if the same ship session is active and substantial post-handoff agent work occurred, regenerate full-tree usage JSON and post it as a new standalone log — `post-log` with `title` `Claude Code usage` and the regenerated object as its `payload` — rather than editing it into another comment;
-8. refresh/rescan the transcript attachment when appropriate (full tier). If merge runs in another session, preserve the original ship transcript and record merge execution separately.
-
-Follow the `tracker` skill's attachment flow for the deterministic scan (known-secret scrub, then `gitleaks`), contextual review, redaction, upload, and verification.
+7. if the same ship session is active and substantial post-handoff agent work occurred, regenerate full-tree usage JSON and post it as a new standalone log — `post-log` with `title` `Claude Code usage` and the regenerated object as its `payload` — rather than editing it into another comment.
 
 ## Bounded fix before merge
 

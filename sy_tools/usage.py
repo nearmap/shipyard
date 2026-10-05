@@ -5,8 +5,8 @@ The parser is deliberately tolerant of transcript schema additions. It counts AP
 attached to assistant messages, de-duplicates by message/request id, and scans the main transcript
 plus the documented nested subagent transcript tree.
 
-`summarize()`, `handbacks()` and `render()` are the surfaces the `sy` MCP server exposes as the
-`usage_summarize`, `worker_handbacks` and `export_transcript` tools; `summarize`'s output is compact
+`summarize()` and `handbacks()` are the surfaces the `sy` MCP server exposes as the
+`usage_summarize` and `worker_handbacks` tools; `summarize`'s output is compact
 JSON suitable for a standalone tracker comment. The one command is the hook:
 
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.usage hook
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 # A hook runs this on bare `python`, so the import graph stays stdlib-only and reaches nothing the MCP
 # server needs; the dependency runs one way, `server.py` imports this and never the reverse.
-# `sy_tools/guards/secret_guard.py` is the sibling under the same constraint.
 import argparse
 from collections import defaultdict
 from collections.abc import Iterable
@@ -476,41 +475,6 @@ def handbacks(main: Path) -> dict[str, Any]:
     return result
 
 
-# ---- readable transcript rendering ----
-
-_DEFAULT_RENDER_LIMITS = {"tool_input": 1500, "tool_result": 4000, "thinking": 1200}
-_RENDER_LIMITS: dict[str, int] | None = None
-
-
-def render_limits() -> dict[str, int]:
-    """Per-block character limits for transcript rendering, from `transcript.truncation_limits`.
-
-    Resolved once per process. An unresolvable config, or a non-numeric value, falls back to defaults.
-    """
-    global _RENDER_LIMITS
-    if _RENDER_LIMITS is None:
-        try:
-            # Imported here so the `hook` command, one process per firing that resolves nothing, never pays.
-            from .config import ConfigError
-            from .config import get as config_get
-            _RENDER_LIMITS = {
-                # Leaf keys only (`config._flatten()`), so the whole path never resolves; `int()` on
-                # `get()`'s unchecked `object` is the point — a non-numeric value hits the fallback.
-                key: int(config_get(f"transcript.truncation_limits.{key}"))  # ty: ignore[invalid-argument-type]
-                for key in _DEFAULT_RENDER_LIMITS
-            }
-        except (ConfigError, ValueError, TypeError):
-            _RENDER_LIMITS = dict(_DEFAULT_RENDER_LIMITS)
-    return _RENDER_LIMITS
-
-
-def _truncate(text: str, limit: int) -> str:
-    text = text.rstrip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n[... {len(text) - limit} more chars truncated ...]"
-
-
 def _content_blocks(content: Any) -> Iterable[dict[str, Any]]:
     if isinstance(content, str):
         yield {"type": "text", "text": content}
@@ -545,137 +509,6 @@ def _parsed_json(text: str) -> list[Any]:
     except json.JSONDecodeError:
         return []
     return value if isinstance(value, list) else [value]
-
-
-def _tool_result_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in _content_blocks(content):
-        kind = block.get("type")
-        if kind == "text":
-            parts.append(str(block.get("text", "")))
-        elif kind == "image":
-            parts.append("[image omitted]")
-        else:
-            parts.append(json.dumps(block, separators=(",", ":")))
-    return "\n".join(parts)
-
-
-def _indent(text: str) -> str:
-    return "  " + text.replace("\n", "\n  ")
-
-
-def _render_row(
-    record: dict[str, Any], tool_names: dict[str, str], pending_interjections: dict[str, int], lines: list[str]
-) -> None:
-    ts = str(record.get("timestamp") or "")[:19].replace("T", " ")
-    if record.get("type") == "queue-operation":
-        text = record.get("content")
-        if isinstance(text, str) and text.strip():
-            key = text.strip()
-            if record.get("operation") == "enqueue":
-                pending_interjections[key] = pending_interjections.get(key, 0) + 1
-                lines.append(f"[{ts}] USER (queued interjection)")
-                lines.append(text.rstrip())
-            elif record.get("operation") == "remove" and pending_interjections.get(key):
-                pending_interjections[key] -= 1
-                lines.append(f"[{ts}] (queued interjection above was cancelled before delivery)")
-        return
-    message = record.get("message")
-    if not isinstance(message, dict):
-        return
-    content = message.get("content")
-    if record.get("type") == "assistant":
-        for block in _content_blocks(content):
-            kind = block.get("type")
-            if kind == "text" and str(block.get("text", "")).strip():
-                lines.append(f"[{ts}] ASSISTANT")
-                lines.append(str(block["text"]).rstrip())
-            elif kind == "thinking" and str(block.get("thinking", "")).strip():
-                lines.append(f"[{ts}] (thinking)")
-                lines.append(_indent(_truncate(str(block["thinking"]), render_limits()["thinking"])))
-            elif kind == "tool_use":
-                name = str(block.get("name", "?"))
-                tool_names[str(block.get("id"))] = name
-                args = _truncate(json.dumps(block.get("input", {}), indent=2), render_limits()["tool_input"])
-                lines.append(f"[{ts}] TOOL CALL {name}")
-                lines.append(_indent(args))
-    elif record.get("type") == "user":
-        for block in _content_blocks(content):
-            kind = block.get("type")
-            if kind == "tool_result":
-                name = tool_names.get(str(block.get("tool_use_id")), "?")
-                body = _truncate(_tool_result_text(block.get("content")), render_limits()["tool_result"])
-                lines.append(f"[{ts}] RESULT ({name})")
-                lines.append(_indent(body))
-            elif kind == "text" and str(block.get("text", "")).strip():
-                text = str(block["text"])
-                if pending_interjections.get(text.strip()):
-                    pending_interjections[text.strip()] -= 1
-                    continue
-                lines.append(f"[{ts}] USER")
-                lines.append(text.rstrip())
-
-
-def _first_timestamp(path: Path) -> str:
-    # Ordering only; a read failure here is reported when the section for this transcript is rendered.
-    for record in _iter_jsonl(path, []):
-        ts = record.get("timestamp")
-        if ts:
-            return str(ts)
-    return ""
-
-
-def _agent_header(path: Path, by_path: dict[Path, str]) -> str:
-    agent_type = by_path.get(path.resolve(), "")
-    description = ""
-    meta = path.with_suffix(".meta.json")
-    if meta.is_file():
-        try:
-            info = json.loads(meta.read_text(encoding="utf-8"))
-            agent_type = agent_type or str(info.get("agentType", ""))
-            description = str(info.get("description", ""))
-        except (OSError, json.JSONDecodeError):
-            pass
-    tail = f": {description}" if description else ""
-    return f"SUBAGENT {agent_type or 'subagent'}{tail}  [{path.name}]"
-
-
-def render(main: Path, *, task: str | None) -> str:
-    """One readable transcript for the session: the main session, then each subagent in start order.
-
-    Tool inputs, tool results and thinking blocks are truncated to `render_limits()`.
-    """
-    session_id = _session_id_from_path(main)
-    warnings: list[str] = []
-    transcripts = _discover_transcripts(main, warnings)
-    by_path, _ = _load_agent_map(session_id)
-    main_resolved = main.resolve()
-    subs = sorted(
-        (p for p in transcripts if p != main_resolved),
-        key=lambda p: (_first_timestamp(p), str(p)),
-    )
-
-    out: list[str] = ["# Claude Code session transcript", f"session_id: {session_id}"]
-    if task:
-        out.append(f"task: {task}")
-    out.append(f"transcripts: 1 main + {len(subs)} subagents")
-    out += [f"warning: {w}" for w in sorted(set(warnings))]
-    out.append("")
-
-    sections = [(main_resolved, f"MAIN SESSION {session_id}")]
-    sections += [(p, _agent_header(p, by_path)) for p in subs]
-    for path, header in sections:
-        out += ["=" * 78, header, "=" * 78]
-        tool_names: dict[str, str] = {}
-        pending_interjections: dict[str, int] = {}
-        already_reported = len(warnings)
-        for record in _iter_jsonl(path, warnings):
-            _render_row(record, tool_names, pending_interjections, out)
-        out += [f"warning: {w}" for w in warnings[already_reported:]]
-        out.append("")
-    return "\n".join(out) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:

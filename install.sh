@@ -61,9 +61,6 @@ case "$TRACKER" in
     ;;
 esac
 
-command -v gitleaks >/dev/null 2>&1 || \
-  echo "NOTE: gitleaks not on PATH; the MCP server resolves its own from pixi.lock, so only the off-tool path (running the two sanitisation passes by hand) stops before publish." >&2
-
 # CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes every
 # agent off the resolved one. The validation above already fails on it; this is the clearer message.
 if [[ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]]; then

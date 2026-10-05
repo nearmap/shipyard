@@ -1,8 +1,8 @@
-# Retrospective, token accounting, transcript, and handoff
+# Retrospective, token accounting, and handoff
 
-This phase runs mostly as a worker for the records and accounting. The readable transcript is rendered from the on-disk session tree by a delegate, so no manual `/export` is ever run.
+This phase runs mostly as a worker for the records and accounting.
 
-Create the durable records for the plan's process tier, each as its own tracker comment, never combined: `full` = all four below; `light` = records 1–3 only, with `transcript_attachment: null` in the metrics JSON. The tier never changes CI/review coverage. Record 4 has a second, independent gate on top of tier — see §4. Every record here, and every state brief and handoff record this phase hands on, is written under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
+Create the three durable records below, each as its own tracker comment, never combined. Every record here, and every state brief and handoff record this phase hands on, is written under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
 
 ## Doc-accuracy self-check (before the retro)
 
@@ -81,8 +81,7 @@ Post a second log the same way — `post-log` with `title` `Claude Code ship met
   "gate_false_pass_reason": null,
   "post_merge_defect": null,
   "rollback": null,
-  "lead_time_seconds": null,
-  "transcript_attachment": "ship-session-....txt"
+  "lead_time_seconds": null
 }
 ```
 
@@ -106,23 +105,7 @@ These are settled definitions, not restatements: several of them were being coun
 - `gate_false_pass_reason` — required whenever `gate_false_pass` is not `null`, and rejected as missing otherwise.
 - `post_merge_defect` / `rollback` — also post-hoc, `null` at ship time, corrected the same way.
 - `lead_time_seconds` — merge timestamp (`gh pr view --json mergedAt`) minus `ship_session_started_at` from the state file. Wall-clock delivery time, deliberately **not** a transcript span or a sum of session durations: a run paused overnight took overnight.
-- `transcript_attachment` — the artifact's filename or URL, or `null`. `null` on the `light` tier and whenever `transcript.attach` is false; a skipped call means no artifact exists, so say so rather than inventing a reference.
-
-## 4. Transcript attachment (full tier only, and only when enabled)
-
-This record fires only when both hold: process tier is `full`, and `transcript.attach` resolves true (`get_config {"key": "transcript.attach"}`; see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md` and `docs/configuration.md`). Otherwise skip it exactly as `light` tier does — same `transcript_attachment: null` in the metrics JSON.
-
-When it applies: a HANDOFF delegate (subagent, added to `agents_used`) renders the whole tree — main plus every nested subagent — into one readable file straight from the on-disk session tree:
-
-```
-export_transcript {"session_id": "$SHIP_SESSION_ID", "task": "$TASK_KEY",
-                   "output": "<scratch_dir($TASK_KEY)>/$TASK_KEY-ship-transcript.txt"}
-```
-
-`output` is mandatory and the rendered text is never returned — the file is scanned and uploaded by path, never read back. Token accounting still comes from `usage_summarize`. Run it as late as possible (after an authorized merge) so the captured tail is maximal.
-
-Scan, redact, and upload exactly one attachment — and, when the delegation itself is denied under auto-mode, fall back to the identical `export_transcript` call inline — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/transcript-attach.md` and `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/merge-accounting.md`'s attachment flow.
 
 ## Handoff
 
-Task stays `in-review` until merge. Before reporting, run this phase's end-of-run hygiene assertion: no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing), and this run's recorded worktrees all exist while nothing this run created is unrecorded (recorded build/review worktrees — under the resolved `worktree.root` — remain until an authorized merge cleans them; the primary checkout and any sibling run's worktrees are out of scope; a mismatch in this run's set is drift to fix loudly, not to report around). Report PR URL, tracker status, acceptance state, coverage SHAs/requested+observed gate, start, and build models, usage/metrics comment status, transcript attachment status, and owned-worktree/hygiene status as a status update, then close the turn with one `AskUserQuestion` (Question mode, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`) stating the PR is ready and asking for the merge: merge once CI is green and reviewers are settled (Recommended), which is the explicit merge path's own revalidation, or hold. Name the follow-on mutations in the question: choosing merge means the run will merge the verified head, reply to any review thread that newly surfaces before merge (drafted and posted for you, never left for you to write), apply the proposed standards-doc edit above if the retro named one, attach the scanned transcript if `transcript.attach` resolves true, and set the task done. Under auto-mode this is the one consent point covering all of them, contingent ones included.
+Task stays `in-review` until merge. Before reporting, run this phase's end-of-run hygiene assertion: no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing), and this run's recorded worktrees all exist while nothing this run created is unrecorded (recorded build/review worktrees — under the resolved `worktree.root` — remain until an authorized merge cleans them; the primary checkout and any sibling run's worktrees are out of scope; a mismatch in this run's set is drift to fix loudly, not to report around). Report PR URL, tracker status, acceptance state, coverage SHAs/requested+observed gate, start, and build models, usage/metrics comment status, and owned-worktree/hygiene status as a status update, then close the turn with one `AskUserQuestion` (Question mode, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`) stating the PR is ready and asking for the merge: merge once CI is green and reviewers are settled (Recommended), which is the explicit merge path's own revalidation, or hold. Name the follow-on mutations in the question: choosing merge means the run will merge the verified head, reply to any review thread that newly surfaces before merge (drafted and posted for you, never left for you to write), apply the proposed standards-doc edit above if the retro named one, and set the task done. Under auto-mode this is the one consent point covering all of them, contingent ones included.

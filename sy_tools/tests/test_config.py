@@ -26,7 +26,7 @@ FIXTURE_LAYER = {
     "$schema": "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json",
     "columns": FIXTURE_COLUMNS,
     "models": {"agents": {"sweep": {"model": "opus"}}},
-    "transcript": {"attach": True},
+    "ship": {"merge_admin": True},
     "redaction": {"extra_words": ["bearer"]},
 }
 
@@ -119,7 +119,7 @@ def test_the_whole_layer_chain_merges_in_precedence_order_and_reports_each_key_s
     assert provenance["columns.backlog"] == "repo-committed"
     assert provenance["columns.done"] == "repo-local"
     assert provenance["limits.max_depth_agents"] == "user-global", "a user-global key must reach the merge"
-    assert provenance["transcript.attach"] == "repo-committed"
+    assert provenance["ship.merge_admin"] == "repo-committed"
     assert provenance["ci.poll_timeout"] == "shipped-default"
     assert provenance["worktree.root"] == "derived-default"
     assert set(config._flatten(values)) <= set(provenance), "every resolved key must name a layer"
@@ -148,7 +148,7 @@ def test_resolution_reads_the_layers_of_the_repo_the_project_pointer_names(fixtu
 
 def test_layer_precedence_and_derived_defaults(fixture_repo):
     assert config.get("columns.ready") == "Fixture Ready", "a repo layer must win over the shipped default"
-    assert config.get("transcript.attach") is True
+    assert config.get("ship.merge_admin") is True
     assert config.get("limits.max_depth_agents") == 3, "an unset key must fall through to the shipped default"
     assert config.get("worktree.root") == str(fixture_repo.parent / f"{fixture_repo.name}-worktrees")
     assert config.resolve()[1]["worktree.root"] == "derived-default"

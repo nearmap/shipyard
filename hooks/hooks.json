@@ -11,15 +11,6 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.guards.secret_guard"
-          }
-        ]
-      },
-      {
         "matcher": "Agent|Task",
         "hooks": [
           {

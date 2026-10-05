@@ -35,7 +35,6 @@ TOOL_NAMES = {
     "attachment-update",
     "check_env",
     "create-issue",
-    "export_transcript",
     "find-issues",
     "fingerprint_config",
     "get-issue",
@@ -170,12 +169,8 @@ async def test_initialize_list_and_call_roundtrip():
             assert tool.input_schema["type"] == "object", tool.name
             assert tool.description, f"{tool.name} must document itself to the model"
 
-        attach = next(t for t in listed.tools if t.name == "attach-artifact")
-        assert set(attach.input_schema["required"]) == {"issue", "path"}, attach.input_schema
-        assert attach.input_schema["properties"]["kind"]["default"] == "transcript"
-        assert attach.input_schema["properties"]["process_tier"]["anyOf"][0]["enum"] == ["full", "light"]
-
         schemas = {t.name: t.input_schema for t in listed.tools}
+        assert set(schemas["attach-artifact"]["required"]) == {"issue", "path"}, schemas["attach-artifact"]
         assert set(schemas["create-issue"]["required"]) == {"issue_type", "title"}, schemas["create-issue"]
         assert "required" not in schemas["find-issues"] or not schemas["find-issues"]["required"], (
             "every find-issues filter is optional; a required one makes the tool uncallable as a plain list"
@@ -630,7 +625,7 @@ async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
     and a tool name that does not exist.
     """
     async with mcp.Client(server.mcp) as client:
-        missing_args = await client.call_tool("attach-artifact", {})
+        missing_args = await client.call_tool("get-issue", {})
         assert missing_args.is_error is True, "a tool that could not run must report isError"
 
         unknown = await client.call_tool("ghost", {})
@@ -642,29 +637,56 @@ async def test_a_failing_tool_is_a_tool_result_not_a_protocol_error():
 
 
 @pytest.mark.anyio
-async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch, tmp_path):
+@pytest.mark.parametrize("verb", ["attach_artifact", "attachment_update"])
+async def test_attachment_writers_scrub_text_before_upload_and_pass_binary_through(verb, monkeypatch, tmp_path):
+    """A UTF-8 artifact reaches the adapter already scrubbed; a binary one reaches it byte-for-byte."""
+    secret = "s3cr3t-value-for-the-attachment-test"
+    monkeypatch.setenv("SY_TEST_ATTACH_TOKEN", secret)
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
+    monkeypatch.setattr(server.config, "extra_secret_words", lambda: frozenset())
+    uploaded: dict[str, bytes] = {}
+
+    class _Backend:
+        async def attach_artifact(self, issue: str, path: Path) -> dict:
+            uploaded[path.name] = path.read_bytes()
+            return {"filename": path.name}
+
+        attachment_update = attach_artifact
+
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Backend())
+    tool = getattr(server, verb)
+
+    report = tmp_path / "report.html"
+    report.write_text(f"<p>{secret}</p>", encoding="utf-8")
+    text_result = await tool(issue="PROJ-1", path=str(report))
+    assert secret.encode() not in uploaded["report.html"], "a text artifact must be scrubbed before upload"
+    assert text_result["scrub"]["scrubbed_vars"] == ["SY_TEST_ATTACH_TOKEN"], text_result["scrub"]
+
+    image = tmp_path / "plot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\xff")
+    binary_result = await tool(issue="PROJ-1", path=str(image))
+    assert uploaded["plot.png"] == b"\x89PNG\r\n\x1a\n\xff", "a binary artifact must upload unchanged"
+    assert binary_result["scrub"] == {"scrubbed": False, "reason": "not UTF-8 text"}, binary_result["scrub"]
+
+
+@pytest.mark.anyio
+async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch):
     """No head-of-line blocking: the whole reason the adapters went async.
 
-    A stalled upload wedges every call queued behind it. An unrelated `validate_config` must complete
-    *while the upload is still in flight* — an ordering claim, so it is asserted against a recorded
+    A stalled tracker read wedges every call queued behind it. An unrelated `validate_config` must complete
+    *while the read is still in flight* — an ordering claim, so it is asserted against a recorded
     sequence rather than a duration, which would only ever be flaky.
     """
-    artifact = tmp_path / "artifact.txt"
-    artifact.write_text("already sanitised\n", encoding="utf-8")
     release = anyio.Event()
     order: list[str] = []
 
     class _StalledBackend:
-        async def attach_artifact(self, issue: str, path) -> dict:
-            order.append("upload-start")
+        async def get_issue(self, issue: str) -> dict:
+            order.append("read-start")
             await release.wait()
-            order.append("upload-end")
-            return {"id": "1", "filename": path.name}
+            order.append("read-end")
+            return {"id": issue}
 
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
-    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
-    monkeypatch.setattr(server.config, "extra_secret_words", lambda: ())
-    monkeypatch.setattr(server.secrets, "sanitize", lambda *_a, **_k: {"redactions": 0})
     monkeypatch.setattr(server.tracker, "adapter", lambda: _StalledBackend())
 
     # A server that serialised calls would never reach the release, so without the deadline a
@@ -673,15 +695,13 @@ async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch, tmp_pat
         async with mcp.Client(server.mcp) as client:
             async with anyio.create_task_group() as tasks:
 
-                async def upload() -> None:
-                    result = await client.call_tool(
-                        "attach-artifact", {"issue": "PROJ-1", "path": str(artifact)}
-                    )
+                async def read() -> None:
+                    result = await client.call_tool("get-issue", {"issue": "PROJ-1"})
                     assert result.is_error is False, result.content
-                    order.append("upload-result")
+                    order.append("read-result")
 
-                tasks.start_soon(upload)
-                while "upload-start" not in order:
+                tasks.start_soon(read)
+                while "read-start" not in order:
                     await anyio.sleep(0.01)
 
                 fast = await client.call_tool("validate_config", {})
@@ -690,196 +710,9 @@ async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch, tmp_pat
 
                 release.set()
 
-    assert order.index("fast-result") < order.index("upload-end"), (
-        f"the fast call was blocked behind the stalled upload: {order}"
+    assert order.index("fast-result") < order.index("read-end"), (
+        f"the fast call was blocked behind the stalled read: {order}"
     )
-
-
-@pytest.mark.anyio
-async def test_gate_off_is_a_no_op_skip(monkeypatch):
-    """With `transcript.attach` off, nothing is read, scrubbed, scanned, or uploaded."""
-    def explode(*_args, **_kwargs):
-        raise AssertionError("gate-off must skip before any render/scrub/scan/upload work")
-
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: False)
-    monkeypatch.setattr(server.secrets, "sanitize", explode)
-    monkeypatch.setattr(server.tracker, "adapter", explode)
-
-    result = await server.attach_artifact(issue="PROJ-1", path="/nonexistent/never-opened.txt")
-    assert result == {"attached": False, "skipped": True, "reason": "transcript.attach is false", "issue": "PROJ-1"}
-
-
-@pytest.mark.anyio
-async def test_ship_caller_needs_the_full_process_tier(monkeypatch):
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
-    monkeypatch.setattr(server.secrets, "sanitize", pytest.fail)
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
-
-    result = await server.attach_artifact(
-        issue="PROJ-1", path="/nonexistent/never-opened.txt", caller="ship", process_tier="light"
-    )
-    assert result["skipped"] is True
-    assert "full process tier" in result["reason"]
-
-
-@pytest.mark.anyio
-async def test_sanitize_runs_strictly_before_upload(monkeypatch, tmp_path):
-    """The security contract: the artifact never leaves the machine before the scrub returns.
-
-    Ordering is not observable from `sanitize`'s own tests, so both calls record against one list: a
-    scrub that raises must leave the upload unreached entirely rather than merely unreported.
-    """
-    path = tmp_path / "artifact.txt"
-    path.write_text("nothing secret here\n", encoding="utf-8")
-    calls: list[str] = []
-
-    class _Backend:
-        async def attach_artifact(self, issue: str, artifact) -> dict:
-            calls.append("upload")
-            return {"id": f"{issue}-1", "name": artifact.name}
-
-    def _sanitize(*_args, **_kwargs) -> dict:
-        calls.append("sanitize")
-        return {"redactions": 0}
-
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
-    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
-    monkeypatch.setattr(server.config, "extra_secret_words", lambda: ())
-    monkeypatch.setattr(server.tracker, "adapter", lambda *_a, **_k: _Backend())
-    monkeypatch.setattr(server.secrets, "sanitize", _sanitize)
-
-    result = await server.attach_artifact(issue="PROJ-1", path=str(path))
-    assert result["attached"] is True
-    assert calls == ["sanitize", "upload"], "the artifact must not be uploaded before it is scrubbed"
-
-    def _refuse(*_args, **_kwargs) -> dict:
-        calls.append("sanitize")
-        raise server.secrets.SanitizeError("refusing to upload")
-
-    calls.clear()
-    monkeypatch.setattr(server.secrets, "sanitize", _refuse)
-    with pytest.raises(server.secrets.SanitizeError, match="refusing to upload"):
-        await server.attach_artifact(issue="PROJ-1", path=str(path))
-    assert calls == ["sanitize"], "a failed scrub must not be followed by an upload"
-
-
-@pytest.mark.anyio
-async def test_replacing_an_attachment_scrubs_before_it_uploads_and_honours_the_same_gate(monkeypatch, tmp_path):
-    """`attachment-update` is an upload, so it owes the same two passes and the same gate as `attach-artifact`.
-
-    A second upload path that skipped either would be exactly the hole that putting gate, scrub and
-    upload inside one tool exists to close — and it would be invisible, because the replacement lands
-    looking identical to a sanitised one.
-    """
-    path = tmp_path / "PROJ-1-ship-transcript.txt"
-    path.write_text("already sanitised\n", encoding="utf-8")
-    calls: list[str] = []
-
-    class _Backend:
-        async def attachment_update(self, issue: str, artifact) -> dict:
-            calls.append("upload")
-            return {"issue": issue, "filename": artifact.name, "replaced": 1}
-
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
-    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
-    monkeypatch.setattr(server.config, "extra_secret_words", lambda: ())
-    monkeypatch.setattr(server.secrets, "sanitize", lambda *_a, **_k: calls.append("sanitize") or {"redactions": 0})
-    monkeypatch.setattr(server.tracker, "adapter", lambda: _Backend())
-
-    result = await server.attachment_update(issue="PROJ-1", path=str(path), caller="ship", process_tier="full")
-    assert result["updated"] is True
-    assert calls == ["sanitize", "upload"], "the replacement must not be uploaded before it is scrubbed"
-
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: False)
-    monkeypatch.setattr(server.secrets, "sanitize", pytest.fail)
-    monkeypatch.setattr(server.tracker, "adapter", pytest.fail)
-    skipped = await server.attachment_update(issue="PROJ-1", path=str(path))
-    assert skipped == {
-        "updated": False, "skipped": True, "reason": "transcript.attach is false", "issue": "PROJ-1"
-    }
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("verb", ["attach_artifact", "attachment_update"])
-async def test_an_opaque_payload_reaches_an_upload_only_on_the_declaration_the_caller_passed(
-    monkeypatch, tmp_path, verb
-):
-    """Both uploading verbs owe the same answer for a payload the known-value scrub cannot decode.
-
-    The tool classifies nothing itself: it hands the caller's declaration to `sanitize` and stays
-    ordered behind it, so an undeclared opaque payload leaves the upload unreached on either verb
-    rather than merely unreported — and a verb that dropped the argument would refuse forever, or
-    upload silently, depending on which default it lost.
-    """
-    path = tmp_path / "PROJ-1-ship-transcript.bin"
-    path.write_bytes(b"\x89\xff")
-    calls: list[str] = []
-    declared: list[object] = []
-
-    class _Backend:
-        async def attach_artifact(self, issue: str, artifact) -> dict:
-            calls.append("upload")
-            return {"id": f"{issue}-1", "name": artifact.name}
-
-        async def attachment_update(self, issue: str, artifact) -> dict:
-            calls.append("upload")
-            return {"issue": issue, "filename": artifact.name, "replaced": 1}
-
-    def _sanitize(_artifact, **kwargs: Any) -> dict:
-        declared.append(kwargs.get("allow_opaque"))
-        calls.append("sanitize")
-        if not kwargs.get("allow_opaque"):
-            raise server.secrets.SanitizeError("not UTF-8 text; pass allow_opaque to declare it")
-        return {"opaque": True, "skipped_reason": "not UTF-8 text"}
-
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
-    monkeypatch.setattr(server.config, "adapter_map", lambda: {})
-    monkeypatch.setattr(server.config, "extra_secret_words", lambda: ())
-    monkeypatch.setattr(server.tracker, "adapter", lambda *_a, **_k: _Backend())
-    monkeypatch.setattr(server.secrets, "sanitize", _sanitize)
-    tool = getattr(server, verb)
-
-    with pytest.raises(server.secrets.SanitizeError, match="allow_opaque"):
-        await tool(issue="PROJ-1", path=str(path))
-    assert calls == ["sanitize"], f"an undeclared opaque payload must not be uploaded: {calls}"
-    assert declared == [False], f"the refusing default must be what an unset flag reaches sanitize as: {declared}"
-
-    calls.clear()
-    result = await tool(issue="PROJ-1", path=str(path), allow_opaque=True)
-    assert calls == ["sanitize", "upload"], f"the declaration must not reorder gate, sanitise and upload: {calls}"
-    assert declared[-1] is True, "the declaration must reach sanitize rather than be dropped by the tool"
-    assert result["sanitize"] == {"opaque": True, "skipped_reason": "not UTF-8 text"}, (
-        f"the caller must see the unscanned upload declared in the result: {result}"
-    )
-
-
-@pytest.mark.anyio
-async def test_neither_uploading_verb_offers_the_unscanned_path_by_default():
-    """The flag is the one way past both passes, so its schema default is the whole trust boundary."""
-    async with mcp.Client(server.mcp) as client:
-        schemas = {t.name: t.input_schema for t in (await client.list_tools()).tools}
-    for name in ("attach-artifact", "attachment-update"):
-        schema = schemas[name]
-        assert schema["properties"]["allow_opaque"]["default"] is False, (
-            f"{name} would skip both sanitisation passes for a caller that never asked: {schema}"
-        )
-        assert "allow_opaque" not in schema.get("required", []), (
-            f"{name} must not make every caller answer for an exception it does not need: {schema}"
-        )
-
-
-@pytest.mark.parametrize(
-    ("kind", "caller", "tier", "expected_skip"),
-    [
-        ("transcript", "spec", None, False),   # spec gates on transcript.attach alone
-        ("transcript", "ship", "full", False),
-        ("transcript", "ship", "light", True),
-        ("report", "ship", "light", False),    # a non-transcript artifact is ungated
-    ],
-)
-def test_gate_matrix(monkeypatch, kind, caller, tier, expected_skip):
-    monkeypatch.setattr(server.config, "get", lambda *_a, **_k: True)
-    assert (server._gate_skip_reason(kind, caller, tier) is not None) is expected_skip
 
 
 def _metrics_payload(**fields: Any) -> dict[str, Any]:
@@ -925,7 +758,6 @@ ALL_NULLS = {
     "post_merge_defect": None,
     "rollback": None,
     "lead_time_seconds": None,
-    "transcript_attachment": None,
 }
 """Every optional field explicitly null — the shape a `light`-tier run with nothing yet known posts.
 
@@ -1660,12 +1492,9 @@ async def test_one_scrub_report_counts_every_field_of_a_write_not_just_the_body(
 
 @pytest.mark.anyio
 async def test_a_declared_credential_absent_from_the_environment_is_reported_not_refused(monkeypatch):
-    """`secrets.sanitize` raises on this and a body write must not, because the two cases differ.
+    """A body is composed out of strings this process holds, so a value absent from its environment cannot be in it.
 
-    `sanitize` scrubs a file another process produced, which can hold a value this process never sees,
-    so a clean zero-redaction run there is a false all-clear worth failing on. A body is composed here,
-    out of strings this process holds, so a value absent from this environment cannot be in it. Raising
-    would hard-block every tracker write for anyone whose credential is not exported — the default
+    Raising would hard-block every tracker write for anyone whose credential is not exported — the default
     configuration under CI among them, which exports none.
     """
     monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_UNSET_TOKEN"]})
@@ -1719,8 +1548,7 @@ async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_r
 
     Forcing a sub-floor value in replaces every occurrence of it anywhere in the write, so a
     one-character declared credential redacts every space in the prose — mangling the body to protect a
-    value too short to be one, and disagreeing with `secrets.sanitize`, which treats a sub-floor value
-    as absent and refuses. Dropping it silently is the other half: this path cannot refuse, so a caller
+    value too short to be one. Dropping it silently is the other half: this path cannot refuse, so a caller
     whose exported credential will not be scrubbed has to be told which one.
     """
     monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
@@ -1796,26 +1624,6 @@ async def test_usage_summarize_refuses_when_a_required_agent_is_absent(tmp_path,
         result = await client.call_tool("usage_summarize", {"transcript": str(main), "require_agent": ["slice"]})
     assert result.is_error is True, result.content
     assert "slice" in _text(result), _text(result)
-
-
-@pytest.mark.anyio
-async def test_export_transcript_writes_the_render_and_never_returns_its_text(tmp_path, monkeypatch):
-    """The isolation the attachment flow depends on: the rendered text reaches disk and not the caller."""
-    monkeypatch.setattr(server.usage, "LEDGER_ROOT", tmp_path / "ledger")
-    main = _synthetic_session(tmp_path)
-    destination = tmp_path / "transcript.txt"
-    async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("export_transcript", {
-            "transcript": str(main), "output": str(destination), "task": "PROJ-1",
-        })
-    assert result.is_error is False, result.content
-    written = destination.read_text(encoding="utf-8")
-    assert "MAIN SESSION t1" in written, written
-    assert "rendered body" in written, written
-    assert _payload(result) == {
-        "path": str(destination), "bytes": len(written.encode("utf-8")), "lines": written.count("\n"),
-    }, _payload(result)
-    assert "rendered body" not in str(result), f"the rendered transcript reached the tool result: {result}"
 
 
 def _handback_session(root: Path) -> Path:
@@ -1898,14 +1706,11 @@ async def test_worker_handbacks_reports_an_unresolvable_transcript_as_a_warning(
     [
         ("usage_summarize", {}),
         ("usage_summarize", {"session_id": "t1", "transcript": "/tmp/t1.jsonl"}),
-        ("export_transcript", {"output": "/tmp/out.txt"}),
-        ("export_transcript", {"session_id": "t1", "transcript": "/tmp/t1.jsonl", "output": "/tmp/out.txt"}),
         ("worker_handbacks", {}),
         ("worker_handbacks", {"session_id": "t1", "transcript": "/tmp/t1.jsonl"}),
     ],
     ids=[
-        "summarize-neither", "summarize-both", "export-neither", "export-both",
-        "handbacks-neither", "handbacks-both",
+        "summarize-neither", "summarize-both", "handbacks-neither", "handbacks-both",
     ],
 )
 async def test_the_transcript_tools_take_exactly_one_source(tool, arguments):

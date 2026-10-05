@@ -67,7 +67,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/tomli-2.4.1-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
-      - conda: https://prefix.dev/github-releases/linux-64/gitleaks-8.30.1-hb0f4dca_0.conda
       - conda: https://prefix.dev/github-releases/linux-64/ruff-0.16.1-hb0f4dca_0.conda
       - conda: https://prefix.dev/github-releases/linux-64/ty-0.0.66-hb0f4dca_0.conda
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -134,7 +133,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/tomli-2.4.1-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
-      - conda: https://prefix.dev/github-releases/linux-aarch64/gitleaks-8.30.1-he8cfe8b_0.conda
       - conda: https://prefix.dev/github-releases/linux-aarch64/ruff-0.16.6-he8cfe8b_0.conda
       - conda: https://prefix.dev/github-releases/linux-aarch64/ty-0.0.80-he8cfe8b_0.conda
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -193,7 +191,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/readline-8.3-h68b038d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/tk-8.6.13-hb794df6_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/zstd-1.5.7-h3eecb57_6.conda
-      - conda: https://prefix.dev/github-releases/osx-64/gitleaks-8.30.1-h0dc7051_0.conda
       - conda: https://prefix.dev/github-releases/osx-64/ruff-0.16.1-h0dc7051_0.conda
       - conda: https://prefix.dev/github-releases/osx-64/ty-0.0.66-h0dc7051_0.conda
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -253,7 +250,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/readline-8.3-h46df422_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tk-8.6.13-hd3d0363_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-      - conda: https://prefix.dev/github-releases/osx-arm64/gitleaks-8.30.1-h60d57d3_0.conda
       - conda: https://prefix.dev/github-releases/osx-arm64/ruff-0.16.1-h60d57d3_0.conda
       - conda: https://prefix.dev/github-releases/osx-arm64/ty-0.0.66-h60d57d3_0.conda
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -314,7 +310,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/vc14_runtime-14.51.36247-habf1de7_41.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/vcomp14-14.51.36247-habf1de7_41.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zstd-1.5.7-h534d264_6.conda
-      - conda: https://prefix.dev/github-releases/win-64/gitleaks-8.30.1-h9490d1a_0.conda
       - conda: https://prefix.dev/github-releases/win-64/ruff-0.16.1-h9490d1a_0.conda
       - conda: https://prefix.dev/github-releases/win-64/ty-0.0.66-h9490d1a_0.conda
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -1599,12 +1594,6 @@ packages:
   purls: []
   size: 388453
   timestamp: 1764777142545
-- conda: https://prefix.dev/github-releases/linux-64/gitleaks-8.30.1-hb0f4dca_0.conda
-  sha256: 85e94dc4f428d96c3af3813efcab698c59005f7b57678ce321e46f5486e58c74
-  md5: 594fb7b91eb17c8e550547d180eed896
-  license: MIT
-  size: 7382324
-  timestamp: 1774118985852
 - conda: https://prefix.dev/github-releases/linux-64/ruff-0.16.1-hb0f4dca_0.conda
   sha256: 056bd1e2676802f49fb41cd8f13111dc5e8d4627a72e7fd3d2d8f23757547761
   md5: a22bf0b15c8363912df9c364cdea4fae
@@ -1617,13 +1606,6 @@ packages:
   license: MIT
   size: 10846785
   timestamp: 1785866347563
-- conda: https://prefix.dev/github-releases/linux-aarch64/gitleaks-8.30.1-he8cfe8b_0.conda
-  sha256: 46085a2775171d92b8865bbab53fc94b2b7ecbab7d1c4d88e180a607c7653fcb
-  md5: 9fb2dd152cad10c6176ed097ee5106f0
-  license: MIT
-  run_exports: {}
-  size: 6722040
-  timestamp: 1774119004625
 - conda: https://prefix.dev/github-releases/linux-aarch64/ruff-0.16.6-he8cfe8b_0.conda
   sha256: 5df5bcbee42aec3c5b8ef12e2d81fe5d031c8d9969d0e6a0bca05aafed8982d6
   md5: 2c2b3679b5ce54feb1bcf4a880383879
@@ -1638,12 +1620,6 @@ packages:
   run_exports: {}
   size: 11108125
   timestamp: 1788998555788
-- conda: https://prefix.dev/github-releases/osx-64/gitleaks-8.30.1-h0dc7051_0.conda
-  sha256: 958f4b2efaa114c12522c620c42e701593778504aa87c9fd600937124cc6aba7
-  md5: d464dd0680c4ff34f5242184af67aa52
-  license: MIT
-  size: 7563634
-  timestamp: 1774118957900
 - conda: https://prefix.dev/github-releases/osx-64/ruff-0.16.1-h0dc7051_0.conda
   sha256: 461e6be7aa8f67bdbf6f76337216f2f6fe6a31fe771bfd3880f5f0a409820150
   md5: 1f83f0416fd5d03a72613bf10cb5fdb6
@@ -1656,12 +1632,6 @@ packages:
   license: MIT
   size: 10195486
   timestamp: 1785866376452
-- conda: https://prefix.dev/github-releases/osx-arm64/gitleaks-8.30.1-h60d57d3_0.conda
-  sha256: 6abf2767cc34df4c047d8bb837aa63c536eb2c6206ac0f8d6947eca94d5a5f0f
-  md5: 558dcc6343af46761ef17c6f50f0697a
-  license: MIT
-  size: 7087517
-  timestamp: 1774118995447
 - conda: https://prefix.dev/github-releases/osx-arm64/ruff-0.16.1-h60d57d3_0.conda
   sha256: f70febe5cd60f66f67da8c2376d1ec146b10d72801c6f933670b54236a492ba0
   md5: 8fee8342ddff91fdeb854765bfe67ae0
@@ -1674,12 +1644,6 @@ packages:
   license: MIT
   size: 9727817
   timestamp: 1785866330101
-- conda: https://prefix.dev/github-releases/win-64/gitleaks-8.30.1-h9490d1a_0.conda
-  sha256: 23bf84e205a564b6f1aa2b974d11794bbfa841f76f948e083957aecf2be3744e
-  md5: aaab7a516659c3d9bb2a8415c82775d5
-  license: MIT
-  size: 7573572
-  timestamp: 1774118976882
 - conda: https://prefix.dev/github-releases/win-64/ruff-0.16.1-h9490d1a_0.conda
   sha256: 72c27bbf4e5e0e0e2345fb86f8020ac0d7eeef3f1f1bc369fea261a1e229c569
   md5: e2f7aed925375c6c77e1f0696c176c6a

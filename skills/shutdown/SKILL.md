@@ -24,7 +24,7 @@ Only when a ticket is named or inferred from the current branch, run the tracker
 - **Branches.** For each `<ticket>/` branch, `gh pr list --head <branch> --state all --json state,headRefOid`; its tip is recoverable only if it equals a merged PR's `headRefOid`, or is an ancestor of `origin/main` or of the MVP ledger's newest harvest SHA (`git merge-base --is-ancestor <branch> <ref>`).
 - **In-flight `/sy:ship`.** `ship-state.yaml` exists in the ticket's scratch dir and its `pr:` is unset or not yet merged (`gh pr view <pr> --json state`).
 - **MVP ticket.** `get-issue` it: the newest `# MVP ledger` entry's whole `agent_detail`, its open hold and harvest SHA included, and whether a `# MVP coverage manifest` exists. A Task carrying a `# MVP reference` comment brings its MVP ticket into scope the same way, for the MVP branch alone.
-- **MVP branch.** When a manifest exists, `get-issue` every Task it names: the MVP branch is retired only when all of them are done and its remote head equals the newest harvest SHA.
+- **MVP branch.** When a manifest exists, `get-issue` every Task named by any manifest: the MVP branch is retired only when all of them are done, no manifest row is owned by a named group, a manifest is newer than the newest `harvest` ledger entry, and its remote head equals the newest harvest SHA.
 
 ## 3. Kept, never deleted
 

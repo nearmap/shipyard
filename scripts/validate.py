@@ -1175,7 +1175,7 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
             if efforts.index(effort.group(1)) < efforts.index(floor["min_effort"]):
                 fail(
                     f"{p.relative_to(ROOT)}: effort {effort.group(1)!r} is below the declared floor "
-                    f"{floor['min_effort']!r}; effort cannot be raised at dispatch, so frontmatter is the floor",
+                    f"{floor['min_effort']!r}; frontmatter is the fallback when a dispatch passes no effort",
                     errors,
                 )
         floor_model = tiers.get(floor.get("min_model"), floor.get("min_model"))
@@ -1996,8 +1996,8 @@ def check_invariants(errors: list[str]) -> None:
     dispatch_ref = read("skills/shared/references/model-dispatch.md")
     if "does not inherit a model override" not in dispatch_ref:
         fail("model-dispatch must state that a nested Agent call does not inherit a model override", errors)
-    if "no effort parameter on the `Agent` tool" not in dispatch_ref:
-        fail("model-dispatch must state plainly that effort cannot be set at dispatch time", errors)
+    if "`effort` parameter" not in dispatch_ref or "inherit an effort override" not in dispatch_ref:
+        fail("model-dispatch must state that effort is passed as the Agent `effort` parameter and is not inherited", errors)
     if 'agent_model {"name": "<agent-name>"}' not in dispatch_ref:
         fail("model-dispatch must resolve the model through the agent_model tool", errors)
     for name, text in (
@@ -2117,8 +2117,8 @@ def check_invariants(errors: list[str]) -> None:
         fail("ship invariants must resolve START and BUILD models explicitly as Agent model overrides", errors)
     for name, text, phase in (("start-resume", start, "start"), ("implementation", impl, "build")):
         tokens = (
-            f"{phase.upper()}_MODEL", f"{phase}_model_requested", f"{phase}_model_observed",
-            "Agent invocation", "model override",
+            f"{phase.upper()}_MODEL", f"{phase.upper()}_EFFORT", f"{phase}_model_requested",
+            f"{phase}_model_observed", "Agent invocation", "model override",
         )
         missing = [t for t in tokens if t not in text]
         if missing:

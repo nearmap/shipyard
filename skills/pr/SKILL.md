@@ -116,4 +116,4 @@ gh pr merge <pr> --rebase --match-head-commit <CI-green + reviewed SHA>
 
 This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates. End by printing the PR URL and what state change/comment action occurred.
 
-Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.
+Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

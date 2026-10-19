@@ -47,6 +47,7 @@ Inspect the JSON before posting:
 - name one `require_agent` entry per directly used agent in `agents_used`; the call must fail if any is absent;
 - `by_agent` must include nested agents when present;
 - totals must not be manually reconstructed or inferred.
+- an `output_unfinalized:<n>` warning is informational and stops nothing: those requests' output is the recorded placeholder plus a separate `output_tokens_estimated`, never folded into `output_tokens`.
 
 Post it with `post-log`, never `post-comment`:
 

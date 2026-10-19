@@ -9,7 +9,7 @@ Load only after the user directly authorizes merge. The authorization is the mer
 3. verify current head equals `CI_GREEN_SHA` and `REV_REVIEWED_SHA`, and re-read its checks after step 2's wait: a re-run now pending is waited for with the shared poller, and a failing one stops the merge, since a matching SHA alone does not prove the checks still pass;
 4. fetch and compare the current target branch against recorded `TARGET_SHA`. If the target moved: disjoint, uncoupled drift → proceed and note it in the handoff; overlapping or plausibly coupled drift → refresh CI against the current merge result and open a new immutable review scope when reviewed files interact. Target drift never silently downgrades coverage;
 5. verify recorded `REVIEW_BASE_SHA`, requested review model, standalone usage comment, and standalone ship-metrics comment;
-6. inspect the usage JSON's `by_agent` entry for `sy:gate` and record the transcript-observed gate model in local state/handoff. If the observed model conflicts with the requested model, stop and investigate rather than claiming the requested reviewer ran;
+6. inspect the usage JSON's `by_agent` entry for `sy:gate` and record the transcript-observed gate model and `efforts` in local state/handoff. If the observed model or effort conflicts with the requested one, stop and investigate rather than claiming the requested reviewer ran;
 7. if the same ship session is active and substantial post-handoff agent work occurred, regenerate full-tree usage JSON and post it as a new standalone log — `post-log` with `title` `Claude Code usage` and the regenerated object as its `payload` — rather than editing it into another comment.
 
 ## Bounded fix before merge

@@ -9,16 +9,16 @@ Rendered figures, screenshots, plots, and marketing visuals carry large image-to
 Resolve once, live through the resolver rather than from this file:
 
 ```
-IMAGE_MODEL = the model `agent_model {"name": "img-inspector"}` reports
+IMAGE_MODEL, IMAGE_EFFORT = the model and effort `agent_model {"name": "img-inspector"}` reports
 ```
 
-Pass `IMAGE_MODEL` as the `sy:img-inspector` Agent invocation's **model override**, not merely as prompt text, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. It is a quality floor, not a cost dial, and `config/floors.json` enforces that rather than this sentence alone.
+Pass `IMAGE_MODEL` and `IMAGE_EFFORT` as the `sy:img-inspector` Agent invocation's **model override** and `effort` parameter, not merely as prompt text, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. It is a quality floor, not a cost dial, and `config/floors.json` enforces that rather than this sentence alone.
 
 ## Fan out
 
 When a step generates, regenerates, selects among, or reviews images:
 
-1. Resolve `IMAGE_MODEL` (above).
+1. Resolve `IMAGE_MODEL` and `IMAGE_EFFORT` (above).
 2. For each candidate, or the whole set when one verdict suffices, dispatch `sy:img-inspector` with the image path(s), the specific inspection task, and the shape of verdict you need: e.g. "does this figure show `<intended story>`", "does the plot match `<data>`", "is any label clipped or unreadable". Cheap inspections fan out in parallel.
 3. Add `sy:img-inspector` to `agents_used`.
 4. Read back only the text verdicts. They drive the accept / regenerate / reselect decision; the pixels never enter your context.

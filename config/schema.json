@@ -96,7 +96,7 @@
         },
         "agents": {
           "type": "object",
-          "description": "Per-agent bindings. `model` is either a tier name or a concrete model alias, resolved at dispatch. `effort` is policy the resolver clamps and validates; per-agent effort is NOT settable at dispatch time (see docs/configuration.md).",
+          "description": "Per-agent bindings. `model` is either a tier name or a concrete model alias, resolved at dispatch. `effort` is resolved and clamped the same way and passed as the Agent invocation's `effort` parameter (see docs/configuration.md).",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,

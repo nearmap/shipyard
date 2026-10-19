@@ -61,10 +61,10 @@ case "$TRACKER" in
     ;;
 esac
 
-# CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter, so it silently reroutes every
-# agent off the resolved one. The validation above already fails on it; this is the clearer message.
+# CLAUDE_CODE_SUBAGENT_MODEL outranks the per-invocation model parameter on Claude Code before 2.1.251, or when
+# CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1, so it silently reroutes every agent off the resolved one. The validation above already fails on it; this is the clearer message.
 if [[ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]]; then
-  echo "ERROR: CLAUDE_CODE_SUBAGENT_MODEL is set; it outranks resolved per-agent models and would reroute the reviewer, the image inspector, and the debate. Unset it." >&2
+  echo "ERROR: CLAUDE_CODE_SUBAGENT_MODEL is set; it outranks the per-invocation model parameter on Claude Code before 2.1.251, or when CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1, and would reroute the reviewer, the image inspector, and the debate. Unset it." >&2
   exit 1
 fi
 

@@ -14,16 +14,16 @@ A seeded memory anchor this phase's own direct observation contradicts is handle
 
 ## Resolve build model
 
-Parent-owned, resolved once before BUILD is dispatched (this worker never picks its own model), from the plan's ship profile and the resolver, live (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
+Parent-owned, resolved once before BUILD is dispatched (this worker never picks its own model or effort), from the plan's ship profile through the resolver, live (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
 ```
-BUILD_MODEL          = <the plan's stated BUILD model, literally, or the value `get_config {"key": "models.tiers.frontier"}` reports when it states "frontier">
-BUILD_MODEL_FALLBACK = the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
+BUILD_MODEL, BUILD_EFFORT                   = the model and effort `agent_model {"name": "ship-build", "model": <the plan's stated BUILD model>, "effort": <the profile's effort; omit when the profile states none>}` reports
+BUILD_MODEL_FALLBACK, BUILD_EFFORT_FALLBACK = the same call with `"model"` set to the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
 ```
 
-Pass `BUILD_MODEL` as the Agent invocation's **model override** and record/reconcile it as `build_model_requested`/`build_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — clamped up to `ship-build`'s `standard` floor in `config/floors.json` (`opus` by default) rather than resolved via a generic `agent_model` call, since this phase's model comes from the plan's stated profile instead. The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
+Pass `BUILD_MODEL` and `BUILD_EFFORT` as the Agent invocation's **model override** and `effort` parameter and record/reconcile them as `build_model_requested`/`build_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; the resolver has already clamped both to `ship-build`'s floor. The parent also states the resolved `BUILD_MODEL` in BUILD's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
 
-If BUILD cannot run at the requested model, re-dispatch once at `BUILD_MODEL_FALLBACK` clamped up to the `opus` floor and set `build_model_observed` to the model that actually ran, per model-dispatch.md's "Unavailability falls back once". A plan written in the old single-word profile format, or one whose BUILD tier is otherwise ambiguous, is never guessed upward: it resolves to the `opus` floor.
+If BUILD cannot run at the requested model, re-dispatch once at `BUILD_MODEL_FALLBACK` and `BUILD_EFFORT_FALLBACK` and set `build_model_observed` to the model that actually ran, per model-dispatch.md's "Unavailability falls back once". A plan written in the old single-word profile format, or one whose BUILD tier is otherwise ambiguous, is never guessed upward: the call omits `model`, so it resolves to `ship-build`'s configured binding, clamped to its floor (`opus` by default).
 
 ## Delegated slice protocol
 
@@ -46,7 +46,7 @@ At the very start of any continuation, before resuming at the next pending slice
 
 After integration, run acceptance tests and standards-required formatter/linter/type checks; route verbose runs (full suite, linters, type checks) through logs in the task's resolved scratch directory — `scratch_dir($TASK_KEY)` throughout this reference means the `path` the `scratch_dir` tool reports for `{"identifier": "$TASK_KEY"}` — and read back only failures and summary lines. Discharge every verification obligation with its named evidence; an undischargeable obligation returns to `/sy:spec`. Where acceptance criteria describe observable behaviour, execute the behaviour (a runner kept in that same directory is fine) and capture the output as acceptance evidence — tests alone discharge only test-shaped criteria.
 
-When a plan step produces, regenerates, or selects among images (figures, screenshots, plots, marketing visuals), inspect them by fanning out to `sy:img-inspector` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`: resolve `IMAGE_MODEL` as the model `agent_model {"name": "img-inspector"}` reports, dispatch the inspector with the path(s) and the inspection task, add it to `agents_used`, and record the returned text verdicts as the figure's acceptance evidence. Never `Read` a raw image into the build context; the text verdicts drive accept / regenerate / reselect.
+When a plan step produces, regenerates, or selects among images (figures, screenshots, plots, marketing visuals), inspect them by fanning out to `sy:img-inspector` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`: resolve `IMAGE_MODEL` and `IMAGE_EFFORT` as the model and effort `agent_model {"name": "img-inspector"}` reports, dispatch the inspector with the path(s) and the inspection task, add it to `agents_used`, and record the returned text verdicts as the figure's acceptance evidence. Never `Read` a raw image into the build context; the text verdicts drive accept / regenerate / reselect.
 
 Every doc the plan names in `docs requiring updates` is a verification obligation on the same footing: before the draft PR, either update it in this branch or read it and confirm on inspection it is already accurate, and record for each named doc which of the two applied plus that branch's evidence: the commit/diff that updated it, or — for "already accurate" — the `path:line-line` span the confirming read covered. "I checked it" with no span named is not evidence. The field is not a hint for incidental doc-sync: a named doc left neither updated nor inspected is an undischarged obligation.
 

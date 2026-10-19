@@ -23,4 +23,4 @@ Authority order is always: dedicated repo standards skill → repository-maintai
 
 Keep returns compact and source-pointed. Human-facing plans may explain unusual constraints clearly; agent-facing standards contracts contain only task-relevant rules, primitives, lenses, and conflicts.
 
-Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.
+Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

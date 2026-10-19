@@ -4,8 +4,8 @@ This phase runs as the `sy:ship-start` worker and returns the state brief per th
 
 1. The parent supplies the plan file's absolute path and its pin (`plan_comment_id`, `plan_version`) in this worker's dispatch prompt, having already materialised it with `plan_file` before dispatching anything (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router). Read `PLAN_BASE_SHA` and the `pre-gate checkpoint` channel out of that file. This worker holds no tracker read and never selects a plan itself: the version selection and its refusals are the tool's (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § Invariants).
 2. Sibling interfaces and blockers off the parent Epic, when the parent's dispatch prompt states them, land here rather than via a fresh read: this worker holds no tracker read and never points `sy:sweep` at one, so an instruction to go read the Epic here would be dead. Unlike `START_MODEL`, nothing obliges the parent to supply this: a dispatch that omits it leaves this worker with none, which is not a resume failure.
-3. Ship profile (the plan's explicit per-phase models, plus effort) is a parent precondition verified before dispatch; if the parent's own running session is below plan it stops and asks via `AskUserQuestion` (raise the profile / proceed at plan floor / other) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. That check concerns the parent's own session tier only; how each phase's model reaches its worker is the separate dispatch mechanism in `## Resolve start model` below. The profile floors worker models (may raise, never lower, so BUILD keeps its opus tier) and sets worker effort to match the work; it never lowers review effort (`sy:gate` stays max). Do not prompt the user from the worker.
-4. Resolve standards in the `repo-standards` delegate (running `/sy:standards resolve <task scope>` at the model `agent_model {"name": "repo-standards"}` reports, added to `agents_used`) that returns only the retained contract — authority, implementation contract, primitives, risk lenses; rule-file reads stay out of the ship context.
+3. Ship profile (the plan's explicit per-phase models, plus effort) is a parent precondition verified before dispatch; if the parent's own running session is below plan it stops and asks via `AskUserQuestion` (raise the profile / proceed at plan floor / other) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. That check concerns the parent's own session tier only; how each phase's model reaches its worker is the separate dispatch mechanism in `## Resolve start model` below. The profile floors worker models (may raise, never lower, so BUILD keeps its opus tier), and its effort applies to START and BUILD through the resolver; review effort is never lowered (`sy:gate` stays max). Do not prompt the user from the worker.
+4. Resolve standards in the `repo-standards` delegate (running `/sy:standards resolve <task scope>` at the model and effort `agent_model {"name": "repo-standards"}` reports, added to `agents_used`) that returns only the retained contract — authority, implementation contract, primitives, risk lenses; rule-file reads stay out of the ship context.
 5. Read durable cross-session memory — `memory_list` (or `memory_search` on the tools/surfaces the task touches) per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`; a lesson that bears on the task enters the state brief as a known anchor. A known anchor this phase's own direct observation already contradicts is never carried forward as if it still held: author it as a `MEMORY_REFUTE` candidate in the return block and record it to `memory_refutations` in state, for the parent to apply.
 6. Load `ship-state.yaml` from the task's resolved scratch directory — `scratch_dir {"identifier": "$TASK_KEY"}`, whose reported `path` is that directory — if present. Draining any `memory_refutations` the loaded state still carries is the parent's own pre-dispatch step (`${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` § State router), never this worker's, which holds no memory write.
 
@@ -21,16 +21,16 @@ Suggest, as a single optional aside (not an `## Action needed` block, per `${CLA
 
 ## Resolve start model
 
-Parent-owned, resolved once before START is dispatched (this worker never picks its own model), from the plan's ship profile and the actual process environment:
+Parent-owned, resolved once before START is dispatched (this worker never picks its own model or effort), from the plan's ship profile through the resolver, live (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`):
 
 ```
-START_MODEL          = <the plan's stated START model, literally, or the value `get_config {"key": "models.tiers.frontier"}` reports when it states "frontier">
-START_MODEL_FALLBACK = the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
+START_MODEL, START_EFFORT                   = the model and effort `agent_model {"name": "ship-start", "model": <the plan's stated START model>, "effort": <the profile's effort; omit when the profile states none>}` reports
+START_MODEL_FALLBACK, START_EFFORT_FALLBACK = the same call with `"model"` set to the value `get_config {"key": "models.tiers.frontier_fallback"}` reports
 ```
 
-Pass `START_MODEL` as the Agent invocation's **model override** and record/reconcile it as `start_model_requested`/`start_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md` — clamped up to `ship-start`'s `cheap` floor in `config/floors.json` (`sonnet` by default) rather than resolved via a generic `agent_model` call, since this phase's model comes from the plan's stated profile instead. The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
+Pass `START_MODEL` and `START_EFFORT` as the Agent invocation's **model override** and `effort` parameter and record/reconcile them as `start_model_requested`/`start_model_observed` per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; the resolver has already clamped both to `ship-start`'s floor. The parent also states the resolved `START_MODEL` in START's dispatch prompt alongside the model override, since the worker's own state brief carries no field for it.
 
-If START cannot run at the requested model, re-dispatch once at `START_MODEL_FALLBACK` clamped up to the `sonnet` floor and set `start_model_observed` to the model that actually ran, per model-dispatch.md's "Unavailability falls back once". A plan written in the old single-word profile format, or one whose START tier is otherwise ambiguous, is never guessed upward: it resolves to the `sonnet` floor.
+If START cannot run at the requested model, re-dispatch once at `START_MODEL_FALLBACK` and `START_EFFORT_FALLBACK` and set `start_model_observed` to the model that actually ran, per model-dispatch.md's "Unavailability falls back once". A plan written in the old single-word profile format, or one whose START tier is otherwise ambiguous, is never guessed upward: the call omits `model`, so it resolves to `ship-start`'s configured binding, clamped to its floor.
 
 ## Fresh run
 
@@ -59,7 +59,7 @@ reviewed_sha: null
 target_sha: null
 review_model_requested: null
 review_model_observed: null
-review_effort: max
+review_effort: <the effort `agent_model {"name": "gate"}` reports>
 start_model_requested: <resolved START_MODEL>
 start_model_observed: null
 build_model_requested: null

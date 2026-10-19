@@ -47,7 +47,7 @@ The MVP session builds directly; these run beside it, never in place of the user
 - `sy:img-inspector` for any screenshot or rendered visual (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`);
 - `/sy:ci` for a pushed branch's CI.
 
-Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.
+Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.
 
 ## State router
 

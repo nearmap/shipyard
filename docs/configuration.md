@@ -54,7 +54,7 @@ show_config {}
 | `ci.poll_interval` | no | Seconds between CI poll attempts. |
 | `models.tiers.*` | no | Named tiers mapped to concrete model aliases. |
 | `models.agents.<name>.model` | no | Which tier or model an agent runs at. **Live at dispatch.** |
-| `models.agents.<name>.effort` | no | Effort policy for an agent. **Not applied at dispatch** — see [Effort](#effort-is-not-a-runtime-knob). |
+| `models.agents.<name>.effort` | no | Effort an agent is dispatched at, clamped to its floor — see [Effort](#effort-is-set-per-dispatch). |
 | `limits.max_depth_agents` | no | Cross-cutting cap on simultaneous depth-investigation subagents (`sy:trace`/`sy:hunt`/etc.) in flight per phase — `/sy:ship`, `/sy:spec`, `/sy:spike`, `/sy:mvp`, and `sy:gate` all read this one key. |
 | `plan.max_active_tasks` | no | Cap on `/sy:spec`-ready Tasks a roadmap keeps active under one Epic at once. `/sy:plan` and the `/sy:mvp` harvest read it. |
 | `spec.max_spec_gate_rounds` | no | How many times `/sy:spec` may dispatch `sy:spec-gate` for the same session before the guard denies a further dispatch and the session must stop and ask you how to proceed. Per session, not per plan — a session that runs `/sy:spec` on two tickets in a row shares one budget. A dispatch consumes a round even if later aborted. |
@@ -119,7 +119,7 @@ Tiers exist so that raising the frontier tier is one edit rather than one per ag
 }
 ```
 
-An agent's `model` is either a tier name or a concrete alias (`haiku`, `sonnet`, `opus`, `fable`). Shipped defaults are in `config/defaults.json`. Resolution happens at dispatch: the resolved value is passed as the `Agent` invocation's model override, so it takes effect on the next dispatch with no restart.
+An agent's `model` is either a tier name or a concrete alias (`haiku`, `sonnet`, `opus`, `fable`). Shipped defaults are in `config/defaults.json`. Resolution happens at dispatch: the resolved model and effort are passed as the `Agent` invocation's `model` and `effort` parameters, so they take effect on the next dispatch with no restart.
 
 ### Floors are enforced, not advised
 
@@ -137,21 +137,25 @@ silently weakens every verdict. Cost-scaling may raise a floor, never lower it.
 
 Most agents have permissive floors, so economising is expected — `{"models": {"agents": {"hunt": {"model": "cheap"}}}}` is fine. The reviewer is the exception.
 
-### Effort is not a runtime knob
+### Effort is set per dispatch
 
-**There is no `effort` parameter on the `Agent` tool.** A subagent's effort comes only from its definition frontmatter, which Claude Code parses when the plugin loads — before any substitution pass runs. So:
+The `Agent` tool takes an `effort` parameter (Claude Code 2.1.292 and later), so effort resolves and dispatches exactly like model: `agent_model` reports the agent's `models.agents.<name>.effort`, clamped up to its `min_effort` floor, and the dispatch passes that value. A caller with its own source of truth — a ship profile's effort — passes it as `agent_model`'s `effort` argument and gets the same clamp. So:
 
-- `models.agents.<name>.effort` is **policy the resolver validates and clamps**. It records intent and enforces floors. It does not change what runs.
-- Changing it and reloading changes nothing about a dispatch. Do not expect otherwise.
-- Per-agent effort cannot vary per repo at all. Frontmatter ships with the plugin.
-
-This is a limitation of the current runtime, stated plainly rather than papered over, and not a design choice: dynamic per-agent effort is wanted, and the resolver will apply `models.agents.<name>.effort` at dispatch as soon as Claude Code accepts an effort per invocation. Claude Code's native plugin config (`userConfig`) is not a way around it: `${user_config.KEY}` does not substitute inside agent frontmatter — the load-time validator receives the literal string and rejects it — and `pluginConfigs` is ignored from project settings anyway, so it could never carry a per-repo value.
+- changing `models.agents.<name>.effort` and reloading changes the next dispatch, never a running agent;
+- frontmatter `effort:` is only the fallback when a dispatch passes none, and it must not sit below the floor;
+- precedence is `CLAUDE_CODE_EFFORT_LEVEL`, then the per-dispatch parameter, then frontmatter, then the session's effort, and the `maxEffortLevel` setting caps all of them — which is why `validate_config` fails when `CLAUDE_CODE_EFFORT_LEVEL` is set;
+- the effort an agent actually ran at is the `efforts` list on its `by_agent` row of the `usage_summarize` roll-up.
 
 One related trap the resolver does guard: effort is silently dropped for a model Claude Code does not treat as effort-capable, so an agent pinned to such a model loses its declared effort with no error and inherits the session's. Binding an agent with a declared effort to a non-effort-capable model is refused by name.
 
 ### Evidence, and a rejected alternative
 
-Recorded so neither is re-derived. Verified against Claude Code 2.1.220:
+Recorded so neither is re-derived. Verified against Claude Code 2.1.303, reading each subagent request's recorded effort:
+
+- `effort` passed on an `Agent` call wins over frontmatter (`low` and `max` on a `high`-frontmatter agent ran at `low` and `max`), alongside a passed `model`.
+- A depth-2 dispatch passing no effort under a `medium` parent ran at its own frontmatter's `high`: nested calls inherit no effort override.
+
+Verified against Claude Code 2.1.220:
 
 - An agent declaring `effort: ${user_config.KEY}` is **rejected at plugin load**, with the validator quoting the raw literal (`has invalid effort '${user_config.PROBE_EFFORT}'`). Substitution therefore happens after frontmatter is parsed into the agent registry, so it cannot reach frontmatter at all. The docs only ever promised "skill and agent *content*", and say "frontmatter" explicitly elsewhere when they mean it.
 - Frontmatter `model:` is **not** validated at load, so silence about a bad model there proves nothing either way.
@@ -204,7 +208,7 @@ Silent precedence is exactly what made the old boundary illegible: `ACLI_TOKEN` 
 
 There is no escape hatch, including for CI and for scripts run outside a session: `install.sh` and `docs/smoke_mcp.py` read through the resolver like everything else.
 
-`CLAUDE_CODE_SUBAGENT_MODEL` is also a hard failure. It outranks the per-invocation model parameter, so setting it silently reroutes every agent off whatever the resolver decided — including the independent reviewer.
+`CLAUDE_CODE_SUBAGENT_MODEL` is also a hard failure. It outranks the per-invocation model parameter on Claude Code before 2.1.251, or when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, so setting it silently reroutes every agent off whatever the resolver decided — including the independent reviewer. `CLAUDE_CODE_EFFORT_LEVEL` is a hard failure for the same reason: it outranks every per-invocation effort.
 
 ## Reloading mid-session
 

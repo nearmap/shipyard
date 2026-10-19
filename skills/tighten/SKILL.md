@@ -181,7 +181,7 @@ Four more, in descending measured volume, derived by classifying every changed p
 
 **The pointer that also summarises what it points at.** The citation earns its place; the table of contents welded to it does not, and that is the half that goes stale when the target moves.
 
-- Cut: "The full dispatch rule, including requested-vs-observed reconciliation and why effort is not symmetrical with model, is `<path>`" → "The full dispatch rule is `<path>`".
+- Cut: "The full dispatch rule, including requested-vs-observed reconciliation and the three-level nesting cap, is `<path>`" → "The full dispatch rule is `<path>`".
 - Exception: name the one thing in the target the reader must act on *here* rather than on arrival — a precondition to resolve before dispatch.
 
 **The unit's own topic sentence, said twice.** The most frequent of the four, in three positions: a section opening with a summary of a section further down, a paragraph closing by re-asserting the sentence it opened with, and a set named and then referred back to in the same breath.

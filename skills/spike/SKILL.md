@@ -102,4 +102,4 @@ If the idea clears the bar, write a `/sy:plan` brief that states the opportunity
 
 Set the spike Task's status to `done` via the `tracker` skill only after the verdict is durable. End with the Task key/link, artifact path, verdict, and `/sy:plan <brief>` kickoff when applicable.
 
-Every subagent dispatch resolves its model from config and passes it as the `Agent` invocation's actual model override, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.
+Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

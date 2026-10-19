@@ -38,7 +38,8 @@ Four failure classes are worth recognising on sight, because each has a differen
 - **A required key is unset.** Set it in the committed layer, or run `/sy:init-repo`.
 - **A retired `SY_*` variable is still in the environment.** This is an error, not an override, deliberately: two resolution paths for one key is what made the old secret/config boundary illegible. Move the value into config and unset the variable. Note that a variable which merely *agrees* with config is still an error.
 - **A floor refusal.** A config layer tried to drop an agent below `config/floors.json`. Cost-scaling may raise a floor, never lower it; the fix is to accept the floor, not to edit the floors file, which is plugin-shipped precisely so it is not locally negotiable.
-- **`CLAUDE_CODE_SUBAGENT_MODEL` is set.** It outranks the per-invocation model parameter, so it silently reroutes every agent off whatever the resolver decided. Unset it.
+- **`CLAUDE_CODE_SUBAGENT_MODEL` is set.** It outranks the per-invocation model parameter on Claude Code before 2.1.251, or when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, so it silently reroutes every agent off whatever the resolver decided. Unset it.
+- **`CLAUDE_CODE_EFFORT_LEVEL` is set.** It outranks the per-invocation effort parameter, so it silently runs every agent at one effort. Unset it.
 
 ## reload
 
@@ -82,9 +83,9 @@ Include `"$schema"` in a newly created file so editors validate it. After any ed
 agent_model {"name": "<name>"}
 ```
 
-Answers "what will `sy:hunt` actually run at, and why". The binding reports the resolved model, the effort policy, what config requested, and whether either was clamped up to a floor. Use it to explain a surprise: a `model_clamped: true` means config asked for something below the floor and the floor won.
+Answers "what will `sy:hunt` actually run at, and why". The binding reports the resolved model and effort to dispatch with, what config (or a passed `model`/`effort` override) requested, and whether either was clamped up to a floor. Use it to explain a surprise: a `model_clamped: true` means config asked for something below the floor and the floor won.
 
-State plainly, whenever effort comes up, that **`effort` in config is policy the resolver validates and clamps, not a value applied at dispatch.** There is no effort parameter on the `Agent` tool; a subagent's effort comes only from its frontmatter, which is plugin-shipped and cannot vary per repo. Never imply a config edit changes a running agent's effort. The full explanation is `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`.
+When effort comes up: **`effort` in config is applied at dispatch**, the same way `model` is — the resolved value is passed as the `Agent` invocation's `effort` parameter, so a config edit changes the next dispatch, never a running agent. Frontmatter `effort:` is only the fallback when a dispatch passes none. The full explanation is `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`.
 
 ## Interaction
 

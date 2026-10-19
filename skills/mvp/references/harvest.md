@@ -32,7 +32,7 @@ Run `sy:debate` over the decomposition unconditionally (`${CLAUDE_PLUGIN_ROOT}/s
 
 ## 6. Approval
 
-One `AskUserQuestion` naming every mutation: create N Tasks in `backlog` under the epic; `add-dependency` each blocker; post one `# MVP reference` comment per derived Task; post `# MVP coverage manifest` on the MVP ticket.
+One `AskUserQuestion` naming every mutation: create N Tasks in `backlog` under the epic; `add-dependency` each blocker; post one `# MVP reference` comment per derived Task; post `# MVP coverage manifest` on the MVP ticket; when the parent epic carries a `/sy:plan` roadmap, post one decision-log delta on it.
 
 ## 7. Write and verify by read-back
 
@@ -45,7 +45,7 @@ Post the `# MVP coverage manifest` on the MVP ticket, its `agent_detail` carryin
 
 ## 8. Epic
 
-When the parent epic carries a `/sy:plan` roadmap (a decision-log comment ending in a `Plan checkpoint` footer), post one decision-log delta ending in that footer, per `${CLAUDE_PLUGIN_ROOT}/skills/plan/references/checkpoint-handoff.md`: the new leaves, with the MVP ticket as their conceptual parent branch. Leave the epic body for `/sy:plan <epic>` to re-render.
+When the parent epic carries a `/sy:plan` roadmap (a decision-log comment), post one decision-log delta without a `Plan checkpoint` footer, so earlier retros stay in `/sy:plan` re-entry's window, per `${CLAUDE_PLUGIN_ROOT}/skills/plan/references/checkpoint-handoff.md`: the new leaves, with the MVP ticket as their conceptual parent branch. Leave the epic body for `/sy:plan <epic>` to re-render.
 
 ## 9. Handoff
 

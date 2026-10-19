@@ -18,7 +18,7 @@ $ARGUMENTS
 
 ## Rebuild first
 
-On every invocation, and after any compaction or resume, before other work: `get-issue` the ticket and take the newest `# MVP ledger` comment's `agent_detail`. It is the full live state — every entry is a snapshot, so the newest alone is enough. If no ledger entry is on the page and `comments_truncated` is set, stop loudly rather than rebuild from less. Also note whether a `# MVP coverage manifest` is on the page, and list the pushed tags with `git ls-remote --tags origin 'mvp/<ticket>*'`. Read the shortcuts taken so far in the MVP worktree:
+On every invocation, and after any compaction or resume, before other work: `get-issue` the ticket and take the newest `# MVP ledger` comment's `agent_detail`. It is the full live state — every entry is a snapshot, so the newest alone is enough. If no ledger entry is on the page and `comments_truncated` is set, stop loudly rather than rebuild from less. Also note whether a `# MVP coverage manifest` is on the page, and list the pushed tags with `git ls-remote --tags origin 'mvp/<ticket>' 'mvp/<ticket>-*'`. Read the shortcuts taken so far in the MVP worktree:
 
 ```
 git log --format='%h %(trailers:key=Shortcut,valueonly)' origin/main..HEAD

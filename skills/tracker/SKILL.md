@@ -83,7 +83,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 - `/sy:ship` ↔ `in-progress` on build, `in-review` at a reviewable gated PR, `done` after merge;
   retrospective and standalone logs live on the task.
 - `/sy:spike` ↔ task under the selected experiment epic; `in-progress` during, `done` at verdict.
-- `/sy:mvp` ↔ task `in-progress` from KICKOFF; derived tasks created in `backlog` at harvest; `done` as decomposed at `/sy:shutdown`, per the canonical decomposition above. The one exception to its step 6: between harvest and shutdown the MVP task stays `in-progress` only for its environment hold, building nothing.
+- `/sy:mvp` ↔ task `in-progress` from KICKOFF; derived tasks created in `backlog` at harvest; `done` as decomposed at `/sy:shutdown`, per the canonical decomposition above, or `done` with a posted reason when abandoned with no manifest. The one exception to its step 6: between harvest and shutdown the MVP task stays `in-progress` only for its environment hold, building nothing.
 - dependencies ↔ `add-dependency` plus the closure semantics above.
 
 ## References: load only when needed

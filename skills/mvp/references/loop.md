@@ -2,7 +2,7 @@
 
 ## The ledger entry
 
-Every entry is a `post-comment` whose `human` half opens `# MVP ledger` and says what changed, in the user's words. Its `agent_detail` half is a full snapshot, never a delta:
+Every entry is a `post-comment` whose `human` half opens `# MVP ledger` and says what changed, in the user's words. Its `agent_detail` half is a full snapshot, never a delta, posted as one ```text fenced block:
 
 ```text
 change: rule | deploy | hold

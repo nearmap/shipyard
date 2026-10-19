@@ -25,7 +25,7 @@ Name the mutations at the approval point — the brief comment or the new Task, 
 
 1. `set-status` the parent epic `in-progress` if it is not already;
 2. `set-status` the ticket `in-progress` and `assign` it to yourself;
-3. create the branch `<ticket>/<slug>` in a worktree under the resolved `worktree.root` (`get_config {"key": "worktree.root"}`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`);
+3. create the branch `<ticket>/<slug>`, or reuse an existing `<ticket>/` branch and its worktree, under the resolved `worktree.root` (`get_config {"key": "worktree.root"}`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`);
 4. post the first `# MVP ledger` entry (`references/loop.md`): `change: rule`, the invariants in `SKILL.md` as the default contract, plus every refused shortcut from the brief as a rule verbatim.
 
 Then route to LOOP.

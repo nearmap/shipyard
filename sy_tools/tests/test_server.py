@@ -1619,7 +1619,7 @@ def _synthetic_session(root: Path) -> Path:
                     "message": {
                         "id": "m1", "model": "probe-model",
                         "content": [{"type": "text", "text": "rendered body"}],
-                        "usage": {"input_tokens": 11, "output_tokens": 3},
+                        "usage": {"input_tokens": 11, "output_tokens": 3}, "stop_reason": "end_turn",
                     },
                 },
                 {

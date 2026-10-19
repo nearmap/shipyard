@@ -34,6 +34,7 @@ def session_tree(tmp_path, monkeypatch) -> Path:
                 "model": "main-model",
                 "content": [{"type": "text", "text": "hello world"}],
                 "usage": {"input_tokens": 10, "output_tokens": 2},
+                "stop_reason": "end_turn",
             },
         },
         {
@@ -85,6 +86,7 @@ def session_tree(tmp_path, monkeypatch) -> Path:
                 "message": {
                     "id": "m2",
                     "model": "sub-model",
+                    "stop_reason": "end_turn",
                     "usage": {
                         "input_tokens": 20,
                         "output_tokens": 4,
@@ -117,6 +119,7 @@ def session_tree(tmp_path, monkeypatch) -> Path:
                     "id": "m3",
                     "model": "sub-model",
                     "usage": {"input_tokens": 5, "output_tokens": 1},
+                    "stop_reason": "end_turn",
                 },
             }
         )
@@ -361,7 +364,9 @@ def test_summarize_warns_instead_of_raising_on_a_line_of_invalid_utf8(tmp_path, 
     from `handbacks()`'s and regressed independently of it."""
     monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
     main = tmp_path / "s1.jsonl"
-    usage_record = {"type": "assistant", "message": {"model": "claude", "usage": {"input_tokens": 3}}}
+    usage_record = {
+        "type": "assistant", "message": {"model": "claude", "usage": {"input_tokens": 3}, "stop_reason": "end_turn"}
+    }
     main.write_bytes(
         json.dumps(usage_record).encode("utf-8")
         + b'\n{"type": "assistant", "note": "\xff\xfe not utf-8"}\n'
@@ -373,3 +378,58 @@ def test_summarize_warns_instead_of_raising_on_a_line_of_invalid_utf8(tmp_path, 
 
     assert result["totals"]["input_tokens"] == 6, result
     assert result["warnings"] == ["decode_error:s1.jsonl:2"], result
+
+
+def _write_session(tmp_path: Path, monkeypatch, records: list[dict]) -> Path:
+    monkeypatch.setattr(usage, "LEDGER_ROOT", tmp_path / "ledger")
+    main = tmp_path / "s1.jsonl"
+    main.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return main
+
+
+def _copy(output: int, *, content: list[dict], stop_reason: str | None = None, **record: str) -> dict:
+    usage_block = {"input_tokens": 4, "cache_read_input_tokens": 100, "output_tokens": output}
+    message = {"id": "r1", "model": "m", "content": content, "usage": usage_block, "stop_reason": stop_reason}
+    return {"type": "assistant", "message": message, **record}
+
+
+def test_a_finalized_copy_after_a_placeholder_counts_its_output_once(tmp_path, monkeypatch):
+    """First-copy dedupe kept the placeholder output; the request's real output is its largest copy."""
+    text = [{"type": "text", "text": "done"}]
+    main = _write_session(
+        tmp_path, monkeypatch, [_copy(5, content=text), _copy(300, content=text, stop_reason="end_turn")]
+    )
+    result = usage.summarize(main, phase="ship", task=None)
+    assert result["totals"]["output_tokens"] == 300, result["totals"]
+    assert result["totals"]["input_tokens"] == 4, "input and cache classes come from one copy, not every copy"
+    assert result["totals"]["cache_read_input_tokens"] == 100, result["totals"]
+    assert result["totals"]["output_unfinalized_requests"] == 0, result["totals"]
+    assert result["warnings"] == [], result["warnings"]
+
+
+def test_a_placeholder_only_request_is_estimated_and_never_reported_as_final(tmp_path, monkeypatch):
+    """Features sum over distinct blocks across copies; the estimate stays out of `output_tokens`."""
+    thinking = {"type": "thinking", "thinking": "", "signature": "s" * 1000}
+    main = _write_session(
+        tmp_path,
+        monkeypatch,
+        [_copy(8, content=[thinking]), _copy(12, content=[thinking, {"type": "text", "text": "x" * 300}])],
+    )
+    result = usage.summarize(main, phase="ship", task=None)
+    # round(0.2739 * 1000 + 0.3321 * 300 - 0.81) = round(372.72)
+    assert result["totals"]["output_tokens_estimated"] == 373, result["totals"]
+    assert result["totals"]["output_tokens"] == 12, "the recorded maximum, with nothing estimated folded in"
+    assert result["totals"]["output_unfinalized_requests"] == 1, result["totals"]
+    assert result["warnings"] == ["output_unfinalized:1"], result["warnings"]
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [({"perTurnEffort": "low", "effort": "low"}, ["low"]), ({"effort": "max"}, ["max"]), ({}, [])],
+    ids=["both fields", "effort only", "neither"],
+)
+def test_by_agent_reports_the_efforts_its_requests_ran_at(tmp_path, monkeypatch, record, expected):
+    """Observed effort comes from the transcript, so a requested effort can be checked against it."""
+    copy = _copy(3, content=[{"type": "text", "text": "ok"}], stop_reason="end_turn", **record)
+    result = usage.summarize(_write_session(tmp_path, monkeypatch, [copy]), phase="ship", task=None)
+    assert [row["efforts"] for row in result["by_agent"]] == [expected], result["by_agent"]

@@ -2,8 +2,8 @@
 """Aggregate Claude Code token usage across a session and all subagent transcripts.
 
 The parser is deliberately tolerant of transcript schema additions. It counts API usage blocks
-attached to assistant messages, de-duplicates by message/request id, and scans the main transcript
-plus the documented nested subagent transcript tree.
+attached to assistant messages, aggregates every copy of one message/request id into one request, and
+scans the main transcript plus the documented nested subagent transcript tree.
 
 `summarize()` and `handbacks()` are the surfaces the `sy` MCP server exposes as the
 `usage_summarize` and `worker_handbacks` tools; `summarize`'s output is compact
@@ -20,7 +20,8 @@ import argparse
 from collections import defaultdict
 from collections.abc import Iterable
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,7 +34,11 @@ TOKEN_KEYS = (
     "output_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
+    "output_tokens_estimated",
+    "output_unfinalized_requests",
 )
+# OLS fit on finalized subagent requests: output ~ signature bytes, visible chars, intercept.
+OUTPUT_ESTIMATE = (0.2739, 0.3321, -0.81)
 
 
 @dataclass
@@ -42,6 +47,8 @@ class Usage:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    output_tokens_estimated: int = 0
+    output_unfinalized_requests: int = 0
 
     def add_mapping(self, usage: dict[str, Any]) -> None:
         # Both cache_*_input_tokens and cache_*_tokens spellings occur across surfaces; accept either.
@@ -259,14 +266,58 @@ def _record_identity(record: dict[str, Any], message: dict[str, Any], path: Path
     return f"{path}:{line_no}"
 
 
+@dataclass
+class _Request:
+    """Every transcript copy of one API request, folded together. The first file to carry it owns it."""
+
+    path: Path
+    model: str
+    usage: Usage
+    finalized: bool = False
+    signature_bytes: int = 0
+    visible_chars: int = 0
+    efforts: set[str] = field(default_factory=set)
+    blocks: set[str] = field(default_factory=set)
+
+    def add_copy(self, record: dict[str, Any], message: dict[str, Any]) -> None:
+        self.usage.output_tokens = max(
+            self.usage.output_tokens, _nonnegative_int(message["usage"].get("output_tokens", 0))
+        )
+        self.finalized = self.finalized or message.get("stop_reason") is not None
+        self.efforts.update(
+            value for value in (record.get("perTurnEffort"), record.get("effort")) if isinstance(value, str) and value
+        )
+        for block in _content_blocks(message.get("content")):
+            key = hashlib.sha256(json.dumps(block, sort_keys=True).encode("utf-8")).hexdigest()
+            if key in self.blocks:
+                continue
+            self.blocks.add(key)
+            kind = block.get("type")
+            if kind in ("thinking", "redacted_thinking"):
+                self.signature_bytes += len(str(block.get("signature") or block.get("data") or ""))
+            elif kind == "text":
+                self.visible_chars += len(str(block.get("text") or ""))
+            elif kind == "tool_use":
+                self.visible_chars += len(json.dumps(block.get("input") or {}))
+
+    def counted(self) -> Usage:
+        """The request's usage: the largest recorded output, plus an estimate when no copy finalized."""
+        item = replace(self.usage)
+        if not self.finalized:
+            signature, visible, intercept = OUTPUT_ESTIMATE
+            item.output_tokens_estimated = max(
+                round(signature * self.signature_bytes + visible * self.visible_chars + intercept), 0
+            )
+            item.output_unfinalized_requests = 1
+        return item
+
+
 def _extract_file_usage(
     path: Path,
     *,
-    seen: set[str],
+    requests: dict[str, _Request],
     warnings: list[str],
-) -> tuple[Usage, dict[str, Usage], str | None, str | None]:
-    total = Usage()
-    by_model: dict[str, Usage] = defaultdict(Usage)
+) -> tuple[str | None, str | None]:
     inferred_agent_type: str | None = None
     inferred_agent_id: str | None = None
 
@@ -291,15 +342,15 @@ def _extract_file_usage(
         if not isinstance(usage, dict):
             continue
         identity = _record_identity(record, message, path, line_no)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        item = Usage()
-        item.add_mapping(usage)
-        total.add(item)
-        model = str(message.get("model") or record.get("model") or "unknown")
-        by_model[model].add(item)
-    return total, by_model, inferred_agent_type, inferred_agent_id
+        request = requests.get(identity)
+        if request is None:
+            # Input and cache classes are final on every copy, so the first one carries them.
+            first = Usage()
+            first.add_mapping(usage)
+            model = str(message.get("model") or record.get("model") or "unknown")
+            request = requests[identity] = _Request(path=path, model=model, usage=first)
+        request.add_copy(record, message)
+    return inferred_agent_type, inferred_agent_id
 
 
 def _first_string(record: dict[str, Any], *keys: str) -> str | None:
@@ -352,37 +403,45 @@ def summarize(
 ) -> dict[str, Any]:
     """The `shipyard.claude_usage.v1` roll-up for one session: totals plus a row per agent and model.
 
-    `main` is the main transcript; the whole subagent tree beneath it is counted with it. A transcript
-    that cannot be read, or a line that will not parse, becomes a `warnings` entry, never a failure.
+    `main` is the main transcript; the whole subagent tree beneath it is counted with it. Every copy of
+    one request counts once: its largest recorded output, and, when no copy carries a final
+    `stop_reason`, an `output_tokens_estimated` share that is never folded into `output_tokens`. Each row
+    carries the `efforts` its requests ran at. A transcript that cannot be read, or a line that will not
+    parse, becomes a `warnings` entry, never a failure.
     """
     session_id = _session_id_from_path(main)
     warnings: list[str] = []
     transcripts = _discover_transcripts(main, warnings)
     by_path, by_id = _load_agent_map(session_id)
-    seen: set[str] = set()
-    total = Usage()
-    grouped: dict[tuple[str, str], Usage] = defaultdict(Usage)
-    invocations: dict[tuple[str, str], set[Path]] = defaultdict(set)
+    requests: dict[str, _Request] = {}
+    agent_of: dict[Path, str] = {}
 
     main_resolved = main.resolve()
     for path in transcripts:
-        file_total, by_model, inferred_type, inferred_id = _extract_file_usage(
-            path, seen=seen, warnings=warnings
-        )
-        total.add(file_total)
+        inferred_type, inferred_id = _extract_file_usage(path, requests=requests, warnings=warnings)
         if path == main_resolved:
-            agent_type = "main"
+            agent_of[path] = "main"
         else:
-            agent_type = (
+            agent_of[path] = (
                 by_path.get(path)
                 or (by_id.get(inferred_id) if inferred_id else None)
                 or _normalize_agent_type(inferred_type)
                 or "unknown_subagent"
             )
-        for model, model_usage in by_model.items():
-            key = (agent_type, model)
-            grouped[key].add(model_usage)
-            invocations[key].add(path)
+
+    total = Usage()
+    grouped: dict[tuple[str, str], Usage] = defaultdict(Usage)
+    invocations: dict[tuple[str, str], set[Path]] = defaultdict(set)
+    efforts: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for request in requests.values():
+        key = (agent_of[request.path], request.model)
+        item = request.counted()
+        total.add(item)
+        grouped[key].add(item)
+        invocations[key].add(request.path)
+        efforts[key].update(request.efforts)
+    if total.output_unfinalized_requests:
+        warnings.append(f"output_unfinalized:{total.output_unfinalized_requests}")
 
     by_agent = []
     for agent_type, model in sorted(grouped):
@@ -392,6 +451,7 @@ def summarize(
                 "agent_type": agent_type,
                 "model": model,
                 "invocations": len(invocations[(agent_type, model)]),
+                "efforts": sorted(efforts[(agent_type, model)]),
                 **usage.as_dict(),
             }
         )

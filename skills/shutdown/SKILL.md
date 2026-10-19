@@ -4,8 +4,9 @@ description: >-
   Wind down one ticket's local footprint: list its worktrees, branches, scratch directory, and
   lingering background tasks, then — on one approval — stop and remove only what is recoverable.
   For an MVP ticket, also release its environment hold and close it as decomposed.
+  Use when asked to clean up or close out a ticket. Main session only; never from a `/sy:ship`
+  worker or other subagent.
 argument-hint: "[ticket key]"
-disable-model-invocation: true
 ---
 
 Clean up after one ticket without losing work. List first, act only on one approval, and leave anything unrecoverable standing.

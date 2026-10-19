@@ -18,7 +18,7 @@ $ARGUMENTS
 
 ## Rebuild first
 
-On every invocation, and after any compaction or resume, before other work: `get-issue` the ticket and take the newest `# MVP ledger` comment's `agent_detail`. It is the full live state — every entry is a snapshot, so the newest alone is enough. If no ledger entry is on the page and `comments_truncated` is set, stop loudly rather than rebuild from less. Read the shortcuts taken so far in the MVP worktree:
+On every invocation, and after any compaction or resume, before other work: `get-issue` the ticket and take the newest `# MVP ledger` comment's `agent_detail`. It is the full live state — every entry is a snapshot, so the newest alone is enough. If no ledger entry is on the page and `comments_truncated` is set, stop loudly rather than rebuild from less. Also note whether a `# MVP coverage manifest` is on the page, and list the pushed tags with `git ls-remote --tags origin 'mvp/<ticket>*'`. Read the shortcuts taken so far in the MVP worktree:
 
 ```
 git log --format='%h %(trailers:key=Shortcut,valueonly)' origin/main..HEAD
@@ -55,6 +55,8 @@ Classify before loading detailed procedure:
 
 ```text
 KICKOFF   no ticket, or brief incomplete   → references/kickoff.md
+HARVEST   tag pushed, no manifest          → references/harvest.md from step 2, on the newest tag
+HELD      manifest posted, hold open       → build nothing; report the hold → /sy:shutdown <ticket>
 LOOP      brief complete, building         → references/loop.md
 HARVEST   the user says the MVP is done    → references/harvest.md
 RELEASE   harvest done, hold released      → /sy:shutdown <ticket>

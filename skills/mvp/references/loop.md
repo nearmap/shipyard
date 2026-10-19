@@ -15,9 +15,7 @@ shortcuts_since_last_deploy:
 - <sha> Shortcut: <what was faked> -> <what production needs>
 ```
 
-The newest entry alone rebuilds the session. A posted entry is never edited; a correction is the next entry.
-
-Post one on each deploy, each new user rule, and each hold change.
+A posted entry is never edited; a correction is the next entry.
 
 ## Deploys and holds
 

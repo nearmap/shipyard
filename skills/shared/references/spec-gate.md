@@ -22,7 +22,7 @@ Three are required-field completeness — the plan's `/sy:ship` section either c
 
 ## When the plan sets a reference
 
-A plan carrying `reference` ports a Task from an `/sy:mvp` reference, and the caller passes the shortcuts that Task owns. Every one of them is either closed by a verification obligation or named under out of scope with a reason; a shortcut that is neither is a finding. A plan that sets `reference` with no shortcuts passed is a finding against the caller's input, not a clean pass. This is a check alongside the six axes, not a seventh.
+A plan carrying `reference` ports a Task from an `/sy:mvp` reference, and the caller passes the shortcuts that Task owns. Every one of them is either closed by a verification obligation or named under out of scope with a reason; a shortcut that is neither is a finding. A plan that sets `reference` with no owned-shortcuts input passed (neither shortcuts nor the comment's literal `none`) is a finding against the caller's input, not a clean pass. This is a check alongside the six axes, not a seventh.
 
 ## When it runs
 

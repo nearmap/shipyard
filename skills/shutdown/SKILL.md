@@ -18,14 +18,15 @@ Only when a ticket is named or inferred from the current branch, run the tracker
 
 ## 2. Inventory — read-only, scoped
 
-- **Scope.** With a ticket: only branches matching `<ticket>/` and their worktrees under the resolved `worktree.root` (`get_config {"key": "worktree.root"}`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`), and only `scratch_dir {"identifier": "<ticket>"}` — never `{"repo": true}`. With none: the current worktree only.
-- **Each worktree's state.** `git status --porcelain` for uncommitted work; `git log @{u}..` for unpushed commits. A branch with no upstream counts as unpushed.
+- **Scope.** With a ticket: only branches matching `<ticket>/`, with or without a worktree; their worktrees and the detached worktrees whose directory name starts with `<ticket>-`, under the resolved `worktree.root` (`get_config {"key": "worktree.root"}`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`), and only `scratch_dir {"identifier": "<ticket>"}` — never `{"repo": true}`. With none: the current worktree only.
+- **Each worktree's state.** `git status --porcelain` for uncommitted work. For a detached worktree, also `git branch -r --contains HEAD`: empty means its HEAD is on no remote branch.
+- **Each `<ticket>/` branch's recoverability.** Its tip is recoverable only if it is an ancestor of `origin/main` or of the newest pushed `mvp/<ticket>[-N]` tag (`git merge-base --is-ancestor <branch> <ref>`; tags from `git ls-remote --tags origin 'mvp/<ticket>*'`), or equals the `headRefOid` of a merged PR (`gh pr list --head <branch> --state merged --json headRefOid`).
 - **Lingering background tasks** this session started and no longer uses: background shells (`ci_poll.sh` pollers, dev servers, watchers), `Monitor`s, idle or finished background agents, and scheduled `CronCreate`/`ScheduleWakeup` loops. A task still doing work the user asked for is listed as kept.
-- **MVP ticket.** `get-issue` it: the newest `# MVP ledger` entry's open hold, whether a `# MVP coverage manifest` exists, and whether the `mvp/<ticket>` tag is pushed (`git ls-remote --tags origin mvp/<ticket>`).
+- **MVP ticket.** `get-issue` it: the newest `# MVP ledger` entry's whole `agent_detail`, its open hold included, and whether a `# MVP coverage manifest` exists.
 
 ## 3. Never plan the loss of unrecoverable work
 
-A worktree with uncommitted or unpushed changes, or an MVP branch with no pushed tag, is listed as **kept**, with the reason. It is never offered for deletion, and no option in step 4 reaches it.
+A `<ticket>/` branch not judged recoverable, a worktree on such a branch, a worktree with uncommitted changes, and a detached worktree whose `git branch -r --contains HEAD` is empty are each listed as **kept**, with the reason. None is offered for deletion, and no option in step 4 reaches one.
 
 ## 4. One approval
 
@@ -33,7 +34,7 @@ One `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-inte
 
 - the background tasks to stop;
 - worktree removals, local branch deletions, remote branch deletions, and the scratch directory removal;
-- for an MVP ticket: post the hold-release `# MVP ledger` entry (`change: hold`, `hold: none`); then, only when a `# MVP coverage manifest` exists, the canonical decomposition closure in `${CLAUDE_PLUGIN_ROOT}/skills/tracker/SKILL.md` — a `# Decomposition` note naming the derived Tasks and the tag, `add-label decomposed`, `set-status done`. With no manifest, ask instead: keep the ticket open / close it as abandoned with a reason.
+- for an MVP ticket: post the hold-release `# MVP ledger` entry per `${CLAUDE_PLUGIN_ROOT}/skills/mvp/references/loop.md` § The ledger entry, carrying the newest entry's snapshot forward with `change: hold` and `hold: none`; then, only when a `# MVP coverage manifest` exists, the canonical decomposition closure, steps 3-5 of `${CLAUDE_PLUGIN_ROOT}/skills/tracker/SKILL.md` § Canonical decomposition, with the tag beside the replacement IDs in `agent_detail`. With no manifest, ask instead: keep the ticket open / close it as abandoned with a reason.
 
 Options: all / choose / other.
 
@@ -41,8 +42,8 @@ Options: all / choose / other.
 
 1. Stop the approved background tasks (`TaskStop`, `CronDelete`, ending a `/loop`).
 2. Tracker writes.
-3. Local cleanup: `git worktree remove`, local branch deletion, scratch removal.
-4. Remote branch deletions. A pushed `mvp/` tag is never deleted.
+3. Local cleanup: `git worktree remove`, local branch deletion with `git branch -d` only, scratch removal.
+4. Remote branch deletions, only for branches step 2 judged recoverable. A pushed `mvp/` tag is never deleted.
 
 ## 6. A denied action stays denied
 

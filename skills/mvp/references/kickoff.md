@@ -15,7 +15,7 @@ A complete brief has every one of these sections:
 - what "done" means;
 - a "Read this first" line opting out of `/sy:spec`, GATE, and merge standards, and stating that this branch never merges.
 
-**Ticket given.** `get-issue` it and check the brief against that list. Ask for the missing sections in batched `AskUserQuestion` calls of at most four (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), then post the answers as one `# MVP brief` comment via `post-comment`. Never rewrite a body the user wrote; the brief comment completes it.
+**Ticket given.** `get-issue` it and check the brief against that list. Ask for the missing sections in batched `AskUserQuestion` calls (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), then post the answers as one `# MVP brief` comment via `post-comment`. Never rewrite a body the user wrote; the brief comment completes it.
 
 **Free-text objective.** Choose the parent epic as `/sy:spike` does (`find-issues` for epics, then `AskUserQuestion`), interview for the same sections, show the drafted brief, and create the Task only on explicit approval: `create-issue` with `parent`, the brief as its body.
 

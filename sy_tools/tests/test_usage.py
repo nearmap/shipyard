@@ -425,8 +425,8 @@ def test_a_placeholder_only_request_is_estimated_and_never_reported_as_final(tmp
 
 @pytest.mark.parametrize(
     ("record", "expected"),
-    [({"perTurnEffort": "low", "effort": "low"}, ["low"]), ({"effort": "max"}, ["max"]), ({}, [])],
-    ids=["both fields", "effort only", "neither"],
+    [({"perTurnEffort": "low"}, ["low"]), ({"effort": "max"}, ["max"]), ({}, [])],
+    ids=["perTurnEffort only", "effort only", "neither"],
 )
 def test_by_agent_reports_the_efforts_its_requests_ran_at(tmp_path, monkeypatch, record, expected):
     """Observed effort comes from the transcript, so a requested effort can be checked against it."""

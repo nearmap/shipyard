@@ -1053,7 +1053,7 @@ def agent_model(
     The reported `model` and `effort` are what the `Agent` invocation passes as its `model` and `effort`
     parameters, never the configured or overridden value read raw: a per-agent floor is a quality floor
     rather than a cost dial, so an override may raise one and never lower it, and the report says whether
-    either value was clamped. An unknown override value is refused by name.
+    either value was clamped.
     """
     _required(name=name)
     if isinstance(name, list) and (model is not None or effort is not None):

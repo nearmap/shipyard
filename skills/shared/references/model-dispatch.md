@@ -10,11 +10,11 @@ Resolve the model for the agent you are about to dispatch, by its own name, thro
 agent_model {"name": "<agent-name>"}
 ```
 
-It returns the binding report for that agent: the model and effort to dispatch with, what config requested, and whether either was clamped up to a floor. A caller whose own source of truth names a different value — a ship profile's phase model or effort — passes it as the call's `model` (a model or tier name) or `effort` argument rather than clamping it in prose; the report then shows the override as requested and the floor-clamped value to dispatch with, and an unknown value is refused by name. Pass the reported **model** and **effort** as the `Agent` invocation's actual `model` and `effort` parameters, never as prompt text — an agent told in prose which model or effort to be is still running whatever the frontmatter said. Record them as the dispatch's requested model and effort.
+It returns the binding report for that agent: the model and effort to dispatch with, what config requested, and whether either was clamped up to a floor. A caller whose own source of truth names a different value — a ship profile's phase model or effort — passes it as the call's `model` (a model or tier name) or `effort` argument rather than clamping it in prose; the report then shows the override as requested and the floor-clamped value to dispatch with. Pass the reported **model** and **effort** as the `Agent` invocation's actual `model` and `effort` parameters, never as prompt text — an agent told in prose which model or effort to be is still running whatever the frontmatter said. Record them as the dispatch's requested model and effort.
 
 Three properties of the mechanism make this non-optional rather than a nicety:
 
-- **A nested `Agent` call does not inherit a model override.** An agent dispatched from inside another agent falls back to its frontmatter unless the model is passed again on that inner call. Resolve and pass on every dispatch, at every depth. Nested calls inherit an effort override no more than a model one: verified on Claude Code 2.1.303, a depth-2 dispatch passed no effort under a medium-effort parent ran at its own frontmatter's.
+- **A nested `Agent` call does not inherit a model override.** An agent dispatched from inside another agent falls back to its frontmatter unless the model is passed again on that inner call. Resolve and pass on every dispatch, at every depth.
 - **Frontmatter is the load-time fallback, not the operative value.** Its `model:` and `effort:` are what run when a dispatch passes neither, so they must never sit below the agent's declared floor — `scripts/validate.py` checks that — but the resolved values are what should actually run.
 - **The resolver has already clamped the value to the agent's declared floor.** `config/floors.json` holds a `min_model`/`min_effort` per agent that no config layer can lower, so a config trying to drop `sy:gate` below the frontier tier is refused by name before it reaches you. You do not need to re-check the floor at the dispatch site — but you must not substitute a weaker model of your own either.
 
@@ -48,7 +48,7 @@ If a dispatch returns no usable result because the requested model is unavailabl
 
 The `Agent` tool's `effort` parameter, added in Claude Code 2.1.292, sets one dispatch's effort the way `model` sets its model: precedence is `CLAUDE_CODE_EFFORT_LEVEL`, then the per-dispatch parameter, then frontmatter `effort:`, then the session's. So:
 
-- nested calls inherit no effort override, so pass the resolved effort on every dispatch at every depth;
+- nested calls do not inherit an effort override (verified on Claude Code 2.1.303: a depth-2 dispatch passed no effort under a medium-effort parent ran at its own frontmatter's), so pass the resolved effort on every dispatch at every depth;
 - frontmatter `effort:` is the load-time fallback and must not sit below the agent's floor;
 - observed effort is the `efforts` list on the agent's `by_agent` entry of the `usage_summarize` roll-up; an observed effort that disagrees with the requested one is investigated like a model mismatch.
 

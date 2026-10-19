@@ -2188,6 +2188,10 @@ def test_agent_model_resolves_a_list_of_agents_in_one_call_and_leaves_the_single
     assert server.agent_model("gate") == bindings["gate"], "the single-name return shape must be unchanged"
     with pytest.raises(server.ToolError, match="single `name`"):
         server.agent_model(["gate"], effort="high")
+    calls = []
+    monkeypatch.setattr(server.config, "agent_binding", lambda name, **kw: calls.append((name, kw)) or bindings[name])
+    server.agent_model("gate", model="opus", effort="max")
+    assert calls == [("gate", {"model": "opus", "effort": "max"})], "a single-name override must reach agent_binding"
 
 
 SEEDED_SHIP_STATE = """ticket: PROJ-1

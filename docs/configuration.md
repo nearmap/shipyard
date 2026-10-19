@@ -152,7 +152,7 @@ One related trap the resolver does guard: effort is silently dropped for a model
 
 Recorded so neither is re-derived. Verified against Claude Code 2.1.303, reading each subagent request's recorded effort:
 
-- `effort` passed on an `Agent` call wins over frontmatter (`low` and `max` on a `high`-frontmatter agent ran at `low` and `max`), alongside a passed `model`.
+- `effort` passed on an `Agent` call wins over frontmatter (`low` and `max` on a `high`-frontmatter agent ran at `low` and `max` in a probe before the entitlement cap below applied), alongside a passed `model`.
 - A depth-2 dispatch passing no effort under a `medium` parent ran at its own frontmatter's `high`: nested calls inherit no effort override.
 - The account's model entitlement can cap effort silently: with `maxEffortLevel: xhigh` on the account's `claude-opus-5-5` entitlement, a dispatch passing `max` (or frontmatter `max`) ran at `xhigh`, visible only as `xhigh` in its `efforts`.
 

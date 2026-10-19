@@ -45,7 +45,7 @@ Draft Summary, Context/constraints, and Out of scope. Write the body as short na
 
 Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing, and then as a deliberate full rewrite authored from scratch — never a merge around body content read back from the tracker, and it does not carry over rich text a description read cannot represent (see the selected adapter's `ADAPTER.md` on what that read does not guarantee). That governs research-phase edits; §7 Step 2 never writes the Task body at all. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
 
-When the Task carries a `# MVP reference` comment it was harvested from an `/sy:mvp` reference: set the plan's `reference` field (§7) to the comment's tag. Each shortcut the comment says this Task owns becomes a verification obligation (lens: reference) or an out-of-scope entry with a reason, and the design invariants gain two: port by hand from the tag, never cherry-picking or checking out reference files; no MVP names (the ticket key, the tag, `mvp`/`demo`/`spike`, demo prefixes) in shipped code.
+When the Task carries a `# MVP reference` comment it was harvested from an `/sy:mvp` reference: set the plan's `reference` field (§7) to the comment's MVP branch and reference SHA. Each shortcut the comment says this Task owns becomes a verification obligation (lens: reference) or an out-of-scope entry with a reason, and the design invariants gain two: port by hand from the reference, never cherry-picking or checking out reference files; no MVP names (the ticket key, the MVP branch, `mvp`/`demo`/`spike`, demo prefixes) in shipped code.
 
 ## 3. Resolve standards and deep research
 
@@ -133,7 +133,7 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - `visual-debug obligations: <list, or 'none'>`;
 - `pre-gate checkpoint: <channel: 'draft PR' or 'running preview'>, or 'none'` — whether `/sy:ship`'s parent pauses for a human look at the draft PR (or a running local preview) before dispatching GATE, framed as "is this the right thing", never as a correctness review; `/sy:ship` never launches a preview itself, only points at the channel declared here. Default when absent is `none`: an unattended or overnight ship run that never declares one sees no change at all;
 - `reviewer orientation: <one sentence>` — optional: one sentence telling the repository's own reviewer what this ticket is really about, such as that it is a performance change rather than a feature. It reaches `repo-review` appended to that agent's instructions as orientation only, and can never override its return contract, its never-fixes/promotes/dispositions rule, or its five `blocked` returns. Omit the field and nothing is appended;
-- `reference: <tag>` — optional, present only for a Task harvested from an `/sy:mvp` reference (§2): the `mvp/` tag the Task ports from by hand;
+- `reference: <branch>@<sha>` — optional, present only for a Task harvested from an `/sy:mvp` reference (§2): the MVP branch and commit the Task ports from by hand;
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base.
 

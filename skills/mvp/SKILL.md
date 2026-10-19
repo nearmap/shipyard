@@ -3,7 +3,7 @@ name: mvp
 description: >-
   Build a working MVP fast on a branch that never merges, outside spec, GATE, and merge
   standards, with every shortcut recorded as it is taken; then harvest it into PR-sized
-  Tasks that each port by hand from a frozen tag. Unlike /sy:spike, which measures an idea
+  Tasks that each port by hand from a pinned commit on that branch. Unlike /sy:spike, which measures an idea
   and returns a verdict, an MVP builds the thing itself.
 argument-hint: "[ticket key, or a free-text objective]"
 disable-model-invocation: true
@@ -18,7 +18,7 @@ $ARGUMENTS
 
 ## Rebuild first
 
-On every invocation, and after any compaction or resume, before other work: `get-issue` the ticket and take the newest `# MVP ledger` comment's `agent_detail`. It is the full live state — every entry is a snapshot, so the newest alone is enough. If no ledger entry is on the page, or a tag is pushed and no manifest is, and `comments_truncated` is set, stop loudly rather than rebuild from less. Also note whether a `# MVP coverage manifest` is on the page, and list the pushed tags with `git ls-remote --tags origin 'mvp/<ticket>' 'mvp/<ticket>-*'`. Read the shortcuts taken so far in the MVP worktree:
+On every invocation, and after any compaction or resume, before other work: `get-issue` the ticket and take the newest `# MVP ledger` comment's `agent_detail`. It is the full live state — every entry is a snapshot, so the newest alone is enough. If no ledger entry is on the page, or the ledger records a harvest SHA and no manifest is on the page, and `comments_truncated` is set, stop loudly rather than rebuild from less. Also note whether a `# MVP coverage manifest` is on the page. Read the shortcuts taken so far in the MVP worktree:
 
 ```
 git log --format='%h %(trailers:key=Shortcut,valueonly)' origin/main..HEAD
@@ -55,7 +55,7 @@ Classify before loading detailed procedure:
 
 ```text
 KICKOFF   no ticket, brief incomplete, or no `# MVP ledger` entry → references/kickoff.md
-HARVEST   tag pushed, no manifest          → references/harvest.md from step 2, on the newest tag
+HARVEST   harvest SHA in ledger, no manifest → references/harvest.md from step 2, on that SHA
 HELD      manifest posted, hold open       → build nothing; report the hold; the user releases it with /sy:shutdown <ticket>
 LOOP      ledger posted, building          → references/loop.md
 HARVEST   the user says the MVP is done    → references/harvest.md

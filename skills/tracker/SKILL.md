@@ -73,7 +73,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 - `# MVP brief` — the MVP's objective and scope, written at KICKOFF.
 - `# MVP ledger` — append-only MVP state; the newest entry is the full live state.
 - `# MVP coverage manifest` — every changed path and shortcut mapped to an owning task or a recorded drop.
-- `# MVP reference` — on each harvested task: port by hand from the `mvp/<ticket>` tag.
+- `# MVP reference` — on each harvested task: port by hand from the MVP branch at its reference SHA.
 - Epic decision logs ending in a `Plan checkpoint` footer.
 
 ## Loop mapping

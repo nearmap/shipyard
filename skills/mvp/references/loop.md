@@ -5,12 +5,13 @@
 Every entry is a `post-comment` whose `human` half opens `# MVP ledger` and says what changed, in the user's words. Its `agent_detail` half is a full snapshot, never a delta, posted as one ```text fenced block:
 
 ```text
-change: rule | deploy | hold
+change: rule | deploy | hold | harvest
 rules:
 - <every live rule, verbatim, the brief's refused shortcuts included>
 deploys:
 - target: <name>; sha: <pushed SHA>; version_check: <result>
 hold: <target>; since: <date>; side_effect: <from the brief>   # or: hold: none
+harvest: <reference SHA>   # or: harvest: none
 shortcuts_since_last_deploy:
 - <sha> Shortcut: <what was faked> -> <what production needs>
 ```
@@ -29,6 +30,6 @@ Scope may grow freely while the goal stands. A change of goal is a `rule` entry,
 
 ## Commits
 
-Commit often, so a shortcut is recorded on the commit that takes it rather than reconstructed later. Anything the build depends on outside git — generators, data builders, throwaway scripts — is committed as soon as it is used; a reference that cannot be rebuilt from its tag is no reference.
+Commit often, so a shortcut is recorded on the commit that takes it rather than reconstructed later. Anything the build depends on outside git — generators, data builders, throwaway scripts — is committed as soon as it is used; a reference that cannot be rebuilt from its SHA is no reference.
 
 The user says the MVP is done → route to HARVEST.

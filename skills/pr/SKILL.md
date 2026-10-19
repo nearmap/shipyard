@@ -45,7 +45,7 @@ Resolve `ship.request_ci_reviewer` — `get_config {"key": "ship.request_ci_revi
 
 When it resolves false, skip straight to "Only then read the thread list" below — there is no bot request to make or confirm.
 
-When it resolves true: an automated reviewer (Copilot and similar) reviews only when requested, draft or ready, and each head needs its own request. `gh pr ready <pr>` is promotion only and requests nothing. Walk this ladder and stop at the first rung that lands:
+When it resolves true: an automated reviewer (Copilot and similar) reviews only when requested, draft or ready, and each head needs its own request. `gh pr ready <pr>` is promotion only and requests nothing. Walk this ladder only on a review request (a caller asking for one, §4 step 2, or a human's direct create/promote); a thread-fetch, reply, or `/sy:ship` promote call requests nothing and goes straight to "Only then read the thread list". Stop at the first rung that lands:
 
 1. **By login** — `gh pr edit <pr> --add-reviewer "@copilot"` (gh ≥2.87.0), or the repo's configured automated reviewer login. gh special-cases `@copilot` onto GitHub's bot path, so this is *not* the same call as a raw REST review request and usually succeeds where one does not.
 2. **By node id over GraphQL** — a raw REST `POST .../requested_reviewers` naming the bot's login fails `422 Reviews may only be requested from collaborators`, because a review bot is not a repository collaborator; rung 1 fails the same way on a gh old enough to lack the special case. The bot is also absent from `suggestedActors`, so read its node id off any review it has already left in this repo, then request by id:

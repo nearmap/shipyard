@@ -22,7 +22,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config", "tighten",
+    "config", "tighten", "mvp", "shutdown",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -1457,6 +1457,13 @@ def check_invariants(errors: list[str]) -> None:
     memory_ref = read("skills/shared/references/memory.md")
     plan = read("skills/plan/SKILL.md")
     spike = read("skills/spike/SKILL.md")
+    mvp = "\n".join(
+        read(rel) for rel in (
+            "skills/mvp/SKILL.md", "skills/mvp/references/kickoff.md", "skills/mvp/references/loop.md",
+            "skills/mvp/references/harvest.md",
+        )
+    )
+    shutdown = read("skills/shutdown/SKILL.md")
     pr = read("skills/pr/SKILL.md")
     explain = read("skills/explain/SKILL.md")
     user_interaction = read("skills/shared/references/user-interaction.md")
@@ -1636,7 +1643,7 @@ def check_invariants(errors: list[str]) -> None:
         fail("merge authorization must name its follow-on mutations at the consent point", errors)
     for name, text in (
         ("ship", ship + start + handoff), ("spec", spec), ("plan", plan), ("spike", spike),
-        ("pr", pr), ("explain", explain), ("init-repo", init_repo),
+        ("pr", pr), ("explain", explain), ("init-repo", init_repo), ("mvp", mvp), ("shutdown", shutdown),
     ):
         if "AskUserQuestion" not in text:
             fail(f"{name} skill must route user decisions through AskUserQuestion per user-interaction.md", errors)
@@ -1652,7 +1659,9 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (("jira", jira_adapter), ("github", github_adapter)):
         if "shared cache" not in text:
             fail(f"{name} adapter must declare its preflight hook, cached inside the preflight tool", errors)
-    for name, text in (("plan", plan), ("spec", spec), ("ship", ship), ("spike", spike)):
+    for name, text in (
+        ("plan", plan), ("spec", spec), ("ship", ship), ("spike", spike), ("mvp", mvp), ("shutdown", shutdown),
+    ):
         if "preflight.md" not in text:
             fail(f"{name} must run the tracker preflight (preflight.md) before other work", errors)
     if "config.local.json" not in init_repo or "config.json" not in init_repo:
@@ -1716,7 +1725,10 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (("spec", spec), ("implementation", impl)):
         if trigger not in text:
             fail(f"{name} must state the spot-check bound with the shared trigger clause verbatim", errors)
-    for name, text in (("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spec", spec), ("spike", spike)):
+    for name, text in (
+        ("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spec", spec), ("spike", spike),
+        ("mvp", mvp),
+    ):
         if "unconditionally" not in text.lower():
             fail(f"{name} must run the sy:debate pass unconditionally, not gated on a pre-identified fork", errors)
 
@@ -1743,6 +1755,19 @@ def check_invariants(errors: list[str]) -> None:
         fail("spec-gate agent restates the pre-gate-checkpoint axis; cite spec-gate.md instead of copying it", errors)
     if checkpoint_axis_phrase in spec:
         fail("spec restates the pre-gate-checkpoint axis definition; cite spec-gate.md instead of copying it", errors)
+    reference_heading = "## When the plan sets a reference"
+    if reference_heading not in spec_gate_ref:
+        fail(f"spec-gate reference must define the MVP shortcut check under {reference_heading!r}", errors)
+    if reference_heading in spec_gate or reference_heading in spec:
+        fail("spec-gate agent or spec restates the reference section; cite spec-gate.md instead of copying it", errors)
+    # Section-scoped to §7, where the plan half's fields are defined.
+    if "`reference: " not in spec.partition("## 7.")[2].partition("\n## ")[0]:
+        fail("spec §7 must define the optional `reference` field an MVP-derived Task's plan carries", errors)
+    if "mcp__plugin_sy_sy__get-issue" not in read("agents/sweep.md"):
+        fail("sweep must hold the get-issue read it is documented to use for ticket tails", errors)
+    for name, text in (("ship-build agent", build_agent), ("implementation", impl), ("gate", gate)):
+        if "never point `sy:sweep` at the tracker" not in text:
+            fail(f"{name} dispatches sy:sweep and must state it never points sy:sweep at the tracker", errors)
     tools_value = _frontmatter_field(spec_gate, "tools").strip()
     if not tools_value:
         fail(
@@ -1989,7 +2014,7 @@ def check_invariants(errors: list[str]) -> None:
 
     # Read side and write side check different tools on purpose: `memory_add` alone never reads memory
     # back, and `memory_list` alone never writes the lesson.
-    for name, text in (("plan", plan), ("spec", spec), ("ship start", start)):
+    for name, text in (("plan", plan), ("spec", spec), ("ship start", start), ("mvp", mvp)):
         if "memory_list" not in text or "memory.md" not in text:
             fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
     if "memory_add" not in handoff or "memory.md" not in handoff:
@@ -2002,7 +2027,7 @@ def check_invariants(errors: list[str]) -> None:
             "not hand-deleting, is how a wrong lesson is retired",
             errors,
         )
-    for name, text in (("plan", plan), ("spec", spec)):
+    for name, text in (("plan", plan), ("spec", spec), ("mvp", mvp)):
         if "memory_refute" not in text:
             fail(f"{name} runs as the parent session and must refute a contradicted lesson directly", errors)
     for name, text in (("start-resume", start), ("implementation", impl), ("immutable-gate", gate_ref)):
@@ -2103,13 +2128,13 @@ def check_invariants(errors: list[str]) -> None:
     # nothing else catches it.
     config_values_ref = read("skills/shared/references/config-values.md")
     for name, text in (
-        ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan),
+        ("ship", ship), ("spec", spec), ("spike", spike), ("gate", gate), ("plan", plan), ("mvp", mvp),
     ):
         if "limits.max_depth_agents" not in text:
             fail(f"{name} must name limits.max_depth_agents rather than a hardcoded depth-agent cap", errors)
     for name, text in (
         ("tracker", tracker_skill), ("plan", plan), ("roadmap-shaping", roadmap_shaping),
-        ("checkpoint-handoff", checkpoint_handoff),
+        ("checkpoint-handoff", checkpoint_handoff), ("mvp", mvp),
     ):
         if "plan.max_active_tasks" not in text:
             fail(f"{name} must name plan.max_active_tasks rather than a hardcoded active-task cap", errors)
@@ -2154,7 +2179,7 @@ def check_invariants(errors: list[str]) -> None:
         ("ship", ship), ("spec", spec), ("spike", spike), ("plan", plan), ("pr", pr),
         ("immutable-gate", gate_ref), ("handoff-accounting", handoff), ("merge-accounting", merge),
         ("tracker", tracker_skill), ("roadmap-shaping", roadmap_shaping),
-        ("checkpoint-handoff", checkpoint_handoff), ("gate", gate),
+        ("checkpoint-handoff", checkpoint_handoff), ("gate", gate), ("mvp", mvp), ("shutdown", shutdown),
     ):
         if "config-values.md" not in text:
             fail(f"{name} names a live-resolved config value and must cite config-values.md", errors)

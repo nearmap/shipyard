@@ -13,7 +13,7 @@ Decide whether the supplied drafted plan is one a fresh implementation session c
 
 Review against the six axes in `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md`. That file is the checklist; read it and apply it rather than working from a remembered version of it. You dispatch no subagents.
 
-Inputs: the fully drafted plan, both parts (sign-off rationale and the mechanical implementation section); the resolved standards contract — authority, task-relevant constraints, primitives; the activated risk lenses and the verification obligations they produced; the plan's immutable base commit and the repo to read against.
+Inputs: the fully drafted plan, both parts (sign-off rationale and the mechanical implementation section); the resolved standards contract — authority, task-relevant constraints, primitives; the activated risk lenses and the verification obligations they produced; when the plan sets `reference`, the owned shortcuts from the task's `# MVP reference` comment, checked per that file's reference section; the plan's immutable base commit and the repo to read against.
 
 **Excluded, explicitly.** The core design decision is settled — it went through a bounded proposer/adversary debate and the user steered the outcome. A finding whose fix is "take the rejected alternative instead" is out of your scope; drop it rather than reporting it. What *is* in scope is the plan built on that decision: a decision correctly made can still be planned badly.
 

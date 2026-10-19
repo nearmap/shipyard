@@ -20,6 +20,10 @@ Three are required-field completeness — the plan's `/sy:ship` section either c
 5. **Visual-debug flagging.** `visual-debug obligations` must be present and honest: every figure, screenshot, plot, or rendered visual the work produces, regenerates, selects among, or invalidates — each one a verification obligation whose named evidence is an `sy:img-inspector` text verdict per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md` — or the literal `none`. Work that touches a visual with `none` here is a finding.
 6. **Pre-gate-checkpoint flagging.** `pre-gate checkpoint` must be present, naming a channel (`draft PR` or `running preview`) or the literal `none`. Checked for presence only: whether a task warrants a human checkpoint is the plan author's call, not a fact this axis checks against the diff, so — unlike axes 4–5 — a `none` here is never itself a finding; an *omitted* field is.
 
+## When the plan sets a reference
+
+A plan carrying `reference` ports a Task from an `/sy:mvp` reference, and the caller passes the shortcuts that Task owns. Every one of them is either closed by a verification obligation or named under out of scope with a reason; a shortcut that is neither is a finding. A plan that sets `reference` with no shortcuts passed is a finding against the caller's input, not a clean pass. This is a check alongside the six axes, not a seventh.
+
 ## When it runs
 
 Once, after the plan is fully drafted and after the debate pass, before it is presented for sign-off. The plan the reviewer reads is the one about to be signed off, not an outline of it.

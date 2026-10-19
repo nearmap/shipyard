@@ -1627,7 +1627,7 @@ def check_invariants(errors: list[str]) -> None:
     if "denied-write boundary" not in wi:
         fail("write-integrity reference must define the denied-write boundary invariant", errors)
     if "gh pr ready" not in pr:
-        fail("pr skill must document the Copilot trigger (gh pr ready)", errors)
+        fail("pr skill must document promotion (gh pr ready)", errors)
     if "write-integrity.md" not in ship or "write-integrity.md" not in pr or "write-integrity.md" not in spec or "write-integrity.md" not in plan:
         fail("ship/pr/spec/plan must each cross-reference the write-integrity reference", errors)
     if "Name the mutation the approval authorizes" not in spec:

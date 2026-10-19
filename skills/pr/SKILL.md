@@ -41,11 +41,11 @@ Title: `<TICKET> - <imperative summary>` when branch carries a ticket key.
 
 ## 3. Review threads
 
-Resolve `ship.request_ci_reviewer` — `get_config {"key": "ship.request_ci_reviewer"}` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — before marking the PR ready. This gates only the automated-reviewer *request* below; it is additive to, never a substitute for, `sy:gate`'s own independent review, which always runs regardless of this setting.
+Resolve `ship.request_ci_reviewer` — `get_config {"key": "ship.request_ci_reviewer"}` (see `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) — before requesting a review. This gates only the automated-reviewer *request* below; it is additive to, never a substitute for, `sy:gate`'s own independent review, which always runs regardless of this setting.
 
-When it resolves false, mark the PR ready with `gh pr ready <pr>` and skip straight to "Only then read the thread list" below — there is no bot request to make or confirm.
+When it resolves false, skip straight to "Only then read the thread list" below — there is no bot request to make or confirm.
 
-When it resolves true: a draft PR gets **no** automated review — Copilot and similar reviewers do not comment until the PR is marked ready, so a draft that is never promoted shows a permanently empty thread list that reads as "nothing to reconcile". Marking it ready with `gh pr ready <pr>` is necessary but not sufficient: observed runs show the automated reviewer does not fire on readiness alone, so an explicit request is the normal path, not a rare fallback. Immediately after marking ready, walk this ladder and stop at the first rung that lands:
+When it resolves true: an automated reviewer (Copilot and similar) reviews only when requested, draft or ready, and each head needs its own request. `gh pr ready <pr>` is promotion only and requests nothing. Walk this ladder and stop at the first rung that lands:
 
 1. **By login** — `gh pr edit <pr> --add-reviewer "@copilot"` (gh ≥2.87.0), or the repo's configured automated reviewer login. gh special-cases `@copilot` onto GitHub's bot path, so this is *not* the same call as a raw REST review request and usually succeeds where one does not.
 2. **By node id over GraphQL** — a raw REST `POST .../requested_reviewers` naming the bot's login fails `422 Reviews may only be requested from collaborators`, because a review bot is not a repository collaborator; rung 1 fails the same way on a gh old enough to lack the special case. The bot is also absent from `suggestedActors`, so read its node id off any review it has already left in this repo, then request by id:
@@ -66,7 +66,7 @@ Then confirm the request actually landed, over GraphQL and not REST — `gh pr v
 gh api graphql -f query='{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){reviewRequests(first:10){nodes{requestedReviewer{__typename ... on Bot{login}}}}}}}'
 ```
 
-Only then read the thread list. An empty one is never evidence of "reviewed, nothing to say": it is indistinguishable from a review nobody requested, and only a confirmed request reaching a terminal state tells the two apart.
+Only then read the thread list. An empty one is never evidence of "reviewed, nothing to say": it is indistinguishable from a review nobody requested, and only a confirmed request reaching a terminal state tells the two apart. A bot review whose body says it could not review (quota reached, or similar) is a failed request, never clearance.
 
 Reconcile the reviewer's threads by **author bot-type, not a hardcoded login.** The same reviewer's bot login is not stable across the GitHub REST and GraphQL surfaces (e.g. a `-bot` suffix or `[bot]` bracket form differs between them), so a query filtered to one literal login silently returns zero threads on the other surface and reports a false "0 new comments". Enumerate all review comments/threads and select by author type being a bot — for example `gh api repos/<o>/<r>/pulls/<pr>/comments --jq '[.[] | select(.user.type=="Bot")]'` (or the GraphQL `reviewThreads` with `author { __typename }` matched against `Bot`) — so every bot thread is caught regardless of which login form that surface reports. Reconcile against comment/thread ids, not login strings.
 

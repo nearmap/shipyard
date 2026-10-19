@@ -8,7 +8,7 @@ description: >-
 argument-hint: "[tracker operation or issue key]"
 ---
 
-Own tracker mechanics behind the contract in `${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`. Workflow skills (`/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`) decide *what* the lifecycle should do in canonical terms; this skill turns that into concrete calls against the selected tracker.
+Own tracker mechanics behind the contract in `${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`. Workflow skills (`/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`) decide *what* the lifecycle should do in canonical terms; this skill turns that into concrete calls against the selected tracker.
 
 $ARGUMENTS
 
@@ -70,6 +70,10 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 - `# Ship retrospective` — human-readable shipped-vs-plan lessons.
 - `# Claude Code usage` — standalone JSON usage log (`post-log`).
 - `# Claude Code ship metrics` — standalone JSON outcome log (`post-log`).
+- `# MVP brief` — the MVP's objective and scope, written at KICKOFF.
+- `# MVP ledger` — append-only MVP state; the newest entry is the full live state.
+- `# MVP coverage manifest` — every changed path and shortcut mapped to an owning task or a recorded drop.
+- `# MVP reference` — on each harvested task: port by hand from the `mvp/<ticket>` tag.
 - Epic decision logs ending in a `Plan checkpoint` footer.
 
 ## Loop mapping
@@ -79,6 +83,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 - `/sy:ship` ↔ `in-progress` on build, `in-review` at a reviewable gated PR, `done` after merge;
   retrospective and standalone logs live on the task.
 - `/sy:spike` ↔ task under the selected experiment epic; `in-progress` during, `done` at verdict.
+- `/sy:mvp` ↔ task `in-progress` from KICKOFF; derived tasks created in `backlog` at harvest; `done` as decomposed at `/sy:shutdown`, per the canonical decomposition above. The one exception to its step 6: between harvest and shutdown the MVP task stays `in-progress` only for its environment hold, building nothing.
 - dependencies ↔ `add-dependency` plus the closure semantics above.
 
 ## References: load only when needed

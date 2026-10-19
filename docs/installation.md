@@ -47,7 +47,7 @@ claude plugin uninstall sy@shipyard --scope project
 
 `update` only acts when `.claude-plugin/plugin.json`'s `version` has actually moved — it fetches the marketplace's git remote regardless, but a same-version fetch is a no-op even if new commits landed. If `update` reports "already at the latest version" right after a change you know shipped, the maintainer forgot to bump the version (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)); there's nothing to do on the consumer side but wait for the bump.
 
-Only `--plugin-dir` (the one-session dev mode above) needs a local checkout. Either way, the commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`.
+Only `--plugin-dir` (the one-session dev mode above) needs a local checkout. Either way, the commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:help`, `/sy:init-repo`.
 
 ### Choose an install scope
 

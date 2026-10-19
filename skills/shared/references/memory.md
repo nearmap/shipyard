@@ -27,11 +27,11 @@ Examples of the right altitude: a CLI flag whose semantics are inverted relative
 
 The moment direct observation — not a hunch, not a suspicion — contradicts a stored lesson, refute it: `memory_refute` with the title, the `evidence` that contradicts it, and a `correction` when part of it still holds. Prefer the correction. A lesson that was wrong only under some condition is more use narrowed than erased, and the condition is exactly what the next reader needs; leave `correction` empty only when nothing in the lesson survives, which tombstones it. `evidence` is required either way, because a refutation overrules an earlier session's conclusion and the next reader has to be able to re-check it. The entry is rewritten in place, never deleted, and repeat refutes converge on the same file.
 
-`/sy:plan` and `/sy:spec` call it directly, at the point of discovery — they are the parent session. A `/sy:ship` worker cannot: only the parent holds the write, so the worker reports the candidate and the parent applies it, per the worker contract in `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md`.
+`/sy:plan`, `/sy:spec`, and `/sy:mvp` call it directly, at the point of discovery — they are the parent session. A `/sy:ship` worker cannot: only the parent holds the write, so the worker reports the candidate and the parent applies it, per the worker contract in `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md`.
 
 ## When to read
 
-Read memory back at the start of work, before decisions harden: `/sy:plan` and `/sy:spec` during their early research, and `/sy:ship` at START. `memory_list` is cheap (the index is one small file); `memory_search` with the tools and surfaces the task touches when the index is long. A hit that bears on the task enters the working brief as a known anchor. A `status: corrected` hit enters it like any other, since its body already states the corrected claim; a `status: tombstoned` hit is never a working anchor — it is a warning against re-deriving the conclusion someone already disproved.
+Read memory back at the start of work, before decisions harden: `/sy:plan` and `/sy:spec` during their early research, `/sy:ship` at START, and `/sy:mvp` at KICKOFF. `memory_list` is cheap (the index is one small file); `memory_search` with the tools and surfaces the task touches when the index is long. A hit that bears on the task enters the working brief as a known anchor. A `status: corrected` hit enters it like any other, since its body already states the corrected claim; a `status: tombstoned` hit is never a working anchor — it is a warning against re-deriving the conclusion someone already disproved.
 
 ## Curation
 

@@ -55,8 +55,8 @@ show_config {}
 | `models.tiers.*` | no | Named tiers mapped to concrete model aliases. |
 | `models.agents.<name>.model` | no | Which tier or model an agent runs at. **Live at dispatch.** |
 | `models.agents.<name>.effort` | no | Effort policy for an agent. **Not applied at dispatch** — see [Effort](#effort-is-not-a-runtime-knob). |
-| `limits.max_depth_agents` | no | Cross-cutting cap on simultaneous depth-investigation subagents (`sy:trace`/`sy:hunt`/etc.) in flight per phase — `/sy:ship`, `/sy:spec`, `/sy:spike`, and `sy:gate` all read this one key. |
-| `plan.max_active_tasks` | no | Cap on `/sy:spec`-ready Tasks a roadmap keeps active under one Epic at once. |
+| `limits.max_depth_agents` | no | Cross-cutting cap on simultaneous depth-investigation subagents (`sy:trace`/`sy:hunt`/etc.) in flight per phase — `/sy:ship`, `/sy:spec`, `/sy:spike`, `/sy:mvp`, and `sy:gate` all read this one key. |
+| `plan.max_active_tasks` | no | Cap on `/sy:spec`-ready Tasks a roadmap keeps active under one Epic at once. `/sy:plan` and the `/sy:mvp` harvest read it. |
 | `spec.max_spec_gate_rounds` | no | How many times `/sy:spec` may dispatch `sy:spec-gate` for the same session before the guard denies a further dispatch and the session must stop and ask you how to proceed. Per session, not per plan — a session that runs `/sy:spec` on two tickets in a row shares one budget. A dispatch consumes a round even if later aborted. |
 | `ship.request_ci_reviewer` | no | Whether GATE requests an automated code-review bot (e.g. Copilot) on the PR, on top of `sy:gate`'s own independent review. Safe to disable: `sy:gate` remains the non-negotiable floor either way, this is an additive second opinion. |
 | `ship.merge_strategy` | no | `squash`, `merge`, or `rebase`, passed to `gh pr merge`. Only `squash` composes a subject/body from the PR description. |

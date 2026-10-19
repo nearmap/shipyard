@@ -1,6 +1,6 @@
 # Talking to the user
 
-Every skill that talks to you directly — `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:pr`, `/sy:explain` — uses exactly one of three modes per turn and never blends them: a decision folded into narration reads as one more sentence and gets missed. Whichever mode a turn is in, it goes through `/sy:tighten` before it is sent. `/sy:ci`, `/sy:standards`, and `/sy:help` never talk to you directly and are out of scope here.
+Every skill that talks to you directly — `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`, `/sy:pr`, `/sy:explain` — uses exactly one of three modes per turn and never blends them: a decision folded into narration reads as one more sentence and gets missed. Whichever mode a turn is in, it goes through `/sy:tighten` before it is sent. `/sy:ci`, `/sy:standards`, and `/sy:help` never talk to you directly and are out of scope here.
 
 ## Status
 

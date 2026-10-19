@@ -714,6 +714,40 @@ def test_agent_binding_reports_the_clamped_dispatch_values_and_where_they_came_f
         config.agent_binding("no-such-agent")
 
 
+def test_an_agent_binding_override_is_clamped_to_the_floor_and_an_unknown_one_is_refused(fixture_repo):
+    """A dispatch-time override is a request like any configured value: it may raise a floor, never lower it."""
+    floor = json.loads((PLUGIN_ROOT / "config" / "floors.json").read_text(encoding="utf-8"))["gate"]
+    tiers = config.resolve()[0]["models"]["tiers"]
+    clamped = config.agent_binding("gate", effort="low")
+    assert (clamped["effort"], clamped["effort_requested"], clamped["effort_clamped"]) == (
+        floor["min_effort"], "low", True
+    ), clamped
+    assert clamped["source"] == "override", clamped
+
+    assert config.agent_binding("sweep", model="frontier")["model"] == tiers["frontier"], "a tier name must resolve"
+    assert config.agent_binding("sweep", effort="medium")["effort"] == "medium"
+
+    for override in ({"effort": "extreme"}, {"model": "gpt"}):
+        with pytest.raises(config.ConfigError, match="override"):
+            config.agent_binding("sweep", **override)
+
+    # A floor at a non-effort-capable tier is the only way an override reaches one, so it is constructed.
+    (fixture_repo / ".shipyard" / "config.local.json").write_text(
+        json.dumps({"models": {"tiers": {"cheap": "haiku"}}}), encoding="utf-8"
+    )
+    config.reload()
+    with pytest.raises(config.ConfigError, match="not effort-capable"):
+        config.agent_binding("sweep", model="haiku", effort="low")
+
+
+def test_validate_reports_an_outranking_effort_level(fixture_repo, monkeypatch):
+    """`CLAUDE_CODE_EFFORT_LEVEL` outranks every per-dispatch effort, so it is an error rather than an override."""
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
+    assert any(e.startswith("CLAUDE_CODE_EFFORT_LEVEL is set.") for e in config.validate())
+    monkeypatch.delenv("CLAUDE_CODE_EFFORT_LEVEL")
+    assert not any("CLAUDE_CODE_EFFORT_LEVEL" in e for e in config.validate())
+
+
 def test_no_agent_resolves_below_its_shipped_floor(fixture_repo):
     """A floor is a quality floor, not a cost dial: resolution may raise one, never lower it."""
     tiers = config.resolve()[0]["models"]["tiers"]
@@ -755,8 +789,9 @@ def test_validate_reports_an_outranking_subagent_model_even_with_nothing_resolva
     """
     monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "sonnet")
     expected = (
-        "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
-        "would silently reroute every agent off the model this config resolved. Unset it."
+        "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter on Claude Code "
+        "before 2.1.251, or when CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1, and would silently reroute every "
+        "agent off the model this config resolved. Unset it."
     )
     assert expected in config.validate()
     assert expected in server.validate_config()["errors"], "it must reach the tool's own report"

@@ -1033,18 +1033,35 @@ def agent_model(
             "resolves every name in one call and reports them, keyed by name, under `agents`."
         ),
     ],
+    model: Annotated[
+        str | None,
+        Field(
+            description="Model or tier name to dispatch with in place of the configured one, e.g. a ship "
+            "profile's phase model. Clamped up to the agent's floor like a configured value. Single `name` only."
+        ),
+    ] = None,
+    effort: Annotated[
+        str | None,
+        Field(
+            description="Effort to dispatch with in place of the configured one, one of low, medium, high, "
+            "xhigh, max. Clamped up to the agent's floor like a configured value. Single `name` only."
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """The model and effort each named agent must be dispatched with, after floor clamping.
 
-    Dispatch with what this returns, never with the configured value read raw: a per-agent floor is a
-    quality floor rather than a cost dial, so cost-scaling may raise one and never lower it, and the
-    report says whether either value was clamped.
+    The reported `model` and `effort` are what the `Agent` invocation passes as its `model` and `effort`
+    parameters, never the configured or overridden value read raw: a per-agent floor is a quality floor
+    rather than a cost dial, so an override may raise one and never lower it, and the report says whether
+    either value was clamped. An unknown override value is refused by name.
     """
     _required(name=name)
+    if isinstance(name, list) and (model is not None or effort is not None):
+        raise ToolError("a model or effort override applies to one agent: pass a single `name`, not a list")
     try:
         if isinstance(name, list):
             return {"agents": {n: config.agent_binding(n) for n in name}}
-        return config.agent_binding(name)
+        return config.agent_binding(name, model=model, effort=effort)
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
 
@@ -1191,8 +1208,10 @@ def usage_summarize(
     """Roll up token usage across one session's main transcript and every subagent transcript under it.
 
     Reads the on-disk transcript tree, so it also works on a resumed session and counts subagent turns
-    the caller never saw. Counts are de-duplicated by message id and grouped by agent type and model,
-    small enough to post as a standalone machine-log comment.
+    the caller never saw. Every copy of one API request is aggregated into one count — output is the
+    largest copy, and a request no copy finalized also gets an `output_tokens_estimated` share — then
+    grouped by agent type and model with the efforts each group ran at, small enough to post as a
+    standalone machine-log comment.
     """
     main = _transcript_source(session_id, transcript)
     result = usage.summarize(main, phase=phase, task=task)

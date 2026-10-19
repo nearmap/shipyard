@@ -2181,11 +2181,13 @@ def test_agent_model_resolves_a_list_of_agents_in_one_call_and_leaves_the_single
         "gate": {"model": "opus", "effort": "high", "clamped": False},
         "ship-build": {"model": "sonnet", "effort": "medium", "clamped": True},
     }
-    monkeypatch.setattr(server.config, "agent_binding", lambda name: bindings[name])
+    monkeypatch.setattr(server.config, "agent_binding", lambda name, **_: bindings[name])
     assert server.agent_model(["ship-build", "gate"]) == {
         "agents": {"ship-build": bindings["ship-build"], "gate": bindings["gate"]}
     }, "a list must report one binding per name, keyed by name"
     assert server.agent_model("gate") == bindings["gate"], "the single-name return shape must be unchanged"
+    with pytest.raises(server.ToolError, match="single `name`"):
+        server.agent_model(["gate"], effort="high")
 
 
 SEEDED_SHIP_STATE = """ticket: PROJ-1

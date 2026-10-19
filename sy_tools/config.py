@@ -416,27 +416,42 @@ def show() -> dict:
     }
 
 
-def agent_binding(name: str) -> dict:
-    """The dispatch-time model and effort policy for one agent, after floor clamping."""
+def agent_binding(name: str, model: str | None = None, effort: str | None = None) -> dict:
+    """The model and effort one agent is dispatched with, after floor clamping.
+
+    `model` (a model or tier name) and `effort` override the configured values before clamping, so an
+    override below a floor is raised to it like any configured value. An unknown override, or an effort
+    on a model that is not effort-capable, is a `ConfigError` rather than a value passed on.
+    """
     values, provenance = resolve()
     agents = values.get("models", {}).get("agents", {})
     if name not in agents:
         raise ConfigError(f"unknown agent {name!r}. Known agents: {', '.join(sorted(agents))}")
     tiers = values.get("models", {}).get("tiers", {})
     floors = _load_json(plugin_root() / "config" / "floors.json").get(name, {})
-    requested_model = _resolve_tier(agents[name].get("model"), tiers)
-    requested_effort = agents[name].get("effort")
-    model, model_clamped = _clamp(requested_model, _resolve_tier(floors.get("min_model"), tiers), MODEL_ORDER)
-    effort, effort_clamped = _clamp(requested_effort, floors.get("min_effort"), EFFORT_ORDER)
+    requested_model = _resolve_tier(agents[name].get("model") if model is None else model, tiers)
+    requested_effort = agents[name].get("effort") if effort is None else effort
+    if model is not None and requested_model not in MODEL_ORDER:
+        raise ConfigError(f"model override {model!r} for {name} is not a known model or tier.")
+    if effort is not None and effort not in EFFORT_ORDER:
+        raise ConfigError(f"effort override {effort!r} for {name} is not one of {', '.join(EFFORT_ORDER)}.")
+    resolved_model, model_clamped = _clamp(requested_model, _resolve_tier(floors.get("min_model"), tiers), MODEL_ORDER)
+    resolved_effort, effort_clamped = _clamp(requested_effort, floors.get("min_effort"), EFFORT_ORDER)
+    overridden = model is not None or effort is not None
+    if overridden and resolved_effort and resolved_model not in EFFORT_CAPABLE:
+        raise ConfigError(
+            f"{name} would dispatch at effort {resolved_effort!r} on {resolved_model!r}, which is not "
+            "effort-capable: the effort would be dropped silently."
+        )
     return {
         "agent": name,
-        "model": model,
-        "effort": effort,
+        "model": resolved_model,
+        "effort": resolved_effort,
         "model_requested": requested_model,
         "effort_requested": requested_effort,
         "model_clamped": model_clamped,
         "effort_clamped": effort_clamped,
-        "source": provenance.get(f"models.agents.{name}.model", "shipped-default"),
+        "source": "override" if overridden else provenance.get(f"models.agents.{name}.model", "shipped-default"),
     }
 
 
@@ -646,12 +661,19 @@ def _outranking_env_conflicts() -> list[str]:
 
     Presence only — the value is never read — and nothing resolved is needed.
     """
+    errors: list[str] = []
     if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"):
-        return [
-            "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter and "
-            "would silently reroute every agent off the model this config resolved. Unset it."
-        ]
-    return []
+        errors.append(
+            "CLAUDE_CODE_SUBAGENT_MODEL is set. It outranks the per-invocation model parameter on Claude Code "
+            "before 2.1.251, or when CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1, and would silently reroute every "
+            "agent off the model this config resolved. Unset it."
+        )
+    if os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"):
+        errors.append(
+            "CLAUDE_CODE_EFFORT_LEVEL is set. It outranks the per-invocation effort parameter and would "
+            "silently run every agent at one effort instead of the effort this config resolved. Unset it."
+        )
+    return errors
 
 
 def _legacy_env_conflicts() -> list[str]:

@@ -1,6 +1,6 @@
 # Explicit merge path
 
-Load only after the user directly authorizes merge. The authorization is the merge option chosen at the handoff question, or the same go-ahead given in the user's own words, which named the follow-on mutations: this path will merge the verified head, reply to any review thread that newly surfaces before merge, apply the retrospective's proposed standards-doc edit when it named one via the bounded-fix sub-flow below, and set the task done. Execute exactly those and no more; a mutation the consent point did not name is not covered by this authorization, and the two contingent ones execute only when their trigger actually occurs.
+Load only after the user directly authorizes merge. The authorization is the merge option chosen at the handoff question, or the same go-ahead given in the user's own words, which named the follow-on mutations: this path will merge the verified head (with `--admin` when `ship.merge_admin` resolves true), reply to any review thread that newly surfaces before merge, apply the retrospective's proposed standards-doc edit when it named one via the bounded-fix sub-flow below, and set the task done. Execute exactly those and no more; a mutation the consent point did not name is not covered by this authorization, and the two contingent ones execute only when their trigger actually occurs.
 
 ## Revalidate
 

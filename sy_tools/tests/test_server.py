@@ -715,23 +715,22 @@ async def test_a_slow_tool_does_not_block_an_unrelated_call(monkeypatch):
     # A server that serialised calls would never reach the release, so without the deadline a
     # regression hangs the suite instead of failing it.
     with anyio.fail_after(10, shield=False):
-        async with mcp.Client(server.mcp) as client:
-            async with anyio.create_task_group() as tasks:
+        async with mcp.Client(server.mcp) as client, anyio.create_task_group() as tasks:
 
-                async def read() -> None:
-                    result = await client.call_tool("get-issue", {"issue": "PROJ-1"})
-                    assert result.is_error is False, result.content
-                    order.append("read-result")
+            async def read() -> None:
+                result = await client.call_tool("get-issue", {"issue": "PROJ-1"})
+                assert result.is_error is False, result.content
+                order.append("read-result")
 
-                tasks.start_soon(read)
-                while "read-start" not in order:
-                    await anyio.sleep(0.01)
+            tasks.start_soon(read)
+            while "read-start" not in order:
+                await anyio.sleep(0.01)
 
-                fast = await client.call_tool("validate_config", {})
-                assert fast.is_error is False, fast.content
-                order.append("fast-result")
+            fast = await client.call_tool("validate_config", {})
+            assert fast.is_error is False, fast.content
+            order.append("fast-result")
 
-                release.set()
+            release.set()
 
     assert order.index("fast-result") < order.index("read-end"), (
         f"the fast call was blocked behind the stalled read: {order}"

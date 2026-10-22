@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from .. import config
 
 STATUS_CONFIG_KEYS = {
@@ -40,8 +42,10 @@ adapter transport passes this to its own timeout and turns the expiry into a `Tr
 """
 
 
-class TrackerError(RuntimeError):
-    """A tracker operation failed. Raised instead of exiting: the process serves other calls."""
+class TrackerError(ToolError):
+    """A tracker operation failed. Raised instead of exiting: the process serves other calls.
+
+    An MCP `ToolError`, so the caller reads its message; the SDK hides any other exception's text."""
 
 
 @runtime_checkable

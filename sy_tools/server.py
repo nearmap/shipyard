@@ -31,6 +31,7 @@ import re
 from typing import Annotated, Any
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
 from pydantic import Field, ValidationError
 import yaml
 
@@ -42,7 +43,7 @@ from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 mcp = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
 
 
-class ToolError(RuntimeError):
+class ToolError(MCPToolError):
     """A tool failed in a way the caller should see as a tool result, not a protocol error."""
 
 

@@ -32,7 +32,7 @@ ci_poll.sh — token-free CI poller.
   ci_poll.sh self-test
 
 The parser accepts a flag before <pr-number-or-branch>, but callers must put it first anyway: the
-end-of-run hygiene check matches a live poller by argv shape (`pgrep -f "ci_poll.sh poll <pr>"`), so a
+end-of-run hygiene check matches a live poller by argv shape (`pgrep -f '[c]i_poll.sh poll <pr>'`), so a
 flag ahead of the selector leaves it undetectable. Omitted interval_s/timeout_s come from resolved config
 (ci.poll_interval, ci.poll_timeout); raise ci.poll_timeout where CI routinely outlasts it, so one poll
 call spans the whole wait.
@@ -331,12 +331,14 @@ if (( n > 1 )); then echo "some checks are still pending"; exit 8; fi
         echo "ci_poll self-test: (j) needs pgrep, which is not on PATH" >&2
         return 1
     fi
+    # an agent's check runs in `bash -c '<cmd>'`, whose argv carries the pattern; pgrep skips itself, not that shell
+    _assert "(s) the bracketed pattern does not match its own bash -c wrapper" "$(_status bash -c "pgrep -f '[c]i_poll.sh poll 98'; exit \$?")" 1
     _fake_gh "$tmp/gh" "$head_a" 'echo "some checks are still pending"; exit 8'
     echo 0 > "$tmp/state"
     CI_POLL_FAKE_STATE="$tmp/state" PATH="$tmp:$PATH" bash "$shell" poll 99 5 60 --repo owner/repo --head aaa1110000000000000000000000000000000000 --allow-no-checks > /dev/null 2>&1 &
     local pid=$! waited=0 matched=0
-    while (( waited < 50 )) && ! pgrep -f "ci_poll.sh poll 99" > /dev/null; do sleep 0.1; waited=$(( waited + 1 )); done
-    if pgrep -f "ci_poll.sh poll 99" > /dev/null; then matched=1; fi
+    while (( waited < 50 )) && ! pgrep -f '[c]i_poll.sh poll 99' > /dev/null; do sleep 0.1; waited=$(( waited + 1 )); done
+    if pgrep -f '[c]i_poll.sh poll 99' > /dev/null; then matched=1; fi
     # both statuses swallowed: a killed child returns 143 and `kill` itself fails if it already exited
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true

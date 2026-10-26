@@ -177,7 +177,6 @@ POLLER_CALL_SITES = (
     "skills/ci/SKILL.md",
     "skills/ship/references/immutable-gate.md",
     "skills/ship/references/merge-accounting.md",
-    "skills/ship/references/handoff-accounting.md",
 )
 
 REQUIRED = {
@@ -2359,7 +2358,7 @@ def check_poller_argv(errors: list[str]) -> None:
             fail(f"{rel}: documents the CI wait and must invoke the shared poller by name", errors)
         for token in found:
             if token.startswith("-"):
-                # the end-of-run hygiene assertions match `pgrep -f "ci_poll.sh poll <pr>"`, so a flag
+                # the end-of-run hygiene assertions match `pgrep -f '[c]i_poll.sh poll <pr>'`, so a flag
                 # slipped in front of the selector leaves a live poller undetectable rather than failing
                 fail(f"{rel}: ci_poll.sh poll takes the selector first, not {token!r}", errors)
 

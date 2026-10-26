@@ -34,6 +34,6 @@ For a squash merge, compose the subject and body from the PR's own description p
 
 Then verify merged state, set the task `done` via the `tracker` skill, and remove only build/slice/review worktrees (under the resolved `worktree.root`) and branches recorded by this run.
 
-Close with the end-of-run hygiene assertion: every worktree recorded by this run is gone from `git worktree list`, and no poller from this run is still alive (`pgrep -f "ci_poll.sh poll <this run's PR>"` returns nothing). A leftover is a loud failure to clean and re-assert, never something to close over.
+Close with the end-of-run hygiene assertion: every worktree recorded by this run is gone from `git worktree list`, and no poller from this run is still alive (`pgrep -f '[c]i_poll.sh poll <PR>'` returns nothing). A leftover is a loud failure to clean and re-assert, never something to close over.
 
 Explicit merge authorization never waives stale CI or review coverage.

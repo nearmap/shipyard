@@ -332,7 +332,7 @@ if (( n > 1 )); then echo "some checks are still pending"; exit 8; fi
         return 1
     fi
     # an agent's check runs in `bash -c '<cmd>'`, whose argv carries the pattern; pgrep skips itself, not that shell
-    _assert "(s) the bracketed pattern does not match its own bash -c wrapper" "$(_status bash -c "pgrep -f '[c]i_poll.sh poll 98'; exit \$?")" 1
+    _assert "(u) the bracketed pattern does not match its own bash -c wrapper" "$(_status bash -c "pgrep -f '[c]i_poll.sh poll 98' | grep -qx \$\$")" 1
     _fake_gh "$tmp/gh" "$head_a" 'echo "some checks are still pending"; exit 8'
     echo 0 > "$tmp/state"
     CI_POLL_FAKE_STATE="$tmp/state" PATH="$tmp:$PATH" bash "$shell" poll 99 5 60 --repo owner/repo --head aaa1110000000000000000000000000000000000 --allow-no-checks > /dev/null 2>&1 &

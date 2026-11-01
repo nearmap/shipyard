@@ -321,11 +321,6 @@ def frontmatter(path: Path, errors: list[str]) -> None:
 def _frontmatter_block(text: str) -> str:
     """Return the frontmatter block's body, or "" when the file opens or closes no such block.
 
-    Anchored on the `\\n---\\n` delimiter, never a split on the bare `---` substring: a `---` inside a
-    field's own value -- a `description: >-` block scalar carrying one, say -- moves a substring split's
-    boundary up into the block, so every key below it falls outside what a caller then reads as the whole
-    block and a containment pin sees an absence that is not there.
-
     "" rather than raising: `frontmatter()` reports both delimiter failures against the path, and a raise
     here would abort main() before it prints the collected list.
     """

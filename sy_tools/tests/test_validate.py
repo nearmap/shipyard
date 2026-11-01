@@ -153,6 +153,7 @@ def test_every_real_agent_frontmatter_parses_as_yaml_with_the_deny_line_intact()
     assert agents
     for path in agents:
         block = validate._frontmatter_block(path.read_text(encoding="utf-8"))
+        assert "---" not in block, f"{path.name}: an interior '---' ends Claude Code's block, dropping later keys"
         parsed = yaml.safe_load(block)
         assert isinstance(parsed, dict), f"{path.name}: frontmatter is not a YAML mapping"
         raw = re.findall(r"^disallowedTools:[ \t]*(.*)$", block, re.M)

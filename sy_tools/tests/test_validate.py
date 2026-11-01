@@ -12,7 +12,10 @@ import inspect
 import json
 from pathlib import Path
 
+import mcp
 import pytest
+
+from sy_tools import server
 
 # Loaded via importlib rather than a sys.path insert, so this module never mutates import
 # resolution for the rest of the pytest session.
@@ -27,6 +30,7 @@ REAL_ROOT = Path(__file__).resolve().parents[2]
 
 
 _DENY_SERVER_TOOLS = ("assign", "check_env", "get-issue", "memory_add", "memory_list", "set-status")
+_POST_COMMENT = '@mcp.tool(name="post-comment")\nasync def g() -> None: ...\n'
 _DENY_GRANTS = {
     "probe": frozenset({"Read", "Grep", "check_env"}),
     "ship-start": frozenset({"Read", "Write", "assign", "check_env", "memory_list", "set-status"}),
@@ -39,11 +43,11 @@ def _deny_check(
     *,
     grants: dict[str, frozenset[str]] | None = None,
     edit: Callable[[str], str] = lambda frontmatter: frontmatter,
-    added_tool: str | None = None,
+    server_suffix: str = "",
 ) -> list[str]:
     """Write each agent's canonical deny line, pass the probe's frontmatter through `edit`, and return the errors.
 
-    `added_tool` lands in the server fixture after the lines are rendered: a tool the server gained since.
+    `server_suffix` lands in the server fixture after the lines are rendered: a registration the server gained since.
     """
     grants = _DENY_GRANTS if grants is None else grants
     monkeypatch.setattr(validate, "ROOT", tmp_path)
@@ -56,10 +60,11 @@ def _deny_check(
             frontmatter = edit(frontmatter)
         brief = f"---\n{frontmatter}model: sonnet\n---\nbody\n"
         (tmp_path / "agents" / f"{stem}.md").write_text(brief, encoding="utf-8")
-    tools = (*_DENY_SERVER_TOOLS, added_tool) if added_tool else _DENY_SERVER_TOOLS
     (tmp_path / "sy_tools").mkdir()
     (tmp_path / "sy_tools" / "server.py").write_text(
-        "".join(f'@mcp.tool(name="{tool}")\nasync def f() -> None: ...\n\n' for tool in tools), encoding="utf-8",
+        "".join(f'@mcp.tool(name="{tool}")\nasync def f() -> None: ...\n\n' for tool in _DENY_SERVER_TOOLS)
+        + server_suffix,
+        encoding="utf-8",
     )
     errors: list[str] = []
     validate.check_agent_denylists(errors)
@@ -77,7 +82,9 @@ def test_canonical_deny_lines_pass(tmp_path, monkeypatch):
     (lambda fm: fm.replace("disallowedTools: ", "disallowedTools: Grep, "), "unexpected ['Grep']"),
     (lambda fm: fm + "tools: Read, Grep\n", "declares `tools:`"),
     (lambda fm: fm.partition("disallowedTools")[0], "found 0"),
-], ids=["missing deny", "misspelled deny", "deny stripping a grant", "tools field", "no deny line"])
+    (lambda fm: fm + "  suffix\n", "continuation"),
+], ids=["missing deny", "misspelled deny", "deny stripping a grant", "tools field", "no deny line",
+        "folded continuation"])
 def test_a_deny_line_drifted_from_its_grants_is_refused(tmp_path, monkeypatch, edit, expected):
     """Claude Code ignores a deny name that matches nothing, so a typo is an over-grant the line must not hide."""
     errors = _deny_check(tmp_path, monkeypatch, edit=edit)
@@ -100,9 +107,42 @@ def test_a_grant_breaking_an_invariant_is_refused(tmp_path, monkeypatch, stem, g
 
 def test_a_server_tool_denied_nowhere_is_refused(tmp_path, monkeypatch):
     """A new `sy` tool reaches every agent until each deny line names it."""
-    errors = _deny_check(tmp_path, monkeypatch, added_tool="post-comment")
+    errors = _deny_check(tmp_path, monkeypatch, server_suffix=_POST_COMMENT)
     assert any("mcp__plugin_sy_sy__post-comment" in error for error in errors), \
         f"a server tool no deny line names must be refused: {errors}"
+
+
+def test_an_indented_server_tool_is_still_governed(tmp_path, monkeypatch):
+    suffix = "if True:\n" + "".join(f"    {line}\n" for line in _POST_COMMENT.splitlines())
+    errors = _deny_check(tmp_path, monkeypatch, server_suffix=suffix)
+    assert any("mcp__plugin_sy_sy__post-comment" in error for error in errors), \
+        f"a decorator nested under a block still registers a tool: {errors}"
+
+
+def test_an_unnamed_server_tool_is_refused(tmp_path, monkeypatch):
+    errors = _deny_check(tmp_path, monkeypatch, server_suffix="@mcp.tool()\nasync def g() -> None: ...\n")
+    assert any("no `@mcp.tool(name=...)`" in error for error in errors), \
+        f"a registration without `name=` must void the read: {errors}"
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_the_server_read_matches_the_live_registry():
+    """The deny lines are rendered from a source read of server.py, so it must agree with what the server serves."""
+    async with mcp.Client(server.mcp) as client:
+        live = {tool.name for tool in (await client.list_tools()).tools}
+    read = validate._sy_server_tools()
+    assert read == live, f"source read {sorted(read)} vs live {sorted(live)}"
+
+
+def test_the_deny_line_orders_builtins_then_both_sy_prefixes(monkeypatch):
+    monkeypatch.setattr(validate, "GOVERNED_BUILTINS", frozenset({"Read", "Grep", "Bash"}))
+    line = validate._deny_line(frozenset({"Read", "check_env"}), frozenset({"check_env", "set-status"}))
+    assert line == "Bash, Grep, mcp__plugin_sy_sy__set-status, mcp__sy__set-status", line
 
 
 def test_the_grant_checks_are_registered_in_main():

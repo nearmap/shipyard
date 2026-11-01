@@ -231,7 +231,7 @@ Claude Code, not Shipyard, runs language servers: a repository declares them in 
 
 ## MCP servers are not a Shipyard setting
 
-A repository's MCP servers — a docs server, say — come from its own Claude Code setup (`.mcp.json`, `.claude/settings.json`, or a plugin it enables), and there is no Shipyard key for them. Every agent inherits them: each agent's frontmatter is a `disallowedTools:` deny-list of the built-in and `sy` tools `AGENT_GRANTS` does not grant it, never a `tools:` allowlist, so another server's tools pass through. How agents use them — search a docs server first, fall back when it is absent, and never call one that writes — is `skills/shared/references/docs-mcp.md`.
+A repository's MCP servers — a docs server, say — come from its own Claude Code setup (`.mcp.json`, `.claude/settings.json`, or a plugin it enables), and there is no Shipyard key for them. Every agent inherits them along with every other MCP server in the session, user-scope servers and connectors included: each agent's frontmatter is a `disallowedTools:` deny-list of the built-in and `sy` tools `AGENT_GRANTS` does not grant it, never a `tools:` allowlist, so another server's tools pass through. How agents use them — search a docs server first, fall back when it is absent, and never call one that writes — is `skills/shared/references/docs-mcp.md`.
 
 ## Trigger/trace event log
 

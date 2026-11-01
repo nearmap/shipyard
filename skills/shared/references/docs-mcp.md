@@ -1,6 +1,6 @@
 # Repository MCP servers
 
-A repository may connect MCP servers in its own Claude Code setup — `.mcp.json`, `.claude/settings.json`, or a plugin it enables — and every Shipyard agent inherits them: an agent's frontmatter denies only the built-in and `sy` tools it is not granted, so another server's tools reach it untouched. Shipyard configures none of them and has no config key for them. Which servers exist, and which one carries the repository's documentation, is the repository's to say, normally in its `CLAUDE.md`.
+A repository may connect MCP servers in its own Claude Code setup — `.mcp.json`, `.claude/settings.json`, or a plugin it enables — and every Shipyard agent inherits them along with every other MCP server in the session, user-scope servers and connectors included: an agent's frontmatter denies only the built-in and `sy` tools it is not granted, so another server's tools reach it untouched. Shipyard configures none of them and has no config key for them. Which servers exist, and which one carries the repository's documentation, is the repository's to say, normally in its `CLAUDE.md`.
 
 ## Availability is discovered, never assumed
 

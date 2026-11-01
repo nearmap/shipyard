@@ -1296,6 +1296,12 @@ def check_agent_denylists(errors: list[str]) -> None:
                 "grants live in AGENT_GRANTS and reach the frontmatter as its `disallowedTools:` line",
                 errors,
             )
+        if re.search(r"^disallowedTools:.*\n[ \t]+\S", block, re.M):
+            fail(
+                f"{rel}: `disallowedTools:` is followed by an indented continuation line, which YAML folds into "
+                "its last deny name so that name matches nothing; keep the whole deny-list on one line",
+                errors,
+            )
         lines = re.findall(r"^disallowedTools:[ \t]*(.*)$", block, re.M)
         canonical = _deny_line(_grants(p.stem), server_tools)
         if len(lines) != 1 or not lines[0].strip():
@@ -1321,7 +1327,7 @@ def _sy_server_tools() -> frozenset[str]:
     path = ROOT / "sy_tools/server.py"
     if not path.is_file():
         return frozenset()
-    decorators = re.findall(r"^@mcp\.tool\b(.*)$", path.read_text(encoding="utf-8"), re.M)
+    decorators = re.findall(r"^[ \t]*@mcp\.tool\b(.*)$", path.read_text(encoding="utf-8"), re.M)
     names = [m.group(1) for d in decorators if (m := re.match(r"""\(name=["']([\w-]+)["']""", d))]
     # One unnamed registration exposes a tool no deny line can be derived for, so it voids the whole read.
     return frozenset(names) if len(names) == len(decorators) else frozenset()

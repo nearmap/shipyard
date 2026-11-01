@@ -25,7 +25,7 @@ if ! (cd "$PLUGIN_ROOT" && pixi install --locked); then
   exit 1
 fi
 
-MIN_CLAUDE_VERSION="2.1.218"
+MIN_CLAUDE_VERSION="2.1.316"
 version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]; }
 
 if command -v claude >/dev/null 2>&1; then

@@ -89,7 +89,7 @@ The preflight fails hard when `pixi` is missing — for every tracker, since the
 
 | Tool | Version | Used for | When you need it |
 |---|---|---|---|
-| Claude Code | ≥ 2.1.218 | Loading the plugin; must support plugins, `hooks`, and `effort`/`model` in agent frontmatter | Always (2.1.218 is the changelog entry where agent markdown files reject `:` in `name`, reserving it for the plugin namespacing the `sy:` agents use); per-dispatch effort needs ≥ 2.1.292, where the `Agent` tool's `effort` parameter was added |
+| Claude Code | ≥ 2.1.316 | Loading the plugin; must support plugins, `hooks`, `effort`/`model`/`disallowedTools` in agent frontmatter, and the `Agent` tool's per-dispatch `effort` parameter | Always (2.1.316 is the release the agents' `disallowedTools:` deny-lists were probed against — no changelog entry establishes when a subagent's deny-list first removed deferred MCP tools, and 2.1.311 is where subagents first reach MCP servers that finish connecting after they start) |
 | Python | 3.10+, on `PATH`, invoked as `python` | Validation, and the hooks (usage accounting, the review guard, the spec-gate round cap, the eval-event log), which run outside the server's own environment | Always |
 | `pixi` | any recent | The `sy` MCP server's environment — it provides the interpreter, the SDK, and the dev/CI tooling from the committed `pixi.lock` | Always (the server is launched as `pixi run sy-server` and will not start without it) |
 | `gh` | ≥ 2.94.0, authenticated | The code host (PRs and CI, via `/sy:pr` and `/sy:ci`) for **every** tracker, and the transport for the GitHub tracker adapter | Always (the 2.94.0 floor is required by the GitHub tracker's sub-issue and dependency flags) |

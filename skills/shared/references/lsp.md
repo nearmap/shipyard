@@ -1,6 +1,6 @@
 # Language-server navigation
 
-A repository may declare language servers in its own Claude Code layer — `lspServers` in a plugin manifest or a plugin-root `.lsp.json`, or in `.claude/settings.json`. Where it does, an agent whose `tools:` allowlist names `LSP` gets one tool of that name carrying `goToDefinition`, `findReferences`, `hover`, `documentSymbol`, `workspaceSymbol`, `goToImplementation`, and `prepareCallHierarchy`/`incomingCalls`/`outgoingCalls`. Shipyard configures none of it and has no config key for it: Claude Code owns server startup, so a Shipyard-side server list would be a second source of truth that never takes effect.
+A repository may declare language servers in its own Claude Code layer — `lspServers` in a plugin manifest or a plugin-root `.lsp.json`, or in `.claude/settings.json`. Where it does, an agent granted `LSP` gets one tool of that name carrying `goToDefinition`, `findReferences`, `hover`, `documentSymbol`, `workspaceSymbol`, `goToImplementation`, and `prepareCallHierarchy`/`incomingCalls`/`outgoingCalls`. Shipyard configures none of it and has no config key for it: Claude Code owns server startup, so a Shipyard-side server list would be a second source of truth that never takes effect.
 
 ## Availability is discovered, never assumed
 

@@ -227,7 +227,11 @@ The preflight cache invalidates itself: its fingerprint folds in the resolved co
 
 ## Language servers are not a Shipyard setting
 
-Claude Code, not Shipyard, runs language servers: a repository declares them in its own `lspServers` block — a plugin manifest, a plugin-root `.lsp.json`, or `.claude/settings.json` — and Claude Code exposes whatever it started to an agent as one built-in tool named `LSP`. There is deliberately no key for this here and none to add: Shipyard starts no processes, so a server list in this file could never take effect, and it would compete with the repository's real declaration. What Shipyard owns is which of its agents may call that tool — a `tools:` grant in `agents/*.md`, governed by `skills/shared/references/lsp.md` — and where a repository declares no server the tool is simply absent from the agents granted it, which is not a fault to configure around.
+Claude Code, not Shipyard, runs language servers: a repository declares them in its own `lspServers` block — a plugin manifest, a plugin-root `.lsp.json`, or `.claude/settings.json` — and Claude Code exposes whatever it started to an agent as one built-in tool named `LSP`. There is deliberately no key for this here and none to add: Shipyard starts no processes, so a server list in this file could never take effect, and it would compete with the repository's real declaration. What Shipyard owns is which of its agents may call that tool — its grant in `scripts/validate.py`'s `AGENT_GRANTS`, rendered as each agent's `disallowedTools:` line and governed by `skills/shared/references/lsp.md` — and where a repository declares no server the tool is simply absent from the agents granted it, which is not a fault to configure around.
+
+## MCP servers are not a Shipyard setting
+
+A repository's MCP servers — a docs server, say — come from its own Claude Code setup (`.mcp.json`, `.claude/settings.json`, or a plugin it enables), and there is no Shipyard key for them. Every agent inherits them: each agent's frontmatter is a `disallowedTools:` deny-list of the built-in and `sy` tools `AGENT_GRANTS` does not grant it, never a `tools:` allowlist, so another server's tools pass through. How agents use them — search a docs server first, fall back when it is absent, and never call one that writes — is `skills/shared/references/docs-mcp.md`.
 
 ## Trigger/trace event log
 

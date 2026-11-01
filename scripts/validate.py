@@ -45,13 +45,9 @@ LEGACY_CONFIG_ENV = {
     "SY_DONE_COLNAME", "SY_FRONTIER_MODEL", "SY_FRONTIER_FALLBACK", "SY_IMAGE_MODEL",
     "SY_DEBATE_MODEL", "SY_GH_PROJECT", "SY_GH_REPO",
 }
-# Every spelling of "give this agent the whole `sy` server": the bare server name under either
-# deployment prefix, and the `__*` suffix form Claude Code documents as equivalent to it.
-SERVER_WILDCARD = re.compile(r"mcp__(?:sy|plugin_sy_sy)(?:__\*)?")
-# The only two prefixes under which an entry names a real `sy` tool. An entry under neither -- a bare
-# `check_env`, or a foreign server's -- grants nothing, however it splits, so every verb extraction
-# below must read the prefix rather than the tail.
-SY_PREFIXES = ("mcp__sy__", "mcp__plugin_sy_sy__")
+# The two prefixes a `sy` tool is exposed under: a marketplace install's, then a project `.mcp.json`'s. A deny
+# line names both, because `disallowedTools` silently ignores a name that matches nothing.
+SY_PREFIXES = ("mcp__plugin_sy_sy__", "mcp__sy__")
 MEMORY_WRITE_TOOLS = {"memory_add", "memory_refute"}
 # Every tool that can write a file, as `hooks/hooks.json`'s PreToolUse matcher enumerates them (its
 # `Bash` leg aside, which is a shell not a write). One copy: a delegate refused `Write`/`Edit` but
@@ -69,12 +65,79 @@ SHIP_WORKER_TRACKER_VERBS = {
 SHIP_WORKER_AGENTS = frozenset(SHIP_WORKER_TRACKER_VERBS)
 # Every agent must be able to ask whether a credential is present without ever reading its value.
 CHECK_ENV_TOOL = "check_env"
+# The built-ins a subagent can be handed, as observed on Claude Code 2.1.316: an agent's deny line names every one
+# it is not granted. `ToolSearch` and `SubagentHandback` are never governed -- deferred tools load through the one,
+# and a subagent's return travels through the other.
+GOVERNED_BUILTINS = frozenset({
+    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "Bash", "PowerShell", "Agent", "Skill", "LSP",
+    "WebFetch", "WebSearch", "TodoWrite", "Artifact", "ArtifactCheck", "ArtifactComments", "ArtifactData",
+    "SendMessage", "TaskStop", "Monitor", "EnterWorktree", "ExitWorktree", "ExitPlanMode", "CronCreate", "CronDelete",
+    "CronList", "RemoteTrigger", "PushNotification", "DesignSync", "ShareOnboardingGuide", "ListAgents",
+    "ReportFindings", "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
+})
+# The only authority for what each agent may hold: built-ins by name, `sy` tools bare. Every agent's
+# `disallowedTools:` line is derived from its entry here and checked against it by exact set equality.
+AGENT_GRANTS: dict[str, frozenset[str]] = {
+    "debate": frozenset({
+        "Agent", "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write", "agent_model", "check_env",
+        "get_config", "scratch_dir",
+    }),
+    "debater": frozenset({"Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "check_env"}),
+    "explain-author": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "Write", "check_env", "scratch_dir",
+    }),
+    "gate": frozenset({
+        "Agent", "Bash", "Glob", "Grep", "LSP", "Read", "Skill", "WebFetch", "WebSearch", "Write", "agent_model",
+        "check_env", "get_config", "scratch_dir",
+    }),
+    "gate-triage": frozenset({"Bash", "Glob", "Grep", "Read", "Write", "check_env", "scratch_dir"}),
+    "hunt": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "Write", "check_env", "scratch_dir",
+    }),
+    "img-inspector": frozenset({"Bash", "Glob", "Read", "check_env"}),
+    "repo-review": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "Skill", "WebFetch", "WebSearch", "Write", "check_env", "get_config",
+        "scratch_dir",
+    }),
+    "repo-standards": frozenset({"Bash", "Glob", "Grep", "Read", "Skill", "check_env", "get_config"}),
+    "seam": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "Write", "check_env", "scratch_dir",
+    }),
+    "ship-build": frozenset({
+        "Agent", "Bash", "Edit", "Glob", "Grep", "LSP", "Read", "Skill", "Write", "agent_model", "check_env",
+        "get_config", "scratch_dir", "ship_state_update",
+    }),
+    "ship-gate": frozenset({
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write", "agent_model", "check_env",
+        "fingerprint_config", "get_config", "scratch_dir", "set-status", "ship_state_update",
+    }),
+    "ship-start": frozenset({
+        "Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write", "agent_model", "assign", "check_env",
+        "fingerprint_config", "get_config", "memory_list", "memory_search", "scratch_dir", "set-status",
+        "ship_state_update",
+    }),
+    "slice": frozenset({"Bash", "Edit", "Glob", "Grep", "LSP", "Read", "Write", "check_env"}),
+    "spec-gate": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "Write", "check_env", "scratch_dir",
+    }),
+    "sweep": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "check_env", "find-issues", "get-issue",
+    }),
+    "trace": frozenset({
+        "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "Write", "check_env", "scratch_dir",
+    }),
+}
 # Claude Code's built-in language-server tool, granted only where a repository declares its own servers,
 # and the single copy of the guidance every grant of it is coupled to.
 LSP_TOOL = "LSP"
 LSP_REFERENCE = "skills/shared/references/lsp.md"
 # The reference section carrying both unavailable cases and the fallback, which every grant leans on.
 LSP_AVAILABILITY_HEADING = "## Availability is discovered, never assumed"
+# The single copy of the guidance for a repository's own MCP servers, which every agent inherits and cites.
+DOCS_MCP_REFERENCE = "skills/shared/references/docs-mcp.md"
+DOCS_MCP_AVAILABILITY_HEADING = "## Availability is discovered, never assumed"
+# An MCP tool name under any server but `sy`'s: an agent naming one is written for one repository's setup.
+FOREIGN_MCP_TOOL = re.compile(r"\bmcp__(?!sy__|plugin_sy_sy__)[\w-]+")
 # The lowest number an adapter's `body_limit` could plausibly be. Both real limits are 32k and 64k, and
 # no tracker documents anything near this floor, so a declaration under it is a typo, not a limit.
 BODY_LIMIT_FLOOR = 8_192
@@ -210,6 +273,7 @@ REQUIRED = {
     "skills/ship/references/merge-accounting.md",
     "skills/shared/references/image-inspection.md",
     "skills/shared/references/lsp.md",
+    "skills/shared/references/docs-mcp.md",
     "skills/shared/references/memory.md",
     "skills/shared/references/user-interaction.md",
     "skills/shared/references/write-integrity.md",
@@ -524,11 +588,13 @@ def _last_section(tail: str, rel: str, heading: str, errors: list[str]) -> str:
     return tail[:later.start()]
 
 
-def _tools_entries(text: str) -> list[str]:
-    """An agent's single-line `tools:` allowlist split into entries, empty when it declares none."""
-    declared = re.search(r"^tools:[ \t]*(.*)$", _frontmatter_block(text), re.M)
-    value = declared.group(1).strip() if declared else ""
-    return [entry.strip() for entry in value.split(",") if entry.strip()]
+def _grants(stem: str) -> frozenset[str]:
+    """What `AGENT_GRANTS` lets the agent `stem` hold, empty for a stem it has no entry for.
+
+    Empty rather than raising: `check_agent_denylists` reports the roster mismatch, and a raise here would abort
+    main() before it prints the collected list.
+    """
+    return AGENT_GRANTS.get(stem, frozenset())
 
 
 def _guard_mode_set(source: str, name: str) -> set[str] | None:
@@ -801,23 +867,12 @@ def check_gate_loop(errors: list[str]) -> None:
             "caller cannot match across rounds",
             errors,
         )
-    granted = _tools_entries(triage)
-    if not granted:
+    for verb in sorted(_grants(Path(triage_rel).stem) & CANONICAL_VERBS):
         fail(
-            f"{triage_rel}: tools: must be an explicit, non-empty allowlist; absent, it inherits every tool "
-            f"including {'/'.join(FILE_WRITE_TOOLS)} and every tracker verb, and the check below passes "
-            "vacuously on the empty grant it reads -- the no-tracker-verb delegate this file describes would "
-            "be enforced by nothing",
+            f"{triage_rel}: AGENT_GRANTS grants the tracker verb {verb!r}; triage decides nothing but "
+            "dispositions, so a tracker write from here is a record no caller authored",
             errors,
         )
-    for entry in granted:
-        verb = _sy_verb(entry)
-        if verb in CANONICAL_VERBS:
-            fail(
-                f"{triage_rel}: tools: grants the tracker verb {verb!r}; triage decides nothing but "
-                "dispositions, so a tracker write from here is a record no caller authored",
-                errors,
-            )
 
     sandbox_modes = _guard_mode_set(guard, "SANDBOX_WRITE_MODES")
     review_modes = _guard_mode_set(guard, "REVIEW_MODES")
@@ -846,36 +901,27 @@ def check_gate_loop(errors: list[str]) -> None:
                     errors,
                 )
                 continue
-            entries = _tools_entries(brief.read_text(encoding="utf-8"))
-            if not entries:
-                fail(
-                    f"agents/{mode}.md: tools: must be an explicit, non-empty allowlist; absent it inherits "
-                    f"every tool including {'/'.join(FILE_WRITE_TOOLS)}, and the grant/mode cross-check below "
-                    "passes vacuously on the empty list it reads",
-                    errors,
-                )
-                continue
+            granted = _grants(mode)
             if mode in sandbox_modes:
-                if "Write" not in entries:
+                if "Write" not in granted:
                     fail(
-                        f"agents/{mode}.md: {guard_rel} lets this mode write the scratch sandbox, but its "
-                        "tools: names no `Write`; a sandbox nothing is granted to write is a guard leg "
+                        f"agents/{mode}.md: {guard_rel} lets this mode write the scratch sandbox, but "
+                        "AGENT_GRANTS grants it no `Write`; a sandbox nothing is granted to write is a guard leg "
                         "nothing exercises, and the brief's own persist step cannot run",
                         errors,
                     )
-                for twin in ("mcp__plugin_sy_sy__scratch_dir", "mcp__sy__scratch_dir"):
-                    if twin not in entries:
-                        fail(
-                            f"agents/{mode}.md: tools: names no {twin!r}, so this sandbox-write mode cannot "
-                            "resolve the root it is allowed to write; a write grant with no way to find the "
-                            "sandbox lands outside it and is refused",
-                            errors,
-                        )
+                if "scratch_dir" not in granted:
+                    fail(
+                        f"agents/{mode}.md: AGENT_GRANTS grants no 'scratch_dir', so this sandbox-write mode "
+                        "cannot resolve the root it is allowed to write; a write grant with no way to find the "
+                        "sandbox lands outside it and is refused",
+                        errors,
+                    )
             else:
                 for tool in FILE_WRITE_TOOLS:
-                    if tool in entries:
+                    if tool in granted:
                         fail(
-                            f"agents/{mode}.md: tools: grants {tool!r}, but {guard_rel} guards this mode "
+                            f"agents/{mode}.md: AGENT_GRANTS grants {tool!r}, but {guard_rel} guards this mode "
                             "without granting it the sandbox; every write it attempts is refused, so the "
                             "grant only buys a delegate that tries to write and fails",
                             errors,
@@ -1186,134 +1232,113 @@ def check_agent_frontmatter_tiers(errors: list[str]) -> None:
                 )
 
 
-def _sy_verb(entry: str) -> str | None:
-    """The tool name if `entry` is `mcp__sy__<verb>` or `mcp__plugin_sy_sy__<verb>`, else `None`."""
-    for prefix in SY_PREFIXES:
-        if entry.startswith(prefix):
-            return entry[len(prefix):]
-    return None
+def check_agent_denylists(errors: list[str]) -> None:
+    """Every agent's `disallowedTools:` line denies exactly what `AGENT_GRANTS` does not grant it.
 
-
-def check_agent_mcp_allowlists(errors: list[str]) -> None:
-    """An agent's `tools:` allowlist reaches the server's tools under both prefixes, never by wildcard, always
-    reaches `check_env`, never gives a `/sy:ship` worker a durable-memory write, and gives a `/sy:ship` worker
-    exactly the tracker-mutation verbs its own procedure names."""
-    for p in sorted((ROOT / "agents").glob("*.md")):
-        text = p.read_text(encoding="utf-8")
-        block = text[4:text.index("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text else ""
-        # Horizontal whitespace only, then strip: `\s*(.+)` would cross the newline after a valueless
-        # `tools:` and capture the next frontmatter line, validating an empty allowlist as if it named that
-        # line's tool.
-        declared = re.search(r"^tools:[ \t]*(.*)$", block, re.M)
-        value = declared.group(1).strip() if declared else ""
-        if declared and not value:
-            # A valueless `tools:` is genuinely empty only when nothing follows it in the frontmatter block, or
-            # the next real content is a sibling key at column 0 -- two bounded, recognisable shapes. Anything
-            # else following it is an explicit allowlist the same-line-only pattern above cannot see, so every
-            # check below would be skipped, for a non-ship agent silently, allowlist and all. Recognise the
-            # narrow *empty* shape and refuse whatever else follows: enumerating the non-empty continuations
-            # instead (block list, then blank-line-preceded, then comment-preceded, then flow sequence, then a
-            # column-0 comment) turned up one more sibling every review round, because that set is open-ended
-            # and this one is closed. Refusing rather than parsing matches the unrecognised glob shapes further
-            # down, and every real agent already uses the single-line comma form.
-            tail = block[declared.end():].splitlines()[1:]
-            next_real = next((ln for ln in tail if ln.strip() and not ln.lstrip().startswith("#")), None)
-            if next_real is not None and not re.match(r"[\w-]+:", next_real):
-                fail(
-                    f"{p.relative_to(ROOT)}: tools: names nothing on its own line but is not genuinely empty "
-                    f"either ({next_real.strip()!r} follows it); rewrite it as the single-line comma-separated "
-                    "form `tools: item, item, ...` so the allowlist checks below can read it",
-                    errors,
-                )
-                continue
-        if not value:
-            if p.stem in SHIP_WORKER_AGENTS:
-                fail(
-                    f"{p.relative_to(ROOT)}: a /sy:ship worker's tools: must be an explicit, non-empty allowlist; "
-                    f"an absent tools field inherits every tool including {'/'.join(sorted(MEMORY_WRITE_TOOLS))}, "
-                    "and an empty value launches the worker with no tools at all",
-                    errors,
-                )
-            continue
-        named = [entry.strip() for entry in value.split(",")]
-        if not all(named):
-            # Every check below skips an empty name, so a leading, trailing, or doubled comma would
-            # otherwise validate clean and hide the typo it came from.
+    An agent declaring no `tools:` inherits the session's whole pool, every repository MCP server included, so the
+    deny line is the only thing keeping a built-in or `sy` tool from an agent not granted it. Claude Code ignores
+    a deny name that matches nothing, so the line is checked by exact set equality: a typo is a missing deny.
+    """
+    server_tools = _sy_server_tools()
+    if not server_tools:
+        fail(
+            "sy_tools/server.py: no `@mcp.tool(name=...)` could be read, or one registers without an explicit "
+            "`name=`, so the deny lines below cannot be derived and a `sy` tool would pass ungoverned",
+            errors,
+        )
+    if set(AGENT_GRANTS) != EXPECTED_AGENTS:
+        fail(
+            f"AGENT_GRANTS covers {sorted(AGENT_GRANTS)}, not the agent roster {sorted(EXPECTED_AGENTS)}; an agent "
+            "with no entry is checked against an empty grant",
+            errors,
+        )
+    universe = GOVERNED_BUILTINS | server_tools
+    for stem, granted in sorted(AGENT_GRANTS.items()):
+        if outside := sorted(granted - universe):
             fail(
-                f"{p.relative_to(ROOT)}: tools has an empty entry from a leading, trailing, or doubled comma "
-                f"in {value!r}; name one tool per comma",
+                f"AGENT_GRANTS[{stem!r}] grants {outside}, which are neither governed built-ins nor `sy` server "
+                "tools; a misspelled grant is one the deny line silently withholds",
                 errors,
             )
-            named = [entry for entry in named if entry]
-        granted = {verb for entry in named if (verb := _sy_verb(entry)) is not None}
         if CHECK_ENV_TOOL not in granted:
             fail(
-                f"{p.relative_to(ROOT)}: tools is an explicit allowlist naming no {CHECK_ENV_TOOL!r}, so this "
-                "agent cannot ask whether a credential is present without shelling out and leaking its value "
-                "into the transcript; name it under both deployment prefixes",
+                f"AGENT_GRANTS[{stem!r}] grants no {CHECK_ENV_TOOL!r}, so this agent cannot ask whether a "
+                "credential is present without shelling out and leaking its value into the transcript",
                 errors,
             )
-        if p.stem in SHIP_WORKER_AGENTS:
-            for entry in named:
-                if _sy_verb(entry) in MEMORY_WRITE_TOOLS:
-                    fail(
-                        f"{p.relative_to(ROOT)}: tools names {entry!r}, but only the /sy:ship parent writes the "
-                        "user-global memory store; a worker relays a MEMORY_REFUTE candidate instead",
-                        errors,
-                    )
-            declared_verbs = SHIP_WORKER_TRACKER_VERBS[p.stem]
-            granted_verbs = granted & CANONICAL_VERBS
-            if granted_verbs != declared_verbs:
-                missing = sorted(declared_verbs - granted_verbs)
-                extra = sorted(granted_verbs - declared_verbs)
-                fail(
-                    f"{p.relative_to(ROOT)}: this /sy:ship worker's procedure names exactly the tracker verbs "
-                    f"[{', '.join(sorted(declared_verbs)) or 'none'}], but tools grants "
-                    f"[{', '.join(sorted(granted_verbs)) or 'none'}]"
-                    + (f"; missing {missing} (canonical spelling is hyphenated)" if missing else "")
-                    + (f"; extra {extra}" if extra else ""),
-                    errors,
-                )
-        for entry in named:
-            # Both spellings, because Claude Code documents `mcp__<server>__*` as granting every tool
-            # from that server exactly as the bare server name does — and the pair
-            # `mcp__sy__*, mcp__plugin_sy_sy__*` also satisfies the twin check below, so the
-            # bare-name-only form of this check let a full server grant through clean.
-            if SERVER_WILDCARD.fullmatch(entry):
-                fail(
-                    f"{p.relative_to(ROOT)}: tools names the server-level wildcard {entry!r}, which grants "
-                    "every tool including the tracker's mutation verbs; name individual tools instead",
-                    errors,
-                )
-            elif entry.startswith("mcp__") and "*" in entry:
-                # Not one of the two documented `tools:` forms above (an exact name or a server-level
-                # `mcp__<server>`/`mcp__<server>__*` pattern) -- refuse rather than let an unrecognised
-                # glob shape reach the server unnoticed, whether it would over-grant or silently strip
-                # the tool it looks like it names.
-                fail(
-                    f"{p.relative_to(ROOT)}: tools names {entry!r}, neither an exact tool name nor a "
-                    "documented server-level pattern; name individual tools instead",
-                    errors,
-                )
-        # `mcp__plugin_sy_sy__` is a marketplace install's prefix, `mcp__sy__` a project `.mcp.json`'s, and an
-        # explicit `tools:` list grants nothing it does not name: one prefix silently strands the other.
-        for entry in named:
-            for prefix, twin in (SY_PREFIXES, SY_PREFIXES[::-1]):
-                if entry.startswith(prefix) and twin + entry[len(prefix):] not in named:
-                    fail(
-                        f"{p.relative_to(ROOT)}: tools names {entry!r} but not its other-deployment twin "
-                        f"{twin + entry[len(prefix):]!r}; both prefixes must be listed or one deployment "
-                        "cannot reach the tool",
-                        errors,
-                    )
+        if stem not in SHIP_WORKER_AGENTS:
+            continue
+        if memory_writes := sorted(granted & MEMORY_WRITE_TOOLS):
+            fail(
+                f"AGENT_GRANTS[{stem!r}] grants {memory_writes}, but only the /sy:ship parent writes the "
+                "user-global memory store; a worker relays a MEMORY_REFUTE candidate instead",
+                errors,
+            )
+        declared_verbs = SHIP_WORKER_TRACKER_VERBS[stem]
+        granted_verbs = granted & CANONICAL_VERBS
+        if granted_verbs != declared_verbs:
+            missing = sorted(declared_verbs - granted_verbs)
+            extra = sorted(granted_verbs - declared_verbs)
+            fail(
+                f"AGENT_GRANTS[{stem!r}]: this /sy:ship worker's procedure names exactly the tracker verbs "
+                f"[{', '.join(sorted(declared_verbs)) or 'none'}], but it is granted "
+                f"[{', '.join(sorted(granted_verbs)) or 'none'}]"
+                + (f"; missing {missing} (canonical spelling is hyphenated)" if missing else "")
+                + (f"; extra {extra}" if extra else ""),
+                errors,
+            )
+    for p in sorted((ROOT / "agents").glob("*.md")):
+        rel = p.relative_to(ROOT)
+        block = _frontmatter_block(p.read_text(encoding="utf-8"))
+        if re.search(r"^tools:", block, re.M):
+            fail(
+                f"{rel}: declares `tools:`, an allowlist that cuts the agent off from every repository MCP server; "
+                "grants live in AGENT_GRANTS and reach the frontmatter as its `disallowedTools:` line",
+                errors,
+            )
+        lines = re.findall(r"^disallowedTools:[ \t]*(.*)$", block, re.M)
+        canonical = _deny_line(_grants(p.stem), server_tools)
+        if len(lines) != 1 or not lines[0].strip():
+            fail(
+                f"{rel}: must carry exactly one single-line comma-separated `disallowedTools:`, found {len(lines)}; "
+                f"its canonical form is `disallowedTools: {canonical}`",
+                errors,
+            )
+            continue
+        declared = {entry.strip() for entry in lines[0].split(",")}
+        expected = set(canonical.split(", "))
+        if declared != expected:
+            fail(
+                f"{rel}: `disallowedTools:` must deny exactly what AGENT_GRANTS does not grant; missing "
+                f"{sorted(expected - declared)}, unexpected {sorted(declared - expected)}. "
+                f"Canonical line: `disallowedTools: {canonical}`",
+                errors,
+            )
+
+
+def _sy_server_tools() -> frozenset[str]:
+    """Every tool name `sy_tools/server.py` registers, read at check time so a monkeypatched `ROOT` is honoured."""
+    path = ROOT / "sy_tools/server.py"
+    if not path.is_file():
+        return frozenset()
+    decorators = re.findall(r"^@mcp\.tool\b(.*)$", path.read_text(encoding="utf-8"), re.M)
+    names = [m.group(1) for d in decorators if (m := re.match(r"""\(name=["']([\w-]+)["']""", d))]
+    # One unnamed registration exposes a tool no deny line can be derived for, so it voids the whole read.
+    return frozenset(names) if len(names) == len(decorators) else frozenset()
+
+
+def _deny_line(granted: frozenset[str], server_tools: frozenset[str]) -> str:
+    """The canonical deny value: ungranted built-ins sorted, then each ungranted `sy` tool under both prefixes."""
+    builtins = sorted(GOVERNED_BUILTINS - granted)
+    sy = [prefix + tool for tool in sorted(server_tools - granted) for prefix in SY_PREFIXES]
+    return ", ".join(builtins + sy)
 
 
 def check_lsp_grants(errors: list[str]) -> None:
     """The `LSP` grant and the reference governing it travel together, in both directions.
 
-    Standalone rather than a leg of `check_agent_mcp_allowlists`: every rule there is about the `sy`
-    server's own tools under their two deployment prefixes, and this one couples a built-in grant to a
-    file outside `agents/`.
+    Standalone rather than a leg of `check_agent_denylists`: every rule there is about what an agent may hold,
+    and this one couples a built-in grant to a file outside `agents/`.
     """
     # Read here rather than through `check_invariants`'s `read()`, which raises on any missing file: a
     # synthetic tree exercising this rule would then have to carry every path that function reads.
@@ -1339,19 +1364,46 @@ def check_lsp_grants(errors: list[str]) -> None:
         )
     for p in sorted((ROOT / "agents").glob("*.md")):
         text = p.read_text(encoding="utf-8")
-        granted = LSP_TOOL in _tools_entries(text)
+        granted = LSP_TOOL in _grants(p.stem)
         cited = LSP_REFERENCE in text
         if granted and not cited:
             fail(
-                f"{p.relative_to(ROOT)}: tools grants {LSP_TOOL!r} but the brief never cites "
+                f"{p.relative_to(ROOT)}: AGENT_GRANTS grants {LSP_TOOL!r} but the brief never cites "
                 f"{LSP_REFERENCE}; an unguided grant is one an agent reaches for as a `Grep` substitute "
                 "and reports as broken wherever no server is configured",
                 errors,
             )
         elif cited and not granted:
             fail(
-                f"{p.relative_to(ROOT)}: the brief cites {LSP_REFERENCE} but tools grants no "
+                f"{p.relative_to(ROOT)}: the brief cites {LSP_REFERENCE} but AGENT_GRANTS grants no "
                 f"{LSP_TOOL!r}, so it describes navigation this agent can never perform",
+                errors,
+            )
+
+
+def check_docs_mcp_citations(errors: list[str]) -> None:
+    """Every agent cites the docs-MCP reference, which keeps its fallback, and none names a repository's server."""
+    reference = ROOT / DOCS_MCP_REFERENCE
+    if not reference.is_file():
+        fail(f"{DOCS_MCP_REFERENCE} is missing, and every agent brief cites it", errors)
+        return
+    body = reference.read_text(encoding="utf-8")
+    section = _bounded_section(body, DOCS_MCP_AVAILABILITY_HEADING, DOCS_MCP_REFERENCE, errors)
+    if section is not None and not all(term in section for term in ("absent", "ToolSearch", "`Read`", "`Grep`")):
+        fail(
+            f"{DOCS_MCP_REFERENCE} must keep the absent-server case, the `ToolSearch` load step and `Read`/`Grep` "
+            "as the fallback; short of that, an agent reads a repository with no docs server as a fault to fix",
+            errors,
+        )
+    for rel, text in [(DOCS_MCP_REFERENCE, body)] + [
+        (str(p.relative_to(ROOT)), p.read_text(encoding="utf-8")) for p in sorted((ROOT / "agents").glob("*.md"))
+    ]:
+        if rel != DOCS_MCP_REFERENCE and DOCS_MCP_REFERENCE not in text:
+            fail(f"{rel}: never cites {DOCS_MCP_REFERENCE}, so it inherits MCP tools with no guidance", errors)
+        if foreign := sorted(set(FOREIGN_MCP_TOOL.findall(text))):
+            fail(
+                f"{rel}: names {foreign}, another server's tools; agents serve every repository, so a server is "
+                "discovered from the repository's own setup, never named here",
                 errors,
             )
 
@@ -1762,19 +1814,12 @@ def check_invariants(errors: list[str]) -> None:
     # Section-scoped to §7, where the plan half's fields are defined.
     if "`reference: " not in spec.partition("## 7.")[2].partition("\n## ")[0]:
         fail("spec §7 must define the optional `reference` field an MVP-derived Task's plan carries", errors)
-    if "mcp__plugin_sy_sy__get-issue" not in read("agents/sweep.md"):
+    if "get-issue" not in _grants("sweep"):
         fail("sweep must hold the get-issue read it is documented to use for ticket tails", errors)
     for name, text in (("ship-build agent", build_agent), ("implementation", impl), ("gate", gate)):
         if "never point `sy:sweep` at the tracker" not in text:
             fail(f"{name} dispatches sy:sweep and must state it never points sy:sweep at the tracker", errors)
-    tools_value = _frontmatter_field(spec_gate, "tools").strip()
-    if not tools_value:
-        fail(
-            "spec-gate must declare an explicit tools: list; an absent tools field inherits every tool "
-            "including Agent/Skill, which is the violation this pin exists to block",
-            errors,
-        )
-    elif re.search(r"\b(?:Agent|Skill)\b", tools_value):
+    if {"Agent", "Skill"} & _grants("spec-gate"):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
     completeness = ("docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
     if any(field not in spec for field in completeness):
@@ -2102,7 +2147,7 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must resolve the worktree root via the worktree.root config key", errors)
 
     gate_fm = gate.split("---", 2)[1]
-    if "Skill" not in gate_fm:
+    if "Skill" not in _grants("gate"):
         fail("gate agent must allow the Skill tool", errors)
     if re.search(r"^skills:\s*$", gate_fm, re.M):
         fail("gate must not preload standards; conformance review is invoked lazily", errors)
@@ -2232,7 +2277,7 @@ def check_invariants(errors: list[str]) -> None:
     # repo-review runs at the harness's three-level nesting cap, where the Agent tool is not exposed at all
     # (model-dispatch § Nesting is capped). Granting it there re-creates a vetting step that silently never
     # runs; the refutation it cannot do lives one level up, and both halves are droppable on their own.
-    if re.search(r"^tools:.*\bAgent\b", repo_review, re.M):
+    if "Agent" in _grants("repo-review"):
         fail(
             "agents/repo-review.md must not grant the Agent tool: it runs at the agent-nesting cap, where "
             "the tool is withheld whatever the frontmatter lists, so every dispatch it is told to make is "
@@ -2421,8 +2466,9 @@ def main() -> int:
     check_no_repo_scratch_refs(errors)
     check_agent_floors(errors)
     check_agent_frontmatter_tiers(errors)
-    check_agent_mcp_allowlists(errors)
+    check_agent_denylists(errors)
     check_lsp_grants(errors)
+    check_docs_mcp_citations(errors)
     check_contract_completeness(errors)
     check_hooks(errors)
     check_invariants(errors)

@@ -1296,7 +1296,7 @@ def check_agent_denylists(errors: list[str]) -> None:
                 "grants live in AGENT_GRANTS and reach the frontmatter as its `disallowedTools:` line",
                 errors,
             )
-        if re.search(r"^disallowedTools:.*\n[ \t]+\S", block, re.M):
+        if re.search(r"^disallowedTools:.*\n(?:[ \t]*\n)*[ \t]+\S", block, re.M):
             fail(
                 f"{rel}: `disallowedTools:` is followed by an indented continuation line, which YAML folds into "
                 "its last deny name so that name matches nothing; keep the whole deny-list on one line",

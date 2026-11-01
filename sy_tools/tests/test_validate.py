@@ -83,8 +83,9 @@ def test_canonical_deny_lines_pass(tmp_path, monkeypatch):
     (lambda fm: fm + "tools: Read, Grep\n", "declares `tools:`"),
     (lambda fm: fm.partition("disallowedTools")[0], "found 0"),
     (lambda fm: fm + "  suffix\n", "continuation"),
+    (lambda fm: fm + "\n  suffix\n", "continuation"),
 ], ids=["missing deny", "misspelled deny", "deny stripping a grant", "tools field", "no deny line",
-        "folded continuation"])
+        "folded continuation", "blank-line folded continuation"])
 def test_a_deny_line_drifted_from_its_grants_is_refused(tmp_path, monkeypatch, edit, expected):
     """Claude Code ignores a deny name that matches nothing, so a typo is an over-grant the line must not hide."""
     errors = _deny_check(tmp_path, monkeypatch, edit=edit)

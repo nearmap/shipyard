@@ -38,7 +38,7 @@ claude plugin install sy@shipyard                     # global (default): every 
 cd /path/to/shipyard && ./install.sh
 ```
 
-Required tools: Claude Code ≥ 2.1.218, and ≥ 2.1.292 for per-dispatch effort (see `docs/installation.md` for the floor's rationale), Python 3.10+ on PATH as `python`, `gh` ≥ 2.94.0 authenticated (every tracker uses it for PRs/CI). Jira additionally needs `acli`.
+Required tools: Claude Code ≥ 2.1.316 (see `docs/installation.md` for the floor's rationale), Python 3.10+ on PATH as `python`, `gh` ≥ 2.94.0 authenticated (every tracker uses it for PRs/CI). Jira additionally needs `acli`.
 
 ## Configuring a repo
 
@@ -94,6 +94,7 @@ Once the plugin is loaded, a question about Shipyard itself — not the recipes 
 ## Key rules for guidance
 
 - A language server is the repository's own Claude Code configuration (`lspServers`), never a Shipyard setting — asked how to make Shipyard use one, point at that declaration, not at a config key.
+- So is an MCP server: agents inherit the repository's own servers through their deny-lists, and there is no Shipyard key to add one.
 - Don't invent config key names, column values, or tracker fields — the authoritative list is `docs/configuration.md`; read it rather than guessing, or call `show_config {}` to see what this repo actually resolves.
 - Never suggest merging on the user's behalf or imply a merge happened automatically — nothing merges without their explicit word, by design.
 - Keep tracker vocabulary (`jira`, `acli`, `gh issue`, ADF, …) out of anything described as core when discussing the codebase — that seam is enforced by `scripts/validate.py`.

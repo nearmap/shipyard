@@ -1,17 +1,23 @@
-"""`scripts/validate.py`'s own unit-testable rules: the agent allowlists, and frontmatter extraction.
+"""`scripts/validate.py`'s own unit-testable rules: the agent deny-lists, and frontmatter extraction.
 
 Nothing else in the suite imports `scripts/`; it is a standalone CLI, not a package, and it is loaded
 once here for every case below. `ROOT` is monkeypatched onto a throwaway `agents/` directory rather
-than the real one, so the allowlist cases can be synthetic and the real agents stay untouched.
+than the real one, so the deny-list cases can be synthetic and the real agents stay untouched.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 import importlib.util
 import inspect
 import json
 from pathlib import Path
+import re
 
+import mcp
 import pytest
+import yaml
+
+from sy_tools import server
 
 # Loaded via importlib rather than a sys.path insert, so this module never mutates import
 # resolution for the rest of the pytest session.
@@ -25,213 +31,141 @@ _spec.loader.exec_module(validate)
 REAL_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _check(
+_DENY_SERVER_TOOLS = ("assign", "check_env", "get-issue", "memory_add", "memory_list", "set-status")
+_POST_COMMENT = '@mcp.tool(name="post-comment")\nasync def g() -> None: ...\n'
+_DENY_GRANTS = {
+    "probe": frozenset({"Read", "Grep", "check_env"}),
+    "ship-start": frozenset({"Read", "Write", "assign", "check_env", "memory_list", "set-status"}),
+}
+
+
+def _deny_check(
     tmp_path: Path,
-    tools_line: str | None,
     monkeypatch: pytest.MonkeyPatch,
-    name: str = "probe",
-    trailing: str = "model: sonnet\n",
+    *,
+    grants: dict[str, frozenset[str]] | None = None,
+    edit: Callable[[str], str] = lambda frontmatter: frontmatter,
+    server_suffix: str = "",
 ) -> list[str]:
-    agents = tmp_path / "agents"
-    agents.mkdir()
-    tools = f"tools: {tools_line}\n" if tools_line is not None else ""
-    # `model:` trails tools: because that is the layout a valueless `tools:` is mis-read as an allowlist
-    # in: a pattern whose whitespace class crosses the newline captures the following frontmatter line.
-    # `trailing=""` puts tools: last in the block instead, with nothing at all after it.
-    fields = f"{tools}{trailing}"
-    (agents / f"{name}.md").write_text(
-        f"---\nname: {name}\ndescription: test\n{fields}---\nbody\n", encoding="utf-8",
-    )
+    """Write each agent's canonical deny line, pass the probe's frontmatter through `edit`, and return the errors.
+
+    `server_suffix` lands in the server fixture after the lines are rendered: a registration the server gained since.
+    """
+    grants = _DENY_GRANTS if grants is None else grants
     monkeypatch.setattr(validate, "ROOT", tmp_path)
+    monkeypatch.setattr(validate, "AGENT_GRANTS", grants)
+    monkeypatch.setattr(validate, "EXPECTED_AGENTS", set(grants))
+    (tmp_path / "agents").mkdir()
+    for stem, granted in grants.items():
+        frontmatter = f"name: {stem}\ndisallowedTools: {validate._deny_line(granted, frozenset(_DENY_SERVER_TOOLS))}\n"
+        if stem == "probe":
+            frontmatter = edit(frontmatter)
+        brief = f"---\n{frontmatter}model: sonnet\n---\nbody\n"
+        (tmp_path / "agents" / f"{stem}.md").write_text(brief, encoding="utf-8")
+    (tmp_path / "sy_tools").mkdir()
+    (tmp_path / "sy_tools" / "server.py").write_text(
+        "".join(f'@mcp.tool(name="{tool}")\nasync def f() -> None: ...\n\n' for tool in _DENY_SERVER_TOOLS)
+        + server_suffix,
+        encoding="utf-8",
+    )
     errors: list[str] = []
-    validate.check_agent_mcp_allowlists(errors)
+    validate.check_agent_denylists(errors)
     return errors
 
 
-def _twins(*tools: str) -> str:
-    """Render `tools` as a `tools:` value naming each under both deployment prefixes."""
-    return ", ".join(f"mcp__{prefix}__{tool}" for tool in tools for prefix in ("sy", "plugin_sy_sy"))
+def test_canonical_deny_lines_pass(tmp_path, monkeypatch):
+    errors = _deny_check(tmp_path, monkeypatch)
+    assert not errors, f"deny lines rendered from AGENT_GRANTS must pass: {errors}"
 
 
-@pytest.mark.parametrize(
-    "tools_line",
-    ["mcp__sy, mcp__plugin_sy_sy", "mcp__sy__*, mcp__plugin_sy_sy__*", "mcp__sy__set_*, mcp__plugin_sy_sy__set_*"],
-)
-def test_a_server_level_or_tool_name_glob_is_refused(tmp_path, monkeypatch, tools_line):
-    # check_env twins ride along here and in the twin case below so the only rule left to break is the
-    # one each case is about; without them every case would also trip the check_env-reachability check
-    # and pass on that error instead.
-    errors = _check(tmp_path, f"{tools_line}, {_twins('check_env')}", monkeypatch)
-    assert errors, f"{tools_line!r} must be refused"
+@pytest.mark.parametrize("edit, expected", [
+    (lambda fm: fm.replace(", mcp__sy__memory_add", ""), "missing ['mcp__sy__memory_add']"),
+    (lambda fm: fm.replace("mcp__sy__memory_add", "mcp__sy__memory_ad"), "missing ['mcp__sy__memory_add']"),
+    (lambda fm: fm.replace("disallowedTools: ", "disallowedTools: Grep, "), "unexpected ['Grep']"),
+    (lambda fm: fm + "tools: Read, Grep\n", "declares `tools:`"),
+    (lambda fm: fm.partition("disallowedTools")[0], "found 0"),
+    (lambda fm: fm + "  suffix\n", "continuation"),
+    (lambda fm: fm + "\n  suffix\n", "continuation"),
+], ids=["missing deny", "misspelled deny", "deny stripping a grant", "tools field", "no deny line",
+        "folded continuation", "blank-line folded continuation"])
+def test_a_deny_line_drifted_from_its_grants_is_refused(tmp_path, monkeypatch, edit, expected):
+    """Claude Code ignores a deny name that matches nothing, so a typo is an over-grant the line must not hide."""
+    errors = _deny_check(tmp_path, monkeypatch, edit=edit)
+    assert any(expected in error for error in errors), f"expected {expected!r}: {errors}"
 
 
-def test_a_glob_missing_the_double_underscore_is_also_refused(tmp_path, monkeypatch):
-    errors = _check(tmp_path, f"mcp__sy*, mcp__plugin_sy_sy*, {_twins('check_env')}", monkeypatch)
-    assert errors, "a glob shape that skips the documented `__` separator must still be refused"
+@pytest.mark.parametrize("stem, grant_edit, expected", [
+    ("probe", lambda g: g | {"Raed"}, "['Raed']"),
+    ("probe", lambda g: g - {"check_env"}, "grants no 'check_env'"),
+    ("ship-start", lambda g: g | {"memory_add"}, "['memory_add']"),
+    ("ship-start", lambda g: g - {"assign"}, "missing ['assign']"),
+    ("ship-start", lambda g: g | {"get-issue"}, "extra ['get-issue']"),
+], ids=["outside the universe", "no check_env", "ship worker memory write", "ship worker short a verb",
+        "ship worker extra verb"])
+def test_a_grant_breaking_an_invariant_is_refused(tmp_path, monkeypatch, stem, grant_edit, expected):
+    grants = {**_DENY_GRANTS, stem: grant_edit(_DENY_GRANTS[stem])}
+    errors = _deny_check(tmp_path, monkeypatch, grants=grants)
+    assert any(expected in error and stem in error for error in errors), f"expected {expected!r}: {errors}"
 
 
-def test_named_tools_with_both_deployment_twins_pass_clean(tmp_path, monkeypatch):
-    errors = _check(tmp_path, _twins("set_status", "check_env"), monkeypatch)
-    assert not errors, f"a legitimate named-tool twin pair must not be refused: {errors}"
+def test_a_server_tool_denied_nowhere_is_refused(tmp_path, monkeypatch):
+    """A new `sy` tool reaches every agent until each deny line names it."""
+    errors = _deny_check(tmp_path, monkeypatch, server_suffix=_POST_COMMENT)
+    assert any("mcp__plugin_sy_sy__post-comment" in error for error in errors), \
+        f"a server tool no deny line names must be refused: {errors}"
 
 
-def test_a_missing_twin_is_refused(tmp_path, monkeypatch):
-    errors = _check(tmp_path, f"mcp__sy__set_status, {_twins('check_env')}", monkeypatch)
-    assert any("twin" in error for error in errors), \
-        f"an entry with no other-deployment twin listed must be refused: {errors}"
+def test_an_indented_server_tool_is_still_governed(tmp_path, monkeypatch):
+    suffix = "if True:\n" + "".join(f"    {line}\n" for line in _POST_COMMENT.splitlines())
+    errors = _deny_check(tmp_path, monkeypatch, server_suffix=suffix)
+    assert any("mcp__plugin_sy_sy__post-comment" in error for error in errors), \
+        f"a decorator nested under a block still registers a tool: {errors}"
 
 
-@pytest.mark.parametrize("tools_line", [
-    "mcp__sy__set_status, mcp__plugin_sy_sy__set_status,",
-    ", mcp__sy__set_status, mcp__plugin_sy_sy__set_status",
-    "mcp__sy__set_status,, mcp__plugin_sy_sy__set_status",
-])
-def test_an_empty_allowlist_entry_is_refused(tmp_path, monkeypatch, tools_line):
-    """A stray comma leaves an empty name every later check skips, so it is flagged rather than dropped mute."""
-    errors = _check(tmp_path, tools_line, monkeypatch)
-    assert any("empty entry" in error for error in errors), f"{tools_line!r} must be refused: {errors}"
+def test_an_unnamed_server_tool_is_refused(tmp_path, monkeypatch):
+    errors = _deny_check(tmp_path, monkeypatch, server_suffix="@mcp.tool()\nasync def g() -> None: ...\n")
+    assert any("no `@mcp.tool(name=...)`" in error for error in errors), \
+        f"a registration without `name=` must void the read: {errors}"
 
 
-@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
-@pytest.mark.parametrize("tool", ["memory_add", "memory_refute"])
-def test_a_ship_worker_granted_a_memory_write_is_refused(tmp_path, monkeypatch, agent, tool):
-    """Only the /sy:ship parent writes the user-global store; a worker relays a MEMORY_REFUTE candidate."""
-    tools = f"mcp__sy__{tool}, mcp__plugin_sy_sy__{tool}"
-    errors = _check(tmp_path, tools, monkeypatch, name=agent)
-    assert any(tool in error for error in errors), f"{agent} must not be able to grant itself {tool}: {errors}"
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
 
-@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
-def test_a_ship_worker_declaring_no_tools_at_all_is_refused(tmp_path, monkeypatch, agent):
-    """An absent tools field inherits every tool, memory writes included, so it cannot pass silently."""
-    errors = _check(tmp_path, None, monkeypatch, name=agent)
-    assert errors, f"{agent} with no tools: line inherits the memory writes and must be refused"
+@pytest.mark.anyio
+async def test_the_server_read_matches_the_live_registry():
+    """The deny lines are rendered from a source read of server.py, so it must agree with what the server serves."""
+    async with mcp.Client(server.mcp) as client:
+        live = {tool.name for tool in (await client.list_tools()).tools}
+    read = validate._sy_server_tools()
+    assert read == live, f"source read {sorted(read)} vs live {sorted(live)}"
 
 
-@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
-@pytest.mark.parametrize("tools_line", ["", "   "])
-def test_a_ship_worker_declaring_an_empty_tools_value_is_refused(tmp_path, monkeypatch, agent, tools_line):
-    """An empty `tools:` value launches the worker with no tools at all rather than inheriting every tool, but
-    either way it is not the explicit allowlist a ship worker must declare, so it is refused the same.
-
-    It is the sharper case: the valueless `tools:` line reads as present, and a pattern whose whitespace
-    class crosses the newline validates the *next* frontmatter line in its place.
-    """
-    errors = _check(tmp_path, tools_line, monkeypatch, name=agent)
-    assert errors, f"{agent} with an empty tools: value declares no usable allowlist and must be refused"
+def test_the_deny_line_orders_builtins_then_both_sy_prefixes(monkeypatch):
+    monkeypatch.setattr(validate, "GOVERNED_BUILTINS", frozenset({"Read", "Grep", "Bash"}))
+    line = validate._deny_line(frozenset({"Read", "check_env"}), frozenset({"check_env", "set-status"}))
+    assert line == "Bash, Grep, mcp__plugin_sy_sy__set-status, mcp__sy__set-status", line
 
 
-_CHECK_ENV_TWINS = ("mcp__sy__check_env", "mcp__plugin_sy_sy__check_env")
-_BLOCK_LIST = "".join(f"  - {tool}\n" for tool in _CHECK_ENV_TWINS).rstrip("\n")
+def test_every_real_agent_frontmatter_parses_as_yaml_with_the_deny_line_intact():
+    agents = sorted((REAL_ROOT / "agents").glob("*.md"))
+    assert agents
+    for path in agents:
+        block = validate._frontmatter_block(path.read_text(encoding="utf-8"))
+        assert "---" not in block, f"{path.name}: an interior '---' ends Claude Code's block, dropping later keys"
+        parsed = yaml.safe_load(block)
+        assert isinstance(parsed, dict), f"{path.name}: frontmatter is not a YAML mapping"
+        raw = re.findall(r"^disallowedTools:[ \t]*(.*)$", block, re.M)
+        assert parsed.get("disallowedTools") == raw[0], f"{path.name}: YAML value differs from the raw deny line"
+        assert "tools" not in parsed, f"{path.name}: carries a tools allowlist"
 
 
-@pytest.mark.parametrize("agent", ["sweep", "ship-build"])
-@pytest.mark.parametrize("continuation", [
-    f"\n{_BLOCK_LIST}",
-    f"\n\n{_BLOCK_LIST}",
-    f"\n  # both deployment prefixes\n{_BLOCK_LIST}",
-    f"\n# both deployment prefixes\n{_BLOCK_LIST}",
-    f"\n  [{', '.join(_CHECK_ENV_TWINS)}]",
-], ids=[
-    "block list", "blank line then block list", "indented comment then block list",
-    "column-0 comment then block list", "flow sequence",
-])
-def test_a_multi_line_tools_value_is_refused_by_shape(tmp_path, monkeypatch, agent, continuation):
-    """Every one of these puts nothing after `tools:` on its own line, so it reads as an absent field and every
-    check below is skipped -- for a non-ship agent silently, however wrong the allowlist it hides. Each sibling
-    here bypassed an earlier guard in turn, which is why the guard now recognises the one shape that means
-    genuinely empty rather than enumerating the shapes that do not.
-
-    check_env rides along under both prefixes so the form itself is the only thing left to refuse.
-    """
-    errors = _check(tmp_path, continuation, monkeypatch, name=agent)
-    assert any("not genuinely empty" in error for error in errors), \
-        f"{agent}'s multi-line tools: must be refused naming the shape: {errors}"
-
-
-@pytest.mark.parametrize("continuation", ["", "\n  # inherited on purpose", "\n# inherited on purpose"],
-                         ids=["bare", "indented comment", "column-0 comment"])
-def test_a_genuinely_empty_tools_value_before_a_sibling_key_is_not_refused(tmp_path, monkeypatch, continuation):
-    """Nothing follows `tools:` but comments and the next frontmatter key, so a non-ship agent inherits the
-    default tool set as it always could; refusing this would report a block list that is not there."""
-    errors = _check(tmp_path, continuation, monkeypatch, name="sweep")
-    assert not errors, f"a genuinely empty tools: must not be read as a hidden allowlist: {errors}"
-
-
-def test_a_genuinely_empty_tools_value_as_the_last_frontmatter_field_is_not_refused(tmp_path, monkeypatch):
-    """With nothing at all after it there is no continuation to find, so the scan must run off the end clean
-    rather than treat the block's closing delimiter as content."""
-    errors = _check(tmp_path, "", monkeypatch, name="sweep", trailing="")
-    assert not errors, f"a trailing empty tools: must not be read as a hidden allowlist: {errors}"
-
-
-def test_a_non_ship_agent_declaring_no_tools_still_passes(tmp_path, monkeypatch):
-    """The pin is scoped to the ship workers; other agents legitimately inherit the default tool set."""
-    assert not _check(tmp_path, None, monkeypatch, name="sweep"), "the guard must not widen past ship workers"
-
-
-def test_a_ship_worker_keeps_the_memory_read_tools(tmp_path, monkeypatch):
-    """START reads memory back, so the guard must pin the write verbs alone, not the whole tool family."""
-    tools = _twins("memory_list", "memory_search", "set-status", "assign", "check_env")
-    assert not _check(tmp_path, tools, monkeypatch, name="ship-start"), "the read side must stay allowed"
-
-
-@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
-def test_a_ship_worker_granted_exactly_its_declared_tracker_verbs_passes(tmp_path, monkeypatch, agent):
-    verbs = sorted(validate.SHIP_WORKER_TRACKER_VERBS[agent])
-    errors = _check(tmp_path, _twins("check_env", *verbs), monkeypatch, name=agent)
-    assert not errors, f"{agent}'s own declared verb set must pass clean: {errors}"
-
-
-@pytest.mark.parametrize("agent, dropped", [
-    ("ship-start", "set-status"), ("ship-start", "assign"), ("ship-gate", "set-status"),
-])
-def test_a_ship_worker_short_a_declared_tracker_verb_is_refused(tmp_path, monkeypatch, agent, dropped):
-    """An under-grant fails loudly rather than at the worker's first write, and names the verb."""
-    verbs = sorted(validate.SHIP_WORKER_TRACKER_VERBS[agent] - {dropped})
-    errors = _check(tmp_path, _twins("check_env", *verbs), monkeypatch, name=agent)
-    assert any("missing" in error and dropped in error for error in errors), \
-        f"{agent} short {dropped} must be refused naming it: {errors}"
-
-
-@pytest.mark.parametrize("agent", ["ship-start", "ship-build", "ship-gate"])
-def test_a_ship_worker_granted_a_tracker_verb_outside_its_set_is_refused(tmp_path, monkeypatch, agent):
-    """An over-grant cannot ride in on an unrelated edit; the set is exact, not a floor."""
-    verbs = [*sorted(validate.SHIP_WORKER_TRACKER_VERBS[agent]), "post-comment"]
-    errors = _check(tmp_path, _twins("check_env", *verbs), monkeypatch, name=agent)
-    assert any("extra" in error and "post-comment" in error for error in errors), \
-        f"{agent} must not silently gain post-comment: {errors}"
-
-
-def test_an_underscore_spelled_tracker_verb_does_not_satisfy_the_canonical_one(tmp_path, monkeypatch):
-    """Tool names are exact: `set_status` reaches no tool, so it must read as the verb still missing."""
-    errors = _check(tmp_path, _twins("check_env", "set_status", "assign"), monkeypatch, name="ship-start")
-    assert any("missing" in error and "set-status" in error for error in errors), \
-        f"an underscore spelling must not count as the hyphenated canonical verb: {errors}"
-
-
-def test_an_explicit_allowlist_without_check_env_is_refused(tmp_path, monkeypatch):
-    """Without it an agent asked about a credential shells out and leaks the value into the transcript."""
-    errors = _check(tmp_path, "Read, Grep, Bash", monkeypatch)
-    assert any("check_env" in error for error in errors), f"a check_env-less allowlist must be refused: {errors}"
-
-
-def test_an_explicit_allowlist_with_check_env_twins_passes(tmp_path, monkeypatch):
-    assert not _check(tmp_path, _twins("check_env"), monkeypatch), "check_env under both prefixes is the fix"
-
-
-@pytest.mark.parametrize("entry", ["check_env", "mcp__other__check_env"])
-def test_an_unprefixed_or_foreign_check_env_does_not_satisfy_the_grant(tmp_path, monkeypatch, entry):
-    """A tail-matching read counts a bare or foreign-server name as the grant; neither reaches the `sy` tool."""
-    errors = _check(tmp_path, entry, monkeypatch)
-    assert any("check_env" in error for error in errors), f"{entry!r} grants no check_env: {errors}"
-
-
-def test_an_unprefixed_tracker_verb_does_not_satisfy_a_ship_workers_declared_set(tmp_path, monkeypatch):
-    """Same tail-matching hazard on the exact-verb-set check: `assign` alone reaches no tool."""
-    errors = _check(tmp_path, f"assign, {_twins('check_env', 'set-status')}", monkeypatch, name="ship-start")
-    assert any("missing" in error and "assign" in error for error in errors), \
-        f"an unprefixed verb must read as still missing: {errors}"
+def test_the_grant_checks_are_registered_in_main():
+    """A check nothing calls protects nothing, and `main()` is its only caller."""
+    source = inspect.getsource(validate.main)
+    for check in ("check_agent_denylists(errors)", "check_docs_mcp_citations(errors)"):
+        assert check in source, f"{check} must be registered in main()"
 
 
 _EMBEDDED_RULE = (
@@ -801,10 +735,13 @@ _LOOP_PINS = validate.GATE_LOOP_PINS
 _LOOP_SECTIONS = validate.GATE_LOOP_SECTIONS
 
 
-# Every sandbox-write mode's brief carries the same three grants, so one copy renders them all.
-_SANDBOX_TOOLS = (
-    "Read, Grep, Glob, Write, mcp__plugin_sy_sy__scratch_dir, mcp__sy__scratch_dir, mcp__sy__check_env"
-)
+# Every sandbox-write mode holds the same grants; `repo-standards` is guarded but granted no sandbox, so no write.
+_SANDBOX_GRANTS = frozenset({"Read", "Grep", "Glob", "Write", "scratch_dir", "check_env"})
+_LOOP_GRANTS = {
+    "gate": _SANDBOX_GRANTS,
+    "gate-triage": _SANDBOX_GRANTS,
+    "repo-standards": frozenset({"Read", "Grep", "check_env"}),
+}
 
 
 def _loop_skill() -> str:
@@ -876,7 +813,7 @@ def _loop_worker() -> str:
 def _loop_gate() -> str:
     """`agents/gate.md`: the persisted-verdict pin in a fence, under a heading carrying a token-target suffix."""
     return (
-        f"---\nname: gate\ntools: {_SANDBOX_TOOLS}\nmodel: fable\neffort: max\n---\n"
+        "---\nname: gate\nmodel: fable\neffort: max\n---\n"
         f"{_LOOP_SECTIONS['return_contract']} — target ≤1,200 tokens\n"
         f"Write the verdict to the scratch root and name its path as `{_LOOP_PINS['gate_verdict_file']}` below.\n"
         "\n```text\n"
@@ -887,8 +824,7 @@ def _loop_gate() -> str:
 
 
 def _loop_standards() -> str:
-    """`agents/repo-standards.md`: guarded by `REVIEW_MODES`, granted no sandbox, so it holds no write."""
-    return "---\nname: repo-standards\ntools: Read, Grep, mcp__sy__check_env\n---\nbody\n"
+    return "---\nname: repo-standards\n---\nbody\n"
 
 
 def _loop_guard() -> str:
@@ -901,7 +837,7 @@ def _loop_guard() -> str:
 
 def _loop_triage() -> str:
     return (
-        f"---\nname: gate-triage\ntools: {_SANDBOX_TOOLS}\nmodel: opus\neffort: high\n---\n"
+        "---\nname: gate-triage\nmodel: opus\neffort: high\n---\n"
         f"Every finding gets one disposition and a `{_LOOP_PINS['root_cause_key']}`.\n"
     )
 
@@ -915,6 +851,8 @@ def _loop_floors() -> str:
 def _loop_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    grants: dict[str, frozenset[str]] | None = None,
+    /,
     *,
     skill: str | None = None,
     gate_ref: str | None = None,
@@ -927,7 +865,8 @@ def _loop_check(
     floors: str | None = None,
     standards: str | None = None,
 ) -> list[str]:
-    """Build the tree `check_gate_loop` reads and return its errors; each override replaces one file.
+    """Build the tree `check_gate_loop` reads and return its errors; `grants` overrides the `AGENT_GRANTS` entries
+    it names, and each keyword replaces one file.
 
     Every mode the guard names carries a brief, `repo-standards` included: a guarded mode with no brief is
     itself a failure now, so the default tree cannot omit one.
@@ -949,6 +888,7 @@ def _loop_check(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
     monkeypatch.setattr(validate, "ROOT", tmp_path)
+    monkeypatch.setattr(validate, "AGENT_GRANTS", {**_LOOP_GRANTS, **(grants or {})})
     errors: list[str] = []
     validate.check_gate_loop(errors)
     return errors
@@ -1055,18 +995,16 @@ def test_a_triage_brief_that_never_names_the_root_cause_key_is_refused(tmp_path,
 
 
 def test_a_triage_brief_granting_a_tracker_verb_is_refused(tmp_path, monkeypatch):
-    triage = _loop_triage().replace("tools: Read, Grep", "tools: Read, mcp__sy__set-status, Grep")
-    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
+    errors = _loop_check(tmp_path, monkeypatch, {"gate-triage": _SANDBOX_GRANTS | {"set-status"}})
     assert any("a record no caller authored" in e for e in errors), \
         f"a delegate granted a tracker verb must be refused: {errors}"
 
 
-def test_a_triage_brief_with_no_tools_field_at_all_is_refused(tmp_path, monkeypatch):
-    """An absent `tools:` inherits every tool, so the tracker-verb leg passes on an empty grant."""
-    triage = _loop_triage().replace(f"tools: {_SANDBOX_TOOLS}\n", "")
-    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
-    assert any("must be an explicit, non-empty allowlist" in e for e in errors), \
-        f"a triage brief declaring no tools at all must be refused: {errors}"
+def test_a_sandbox_write_mode_granted_nothing_is_refused(tmp_path, monkeypatch):
+    """`_grants` reads a mode with no `AGENT_GRANTS` entry as this empty grant, which is loud rather than vacuous."""
+    errors = _loop_check(tmp_path, monkeypatch, {"gate-triage": frozenset()})
+    assert any("gate-triage" in e and "grants it no `Write`" in e for e in errors), \
+        f"a sandbox-write mode with no grant entry must be refused: {errors}"
 
 
 def test_a_section_appended_after_the_fix_cycle_is_refused(tmp_path, monkeypatch):
@@ -1277,8 +1215,7 @@ def test_a_sandbox_grant_for_a_mode_no_dispatch_resolves_is_refused(tmp_path, mo
         "SANDBOX_WRITE_MODES = {'gate', 'gate-triage'}",
         "SANDBOX_WRITE_MODES = {'gate', 'gate-triage', 'repo-standards'}",
     )
-    standards = f"---\nname: repo-standards\ntools: {_SANDBOX_TOOLS}\n---\nbody\n"
-    errors = _loop_check(tmp_path, monkeypatch, guard=guard, standards=standards)
+    errors = _loop_check(tmp_path, monkeypatch, {"repo-standards": _SANDBOX_GRANTS}, guard=guard)
     assert any("the grant is dead" in e for e in errors), \
         f"a sandbox grant for an undispatched mode must be refused: {errors}"
 
@@ -1301,23 +1238,19 @@ def test_a_reviewer_return_contract_heading_that_is_gone_is_refused(tmp_path, mo
 
 
 def test_a_sandbox_write_mode_whose_brief_holds_no_write_grant_is_refused(tmp_path, monkeypatch):
-    triage = _loop_triage().replace("Write, ", "")
-    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
-    assert any("names no `Write`" in e for e in errors), \
+    errors = _loop_check(tmp_path, monkeypatch, {"gate-triage": _SANDBOX_GRANTS - {"Write"}})
+    assert any("grants it no `Write`" in e for e in errors), \
         f"a sandbox-write mode with no write grant must be refused: {errors}"
 
 
-def test_a_sandbox_write_mode_naming_only_one_scratch_dir_twin_is_refused(tmp_path, monkeypatch):
-    """The grant must resolve under either deployment prefix; one twin leaves the other deployment broken."""
-    triage = _loop_triage().replace("mcp__plugin_sy_sy__scratch_dir, ", "")
-    errors = _loop_check(tmp_path, monkeypatch, triage=triage)
-    assert any("cannot" in e and "resolve the root it is allowed to write" in e for e in errors), \
-        f"a sandbox-write mode missing a scratch_dir twin must be refused: {errors}"
+def test_a_sandbox_write_mode_granted_no_scratch_dir_is_refused(tmp_path, monkeypatch):
+    errors = _loop_check(tmp_path, monkeypatch, {"gate-triage": _SANDBOX_GRANTS - {"scratch_dir"}})
+    assert any("resolve the root it is allowed to write" in e for e in errors), \
+        f"a sandbox-write mode with no scratch_dir must be refused: {errors}"
 
 
 def test_a_guarded_but_ungranted_mode_whose_brief_holds_a_write_is_refused(tmp_path, monkeypatch):
-    standards = "---\nname: repo-standards\ntools: Read, Grep, Write, mcp__sy__check_env\n---\nbody\n"
-    errors = _loop_check(tmp_path, monkeypatch, standards=standards)
+    errors = _loop_check(tmp_path, monkeypatch, {"repo-standards": _LOOP_GRANTS["repo-standards"] | {"Write"}})
     assert any("guards this mode" in e and "without granting it the sandbox" in e for e in errors), \
         f"a guarded, ungranted mode holding a write must be refused: {errors}"
 
@@ -1401,7 +1334,7 @@ _LSP_REFERENCE = (
 def _lsp_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    tools_line: str,
+    granted: frozenset[str],
     brief: str,
     reference: str = _LSP_REFERENCE,
 ) -> list[str]:
@@ -1409,35 +1342,36 @@ def _lsp_check(
     (tmp_path / "agents").mkdir()
     (tmp_path / "skills" / "shared" / "references").mkdir(parents=True)
     (tmp_path / validate.LSP_REFERENCE).write_text(reference, encoding="utf-8")
-    (tmp_path / "agents" / "probe.md").write_text(
-        f"---\nname: probe\ndescription: test\ntools: {tools_line}\nmodel: sonnet\n---\n{brief}", encoding="utf-8",
-    )
+    (tmp_path / "agents" / "probe.md").write_text(f"---\nname: probe\nmodel: sonnet\n---\n{brief}", encoding="utf-8")
     monkeypatch.setattr(validate, "ROOT", tmp_path)
+    monkeypatch.setattr(validate, "AGENT_GRANTS", {"probe": granted})
     errors: list[str] = []
     validate.check_lsp_grants(errors)
     return errors
 
 
 _LSP_CITATION = "Prefer it per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/lsp.md`.\n"
+_LSP_GRANTED = frozenset({"Read", "Grep", "LSP"})
+_LSP_UNGRANTED = frozenset({"Read", "Grep"})
 
 
 def test_a_grant_beside_its_citation_passes(tmp_path, monkeypatch):
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION)
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_GRANTED, _LSP_CITATION)
     assert not errors, f"a granted, cited LSP tool must pass: {errors}"
 
 
 def test_an_agent_naming_neither_the_grant_nor_the_citation_passes(tmp_path, monkeypatch):
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep", "body\n")
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_UNGRANTED, "body\n")
     assert not errors, f"an agent with no business navigating symbols must not be forced into the grant: {errors}"
 
 
 def test_a_grant_without_the_citation_is_refused(tmp_path, monkeypatch):
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", "body\n")
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_GRANTED, "body\n")
     assert any("never cites" in error for error in errors), f"an unguided grant must be refused: {errors}"
 
 
 def test_a_citation_without_the_grant_is_refused(tmp_path, monkeypatch):
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep", _LSP_CITATION)
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_UNGRANTED, _LSP_CITATION)
     assert any("grants no 'LSP'" in error for error in errors), \
         f"guidance for a tool the agent can never call must be refused: {errors}"
 
@@ -1446,7 +1380,7 @@ def test_a_citation_without_the_grant_is_refused(tmp_path, monkeypatch):
 def test_a_reference_that_lost_the_unavailable_case_is_refused(tmp_path, monkeypatch, dropped):
     """A hollowed reference is what turns a missing language server into a fault an agent tries to fix."""
     reference = _LSP_REFERENCE.replace(dropped, "elsewhere")
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_GRANTED, _LSP_CITATION, reference=reference)
     assert any("fallback" in error for error in errors), f"dropping {dropped!r} must be refused: {errors}"
 
 
@@ -1456,7 +1390,7 @@ def test_a_reference_whose_rule_moved_out_of_its_section_is_refused(tmp_path, mo
         f"# Language-server navigation\n\n{_LSP_RULE}\n{validate.LSP_AVAILABILITY_HEADING}\n\n"
         f"Use the tool.\n\n{_LSP_TERMINATOR}"
     )
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_GRANTED, _LSP_CITATION, reference=reference)
     assert any("fallback" in error for error in errors), \
         f"a hollowed section whose words survive outside it must still be refused: {errors}"
 
@@ -1464,7 +1398,7 @@ def test_a_reference_whose_rule_moved_out_of_its_section_is_refused(tmp_path, mo
 def test_a_reference_missing_the_availability_heading_is_refused(tmp_path, monkeypatch):
     """The pin has nowhere to look once the heading is renamed, which is a loud failure, not a pass."""
     reference = _LSP_REFERENCE.replace(validate.LSP_AVAILABILITY_HEADING, "## Something else")
-    errors = _lsp_check(tmp_path, monkeypatch, "Read, Grep, LSP", _LSP_CITATION, reference=reference)
+    errors = _lsp_check(tmp_path, monkeypatch, _LSP_GRANTED, _LSP_CITATION, reference=reference)
     assert any("heading" in error for error in errors), f"a renamed heading must be refused: {errors}"
 
 
@@ -1472,3 +1406,48 @@ def test_the_lsp_grant_check_is_registered_in_main():
     """A check nothing calls protects nothing, and `main()` is its only caller."""
     assert "check_lsp_grants(errors)" in inspect.getsource(validate.main), \
         "the LSP-grant check must be registered in main()"
+
+
+_DOCS_MCP_REFERENCE = (
+    f"# Repository MCP servers\n\n{validate.DOCS_MCP_AVAILABILITY_HEADING}\n\n"
+    "A server may be absent; fall back to `Read`/`Grep`. MCP tools arrive deferred: load one with `ToolSearch`.\n\n"
+    "## Read only\n\nNever write.\n"
+)
+_DOCS_MCP_CITATION = "Search it first, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`.\n"
+
+
+def _docs_mcp_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, brief: str, reference: str = _DOCS_MCP_REFERENCE,
+) -> list[str]:
+    """Build the agent-plus-reference tree `check_docs_mcp_citations` reads and return its errors."""
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "skills" / "shared" / "references").mkdir(parents=True)
+    (tmp_path / validate.DOCS_MCP_REFERENCE).write_text(reference, encoding="utf-8")
+    (tmp_path / "agents" / "probe.md").write_text(f"---\nname: probe\n---\n{brief}", encoding="utf-8")
+    monkeypatch.setattr(validate, "ROOT", tmp_path)
+    errors: list[str] = []
+    validate.check_docs_mcp_citations(errors)
+    return errors
+
+
+def test_a_brief_citing_the_docs_mcp_reference_passes(tmp_path, monkeypatch):
+    errors = _docs_mcp_check(tmp_path, monkeypatch, _DOCS_MCP_CITATION)
+    assert not errors, f"a brief citing a complete reference must pass: {errors}"
+
+
+def test_a_brief_missing_the_docs_mcp_citation_is_refused(tmp_path, monkeypatch):
+    errors = _docs_mcp_check(tmp_path, monkeypatch, "body\n")
+    assert any("never cites" in error for error in errors), f"an uncited brief must be refused: {errors}"
+
+
+def test_a_brief_naming_a_repository_server_is_refused(tmp_path, monkeypatch):
+    """Agents serve every repository, so a server name in a brief is guidance for one setup only."""
+    errors = _docs_mcp_check(tmp_path, monkeypatch, _DOCS_MCP_CITATION + "Call `mcp__acmedocs__search` first.\n")
+    assert any("mcp__acmedocs__search" in error for error in errors), f"a named server must be refused: {errors}"
+
+
+@pytest.mark.parametrize("dropped", ["absent", "ToolSearch", "`Read`", "`Grep`"])
+def test_a_docs_mcp_reference_that_lost_its_fallback_is_refused(tmp_path, monkeypatch, dropped):
+    reference = _DOCS_MCP_REFERENCE.replace(dropped, "elsewhere")
+    errors = _docs_mcp_check(tmp_path, monkeypatch, _DOCS_MCP_CITATION, reference=reference)
+    assert any("fallback" in error for error in errors), f"dropping {dropped!r} must be refused: {errors}"

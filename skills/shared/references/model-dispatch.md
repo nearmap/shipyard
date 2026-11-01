@@ -20,7 +20,7 @@ Three properties of the mechanism make this non-optional rather than a nicety:
 
 ## Nesting is capped
 
-Claude Code allows three levels of subagent nesting, and the cap is silent. An agent at the third level is not given the `Agent` tool at all — its frontmatter `tools:` list is not honoured, no error is raised, and nothing in its return says a dispatch was refused rather than skipped. Measured across 1,776 subagent runs of this plugin: 654 at depth 1, 685 at depth 2, 437 at depth 3, and none anywhere at depth 4.
+Claude Code allows three levels of subagent nesting, and the cap is silent. An agent at the third level is not given the `Agent` tool at all — its frontmatter grant is not honoured, no error is raised, and nothing in its return says a dispatch was refused rather than skipped. Measured across 1,776 subagent runs of this plugin: 654 at depth 1, 685 at depth 2, 437 at depth 3, and none anywhere at depth 4.
 
 So an agent may be instructed to dispatch only when every path that reaches it lands at depth 1 or 2. Count the path, not the intent: `/sy:ship` → `sy:ship-gate` (1) → `sy:gate` (2) → `sy:repo-review` (3) puts the reviewer at the cap, which is why it dispatches nothing and `sy:gate` refutes its candidates instead. A `fork` spends a level like any other dispatch, so dispatching `sy:gate` from a forked worker puts gate itself at the cap and costs it every `sy:hunt` it was going to run, with no sign in its verdict that depth was the reason.
 

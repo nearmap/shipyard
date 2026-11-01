@@ -11,9 +11,11 @@ import importlib.util
 import inspect
 import json
 from pathlib import Path
+import re
 
 import mcp
 import pytest
+import yaml
 
 from sy_tools import server
 
@@ -144,6 +146,18 @@ def test_the_deny_line_orders_builtins_then_both_sy_prefixes(monkeypatch):
     monkeypatch.setattr(validate, "GOVERNED_BUILTINS", frozenset({"Read", "Grep", "Bash"}))
     line = validate._deny_line(frozenset({"Read", "check_env"}), frozenset({"check_env", "set-status"}))
     assert line == "Bash, Grep, mcp__plugin_sy_sy__set-status, mcp__sy__set-status", line
+
+
+def test_every_real_agent_frontmatter_parses_as_yaml_with_the_deny_line_intact():
+    agents = sorted((REAL_ROOT / "agents").glob("*.md"))
+    assert agents
+    for path in agents:
+        block = validate._frontmatter_block(path.read_text(encoding="utf-8"))
+        parsed = yaml.safe_load(block)
+        assert isinstance(parsed, dict), f"{path.name}: frontmatter is not a YAML mapping"
+        raw = re.findall(r"^disallowedTools:[ \t]*(.*)$", block, re.M)
+        assert parsed.get("disallowedTools") == raw[0], f"{path.name}: YAML value differs from the raw deny line"
+        assert "tools" not in parsed, f"{path.name}: carries a tools allowlist"
 
 
 def test_the_grant_checks_are_registered_in_main():

@@ -1,31 +1,39 @@
-"""The `/sy:whiteboard` board: an Excalidraw scene Claude writes and the user edits by hand.
+"""The `/sy:whiteboard` design board: an Excalidraw scene Claude writes and the user edits by hand.
 
 A board is a folder of files. `board.excalidraw` is a plain Excalidraw scene that opens in the
 Excalidraw VS Code extension, on excalidraw.com, or in any other Excalidraw editor, so the user can drag
-notes between lanes, edit text, add notes and draw arrows without any service. `board.state.json`
-records what Claude last wrote: the revision, each note's lane, text and kind, each lane's name, and
-each link. That record is what turns the user's edits into a diff Claude can answer.
-`board.written.excalidraw` is a copy of the scene as Claude last wrote it. `revisions/r<N>.json` is what
-revision N wrote, and `revisions/seen-r<N>.json` is the last save `read` saw from an editor holding
-revision N; both are the board's lanes, notes and links without geometry.
+notes between cells and sections, edit text and labels, add notes and draw arrows without any service.
+`board.state.json` records what Claude last wrote: the revision, each note's section, cell, text and
+kind, each section's name, each link and its label, and the grid that write laid out. That record is what
+turns the user's edits into a diff Claude can answer. `board.written.excalidraw` is a copy of the scene
+as Claude last wrote it. `revisions/r<N>.json` is what revision N wrote plus its grid, and
+`revisions/seen-r<N>.json` is the last save `read` saw from an editor holding revision N; both are the
+board's sections, notes and links without geometry.
 
-The write contract is one rule, applied to a note's lane and text and to a lane's name: a field changes
-only when the board still holds what Claude last wrote there, or when the spec already matches the
-board. A user edit Claude has not adopted makes the write fail, naming the note, so the session has to
-read the board and answer the edit before it can overwrite it. Colour is cosmetic: a note the user
-recoloured keeps the user's colour. The write never deletes an element, and moves one only to put a
-note in the lane the spec names; ruling a note out means moving it to another lane, not removing it.
-A tidy, which only the user asks for, is the one exception: it reflows positions, lane sizes and lane
-order, and never content.
+Sections are Excalidraw frames, stacked top to bottom. Inside a section, notes sit on a grid of cells,
+`at` = [column, row]: columns are a fixed width apart, and each row is as tall as its tallest note. A
+note is a rectangle with bound text, coloured by kind. A link is an arrow bound to two notes, and its
+label is a text element bound to the arrow. Element ids are the spec's ids, so the same note keeps the
+same id through every save.
+
+Every write lays the whole board out again: sections in spec order, each note at its cell, every section
+sized to its grid plus one spare column and one spare row for the user to drag into, everything else
+framed in a section moved with it, and every arrow between two notes redrawn. Elements outside every
+section (the scratch area) are never moved. A note's cell is read back from where it sits: a note still
+where the last write left it keeps its cell, and any other takes the nearest cell no unmoved note holds,
+so a drag to another cell is a user edit and a nudge inside a cell snaps back on the next write.
+
+The write contract is one rule, applied to a note's text, section and cell, a section's name and a
+link's label: a field changes only when the board still holds what Claude last wrote there, or when the
+spec already matches the board. A user edit Claude has not adopted makes the write fail, naming the
+element, so the session has to read the board and answer the edit before it can overwrite it. Colour is
+cosmetic: a note the user recoloured keeps the user's colour. The write never deletes an element.
 
 Every write stamps a revision marker on the board, and every read records the save it saw under that
 revision. An editor that opened the board before a write and saves afterwards writes back an older
 revision, which would otherwise read as the user deleting everything that write added. `read` detects
 that, reports the user's edits as the difference from the last save it saw from that revision (or from
 what that revision wrote), moves the stale save aside rather than losing it, and restores the last write.
-
-Lanes are Excalidraw frames. A note is a shape with bound text. A link is an arrow bound to two notes.
-Element ids are the spec's ids, so the same note keeps the same id through every save.
 """
 from __future__ import annotations
 
@@ -48,32 +56,38 @@ REVISIONS_NAME = "revisions"
 REVISION_ID = "sy-board-revision"
 
 KIND_COLOURS = {
-    "status": ("#e9ecef", "#343a40"),
-    "option": ("#fff3bf", "#5c4a00"),
-    "decision": ("#d0ebff", "#1c4f7a"),
-    "hypothesis": ("#e5dbff", "#4b2d8f"),
-    "probe": ("#c3fae8", "#0b5d4b"),
-    "objection": ("#ffc9c9", "#7a1c1c"),
+    "component": ("#d0ebff", "#1c4f7a"),
+    "store": ("#e5dbff", "#4b2d8f"),
+    "data": ("#fff3bf", "#5c4a00"),
+    "external": ("#e9ecef", "#343a40"),
+    "step": ("#c3fae8", "#0b5d4b"),
+    "note": ("#ffe8cc", "#7a3e00"),
 }
+LEFT_ALIGNED_KINDS = {"data"}
 
-LANE_WIDTH = 340
-LANE_HEIGHT = 360
-LANE_GAP = 60
 NOTE_WIDTH = 280
-NOTE_INSET = 30
-NOTE_GAP = 44
-FIRST_NOTE_OFFSET = 50
+CELL_GAP = 100
+CELL_WIDTH = NOTE_WIDTH + CELL_GAP
+NOMINAL_ROW_HEIGHT = 80
+ROW_GAP = 70
+SECTION_INSET = 30
+SECTION_TOP_INSET = 40
+SECTION_GAP = 100
 FONT_SIZE = 16
 LINE_HEIGHT = 1.25
 WRAP_CHARS = 28
 TEXT_PADDING = 12
+BOUND_TEXT_PADDING = 5
+SAME_SPOT = 0.5
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _REVISION_TEXT = re.compile(r"revision (\d+)")
 _NOTE_SHAPES = {"rectangle", "ellipse", "diamond"}
+_NEVER = object()
 
 Element = dict[str, Any]
 Live = dict[str, Element]
+Cell = list[int]
 
 
 class BoardConflict(ValueError):
@@ -87,19 +101,18 @@ def folder(root: Path, board_id: str) -> Path:
     return root / board_id
 
 
-def write(directory: Path, spec: dict[str, Any], tidy: bool = False) -> dict[str, Any]:
-    """Merge `spec` into the board in `directory`, creating it on first write, and report what changed.
+def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Merge `spec` into the board in `directory`, creating it on first write, lay it out, and report what changed.
 
-    `spec` is `{"lanes": [{"id", "name"}], "notes": [{"id", "lane", "kind", "text"}], "links": [{"from",
-    "to"}]}`. A note's `lane` may be null only to adopt a note the user dragged out of every lane. With
-    `tidy`, the merged board is then reflowed: lanes in spec order (any other lane after them, left to
-    right), each lane's notes restacked in spec order (notes the spec does not name after them, top to
-    bottom), everything framed in a lane moved with it, and links redrawn between their notes. A tidy
-    changes positions, lane sizes and lane order only. Raises `ValueError` for a malformed spec and
+    `spec` is `{"sections": [{"id", "name"}], "notes": [{"id", "section", "kind", "text", "at"}], "links":
+    [{"from", "to"}, optionally "label"]}`. `at` is `[column, row]`, two ints >= 0, unique within a
+    section. A note's `section` and `at` may be null only to adopt a note the user dragged out of every
+    section. After merging, the whole board is laid out (see the module docstring). Raises `ValueError`
+    for a malformed spec or a spec cell another note the spec does not name already holds, and
     `BoardConflict` when it would overwrite a user edit not yet adopted, or when the board file is a stale
     save `read` has not yet restored.
     """
-    lanes, notes, links = _parse_spec(spec)
+    sections, notes, links = _parse_spec(spec)
     scene_path, state_path = directory / SCENE_NAME, directory / STATE_NAME
     scene = _load_scene(scene_path) if scene_path.is_file() else _empty_scene()
     state = _load_state(state_path)
@@ -111,25 +124,29 @@ def write(directory: Path, spec: dict[str, Any], tidy: bool = False) -> dict[str
         )
     elements: list[Element] = scene["elements"]
     live = _live(scene)
+    cells = _cells(live, state["grid"])
     changed: list[str] = []
 
-    for lane in lanes:
-        current = live.get(lane["id"])
-        written = state["lanes"].get(lane["id"])
+    for section in sections:
+        current = live.get(section["id"])
+        written = state["sections"].get(section["id"])
         if current is None:
             if written is not None:
-                raise BoardConflict(f"lane {lane['id']!r} was deleted on the board; drop it from the spec or argue it")
-            frame = _frame(lane["id"], lane["name"], _next_lane_x(live), 0)
+                raise BoardConflict(
+                    f"section {section['id']!r} was deleted on the board; drop it from the spec or argue it"
+                )
+            frame = _frame(section["id"], section["name"])
             elements.append(frame)
             live[frame["id"]] = frame
-            changed.append(f"lane {lane['id']} added")
+            changed.append(f"section {section['id']} added")
             continue
         if current["type"] != "frame":
-            raise ValueError(f"lane {lane['id']!r} names a {current['type']} on the board, not a frame")
-        if _reconcile("lane", lane["id"], "name", current.get("name") or "", written and written["name"], lane["name"]):
-            current["name"] = lane["name"]
+            raise ValueError(f"section {section['id']!r} names a {current['type']} on the board, not a frame")
+        last = written["name"] if written else _NEVER
+        if _reconcile("section", section["id"], "name", current.get("name") or "", last, section["name"]):
+            current["name"] = section["name"]
             _touch(current)
-            changed.append(f"lane {lane['id']} renamed")
+            changed.append(f"section {section['id']} renamed")
 
     for note in notes:
         current = live.get(note["id"])
@@ -140,75 +157,109 @@ def write(directory: Path, spec: dict[str, Any], tidy: bool = False) -> dict[str
                 raise BoardConflict(f"note {note['id']!r} was deleted on the board; drop it from the spec or argue it")
             if current is not None:
                 raise ValueError(f"note {note['id']!r} is a {current['type']} with no text on the board, not a note")
-            if note["lane"] is None or live.get(note["lane"], {}).get("type") != "frame":
-                raise ValueError(f"note {note['id']!r} names lane {note['lane']!r}, which is not a frame on the board")
-            shape, text = _note(note, live[note["lane"]], live)
+            _require_section(note, live)
+            shape, text = _note(note)
             elements.extend([shape, text])
             live[shape["id"]], live[text["id"]] = shape, text
-            _fit_lane(live[note["lane"]], shape)
-            changed.append(f"note {note['id']} added to {note['lane']}")
+            changed.append(f"note {note['id']} added to {note['section']} at {note['at']}")
             continue
         assert current is not None
         text_now = text_el.get("originalText", text_el["text"])
-        if _reconcile("note", note["id"], "text", text_now, written and written["text"], note["text"]):
+        if _reconcile("note", note["id"], "text", text_now, _last(written, "text"), note["text"]):
             _set_text(text_el, current, note["text"])
             changed.append(f"note {note['id']} text updated")
-        if _reconcile("note", note["id"], "lane", current.get("frameId"), written and written["lane"], note["lane"]):
-            if note["lane"] is None or live.get(note["lane"], {}).get("type") != "frame":
-                raise ValueError(f"note {note['id']!r} names lane {note['lane']!r}, which is not a frame on the board")
-            _move_to_lane(current, text_el, live[note["lane"]], live)
-            changed.append(f"note {note['id']} moved to {note['lane']}")
+        section_now = _section_of(current, live)
+        if _reconcile("note", note["id"], "section", section_now, _last(written, "section"), note["section"]):
+            if note["section"] is None:
+                raise ValueError(
+                    f"note {note['id']!r}: section may be null only to adopt a note the user dragged out of "
+                    "every section; a write never moves a note out of its section"
+                )
+            _require_section(note, live)
+            for element in (current, text_el):
+                element["frameId"] = note["section"]
+                _touch(element)
+            changed.append(f"note {note['id']} moved to section {note['section']}")
+        if _reconcile("note", note["id"], "at", cells.get(note["id"]), _last(written, "at"), note["at"]):
+            changed.append(f"note {note['id']} moved to cell {note['at']}")
         if written is not None and written["kind"] != note["kind"]:
             if current["backgroundColor"] == KIND_COLOURS[written["kind"]][0]:
                 current["backgroundColor"], current["strokeColor"] = KIND_COLOURS[note["kind"]]
                 _touch(current)
+            _align_text(text_el, note["kind"])
+            _set_text(text_el, current, text_el.get("originalText", text_el["text"]))
             changed.append(f"note {note['id']} is now a {note['kind']}")
 
-    known_links = {(link["from"], link["to"]) for link in state["links"]}
-    arrows = {_link_key(e, live) for e in live.values() if e["type"] == "arrow"}
+    named = {note["id"]: note for note in notes}
+    final = {ident: cell for ident, cell in cells.items() if ident not in named}
+    holders = {(_section_of(live[ident], live), tuple(cell)): ident for ident, cell in final.items()}
+    for note in notes:
+        if note["section"] is None:
+            continue
+        if (other := holders.get((note["section"], tuple(note["at"])))) is not None:
+            raise ValueError(
+                f"note {note['id']!r} at {note['at']} in section {note['section']!r} is the cell note {other!r} "
+                "holds, and the spec does not name it: pick another cell or adopt that note in the spec"
+            )
+        final[note["id"]] = note["at"]
+
+    known = {(link["from"], link["to"]): link["label"] for link in state["links"]}
+    arrows = _arrows(live)
     for link in links:
         for end in (link["from"], link["to"]):
             if live.get(end, {}).get("type") not in _NOTE_SHAPES:
                 raise ValueError(f"link {link['from']}->{link['to']} names {end!r}, which is not a note on the board")
         key = (link["from"], link["to"])
+        name = f"{key[0]}->{key[1]}"
         if key in arrows:
+            arrow = arrows[key]
+            label_el = _label(arrow, live)
+            label_now = label_el.get("originalText", label_el["text"]) if label_el else ""
+            if _reconcile("link", name, "label", label_now, known.get(key, _NEVER), link["label"]):
+                if not link["label"]:
+                    raise ValueError(f"link {name}: a write never deletes an element, so its label cannot be cleared")
+                if label_el is None:
+                    label_el = _add_label(arrow, link["label"], elements, live)
+                else:
+                    _set_label(label_el, link["label"])
+                changed.append(f"link {name} relabelled")
             continue
-        if key in known_links:
-            raise BoardConflict(f"link {key[0]}->{key[1]} was deleted on the board; drop it from the spec or argue it")
+        if key in known:
+            raise BoardConflict(f"link {name} was deleted on the board; drop it from the spec or argue it")
         arrow = _arrow(live[key[0]], live[key[1]])
         elements.append(arrow)
         live[arrow["id"]] = arrow
-        arrows.add(key)
-        changed.append(f"link {key[0]}->{key[1]} added")
+        arrows[key] = arrow
+        if link["label"]:
+            _add_label(arrow, link["label"], elements, live)
+        changed.append(f"link {name} added")
 
-    if tidy:
-        _tidy([lane["id"] for lane in lanes], [note["id"] for note in notes], live)
-        changed.append("board tidied")
+    grid = _layout(live, [section["id"] for section in sections], final)
 
     revision = state["revision"] + 1
     _stamp_revision(elements, live, revision)
     _frames_last(elements)
     present = _note_ids(live)
+    spec_links = {(link["from"], link["to"]): link["label"] for link in links}
+    kept_links = {**known, **spec_links}
     # Anything Claude wrote that the user has since deleted, and the spec no longer names, is forgotten here:
     # the deletion has been answered, so a later read must not report it again.
     new_state = {
         "revision": revision,
-        "lanes": {
-            **{k: v for k, v in state["lanes"].items() if k in live},
-            **{lane["id"]: {"name": lane["name"]} for lane in lanes},
+        "sections": {
+            **{k: v for k, v in state["sections"].items() if k in live},
+            **{section["id"]: {"name": section["name"]} for section in sections},
         },
         "notes": {
             **{k: v for k, v in state["notes"].items() if k in present},
-            **{n["id"]: {"lane": n["lane"], "text": n["text"], "kind": n["kind"]} for n in notes},
+            **{n["id"]: {"section": n["section"], "text": n["text"], "kind": n["kind"], "at": n["at"]} for n in notes},
         },
-        "links": [
-            {"from": a, "to": b}
-            for a, b in sorted((known_links | {(link["from"], link["to"]) for link in links}) & arrows)
-        ],
+        "links": [{"from": a, "to": b, "label": kept_links[(a, b)]} for a, b in sorted(set(kept_links) & set(arrows))],
+        "grid": grid,
     }
     (directory / REVISIONS_NAME).mkdir(parents=True, exist_ok=True)
     # Written before the state names this revision, so a crash never leaves a revision with no base to diff.
-    _write_json(directory / REVISIONS_NAME / f"r{revision}.json", _projection(live))
+    _write_json(directory / REVISIONS_NAME / f"r{revision}.json", {**_projection(live, grid), "grid": grid})
     text = json.dumps(scene, indent=2) + "\n"
     atomic_write(scene_path, text)
     atomic_write(directory / WRITTEN_NAME, text)
@@ -217,22 +268,22 @@ def write(directory: Path, spec: dict[str, Any], tidy: bool = False) -> dict[str
 
 
 def read(directory: Path) -> dict[str, Any]:
-    """Summarise the board: lanes, notes and links with their owner and every user change, and deletions.
+    """Summarise the board: sections, notes and links with their owner and every user change, and deletions.
 
-    Each lane, note and link carries `owner`: `claude` for one a write placed, `user` for one added by
+    Each section, note and link carries `owner`: `claude` for one a write placed, `user` for one added by
     hand. `user_changed` lists the fields the user changed since the last write. Notes are listed in board
-    order: lane by lane from the left (notes outside every lane last), each lane top to bottom. Every read
-    records the save it saw in `revisions/seen-r<N>.json`, N being the revision the save carries. When the
-    board file is a stale save (an older revision than the last write), the file is first moved aside and
-    the last write restored, and `stale_save` names where the stale file was kept and carries `changes`:
-    the user's edits in it, against the last save read saw from that revision, or else against what that
-    revision wrote, in the shape the `board_read` tool documents. Raises `FileNotFoundError` when no board
-    exists in `directory`, and `AssertionError` when a stale save has neither base to diff against.
+    order: section by section from the top, each by row then column, then notes outside every section.
+    Every read records the save it saw in `revisions/seen-r<N>.json`, N being the revision the save
+    carries. When the board file is a stale save (an older revision than the last write), the file is
+    first moved aside and the last write restored, and `stale_save` names where the stale file was kept and
+    carries `changes`: the user's edits in it, against the last save read saw from that revision, or else
+    against what that revision wrote, in the shape the `board_read` tool documents. Raises
+    `FileNotFoundError` when no board exists in `directory`, and `AssertionError` when a stale save has
+    neither base to diff against.
     """
     scene_path = directory / SCENE_NAME
     scene = _load_scene(scene_path)
     state = _load_state(directory / STATE_NAME)
-    saved = _projection(_live(scene))
     marked = _marked_revision(scene)
     stale_save = None
     if (stale := _stale_revision(scene, state)) is not None:
@@ -240,6 +291,7 @@ def read(directory: Path) -> dict[str, Any]:
         written_path = directory / REVISIONS_NAME / f"r{stale}.json"
         base_path = seen_path if seen_path.is_file() else written_path
         assert base_path.is_file(), f"revision {stale} save has no base: neither {seen_path} nor {written_path}"
+        saved = _projection(_live(scene), json.loads(written_path.read_text(encoding="utf-8"))["grid"])
         changes = _diff(json.loads(base_path.read_text(encoding="utf-8")), saved)
         aside = directory / f"board.stale-r{stale}-{int(time.time())}.excalidraw"
         os.replace(scene_path, aside)
@@ -248,41 +300,49 @@ def read(directory: Path) -> dict[str, Any]:
         stale_save = {
             "kept_as": str(aside), "its_revision": stale, "restored_revision": state["revision"], "changes": changes,
         }
+    else:
+        saved = _projection(_live(scene), state["grid"])
     if marked is not None:
         _write_json(directory / REVISIONS_NAME / f"seen-r{marked}.json", saved)
     live = _live(scene)
 
-    lanes = []
-    for frame in sorted((e for e in live.values() if e["type"] == "frame"), key=lambda f: (f["x"], f["y"])):
-        written = state["lanes"].get(frame["id"])
+    sections = []
+    for frame in _frames_top_down(live):
+        written = state["sections"].get(frame["id"])
         entry: dict[str, Any] = {"id": frame["id"], "name": frame.get("name") or ""}
         entry["owner"] = "claude" if written else "user"
         if written and written["name"] != entry["name"]:
             entry["user_changed"] = ["name"]
-        lanes.append(entry)
+        sections.append(entry)
 
     notes = []
-    for ident, lane, text in _board_notes(live):
+    for ident, section, at, text in _board_notes(live, state["grid"]):
         written = state["notes"].get(ident)
-        entry = {"id": ident, "lane": lane, "text": text, "owner": "claude" if written else "user"}
+        entry = {"id": ident, "section": section, "at": at, "text": text, "owner": "claude" if written else "user"}
         if written:
-            user_changed = [field for field, now in (("lane", lane), ("text", text)) if written[field] != now]
-            if user_changed:
+            now = {"section": section, "at": at, "text": text}
+            if user_changed := [field for field in ("section", "at", "text") if written[field] != now[field]]:
                 entry["user_changed"] = user_changed
         notes.append(entry)
 
-    known_links = {(link["from"], link["to"]) for link in state["links"]}
-    links = _links(live)
+    known = {(link["from"], link["to"]): link["label"] for link in state["links"]}
+    links = []
+    for a, b, label in _links(live):
+        entry = {"from": a, "to": b, "label": label, "owner": "claude" if (a, b) in known else "user"}
+        if (a, b) in known and known[(a, b)] != label:
+            entry["user_changed"] = ["label"]
+        links.append(entry)
     present = _note_ids(live)
+    on_board = {(a, b) for a, b, _ in _links(live)}
     return {
         "folder": str(directory),
         "scene": str(scene_path),
         "stale_save": stale_save,
-        "lanes": lanes,
+        "sections": sections,
         "notes": notes,
-        "links": [{"from": a, "to": b, "owner": "claude" if (a, b) in known_links else "user"} for a, b in links],
+        "links": links,
         "deleted_notes": sorted(k for k in state["notes"] if k not in present),
-        "deleted_links": [f"{a}->{b}" for a, b in sorted(known_links - set(links))],
+        "deleted_links": [f"{a}->{b}" for a, b in sorted(set(known) - on_board)],
     }
 
 
@@ -290,12 +350,24 @@ def _live(scene: dict[str, Any]) -> Live:
     return {e["id"]: e for e in scene["elements"] if not e.get("isDeleted")}
 
 
-def _board_notes(live: Live) -> list[tuple[str, str | None, str]]:
-    """Every note and free text on the board as (id, lane, text), lane by lane from the left, each top to bottom.
+def _frames_top_down(live: Live) -> list[Element]:
+    return sorted((e for e in live.values() if e["type"] == "frame"), key=lambda f: (f["y"], f["x"]))
 
-    The revision marker is no note, and a shape whose text is gone is none either.
+
+def _section_of(element: Element, live: Live) -> str | None:
+    frame_id = element.get("frameId")
+    return frame_id if frame_id is not None and live.get(frame_id, {}).get("type") == "frame" else None
+
+
+def _board_notes(live: Live, grid: dict[str, Any]) -> list[tuple[str, str | None, Cell | None, str]]:
+    """Every note and free text on the board as (id, section, at, text), in board order.
+
+    Section by section from the top, each by row then column (free text in a section after its notes, top
+    to bottom), then everything outside every section, top to bottom. The revision marker is no note, and a
+    shape whose text is gone is none either. Free text has no cell.
     """
-    lane_x = {e["id"]: e["x"] for e in live.values() if e["type"] == "frame"}
+    rank = {frame["id"]: i for i, frame in enumerate(_frames_top_down(live))}
+    cells = _cells(live, grid)
     found = []
     for element in live.values():
         if element["type"] in _NOTE_SHAPES:
@@ -307,45 +379,217 @@ def _board_notes(live: Live) -> list[tuple[str, str | None, str]]:
             text = element.get("originalText", element["text"])
         else:
             continue
-        lane = element.get("frameId")
-        found.append(((lane_x.get(lane, math.inf), element["y"], element["x"]), (element["id"], lane, text)))
+        section = _section_of(element, live)
+        at = cells.get(element["id"])
+        order = (0, at[1], at[0]) if at is not None else (1, element["y"], element["x"])
+        found.append(((rank.get(section, math.inf), *order), (element["id"], section, at, text)))
     return [note for _, note in sorted(found, key=lambda pair: pair[0])]
 
 
-def _links(live: Live) -> list[tuple[str, str]]:
-    keys = {_link_key(e, live) for e in live.values() if e["type"] == "arrow"}
-    return sorted((a, b) for a, b in keys if a is not None and b is not None)
+def _row_offset(rows: list[float], row: int) -> float:
+    """Row `row`'s y offset from its frame's top: recorded rows, then nominal rows beyond them."""
+    if row < len(rows):
+        return rows[row]
+    step = NOMINAL_ROW_HEIGHT + ROW_GAP
+    if not rows:
+        return SECTION_TOP_INSET + row * step
+    return rows[-1] + (row - len(rows) + 1) * step
 
 
-def _projection(live: Live) -> dict[str, Any]:
+def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
+    """Each framed note's cell, read back from its top-left against its section's recorded grid.
+
+    The grid is re-anchored at the frame's current x/y, so a frame the user dragged keeps its cells. A note
+    exactly on a cell's top-left (where the last write left it) keeps that cell; any other, in board order,
+    takes the nearest cell no unmoved note and no earlier note holds, ties by (distance, row, column).
+    """
+    by_frame: dict[str, list[Element]] = {}
+    for element in live.values():
+        section = _section_of(element, live)
+        if section is not None and element["type"] in _NOTE_SHAPES and _bound_text(element, live) is not None:
+            by_frame.setdefault(section, []).append(element)
+    cells: dict[str, Cell] = {}
+    for section, shapes in by_frame.items():
+        frame = live[section]
+        recorded = grid.get(section, {"cols": 0, "rows": []})
+        rows = recorded["rows"]
+        shapes.sort(key=lambda e: (e["y"], e["x"]))
+        span = len(shapes) + 2
+        candidates: dict[str, list[tuple[float, int, int]]] = {}
+        for shape in shapes:
+            rel_x, rel_y = shape["x"] - frame["x"], shape["y"] - frame["y"]
+            near_col = max(0, round((rel_x - SECTION_INSET) / CELL_WIDTH))
+            near_row = max(0, round((rel_y - SECTION_TOP_INSET) / (NOMINAL_ROW_HEIGHT + ROW_GAP)))
+            cols = range(max(near_col, recorded["cols"]) + span)
+            row_range = range(max(near_row, len(rows)) + span)
+            candidates[shape["id"]] = sorted(
+                (math.hypot(SECTION_INSET + c * CELL_WIDTH - rel_x, _row_offset(rows, r) - rel_y), r, c)
+                for c in cols for r in row_range
+            )
+        held: set[tuple[int, int]] = set()
+        moved = []
+        for shape in shapes:
+            distance, row, col = candidates[shape["id"]][0]
+            if distance <= SAME_SPOT and (col, row) not in held:
+                held.add((col, row))
+                cells[shape["id"]] = [col, row]
+            else:
+                moved.append(shape)
+        for shape in moved:
+            _, row, col = next(c for c in candidates[shape["id"]] if (c[2], c[1]) not in held)
+            held.add((col, row))
+            cells[shape["id"]] = [col, row]
+    return cells
+
+
+def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dict[str, Any]:
+    """Lay the board out and return the grid it laid, per section: frame x, y, column count and row offsets.
+
+    Sections in `section_order`, then any other frame by current y, each at x = 0, stacked top to bottom.
+    Each note in `cells` goes to its cell and its text follows; everything else framed in a section moves
+    with it; each frame is sized to its grid (one spare column and row included) and to what it frames;
+    every arrow between two notes is redrawn and its label centred on it. Unframed elements stay put.
+    """
+    before = {ident: _geometry(e) for ident, e in live.items()}
+    frames = [live[ident] for ident in section_order] + [
+        e for e in _frames_top_down(live) if e["id"] not in section_order
+    ]
+    notes = _note_ids(live)
+    linked: dict[str, tuple[str, str]] = {}
+    for ident, element in live.items():
+        if element["type"] == "arrow":
+            a, b = _link_key(element, live)
+            if a is not None and b is not None and {a, b} <= notes:
+                linked[ident] = (a, b)
+    labels = {e["id"] for e in live.values() if e.get("containerId") in linked}
+    note_texts = {text["id"] for ident in cells if (text := _bound_text(live[ident], live)) is not None}
+    grid: dict[str, Any] = {}
+    y = 0.0
+    for frame in frames:
+        shapes = [live[ident] for ident in cells if live[ident].get("frameId") == frame["id"]]
+        heights: dict[int, float] = {}
+        for shape in shapes:
+            row = cells[shape["id"]][1]
+            heights[row] = max(heights.get(row, 0.0), shape["height"])
+        cols = max((cells[s["id"]][0] for s in shapes), default=-1) + 2
+        rows: list[float] = []
+        offset = float(SECTION_TOP_INSET)
+        for row in range(max((cells[s["id"]][1] for s in shapes), default=-1) + 2):
+            rows.append(offset)
+            offset += heights.get(row, NOMINAL_ROW_HEIGHT) + ROW_GAP
+        dx, dy = -frame["x"], y - frame["y"]
+        frame["x"], frame["y"] = 0.0, y
+        laid_out = set(cells) | note_texts | set(linked) | labels
+        others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
+        for element in others:
+            element["x"] += dx
+            element["y"] += dy
+        texts = []
+        for shape in shapes:
+            col, row = cells[shape["id"]]
+            shape["x"], shape["y"] = frame["x"] + SECTION_INSET + col * CELL_WIDTH, frame["y"] + rows[row]
+            text_el = _bound_text(shape, live)
+            assert text_el is not None
+            _place_text(text_el, shape)
+            texts.append(text_el)
+        members = [*shapes, *texts, *others]
+        right = max([SECTION_INSET + cols * CELL_WIDTH - CELL_GAP, *(_extent(e)[0] - frame["x"] for e in members)])
+        bottom = max([offset - ROW_GAP, *(_extent(e)[1] - frame["y"] for e in members)])
+        frame["width"], frame["height"] = right + SECTION_INSET, bottom + SECTION_INSET
+        grid[frame["id"]] = {"x": frame["x"], "y": frame["y"], "cols": cols, "rows": rows}
+        y += frame["height"] + SECTION_GAP
+    for ident, (source, target) in linked.items():
+        arrow = live[ident]
+        (sx, sy), (tx, ty) = _facing_edges(live[source], live[target])
+        arrow.update(x=sx, y=sy, width=abs(tx - sx), height=abs(ty - sy), points=[[0, 0], [tx - sx, ty - sy]])
+        if (label_el := _label(arrow, live)) is not None:
+            _centre_label(label_el, arrow)
+    for ident, element in live.items():
+        if ident in before and _geometry(element) != before[ident]:
+            _touch(element)
+    return grid
+
+
+def _extent(element: Element) -> tuple[float, float]:
+    if "points" in element:
+        return (
+            element["x"] + max(point[0] for point in element["points"]),
+            element["y"] + max(point[1] for point in element["points"]),
+        )
+    return element["x"] + element["width"], element["y"] + element["height"]
+
+
+def _arrows(live: Live) -> dict[tuple[str, str], Element]:
+    """Each arrow bound to two elements, keyed by the (from, to) ids it joins; the first wins a repeat."""
+    found: dict[tuple[str, str], Element] = {}
+    for element in live.values():
+        if element["type"] == "arrow":
+            a, b = _link_key(element, live)
+            if a is not None and b is not None:
+                found.setdefault((a, b), element)
+    return found
+
+
+def _label(arrow: Element, live: Live) -> Element | None:
+    """The arrow's label: the text element bound to it, found by `containerId`, never by geometry."""
+    return next(
+        (e for e in live.values() if e["type"] == "text" and e.get("containerId") == arrow["id"]), None,
+    )
+
+
+def _links(live: Live) -> list[tuple[str, str, str]]:
+    notes = _note_ids(live)
+    found = []
+    for (a, b), arrow in _arrows(live).items():
+        if a in notes and b in notes:
+            label_el = _label(arrow, live)
+            found.append((a, b, label_el.get("originalText", label_el["text"]) if label_el else ""))
+    return sorted(found)
+
+
+def _projection(live: Live, grid: dict[str, Any]) -> dict[str, Any]:
     """The board without geometry: what a stale save's edits are diffed against."""
     return {
-        "lanes": {e["id"]: e.get("name") or "" for e in live.values() if e["type"] == "frame"},
-        "notes": {ident: {"lane": lane, "text": text} for ident, lane, text in _board_notes(live)},
-        "links": [[a, b] for a, b in _links(live)],
+        "sections": {e["id"]: e.get("name") or "" for e in live.values() if e["type"] == "frame"},
+        "notes": {
+            ident: {"section": section, "at": at, "text": text}
+            for ident, section, at, text in _board_notes(live, grid)
+        },
+        "links": [[a, b, label] for a, b, label in _links(live)],
     }
 
 
 def _diff(base: dict[str, Any], now: dict[str, Any]) -> dict[str, Any]:
     """What changed from projection `base` to projection `now`, in the shape `board_read` documents."""
     before, after = base["notes"], now["notes"]
-    old_lanes, new_lanes = base["lanes"], now["lanes"]
-    old_links, new_links = [tuple(x) for x in base["links"]], [tuple(x) for x in now["links"]]
+    old_sections, new_sections = base["sections"], now["sections"]
+    old_links = {(a, b): label for a, b, label in base["links"]}
+    new_links = {(a, b): label for a, b, label in now["links"]}
+
+    def moved(i: str, n: dict[str, Any]) -> bool:
+        return (n["section"], n["at"]) != (before[i]["section"], before[i]["at"])
+
     return {
         "notes": {
             "added": [{"id": i, **n} for i, n in after.items() if i not in before],
             "deleted": [{"id": i, **n} for i, n in before.items() if i not in after],
-            "moved": [{"id": i, **n} for i, n in after.items() if i in before and n["lane"] != before[i]["lane"]],
+            "moved": [{"id": i, **n} for i, n in after.items() if i in before and moved(i, n)],
             "edited": [{"id": i, **n} for i, n in after.items() if i in before and n["text"] != before[i]["text"]],
         },
-        "lanes": {
-            "added": [{"id": i, "name": n} for i, n in new_lanes.items() if i not in old_lanes],
-            "deleted": [{"id": i, "name": n} for i, n in old_lanes.items() if i not in new_lanes],
-            "renamed": [{"id": i, "name": n} for i, n in new_lanes.items() if i in old_lanes and n != old_lanes[i]],
+        "sections": {
+            "added": [{"id": i, "name": n} for i, n in new_sections.items() if i not in old_sections],
+            "deleted": [{"id": i, "name": n} for i, n in old_sections.items() if i not in new_sections],
+            "renamed": [
+                {"id": i, "name": n} for i, n in new_sections.items() if i in old_sections and n != old_sections[i]
+            ],
         },
         "links": {
-            "added": [list(x) for x in new_links if x not in old_links],
-            "deleted": [list(x) for x in old_links if x not in new_links],
+            "added": [[a, b, label] for (a, b), label in new_links.items() if (a, b) not in old_links],
+            "deleted": [[a, b, label] for (a, b), label in old_links.items() if (a, b) not in new_links],
+            "relabelled": [
+                [a, b, label] for (a, b), label in new_links.items()
+                if (a, b) in old_links and label != old_links[(a, b)]
+            ],
         },
     }
 
@@ -355,47 +599,82 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _parse_spec(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    unknown = set(spec) - {"lanes", "notes", "links"}
+    unknown = set(spec) - {"sections", "notes", "links"}
     if unknown:
-        raise ValueError(f"spec has unknown keys {sorted(unknown)}; it takes lanes, notes and links")
-    lanes = [_fields(lane, "lane", ("id", "name")) for lane in spec.get("lanes", [])]
-    notes = [_fields(note, "note", ("id", "lane", "kind", "text"), nullable="lane") for note in spec.get("notes", [])]
-    links = [_fields(link, "link", ("from", "to")) for link in spec.get("links", [])]
-    ids = [x["id"] for x in lanes + notes]
+        raise ValueError(f"spec has unknown keys {sorted(unknown)}; it takes sections, notes and links")
+    sections = [_fields(section, "section", ("id", "name")) for section in spec.get("sections", [])]
+    notes = [
+        _fields(note, "note", ("id", "section", "kind", "text", "at"), nullable=("section",), cell="at")
+        for note in spec.get("notes", [])
+    ]
+    links = [
+        _fields({"label": "", **link} if isinstance(link, dict) else link, "link", ("from", "to", "label"))
+        for link in spec.get("links", [])
+    ]
+    ids = [x["id"] for x in sections + notes]
     if dupes := sorted({i for i in ids if ids.count(i) > 1}):
-        raise ValueError(f"ids must be unique across lanes and notes; repeated: {dupes}")
-    for item in lanes + notes:
+        raise ValueError(f"ids must be unique across sections and notes; repeated: {dupes}")
+    for item in sections + notes:
         if not _ID.match(item["id"]):
             raise ValueError(f"id {item['id']!r} must be 1-64 letters, digits, '-' or '_'")
+    taken: dict[tuple[str, tuple[int, ...]], str] = {}
     for note in notes:
         if note["kind"] not in KIND_COLOURS:
             raise ValueError(f"note {note['id']!r} has kind {note['kind']!r}; use one of {sorted(KIND_COLOURS)}")
         if not note["text"].strip():
             raise ValueError(f"note {note['id']!r} has no text")
-    return lanes, notes, links
+        if (note["section"] is None) != (note["at"] is None):
+            raise ValueError(f"note {note['id']!r}: section and at are null together or not at all")
+        if note["section"] is not None:
+            note["at"] = list(note["at"])
+            if (other := taken.setdefault((note["section"], tuple(note["at"])), note["id"])) != note["id"]:
+                raise ValueError(f"notes {other!r} and {note['id']!r} share cell {note['at']} in {note['section']!r}")
+    return sections, notes, links
 
 
-def _fields(item: Any, what: str, keys: tuple[str, ...], nullable: str = "") -> dict[str, Any]:
+def _fields(
+    item: Any, what: str, keys: tuple[str, ...], nullable: tuple[str, ...] = (), cell: str = "",
+) -> dict[str, Any]:
     if not isinstance(item, dict) or set(item) != set(keys):
         raise ValueError(f"each {what} must be an object with exactly the fields {list(keys)}: {item!r}")
-    if not all(isinstance(item[k], str) or (k == nullable and item[k] is None) for k in keys):
-        raise ValueError(f"each {what}'s fields {list(keys)} must be strings: {item!r}")
-    return item
+    for key in keys:
+        value = item[key]
+        if value is None and (key in nullable or key == cell):
+            continue
+        if key == cell:
+            if not (
+                isinstance(value, list | tuple) and len(value) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value)
+            ):
+                raise ValueError(f"each {what}'s {key} must be [column, row], two ints >= 0: {item!r}")
+        elif not isinstance(value, str):
+            raise ValueError(f"each {what}'s field {key!r} must be a string: {item!r}")
+    return dict(item)
+
+
+def _last(written: dict[str, Any] | None, field: str) -> Any:
+    return written[field] if written is not None else _NEVER
 
 
 def _reconcile(what: str, ident: str, field: str, current: Any, last: Any, wanted: Any) -> bool:
     """True when the field should be set to `wanted`; raises when that would overwrite an unadopted user edit.
 
-    `last` is what Claude last wrote to the field, or None when Claude never wrote it.
+    `last` is what Claude last wrote to the field, or `_NEVER` when Claude never wrote it.
     """
     if current == wanted:
         return False
-    if last is not None and current == last:
+    if last is not _NEVER and current == last:
         return True
+    shown = "nothing" if last is _NEVER else repr(last)
     raise BoardConflict(
-        f"{what} {ident!r}: the user changed {field} on the board to {current!r} (last written {last!r}); "
+        f"{what} {ident!r}: the user changed {field} on the board to {current!r} (last written {shown}); "
         f"adopt it in the spec or argue it with the user before writing {wanted!r}"
     )
+
+
+def _require_section(note: dict[str, Any], live: Live) -> None:
+    if note["section"] is None or live.get(note["section"], {}).get("type") != "frame":
+        raise ValueError(f"note {note['id']!r} names section {note['section']!r}, which is not a frame on the board")
 
 
 def _load_scene(path: Path) -> dict[str, Any]:
@@ -406,7 +685,7 @@ def _load_scene(path: Path) -> dict[str, Any]:
 
 def _load_state(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        return {"revision": 0, "lanes": {}, "notes": {}, "links": []}
+        return {"revision": 0, "sections": {}, "notes": {}, "links": [], "grid": {}}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -478,8 +757,8 @@ def _touch(element: Element) -> None:
     element["updated"] = _now()
 
 
-def _frame(ident: str, name: str, x: float, y: float) -> Element:
-    frame = _base(ident, "frame", x, y, LANE_WIDTH, LANE_HEIGHT)
+def _frame(ident: str, name: str) -> Element:
+    frame = _base(ident, "frame", 0, 0, 0, 0)
     frame.update(name=name, strokeColor="#bbbbbb", boundElements=None)
     return frame
 
@@ -496,25 +775,29 @@ def _text_size(wrapped: str) -> tuple[float, float]:
     return max(len(line) for line in lines) * FONT_SIZE * 0.55, len(lines) * FONT_SIZE * LINE_HEIGHT
 
 
-def _note(note: dict[str, Any], lane: Element, live: Live) -> tuple[Element, Element]:
-    wrapped = _wrap(note["text"])
-    tw, th = _text_size(wrapped)
-    height = max(80.0, th + 2 * TEXT_PADDING)
-    x, y = lane["x"] + NOTE_INSET, _next_note_y(lane, live)
+def _note(note: dict[str, Any]) -> tuple[Element, Element]:
+    """A new note in its section, at the frame's origin until the layout puts it in its cell."""
     background, stroke = KIND_COLOURS[note["kind"]]
-    shape = _base(note["id"], "rectangle", x, y, NOTE_WIDTH, height)
+    shape = _base(note["id"], "rectangle", 0, 0, NOTE_WIDTH, NOMINAL_ROW_HEIGHT)
     text_id = f"{note['id']}-text"
     shape.update(
-        backgroundColor=background, strokeColor=stroke, roundness={"type": 3}, frameId=lane["id"],
+        backgroundColor=background, strokeColor=stroke, roundness={"type": 3}, frameId=note["section"],
         boundElements=[{"id": text_id, "type": "text"}],
     )
-    text = _base(text_id, "text", x + (NOTE_WIDTH - tw) / 2, y + (height - th) / 2, tw, th)
+    text = _base(text_id, "text", 0, 0, 0, 0)
     text.update(
-        strokeColor=stroke, frameId=lane["id"], boundElements=None, text=wrapped, originalText=note["text"],
-        fontSize=FONT_SIZE, fontFamily=1, textAlign="center", verticalAlign="middle", containerId=note["id"],
-        lineHeight=LINE_HEIGHT, autoResize=True,
+        strokeColor=stroke, frameId=note["section"], boundElements=None, fontSize=FONT_SIZE, fontFamily=1,
+        containerId=note["id"], lineHeight=LINE_HEIGHT, autoResize=True,
     )
+    _align_text(text, note["kind"])
+    _set_text(text, shape, note["text"])
     return shape, text
+
+
+def _align_text(text_el: Element, kind: str) -> None:
+    """Schema-style `data` text sits top-left, one field per line; every other kind's text is centred."""
+    left = kind in LEFT_ALIGNED_KINDS
+    text_el.update(textAlign="left" if left else "center", verticalAlign="top" if left else "middle")
 
 
 def _bound_text(shape: Element, live: Live) -> Element | None:
@@ -527,45 +810,54 @@ def _bound_text(shape: Element, live: Live) -> Element | None:
 def _set_text(text_el: Element, shape: Element, text: str) -> None:
     wrapped = _wrap(text)
     tw, th = _text_size(wrapped)
-    shape["height"] = max(shape["height"], th + 2 * TEXT_PADDING)
-    text_el.update(
-        text=wrapped, originalText=text, width=tw, height=th,
-        x=shape["x"] + (shape["width"] - tw) / 2, y=shape["y"] + (shape["height"] - th) / 2,
-    )
+    shape["height"] = max(float(NOMINAL_ROW_HEIGHT), th + 2 * TEXT_PADDING)
+    text_el.update(text=wrapped, originalText=text, width=tw, height=th)
+    _place_text(text_el, shape)
     _touch(text_el)
     _touch(shape)
 
 
-def _move_to_lane(shape: Element, text_el: Element, lane: Element, live: Live) -> None:
-    dx = lane["x"] + NOTE_INSET - shape["x"]
-    dy = _next_note_y(lane, live) - shape["y"]
-    for element in (shape, text_el):
-        element["x"] += dx
-        element["y"] += dy
-        element["frameId"] = lane["id"]
-        _touch(element)
-    _fit_lane(lane, shape)
+def _place_text(text_el: Element, shape: Element) -> None:
+    """Put bound text where its alignment says inside its shape: inset top-left, or centred."""
+    if text_el.get("textAlign") == "left":
+        text_el["x"] = shape["x"] + BOUND_TEXT_PADDING
+    else:
+        text_el["x"] = shape["x"] + (shape["width"] - text_el["width"]) / 2
+    if text_el.get("verticalAlign") == "top":
+        text_el["y"] = shape["y"] + BOUND_TEXT_PADDING
+    else:
+        text_el["y"] = shape["y"] + (shape["height"] - text_el["height"]) / 2
 
 
-def _next_note_y(lane: Element, live: Live) -> float:
-    bottoms = [e["y"] + e["height"] for e in live.values() if e.get("frameId") == lane["id"] and e["type"] != "text"]
-    return max(bottoms) + NOTE_GAP if bottoms else lane["y"] + FIRST_NOTE_OFFSET
+def _add_label(arrow: Element, text: str, elements: list[Element], live: Live) -> Element:
+    """A label bound to `arrow`, with every field Excalidraw needs to keep it when the arrow next moves."""
+    label = _base(f"{arrow['id']}-label", "text", 0, 0, 0, 0)
+    label.update(
+        boundElements=None, fontSize=FONT_SIZE, fontFamily=1, textAlign="center", verticalAlign="middle",
+        containerId=arrow["id"], lineHeight=LINE_HEIGHT, autoResize=True,
+    )
+    _set_label(label, text)
+    arrow["boundElements"] = [*(arrow.get("boundElements") or []), {"type": "text", "id": label["id"]}]
+    _touch(arrow)
+    elements.append(label)
+    live[label["id"]] = label
+    return label
 
 
-def _fit_lane(lane: Element, shape: Element) -> None:
-    bottom = shape["y"] + shape["height"] + NOTE_GAP
-    if bottom > lane["y"] + lane["height"]:
-        lane["height"] = bottom - lane["y"]
-        _touch(lane)
+def _set_label(label: Element, text: str) -> None:
+    width, height = _text_size(text)
+    label.update(text=text, originalText=text, width=width, height=height)
+    _touch(label)
 
 
-def _next_lane_x(live: Live) -> float:
-    rights = [e["x"] + e["width"] for e in live.values() if e["type"] == "frame"]
-    return max(rights) + LANE_GAP if rights else 0
+def _centre_label(label: Element, arrow: Element) -> None:
+    first, last = arrow["points"][0], arrow["points"][-1]
+    mid_x, mid_y = arrow["x"] + (first[0] + last[0]) / 2, arrow["y"] + (first[1] + last[1]) / 2
+    label["x"], label["y"] = mid_x - label["width"] / 2, mid_y - label["height"] / 2
 
 
 def _arrow(source: Element, target: Element) -> Element:
-    """An arrow bound to both notes, leaving and entering through the sides that face each other."""
+    """An arrow bound to both notes and to no frame, so a link between two sections is never clipped."""
     (sx, sy), (tx, ty) = _facing_edges(source, target)
     # ':' is outside the id alphabet, so two different links can never share an arrow id.
     ident = f"link:{source['id']}:{target['id']}"
@@ -610,54 +902,5 @@ def _frames_last(elements: list[Element]) -> None:
     elements.sort(key=lambda e: e["type"] == "frame")
 
 
-def _tidy(lane_order: list[str], note_order: list[str], live: Live) -> None:
-    """Reflow the board's geometry: lanes in `lane_order` then by x, notes restacked in `note_order` then by y.
-
-    Moves every element framed in a lane with it, redraws every link between two notes, and resizes each
-    lane to hold what it frames. Touches nothing but positions, sizes and arrow points.
-    """
-    before = {ident: _geometry(e) for ident, e in live.items()}
-    rank = {ident: i for i, ident in enumerate(note_order)}
-    frames = [live[ident] for ident in lane_order] + sorted(
-        (e for e in live.values() if e["type"] == "frame" and e["id"] not in lane_order), key=lambda f: f["x"]
-    )
-    x = 0.0
-    for frame in frames:
-        members = [e for e in live.values() if e.get("frameId") == frame["id"]]
-        dx, dy = x - frame["x"], -frame["y"]
-        for element in (frame, *members):
-            element["x"] += dx
-            element["y"] += dy
-        shapes = [e for e in members if e["type"] in _NOTE_SHAPES and _bound_text(e, live) is not None]
-        y = frame["y"] + FIRST_NOTE_OFFSET
-        for shape in sorted(shapes, key=lambda e: (0, rank[e["id"]]) if e["id"] in rank else (1, e["y"])):
-            text_el = _bound_text(shape, live)
-            assert text_el is not None
-            dx, dy = frame["x"] + NOTE_INSET - shape["x"], y - shape["y"]
-            for element in (shape, text_el):
-                element["x"] += dx
-                element["y"] += dy
-            y = shape["y"] + shape["height"] + NOTE_GAP
-        x = frame["x"] + frame["width"] + LANE_GAP
-    for arrow in (e for e in live.values() if e["type"] == "arrow"):
-        source, target = _link_key(arrow, live)
-        if source is None or target is None:
-            continue
-        (sx, sy), (tx, ty) = _facing_edges(live[source], live[target])
-        arrow.update(x=sx, y=sy, width=abs(tx - sx), height=abs(ty - sy), points=[[0, 0], [tx - sx, ty - sy]])
-    for frame in frames:
-        bottoms = [_bottom(e) for e in live.values() if e.get("frameId") == frame["id"]]
-        frame["height"] = max([LANE_HEIGHT, *(b - frame["y"] + NOTE_GAP for b in bottoms)])
-    for ident, element in live.items():
-        if _geometry(element) != before[ident]:
-            _touch(element)
-
-
 def _geometry(element: Element) -> tuple[Any, ...]:
     return element["x"], element["y"], element["width"], element["height"], element.get("points")
-
-
-def _bottom(element: Element) -> float:
-    if "points" in element:
-        return element["y"] + max(point[1] for point in element["points"])
-    return element["y"] + element["height"]

@@ -1115,45 +1115,49 @@ def board_write(
     spec: Annotated[
         dict[str, Any],
         Field(
-            description='The board as Claude wants it: {"lanes": [{"id", "name"}], "notes": [{"id", "lane", '
-            '"kind", "text"}], "links": [{"from", "to"}]}. `kind` is one of status, option, decision, '
-            "hypothesis, probe, objection. Lanes and notes already on the board keep their place; anything "
-            "the spec leaves out is left as it is, never deleted."
+            description='The design board as Claude wants it: {"sections": [{"id", "name"}], "notes": [{"id", '
+            '"section", "kind", "text", "at"}], "links": [{"from", "to", "label"}]}. `kind` is one of component, '
+            "store, data, external, step, note; `data` text is a title line then one field per line. `at` is "
+            "[column, row] in the note's section, unique within it. A link's `label` is optional. `section` and "
+            "`at` are null together, and only to adopt a note the user dragged out of every section. Anything "
+            "the spec leaves out stays on the board, never deleted."
         ),
     ],
-    tidy: Annotated[
-        bool,
-        Field(description="True only when the user asked to tidy the board: reflows positions, never content."),
-    ] = False,
 ) -> dict[str, Any]:
-    """Merge a spec into the board's Excalidraw scene, creating it on first write, and list what changed.
+    """Merge a spec into the board's Excalidraw scene, creating it on first write, lay it out, and list what changed.
 
-    Refused, with the note named, when the spec would overwrite a lane, text or note the user changed or
-    deleted on the board since the last write: call `board_read`, answer the edit, then write a spec that
-    adopts it. Also refused while the file is a stale editor save, until `board_read` restores it. `scene`
-    is the `.excalidraw` file the user opens in any Excalidraw editor; `folder` holds it and the board's notes.
-    With `tidy`, the merged board is reflowed: lanes in spec order, each lane's notes restacked in spec order
-    with notes the spec does not name below them, links redrawn; text, lanes and links never change.
+    Every write lays the whole board out: sections stacked in spec order, each note at its cell, one spare
+    column and row per section for the user to drag into, links redrawn with their labels. Notes outside
+    every section (the scratch area) never move. Refused, with the element named, when the spec would
+    overwrite a note's text, section or cell, a section's name or a link's label the user changed, or
+    something the user deleted, since the last write: call `board_read`, answer the edit, then write a spec
+    that adopts it. Also refused, as a plain error, when a spec cell is held by a note the spec does not
+    name, and while the file is a stale editor save, until `board_read` restores it. `scene` is the
+    `.excalidraw` file the user opens in any Excalidraw editor; `folder` holds it and the board's notes.
     """
     try:
-        return board.write(_board_folder(board_id), spec, tidy)
+        return board.write(_board_folder(board_id), spec)
     except (ValueError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 
 
 @mcp.tool(name="board_read")
 def board_read(board_id: BoardId) -> dict[str, Any]:
-    """Read the board back: lanes, notes and links with their owner and `user_changed` fields, and deletions.
+    """Read the board back: sections, notes and links with their owner and `user_changed` fields, and deletions.
 
     `owner` is `claude` for what a write placed and `user` for what was added by hand. `user_changed` lists
-    the fields the user changed since the last write; `deleted_notes` and `deleted_links` are what the user
-    removed. Each is a move to answer before the next `board_write`. Notes are listed lane by lane from the
-    left, each lane top to bottom. Every read records the save it saw in the board's folder. A non-null
-    `stale_save` means an editor saved a copy opened before the last write: that copy was kept aside at
-    `kept_as` and the last write restored. Its `changes` are the user's edits in that copy since the last
-    save read saw from the same editor tab: `{"notes": {"added", "deleted", "moved", "edited"}, "lanes":
-    {"added", "deleted", "renamed"}, "links": {"added", "deleted"}}`, each note `{"id", "lane", "text"}`,
-    each lane `{"id", "name"}`, each link `[from, to]`. Answer every one with the user, per the skill.
+    the fields the user changed since the last write: a section's `name`; a note's `section`, `at` or
+    `text`; a link's `label`. A note's `at` is read back from where it sits: a drag to another cell is a
+    change, a nudge inside its cell is not and snaps back on the next write. `deleted_notes` and
+    `deleted_links` are what the user removed. Each is a move to answer before the next `board_write`.
+    Notes are listed section by section from the top, each by row then column, then the notes outside every
+    section with `section` and `at` null. Every read records the save it saw in the board's folder. A
+    non-null `stale_save` means an editor saved a copy opened before the last write: that copy was kept
+    aside at `kept_as` and the last write restored. Its `changes` are the user's edits in that copy since
+    the last save read saw from the same editor tab: `{"notes": {"added", "deleted", "moved", "edited"},
+    "sections": {"added", "deleted", "renamed"}, "links": {"added", "deleted", "relabelled"}}`, each note
+    `{"id", "section", "at", "text"}` (moved: its section or cell changed), each section `{"id", "name"}`,
+    each link `[from, to, label]`. Answer every one with the user, per the skill.
     """
     try:
         return board.read(_board_folder(board_id))

@@ -275,6 +275,24 @@ def test_the_scratch_area_is_never_moved_and_reads_as_the_users(tmp_path):
         board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], scribble]})
 
 
+def test_an_arrow_between_two_scratch_notes_keeps_its_geometry(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    _user_adds_note(scene, "a", "A", 2000, 40, None)
+    _user_adds_note(scene, "b", "B", 2400, 300, None)
+    bound = {"focus": 0, "gap": 1}
+    arrow = {**next(e for e in scene["elements"] if e["type"] == "arrow"), "id": "scratch-arrow", "x": 2100.0,
+             "y": 90.0, "width": 123.0, "height": 77.0, "points": [[0, 0], [123.0, 77.0]], "boundElements": [],
+             "startBinding": {**bound, "elementId": "a"}, "endBinding": {**bound, "elementId": "b"}}
+    scene["elements"].append(arrow)
+    _save(tmp_path, scene)
+    board.write(tmp_path, SPEC)
+    kept = _element(_scene(tmp_path), "scratch-arrow")
+    assert (kept["x"], kept["y"], kept["width"], kept["height"], kept["points"]) == (
+        2100.0, 90.0, 123.0, 77.0, [[0, 0], [123.0, 77.0]]
+    ), "an arrow between two scratch notes is the user's and is never redrawn"
+
+
 def test_framed_free_text_moves_with_its_section_and_stays_inside_it(tmp_path):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
@@ -298,6 +316,10 @@ def test_a_deleted_note_is_reported_refuses_a_rewrite_and_is_forgotten_once_drop
     with pytest.raises(board.BoardConflict, match="deleted"):
         board.write(tmp_path, SPEC)
     board.write(tmp_path, {**SPEC, "notes": [SPEC["notes"][0], SPEC["notes"][2]], "links": []})
+    if removed == {"server:text"}:
+        with pytest.raises(ValueError, match="new id"):
+            board.write(tmp_path, SPEC)
+        return
     assert board.read(tmp_path)["deleted_notes"] == [], "an answered deletion must not be reported again"
     assert board.read(tmp_path)["deleted_links"] == [], "nor its links, though a textless shape still binds them"
 

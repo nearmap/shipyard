@@ -24,7 +24,7 @@ The board is where the design is drawn, once the user opens it. The record stays
 
 Keep notes short: a title line, then at most three short lines (a `data` note may list more fields). A note's id never changes once written, because the id is how a user's move is traced back.
 
-The spec lists every section and note Claude wants as it stands, rebuilt from `notes.md` each write. A spec that drops a note leaves it on the board untouched; a write never deletes anything. A link label, once written, can be changed but not cleared. Restoring a note or link the user deleted takes two writes: drop it from the spec, then add it again in the next one.
+The spec lists every section and note Claude wants as it stands, rebuilt from `notes.md` each write. A spec that drops a note leaves it on the board untouched; a write never deletes anything. A link label, once written, can be changed but not cleared. Restoring a note or link the user deleted takes two writes: drop it from the spec, then add it again in the next one (a note whose text alone was cleared needs a note of Claude's own under a new id).
 
 ## Layout
 

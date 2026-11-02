@@ -19,7 +19,7 @@ contain ':', which no spec id can, so they never collide with one.
 
 Every write lays the whole board out again: sections in spec order, each note at its cell, every section
 sized to its grid plus one spare column and one spare row for the user to drag into, everything else
-framed in a section moved with it, and every arrow between two notes redrawn. Elements outside every
+framed in a section moved with it, and every arrow touching a framed note redrawn. Elements outside every
 section (the scratch area) are never moved. A note's cell is read back from where it sits: a note whose
 nearest cell is still the one the last write gave it keeps that cell, and any other takes the nearest cell
 no such note holds, so a drag to another cell is a user edit and a nudge inside a cell snaps back on the
@@ -155,8 +155,8 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         if text_el is None:
             if written is not None:
                 raise BoardConflict(
-                    f"note {note['id']!r} was deleted on the board; drop it from this spec; to restore it, add it "
-                    "again in the next write"
+                    f"note {note['id']!r} was deleted on the board; drop it from this spec; to restore it, add a note "
+                    "of your own with its text under a new id in the next write"
                 )
             if current is not None and current["type"] == "text":
                 raise ValueError(
@@ -164,7 +164,10 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
                     "text under a new id; the user may delete the free text"
                 )
             if current is not None:
-                raise ValueError(f"note {note['id']!r} is a {current['type']} with no text on the board, not a note")
+                raise ValueError(
+                    f"note {note['id']!r} is a {current['type']} with no text on the board, not a note: add a note of "
+                    "your own with its text under a new id; the user may delete the empty shape"
+                )
             _require_section(note, live)
             shape, text = _note(note)
             elements.extend([shape, text])
@@ -486,7 +489,8 @@ def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dic
     Sections in `section_order`, then any other frame by current y, each at x = 0, stacked top to bottom.
     Each note in `cells` goes to its cell and its text follows; everything else framed in a section moves
     with it; each frame is sized to its grid (one spare column and row included) and to what it frames;
-    every arrow between two notes is redrawn and its label centred on it. Unframed elements stay put.
+    every arrow between two notes, at least one framed in a section, is redrawn and its label centred on it.
+    Unframed elements stay put, so an arrow between two scratch notes keeps its geometry.
     """
     before = {ident: _geometry(e) for ident, e in live.items()}
     frames = [live[ident] for ident in section_order] + [
@@ -497,7 +501,8 @@ def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dic
     for ident, element in live.items():
         if element["type"] == "arrow":
             a, b = _link_key(element, live)
-            if a is not None and b is not None and {a, b} <= notes:
+            framed = a in notes and b in notes and (live[a].get("frameId") or live[b].get("frameId"))
+            if framed:
                 linked[ident] = (a, b)
     labels = {e["id"] for e in live.values() if e.get("containerId") in linked}
     note_texts = {text["id"] for ident in cells if (text := _bound_text(live[ident], live)) is not None}

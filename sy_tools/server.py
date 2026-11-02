@@ -1121,6 +1121,10 @@ def board_write(
             "the spec leaves out is left as it is, never deleted."
         ),
     ],
+    tidy: Annotated[
+        bool,
+        Field(description="True only when the user asked to tidy the board: reflows positions, never content."),
+    ] = False,
 ) -> dict[str, Any]:
     """Merge a spec into the board's Excalidraw scene, creating it on first write, and list what changed.
 
@@ -1128,9 +1132,11 @@ def board_write(
     deleted on the board since the last write: call `board_read`, answer the edit, then write a spec that
     adopts it. Also refused while the file is a stale editor save, until `board_read` restores it. `scene`
     is the `.excalidraw` file the user opens in any Excalidraw editor; `folder` holds it and the board's notes.
+    With `tidy`, the merged board is reflowed: lanes in spec order, each lane's notes restacked in spec order
+    with notes the spec does not name below them, links redrawn; text, lanes and links never change.
     """
     try:
-        return board.write(_board_folder(board_id), spec)
+        return board.write(_board_folder(board_id), spec, tidy)
     except (ValueError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 
@@ -1141,9 +1147,13 @@ def board_read(board_id: BoardId) -> dict[str, Any]:
 
     `owner` is `claude` for what a write placed and `user` for what was added by hand. `user_changed` lists
     the fields the user changed since the last write; `deleted_notes` and `deleted_links` are what the user
-    removed. Each is a move to answer before the next `board_write`. A non-null `stale_save` means an editor
-    saved a copy opened before the last write: that copy was kept aside at `kept_as` and the last write
-    restored, so tell the user and redo whatever they changed in it.
+    removed. Each is a move to answer before the next `board_write`. Notes are listed lane by lane from the
+    left, each lane top to bottom. Every read records the save it saw in the board's folder. A non-null
+    `stale_save` means an editor saved a copy opened before the last write: that copy was kept aside at
+    `kept_as` and the last write restored. Its `changes` are the user's edits in that copy since the last
+    save read saw from the same editor tab: `{"notes": {"added", "deleted", "moved", "edited"}, "lanes":
+    {"added", "deleted", "renamed"}, "links": {"added", "deleted"}}`, each note `{"id", "lane", "text"}`,
+    each lane `{"id", "name"}`, each link `[from, to]`. Answer every one with the user, per the skill.
     """
     try:
         return board.read(_board_folder(board_id))

@@ -85,7 +85,7 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 
 The working surface is a shared [Excalidraw](https://excalidraw.com) board, a plain `.excalidraw` file in this repository's scratch directory. You open it in VS Code with the Excalidraw extension, or on excalidraw.com, and drag notes between lanes, edit their text, or add notes and arrows; Claude reads every change at the start of its next turn and answers it. Neither editor reloads the file, so you reopen the board after each Claude turn; a save from a tab you forgot to reopen is kept aside and its edits answered, not lost. Writes go through the `sy` server's `board_write`, which refuses to overwrite an edit of yours that the session has not answered. The decision then hands off: to `/sy:spike` when a gain still needs measuring, to `/sy:plan` or `/sy:spec` when it is ready to build.
 
-![A whiteboard board in Excalidraw: lanes for where we are, open questions, live, parked and ruled-out options](docs/img/whiteboard-board.png)
+![A whiteboard board in Excalidraw: lanes for where we are, the problem, the goal, open questions, probes, alive, parked and ruled-out options, and decided](docs/img/whiteboard-board.png)
 
 ## Working with you
 

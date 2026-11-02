@@ -1131,8 +1131,8 @@ def board_write(
     every section (the scratch area) never move. Refused, with the element named, when the spec would
     overwrite a note's text, section or cell, a section's name or a link's label the user changed, or
     something the user deleted, since the last write: call `board_read`, answer the edit, then write a spec
-    that adopts it. Restoring a deleted note or link takes two writes: drop it, then add it again (a note under a new id when only its text was cleared). A user's
-    unlabelled arrow is adopted with label "" first and labelled in the next write. Free text is never a
+    that adopts it. Restoring a deleted note or link takes two writes: drop it, then add it again (a note under a
+    new id when only its text was cleared). A user's unlabelled arrow is adopted with label "" first and labelled in the next write. Free text is never a
     note: keep it by adding a note of Claude's own with its text under a new id. Also refused, as a plain
     error, when a spec cell is held by a note the spec does not name, and while the file is a stale editor
     save, until `board_read` restores it. `scene` is the `.excalidraw` file the user opens in any Excalidraw

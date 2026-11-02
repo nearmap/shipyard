@@ -50,7 +50,7 @@ def _user_edits_text(directory: Path, note: str, text: str) -> None:
     _save(directory, scene)
 
 
-def _with(note: str, **fields: str) -> dict:
+def _with(note: str, **fields: str | None) -> dict:
     return {**SPEC, "notes": [{**n, **fields} if n["id"] == note else n for n in SPEC["notes"]]}
 
 
@@ -72,8 +72,8 @@ def test_a_first_write_makes_a_scene_whose_notes_lanes_and_link_read_back_unchan
         ("opt-a", "alive", "claude"), ("opt-b", "alive", "claude"),
     ], report["notes"]
     assert not any("user_changed" in n for n in report["notes"]), "nothing has been edited yet"
-    assert report["links"] == [{"from": "opt-a", "to": "opt-b"}], report["links"]
-    dx, dy = _element(scene, "link-opt-a-opt-b")["points"][1]
+    assert report["links"] == [{"from": "opt-a", "to": "opt-b", "owner": "claude"}], report["links"]
+    dx, dy = _element(scene, "link:opt-a:opt-b")["points"][1]
     assert dx == 0 and dy > 0, f"a link between stacked notes must run straight down the gap, not across them: {dx, dy}"
 
 
@@ -94,6 +94,45 @@ def test_a_user_edit_is_reported_refuses_an_overwrite_and_clears_once_adopted(tm
     assert "user_changed" not in _note(board.read(tmp_path), "opt-b"), "an adopted edit is no longer a change"
 
 
+def _user_drags_off_every_lane(directory: Path) -> None:
+    scene = _scene(directory)
+    for ident in ("opt-b", "opt-b-text"):
+        _element(scene, ident).update(x=-900, frameId=None)
+    _save(directory, scene)
+
+
+def _user_recolours(directory: Path) -> None:
+    scene = _scene(directory)
+    _element(scene, "opt-b")["backgroundColor"] = "#ffffff"
+    _save(directory, scene)
+
+
+@pytest.mark.parametrize(
+    ("edit", "spec"),
+    [(_user_drags_off_every_lane, _with("opt-b", lane=None)), (_user_recolours, _with("opt-b", kind="objection"))],
+)
+def test_an_edit_outside_the_lanes_or_to_a_colour_never_wedges_the_board(tmp_path, edit, spec):
+    board.write(tmp_path, SPEC)
+    edit(tmp_path)
+    board.write(tmp_path, spec)
+    assert "user_changed" not in _note(board.read(tmp_path), "opt-b"), "the edit must be adoptable, not a dead end"
+
+
+def test_a_stale_editor_save_is_kept_aside_and_the_last_write_restored(tmp_path):
+    board.write(tmp_path, SPEC)
+    opened_before = (tmp_path / board.SCENE_NAME).read_text(encoding="utf-8")
+    added = {"id": "opt-c", "lane": "out", "kind": "option", "text": "C"}
+    board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], added]})
+    (tmp_path / board.SCENE_NAME).write_text(opened_before, encoding="utf-8")
+    with pytest.raises(board.BoardConflict, match="board_read"):
+        board.write(tmp_path, SPEC)
+    report = board.read(tmp_path)
+    assert report["stale_save"] and Path(report["stale_save"]["kept_as"]).read_text(encoding="utf-8") == opened_before
+    assert report["deleted_notes"] == [] and _note(report, "opt-c")["owner"] == "claude", (
+        "a stale save must not read as the user deleting what the last write added"
+    )
+
+
 def test_claude_moves_its_own_unedited_note_into_another_lane(tmp_path):
     board.write(tmp_path, SPEC)
     result = board.write(tmp_path, _with("opt-b", lane="out"))
@@ -105,10 +144,11 @@ def test_claude_moves_its_own_unedited_note_into_another_lane(tmp_path):
     )
 
 
-def test_a_deleted_note_is_reported_refuses_a_rewrite_and_is_forgotten_once_dropped(tmp_path):
+@pytest.mark.parametrize("removed", [{"opt-b", "opt-b-text"}, {"opt-b-text"}], ids=["whole note", "only its text"])
+def test_a_deleted_note_is_reported_refuses_a_rewrite_and_is_forgotten_once_dropped(tmp_path, removed):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
-    scene["elements"] = [e for e in scene["elements"] if e["id"] not in {"opt-b", "opt-b-text"}]
+    scene["elements"] = [e for e in scene["elements"] if e["id"] not in removed]
     _save(tmp_path, scene)
     assert board.read(tmp_path)["deleted_notes"] == ["opt-b"]
     with pytest.raises(board.BoardConflict, match="deleted"):
@@ -147,9 +187,11 @@ def test_a_malformed_spec_is_refused_before_anything_is_written(tmp_path, spec, 
 
 
 def test_the_tools_resolve_the_board_from_its_identifier_and_surface_a_conflict(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "scratch_dir", lambda identifier: tmp_path / identifier)
+    monkeypatch.setattr(config, "repo_scratch_dir", lambda: tmp_path)
     server.board_write("pricing-idea", SPEC)
-    _user_drags(tmp_path / "pricing-idea", "opt-a", "out")
+    _user_drags(tmp_path / "whiteboards" / "pricing-idea", "opt-a", "out")
     assert _note(server.board_read("pricing-idea"), "opt-a")["user_changed"] == ["lane"]
     with pytest.raises(server.ToolError, match="opt-a"):
         server.board_write("pricing-idea", SPEC)
+    with pytest.raises(server.ToolError, match="board id"):
+        server.board_read("../elsewhere")

@@ -25,15 +25,15 @@ $ARGUMENTS
 
 ## The board
 
-One folder per problem: `scratch_dir {"identifier": "<slug>"}` (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). It holds:
+One folder per problem, keyed by the board's slug under this repository's scratch directory: the `folder` that `board_write {"board_id": "<slug>", "spec": ...}` and `board_read {"board_id": "<slug>"}` return (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). It holds:
 
 - `notes.md`: the full record (aim, glossary, theory, hypotheses, decision tree, claims, options, probes, decision, dated log). A new session resumes from it.
-- `board.excalidraw`: the shared board. Write it only through `board_write {"board_id": "<slug>", "spec": ...}` and read it only through `board_read`; never edit the scene JSON by hand.
+- `board.excalidraw`: the shared board. Write it only through `board_write` and read it only through `board_read`; never edit the scene JSON by hand.
 - `probes/`: probe scripts and their outputs.
 
 `references/board.md` holds the `notes.md` template, the lanes and note kinds, and the line telling the user how to open the board.
 
-The board is the user's surface as much as Claude's. **Start every turn with `board_read`.** Every `user_changed` field, `user` note, deleted note and new link is a move to answer in that turn, before anything else: a note dragged to Ruled out needs its reason recorded, a revived note gets argued on its merits, an edited text is a correction to adopt or dispute. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently.
+The board is the user's surface as much as Claude's. **Start every turn with `board_read`.** Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to Ruled out needs its reason recorded, a revived note gets argued on its merits, an edited text is a correction to adopt or dispute. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently. A non-null `stale_save` means the user's editor saved a copy opened before the last write: say so, show where it was kept, and ask what they changed in it.
 
 To resume: read `notes.md`, then `board_read`, then give a three-line recap (aim, leading option, strongest open objection) and carry on.
 
@@ -55,7 +55,7 @@ Every turn follows `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interact
 
 - Restate the problem in the user's words: who is asking and what they will do with the answer.
 - Name the kind of work: root cause, method choice, system design, feasibility, measurement design, or a mix. It decides what counts as an answer: a root-cause question needs causes found, not a design.
-- One aim per board; a second aim gets its own. Pick the slug and resolve the folder.
+- One aim per board; a second aim gets its own. Pick the slug and open the board with a first `board_write`: the lanes and the status note. Its `folder` is where `notes.md` and `probes/` go.
 - Suggest, as a single optional aside, `/rename whiteboard <slug>`.
 
 ## 2. Theory first, then an early look (bounded)

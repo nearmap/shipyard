@@ -1,23 +1,31 @@
 """The `/sy:whiteboard` board: an Excalidraw scene Claude writes and the user edits by hand.
 
-A board is two files in one scratch directory. `board.excalidraw` is a plain Excalidraw scene that
-opens in the Excalidraw VS Code extension, on excalidraw.com, or in any other Excalidraw editor, so the
-user can drag notes between lanes, edit text, add notes and draw arrows without any service.
-`board.state.json` records what Claude last wrote: each note's lane and text, each lane's name, and
+A board is a folder of files. `board.excalidraw` is a plain Excalidraw scene that opens in the
+Excalidraw VS Code extension, on excalidraw.com, or in any other Excalidraw editor, so the user can drag
+notes between lanes, edit text, add notes and draw arrows without any service. `board.state.json`
+records what Claude last wrote: the revision, each note's lane, text and kind, each lane's name, and
 each link. That record is what turns the user's edits into a diff Claude can answer.
+`board.written.excalidraw` is a copy of the scene as Claude last wrote it.
 
-The write contract is one rule, applied to every field Claude owns: a field changes only when the
-board still holds what Claude last wrote there, or when the spec already matches the board. A user
-edit Claude has not adopted makes the write fail, naming the note, so the session has to read the
-board and answer the edit before it can overwrite it. The write never deletes or repositions an
-element that already exists; ruling a note out means moving it to another lane, not removing it.
+The write contract is one rule, applied to a note's lane and text and to a lane's name: a field changes
+only when the board still holds what Claude last wrote there, or when the spec already matches the
+board. A user edit Claude has not adopted makes the write fail, naming the note, so the session has to
+read the board and answer the edit before it can overwrite it. Colour is cosmetic: a note the user
+recoloured keeps the user's colour. The write never deletes an element, and moves one only to put a
+note in the lane the spec names; ruling a note out means moving it to another lane, not removing it.
 
-Lanes are Excalidraw frames. A note is a rectangle with bound text. A link is an arrow bound to two
-notes. Element ids are the spec's ids, so the same note keeps the same id through every save.
+Every write stamps a revision marker on the board. An editor that opened the board before a write and
+saves afterwards writes back an older revision, which would otherwise read as the user deleting
+everything that write added. `read` detects that, moves the stale save aside rather than losing it, and
+restores the last write.
+
+Lanes are Excalidraw frames. A note is a shape with bound text. A link is an arrow bound to two notes.
+Element ids are the spec's ids, so the same note keeps the same id through every save.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import textwrap
@@ -29,6 +37,8 @@ from .atomic import atomic_write
 
 SCENE_NAME = "board.excalidraw"
 STATE_NAME = "board.state.json"
+WRITTEN_NAME = "board.written.excalidraw"
+REVISION_ID = "sy-board-revision"
 
 KIND_COLOURS = {
     "status": ("#e9ecef", "#343a40"),
@@ -52,6 +62,7 @@ WRAP_CHARS = 28
 TEXT_PADDING = 12
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_REVISION_TEXT = re.compile(r"revision (\d+)")
 _NOTE_SHAPES = {"rectangle", "ellipse", "diamond"}
 
 Element = dict[str, Any]
@@ -62,19 +73,33 @@ class BoardConflict(ValueError):
     """The board holds a user edit the spec would overwrite; read the board and answer it first."""
 
 
+def folder(root: Path, board_id: str) -> Path:
+    """The board's folder under `root`; refuses an id that could step outside it."""
+    if not _ID.match(board_id):
+        raise ValueError(f"board id {board_id!r} must be 1-64 letters, digits, '-' or '_'")
+    return root / board_id
+
+
 def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     """Merge `spec` into the board in `directory`, creating it on first write, and report what changed.
 
     `spec` is `{"lanes": [{"id", "name"}], "notes": [{"id", "lane", "kind", "text"}], "links": [{"from",
-    "to"}]}`. Raises `ValueError` for a malformed spec and `BoardConflict` when it would overwrite a user
-    edit not yet adopted.
+    "to"}]}`. A note's `lane` may be null only to adopt a note the user dragged out of every lane. Raises
+    `ValueError` for a malformed spec and `BoardConflict` when it would overwrite a user edit not yet
+    adopted, or when the board file is a stale save `read` has not yet restored.
     """
     lanes, notes, links = _parse_spec(spec)
     scene_path, state_path = directory / SCENE_NAME, directory / STATE_NAME
     scene = _load_scene(scene_path) if scene_path.is_file() else _empty_scene()
     state = _load_state(state_path)
-    live = {e["id"]: e for e in scene["elements"] if not e.get("isDeleted")}
+    if (stale := _stale_revision(scene, state)) is not None:
+        raise BoardConflict(
+            f"the board file is revision {stale}, older than the last write ({state['revision']}): an editor "
+            "saved a copy it opened before that write. Call board_read, which keeps that save aside and "
+            "restores the last write, then answer it with the user"
+        )
     elements: list[Element] = scene["elements"]
+    live = {e["id"]: e for e in elements if not e.get("isDeleted")}
     changed: list[str] = []
 
     for lane in lanes:
@@ -90,7 +115,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
             continue
         if current["type"] != "frame":
             raise ValueError(f"lane {lane['id']!r} names a {current['type']} on the board, not a frame")
-        if _reconcile("lane", lane["id"], "name", current.get("name"), written and written["name"], lane["name"]):
+        if _reconcile("lane", lane["id"], "name", current.get("name") or "", written and written["name"], lane["name"]):
             current["name"] = lane["name"]
             _touch(current)
             changed.append(f"lane {lane['id']} renamed")
@@ -98,35 +123,35 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     for note in notes:
         current = live.get(note["id"])
         written = state["notes"].get(note["id"])
-        if note["lane"] not in live or live[note["lane"]]["type"] != "frame":
-            raise ValueError(f"note {note['id']!r} names lane {note['lane']!r}, which is not a frame on the board")
-        if current is None:
+        text_el = _bound_text(current, live) if current is not None else None
+        if text_el is None:
             if written is not None:
                 raise BoardConflict(f"note {note['id']!r} was deleted on the board; drop it from the spec or argue it")
+            if current is not None:
+                raise ValueError(f"note {note['id']!r} is a {current['type']} with no text on the board, not a note")
+            if note["lane"] is None or live.get(note["lane"], {}).get("type") != "frame":
+                raise ValueError(f"note {note['id']!r} names lane {note['lane']!r}, which is not a frame on the board")
             shape, text = _note(note, live[note["lane"]], live)
             elements.extend([shape, text])
             live[shape["id"]], live[text["id"]] = shape, text
             _fit_lane(live[note["lane"]], shape)
             changed.append(f"note {note['id']} added to {note['lane']}")
             continue
-        text_el = _bound_text(current, live)
-        if text_el is None:
-            raise ValueError(f"note {note['id']!r} is a {current['type']} with no text on the board, not a note")
+        assert current is not None
         text_now = text_el.get("originalText", text_el["text"])
         if _reconcile("note", note["id"], "text", text_now, written and written["text"], note["text"]):
             _set_text(text_el, current, note["text"])
             changed.append(f"note {note['id']} text updated")
         if _reconcile("note", note["id"], "lane", current.get("frameId"), written and written["lane"], note["lane"]):
+            if note["lane"] is None or live.get(note["lane"], {}).get("type") != "frame":
+                raise ValueError(f"note {note['id']!r} names lane {note['lane']!r}, which is not a frame on the board")
             _move_to_lane(current, text_el, live[note["lane"]], live)
             changed.append(f"note {note['id']} moved to {note['lane']}")
-        # Only a note Claude wrote is recoloured: a hand-made note keeps whatever colour the user gave it.
-        if written is not None:
-            written_colour = KIND_COLOURS[written["kind"]][0]
-            wanted_colour, wanted_stroke = KIND_COLOURS[note["kind"]]
-            if _reconcile("note", note["id"], "colour", current["backgroundColor"], written_colour, wanted_colour):
-                current["backgroundColor"], current["strokeColor"] = wanted_colour, wanted_stroke
+        if written is not None and written["kind"] != note["kind"]:
+            if current["backgroundColor"] == KIND_COLOURS[written["kind"]][0]:
+                current["backgroundColor"], current["strokeColor"] = KIND_COLOURS[note["kind"]]
                 _touch(current)
-                changed.append(f"note {note['id']} is now a {note['kind']}")
+            changed.append(f"note {note['id']} is now a {note['kind']}")
 
     known_links = {(link["from"], link["to"]) for link in state["links"]}
     arrows = {_link_key(e, live) for e in live.values() if e["type"] == "arrow"}
@@ -145,16 +170,20 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         arrows.add(key)
         changed.append(f"link {key[0]}->{key[1]} added")
 
+    revision = state["revision"] + 1
+    _stamp_revision(elements, live, revision)
     _frames_last(elements)
+    present = _note_ids(live)
     # Anything Claude wrote that the user has since deleted, and the spec no longer names, is forgotten here:
     # the deletion has been answered, so a later read must not report it again.
     new_state = {
+        "revision": revision,
         "lanes": {
             **{k: v for k, v in state["lanes"].items() if k in live},
             **{lane["id"]: {"name": lane["name"]} for lane in lanes},
         },
         "notes": {
-            **{k: v for k, v in state["notes"].items() if k in live},
+            **{k: v for k, v in state["notes"].items() if k in present},
             **{n["id"]: {"lane": n["lane"], "text": n["text"], "kind": n["kind"]} for n in notes},
         },
         "links": [
@@ -163,26 +192,36 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         ],
     }
     directory.mkdir(parents=True, exist_ok=True)
-    atomic_write(scene_path, json.dumps(scene, indent=2) + "\n")
+    text = json.dumps(scene, indent=2) + "\n"
+    atomic_write(scene_path, text)
+    atomic_write(directory / WRITTEN_NAME, text)
     atomic_write(state_path, json.dumps(new_state, indent=2, sort_keys=True) + "\n")
-    return {"scene": str(scene_path), "changed": changed}
+    return {"folder": str(directory), "scene": str(scene_path), "revision": revision, "changed": changed}
 
 
 def read(directory: Path) -> dict[str, Any]:
-    """Summarise the board for the session: lanes, notes with every user change, links, deletions.
+    """Summarise the board: lanes, notes and links with their owner and every user change, and deletions.
 
-    Each note carries `owner` (`claude` for a note Claude wrote, `user` for one added by hand) and
-    `user_changed`, the fields the user changed since Claude last wrote them. Raises `FileNotFoundError`
+    Each lane, note and link carries `owner`: `claude` for one a write placed, `user` for one added by
+    hand. `user_changed` lists the fields the user changed since the last write. When the board file is
+    a stale save (an older revision than the last write), the file is first moved aside and the last
+    write restored, and `stale_save` names where the stale file was kept. Raises `FileNotFoundError`
     when no board exists in `directory`.
     """
     scene_path = directory / SCENE_NAME
     scene = _load_scene(scene_path)
     state = _load_state(directory / STATE_NAME)
+    stale_save = None
+    if (stale := _stale_revision(scene, state)) is not None:
+        aside = directory / f"board.stale-r{stale}-{int(time.time())}.excalidraw"
+        os.replace(scene_path, aside)
+        atomic_write(scene_path, (directory / WRITTEN_NAME).read_text(encoding="utf-8"))
+        scene = _load_scene(scene_path)
+        stale_save = {"kept_as": str(aside), "its_revision": stale, "restored_revision": state["revision"]}
     live = {e["id"]: e for e in scene["elements"] if not e.get("isDeleted")}
-    frames = {e["id"]: e for e in live.values() if e["type"] == "frame"}
 
     lanes = []
-    for frame in sorted(frames.values(), key=lambda f: (f["x"], f["y"])):
+    for frame in sorted((e for e in live.values() if e["type"] == "frame"), key=lambda f: (f["x"], f["y"])):
         written = state["lanes"].get(frame["id"])
         entry: dict[str, Any] = {"id": frame["id"], "name": frame.get("name") or ""}
         entry["owner"] = "claude" if written else "user"
@@ -197,7 +236,7 @@ def read(directory: Path) -> dict[str, Any]:
             if text_el is None:
                 continue
             text = text_el.get("originalText", text_el["text"])
-        elif element["type"] == "text" and not element.get("containerId"):
+        elif element["type"] == "text" and not element.get("containerId") and element["id"] != REVISION_ID:
             text = element.get("originalText", element["text"])
         else:
             continue
@@ -210,30 +249,27 @@ def read(directory: Path) -> dict[str, Any]:
                 entry["user_changed"] = user_changed
         notes.append(entry)
 
-    links = sorted(
-        {_link_key(e, live) for e in live.values() if e["type"] == "arrow"} - {(None, None)},
-        key=lambda k: (str(k[0]), str(k[1])),
-    )
-    deleted = sorted(k for k in state["notes"] if k not in live)
-    deleted_links = sorted(
-        f"{link['from']}->{link['to']}" for link in state["links"] if (link["from"], link["to"]) not in set(links)
-    )
+    known_links = {(link["from"], link["to"]) for link in state["links"]}
+    links = sorted({_link_key(e, live) for e in live.values() if e["type"] == "arrow"} - {(None, None)})
+    present = _note_ids(live)
     return {
+        "folder": str(directory),
         "scene": str(scene_path),
+        "stale_save": stale_save,
         "lanes": lanes,
         "notes": notes,
-        "links": [{"from": a, "to": b} for a, b in links],
-        "deleted_notes": deleted,
-        "deleted_links": deleted_links,
+        "links": [{"from": a, "to": b, "owner": "claude" if (a, b) in known_links else "user"} for a, b in links],
+        "deleted_notes": sorted(k for k in state["notes"] if k not in present),
+        "deleted_links": [f"{a}->{b}" for a, b in sorted(known_links - set(links))],
     }
 
 
-def _parse_spec(spec: dict[str, Any]) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
+def _parse_spec(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     unknown = set(spec) - {"lanes", "notes", "links"}
     if unknown:
         raise ValueError(f"spec has unknown keys {sorted(unknown)}; it takes lanes, notes and links")
     lanes = [_fields(lane, "lane", ("id", "name")) for lane in spec.get("lanes", [])]
-    notes = [_fields(note, "note", ("id", "lane", "kind", "text")) for note in spec.get("notes", [])]
+    notes = [_fields(note, "note", ("id", "lane", "kind", "text"), nullable="lane") for note in spec.get("notes", [])]
     links = [_fields(link, "link", ("from", "to")) for link in spec.get("links", [])]
     ids = [x["id"] for x in lanes + notes]
     if dupes := sorted({i for i in ids if ids.count(i) > 1}):
@@ -249,9 +285,11 @@ def _parse_spec(spec: dict[str, Any]) -> tuple[list[dict[str, str]], list[dict[s
     return lanes, notes, links
 
 
-def _fields(item: Any, what: str, keys: tuple[str, ...]) -> dict[str, str]:
-    if not isinstance(item, dict) or set(item) != set(keys) or not all(isinstance(item[k], str) for k in keys):
-        raise ValueError(f"each {what} must be an object with exactly the string fields {list(keys)}: {item!r}")
+def _fields(item: Any, what: str, keys: tuple[str, ...], nullable: str = "") -> dict[str, Any]:
+    if not isinstance(item, dict) or set(item) != set(keys):
+        raise ValueError(f"each {what} must be an object with exactly the fields {list(keys)}: {item!r}")
+    if not all(isinstance(item[k], str) or (k == nullable and item[k] is None) for k in keys):
+        raise ValueError(f"each {what}'s fields {list(keys)} must be strings: {item!r}")
     return item
 
 
@@ -270,19 +308,19 @@ def _reconcile(what: str, ident: str, field: str, current: Any, last: Any, wante
     )
 
 
-def _load_scene(path: Path) -> Element:
+def _load_scene(path: Path) -> dict[str, Any]:
     scene = json.loads(path.read_text(encoding="utf-8"))
     assert scene.get("type") == "excalidraw", f"{path} is not an Excalidraw scene (type={scene.get('type')!r})"
     return scene
 
 
-def _load_state(path: Path) -> Element:
+def _load_state(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        return {"lanes": {}, "notes": {}, "links": []}
+        return {"revision": 0, "lanes": {}, "notes": {}, "links": []}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _empty_scene() -> Element:
+def _empty_scene() -> dict[str, Any]:
     return {
         "type": "excalidraw",
         "version": 2,
@@ -291,6 +329,36 @@ def _empty_scene() -> Element:
         "appState": {"viewBackgroundColor": "#ffffff", "gridSize": None},
         "files": {},
     }
+
+
+def _stale_revision(scene: dict[str, Any], state: dict[str, Any]) -> int | None:
+    """The scene's revision when it is older than the last write; None when current or unmarked."""
+    marker = next((e for e in scene["elements"] if e["id"] == REVISION_ID and not e.get("isDeleted")), None)
+    found = _REVISION_TEXT.search(marker.get("originalText", marker.get("text", ""))) if marker else None
+    if found is None:
+        return None
+    revision = int(found.group(1))
+    return revision if revision < state["revision"] else None
+
+
+def _stamp_revision(elements: list[Element], live: Live, revision: int) -> None:
+    label = f"Board revision {revision}, written by /sy:whiteboard"
+    marker = live.get(REVISION_ID)
+    if marker is None:
+        marker = _base(REVISION_ID, "text", 0, -48, 0, FONT_SIZE * LINE_HEIGHT)
+        marker.update(
+            strokeColor="#868e96", boundElements=None, fontSize=12, fontFamily=2, textAlign="left",
+            verticalAlign="top", containerId=None, lineHeight=LINE_HEIGHT, autoResize=True,
+        )
+        elements.append(marker)
+        live[REVISION_ID] = marker
+    marker.update(text=label, originalText=label, width=len(label) * 12 * 0.55)
+    _touch(marker)
+
+
+def _note_ids(live: Live) -> set[str]:
+    """Ids of every shape on the board that still carries its text: a shape whose text is gone is no note."""
+    return {e["id"] for e in live.values() if e["type"] in _NOTE_SHAPES and _bound_text(e, live) is not None}
 
 
 def _seed(ident: str, salt: int = 0) -> int:
@@ -335,7 +403,7 @@ def _text_size(wrapped: str) -> tuple[float, float]:
     return max(len(line) for line in lines) * FONT_SIZE * 0.55, len(lines) * FONT_SIZE * LINE_HEIGHT
 
 
-def _note(note: dict[str, str], lane: Element, live: Live) -> tuple[Element, Element]:
+def _note(note: dict[str, Any], lane: Element, live: Live) -> tuple[Element, Element]:
     wrapped = _wrap(note["text"])
     tw, th = _text_size(wrapped)
     height = max(80.0, th + 2 * TEXT_PADDING)
@@ -406,7 +474,8 @@ def _next_lane_x(live: Live) -> float:
 def _arrow(source: Element, target: Element) -> Element:
     """An arrow bound to both notes, leaving and entering through the sides that face each other."""
     (sx, sy), (tx, ty) = _facing_edges(source, target)
-    ident = f"link-{source['id']}-{target['id']}"
+    # ':' is outside the id alphabet, so two different links can never share an arrow id.
+    ident = f"link:{source['id']}:{target['id']}"
     arrow = _base(ident, "arrow", sx, sy, abs(tx - sx), abs(ty - sy))
     arrow.update(
         points=[[0, 0], [tx - sx, ty - sy]], lastCommittedPoint=None, startArrowhead=None, endArrowhead="arrow",

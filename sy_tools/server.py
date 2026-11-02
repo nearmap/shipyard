@@ -1098,10 +1098,15 @@ def scratch_dir(
 BoardId = Annotated[
     str,
     Field(
-        description="The board's slug, e.g. `pricing-idea`. Resolves through `scratch_dir`, so the same slug "
-        "reaches the same board from every session and every worktree."
+        description="The board's slug, e.g. `pricing-idea`: letters, digits, '-' or '_'. Resolves under this "
+        "repository's own scratch directory, so the same slug reaches the same board from every session and "
+        "worktree of this repository, and never another repository's board."
     ),
 ]
+
+
+def _board_folder(board_id: str) -> Path:
+    return board.folder(config.repo_scratch_dir() / "whiteboards", board_id)
 
 
 @mcp.tool(name="board_write")
@@ -1119,27 +1124,30 @@ def board_write(
 ) -> dict[str, Any]:
     """Merge a spec into the board's Excalidraw scene, creating it on first write, and list what changed.
 
-    Refused, with the note named, when the spec would overwrite a lane, text, colour or note the user changed
-    or deleted on the board since the last write: call `board_read`, answer the edit, then write a spec that
-    adopts it. `scene` is the `.excalidraw` file the user opens in any Excalidraw editor.
+    Refused, with the note named, when the spec would overwrite a lane, text or note the user changed or
+    deleted on the board since the last write: call `board_read`, answer the edit, then write a spec that
+    adopts it. Also refused while the file is a stale editor save, until `board_read` restores it. `scene`
+    is the `.excalidraw` file the user opens in any Excalidraw editor; `folder` holds it and the board's notes.
     """
     try:
-        return board.write(config.scratch_dir(board_id), spec)
+        return board.write(_board_folder(board_id), spec)
     except (ValueError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 
 
 @mcp.tool(name="board_read")
 def board_read(board_id: BoardId) -> dict[str, Any]:
-    """Read the board back: lanes, notes with their owner and `user_changed` fields, links, and deletions.
+    """Read the board back: lanes, notes and links with their owner and `user_changed` fields, and deletions.
 
-    `owner` is `claude` for a note a write placed and `user` for one added by hand. `user_changed` lists the
-    fields (`lane`, `text`) the user changed since the last write; `deleted_notes` and `deleted_links` are
-    what the user removed. Each is a move to answer before the next `board_write`.
+    `owner` is `claude` for what a write placed and `user` for what was added by hand. `user_changed` lists
+    the fields the user changed since the last write; `deleted_notes` and `deleted_links` are what the user
+    removed. Each is a move to answer before the next `board_write`. A non-null `stale_save` means an editor
+    saved a copy opened before the last write: that copy was kept aside at `kept_as` and the last write
+    restored, so tell the user and redo whatever they changed in it.
     """
     try:
-        return board.read(config.scratch_dir(board_id))
-    except (FileNotFoundError, config.ConfigError) as exc:
+        return board.read(_board_folder(board_id))
+    except (FileNotFoundError, ValueError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 
 

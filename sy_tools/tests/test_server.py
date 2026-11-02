@@ -33,6 +33,8 @@ TOOL_NAMES = {
     "attach-artifact",
     "attachment-download",
     "attachment-update",
+    "board_read",
+    "board_write",
     "check_env",
     "create-issue",
     "find-issues",

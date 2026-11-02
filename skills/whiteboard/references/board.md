@@ -14,19 +14,21 @@ The board is what `board_write` renders: lanes (frames) left to right, notes ins
 | `probes` | Probes | one `probe` note per probe: prediction, then result |
 | `decided` | Decided | settled decisions, and at convergence the Decision |
 
-Kinds set a note's colour: `status`, `option`, `decision`, `hypothesis`, `probe`, `objection`. A link is an arrow: `D1 -> D2` when D2 depends on D1, `objection -> option` when an objection targets an option.
+Kinds set a note's colour: `status`, `option`, `decision`, `hypothesis`, `probe`, `objection`. A note the user recolours keeps their colour. A link is an arrow: `D1 -> D2` when D2 depends on D1, `objection -> option` when an objection targets an option.
 
 Keep notes short: a title line, then at most three short lines. The detail is in `notes.md`; the board is the map of it. A note's id never changes once written (`opt-<slug>`, `D<n>`, `P<n>`, `H<n>`), because the id is how a user's move is traced back.
 
-The spec lists every lane and note Claude wants as it stands, so it is rebuilt from `notes.md` each write. A spec that drops a note leaves it on the board untouched; moving it to `out` is how an option leaves.
+The spec lists every lane and note Claude wants as it stands, so it is rebuilt from `notes.md` each write. A spec that drops a note leaves it on the board untouched; moving it to `out` is how an option leaves. To adopt a note the user dragged out of every lane, give it `"lane": null`.
 
 ## Opening the board
 
 Tell the user once, at the first write, with the path `board_write` returned:
 
-> The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), which edits the file in place, or at excalidraw.com through Open, where a Chromium browser saves back to the same file. Drag notes between lanes, edit their text, add notes or arrows; I read your changes at the start of every turn.
+> The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), which edits the file in place and reloads it when I update it. Drag notes between lanes, edit their text, add notes or arrows, and save; I read your changes at the start of every turn.
 
-excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive. Any other Excalidraw editor works the same way.
+excalidraw.com (through Open, in a Chromium browser) also works, but it never reloads the file: the user reopens it after each of Claude's turns before editing, or a save writes back the older copy. `board_read` catches that case and keeps the stale copy aside, so nothing is lost, but the user then has to redo their edit. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
+
+The small grey "Board revision N" line above the lanes is how a stale save is detected. Leave it on the board.
 
 ## `notes.md` template
 

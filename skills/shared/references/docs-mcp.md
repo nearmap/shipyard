@@ -12,4 +12,4 @@ When the repository's `CLAUDE.md` names a docs MCP server, search it before read
 
 ## Read only
 
-A tool from another MCP server is for reading. Never call one that sends, posts, creates, or writes — a message, a comment, a page, a file — beyond the search bookkeeping the repository's `CLAUDE.md` asks of its docs server. The tracker is reached only through `sy` verbs.
+A tool from another MCP server is for reading. Never call one that sends, posts, creates, or writes — a message, a comment, a page, a file — beyond the search bookkeeping the repository's `CLAUDE.md` asks of its docs server. The tracker is reached only through `sy` verbs. The one exception is `/sy:whiteboard` publishing its own decision page to a private hosted page, and only when the user picked that through `AskUserQuestion`.

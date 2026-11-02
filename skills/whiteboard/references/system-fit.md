@@ -30,6 +30,17 @@ Before any new component, take the first answer that fully works:
 The smallest option is preferred only once everything it must reach (callers, consumers, tests,
 data contracts) is known.
 
+## Size it before designing
+
+Rough numbers at full scale, before the first data-flow drawing; they go on the board's arrow
+labels.
+
+- Data volume: rows, files, bytes, now and per day.
+- Request rate, and its peak.
+- Latency budget, if anyone waits for the result.
+- Storage and compute cost at full scale, and the cost of recomputing everything once.
+- Growth: what the numbers are in a year, and which one breaks the design first.
+
 ## Questions for each design option
 
 - **Boundaries.** Where does it sit? What is the thinnest interface it needs? What does it couple to?
@@ -44,6 +55,20 @@ data contracts) is known.
 - **State.** Does it add a database, cache or service? Writing code is usually cheaper than
   running a stateful system.
 - **Change.** How is it rolled out, compared with the old behaviour, and rolled back?
+
+## Operability
+
+- How do we know it works in production: the metrics, the alerts, and how drift in the inputs or the
+  output shows up.
+- Who owns it and runs it, and what it costs to run.
+- Security, privacy, retention and licensing of the data it reads and writes.
+
+## Reversal cost
+
+Every decision is cheap or costly to undo. A cheap one (a parameter, an internal function, a probe
+script) is settled fast and revisited when it bites. A costly one gets both lenses and a probe or a
+debate before it settles: a published schema, a stored format, a public API and a new service are
+costly, because something outside the change comes to depend on them.
 
 ## Data alignment checks (only when relevant)
 

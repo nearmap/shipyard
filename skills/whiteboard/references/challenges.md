@@ -1,7 +1,7 @@
 # Challenge checklist
 
 Run it against every surviving option at each checkpoint, and against Claude's own claims before
-they reach the board. Report what failed. Do not wait for the user to ask. Skip a question
+they reach `notes.md` and the page. Report what failed. Do not wait for the user to ask. Skip a question
 only when it plainly does not apply.
 
 Every failure reported needs a concrete case: this input or situation leads to this wrong result.
@@ -49,6 +49,7 @@ No case, no finding.
 ## Decision
 
 - What is the strongest argument against the leading option? Who would make it?
-- Pre-mortem: it is six months later and this failed. What is the most likely reason?
+- Pre-mortem: it is six months later and this failed. What is the most likely reason? Each answer
+  becomes a residual risk or a probe.
 - What result would change our mind? Is there a probe that could produce it?
 - How hard is it to reverse once shipped?

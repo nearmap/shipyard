@@ -1,6 +1,6 @@
 # A hosted whiteboard as `/sy:whiteboard`'s board
 
-The board is a local Excalidraw file, not a Miro, tldraw or other hosted board.
+The board is a local Excalidraw file, not a Miro, tldraw or other hosted board. The decision page is a local file too by default; the skill offers a private hosted page only when the session has a tool that publishes one and the user picks it. The board stays a local file either way.
 
 ## Why
 

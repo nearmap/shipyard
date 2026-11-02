@@ -58,7 +58,7 @@ to know what a method does to the data before trusting what it says about the wo
 ## Sample size
 
 - Before a probe, estimate whether the sample can detect the effect that would matter. If not, the
-  probe can only rule out large effects, and the board says so.
+  probe can only rule out large effects, and `notes.md` says so.
 - Rare failures (1 in 1,000 or rarer) need a full-population count, not a sample.
 
 ## Stability and determinism

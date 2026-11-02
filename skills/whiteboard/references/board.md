@@ -1,151 +1,52 @@
-# Board shape
+# The design board
 
-## Lanes and note kinds
+The board is where the design is drawn, once the user opens it. The record stays in `notes.md`; the board is the picture of the design part of it.
 
-The board is what `board_write` renders: lanes (frames) left to right, notes inside them, links between notes. A normal `board_write` only appends a new lane on the right and never moves or removes one, so one lane order serves both layouts:
+## Sections, notes and links
 
-| Lane id | Name | Holds |
-|---|---|---|
-| `now` | Where we are | one `status` note: leading option, strongest open objection, next step |
-| `problem` | Problem | the problem in the user's words: who is asking, what they will do with the answer, and the scope in and out |
-| `goal` | Goal | the goal, who uses the answer, and the `done` note: the criterion that says the work is done |
-| `constraints` | Constraints and non-goals | hard constraints, the resources available, and non-goals, one per note |
-| `theory` | Theory and hypotheses | one `hypothesis` note per `H<n>`: the test, and the result that would disprove it |
-| `frontier` | Open questions | one `decision` note per open decision (`D1 ...`), linked to the decisions it depends on |
-| `probes` | Probes | one `probe` note per probe: prediction, then result |
-| `ideas` | Ideas | framing only: one-line `option` notes, each naming the hypothesis it rests on |
-| `alive` | Alive | live options, ranked top to bottom, with their `objection` notes beside them |
-| `parked` | Parked | options set aside for a stated reason, and ideas for other problems |
-| `out` | Ruled out | options with their one-line reason, tier and what would reopen them |
-| `decided` | Decided | settled decisions, and at convergence the Decision |
+`board_write` takes the whole board as Claude wants it:
 
-Every board starts with `now`, `problem`, `goal` and `constraints`, the lanes the interview fills, then the extra sections the user picked at Open, in this order: `theory` (Theory and hypotheses), `frontier` (Open questions), `probes` (Probes). `problem`, `goal` and `constraints` hold `status` notes. Then:
+```json
+{
+  "sections": [{"id": "flow-a", "name": "Data flow: A"}],
+  "notes": [
+    {"id": "ingest", "section": "flow-a", "kind": "step", "text": "Ingest\n1k files/day", "at": [0, 0]},
+    {"id": "store", "section": "flow-a", "kind": "store", "text": "Object store", "at": [1, 0]}
+  ],
+  "links": [{"from": "ingest", "to": "store", "label": "2 GB/day"}]
+}
+```
 
-- **Framing layout** (Frame first): adds `ideas` and `out`.
-- **Working layout** (straight to the working board, or decide now): adds `frontier` and `probes` when they are not there yet, then `alive`, `parked`, `out` and `decided`.
-- **Switch from framing to working**: append `frontier` and `probes` when absent, then `alive`, `parked` and `decided`. `out` stays where the frame put it, so the user's frame-stage cuts carry into the working session, and the emptied `ideas` lane stays until the user deletes it. After a switch `out` sits left of `alive`, until a tidy puts the lanes into spec order.
+- **Sections** are frames, stacked top to bottom in spec order. One per view the user picked at Readiness: Data model, Data flow, System design, Algorithm, or one per approach and view ("Data flow: A").
+- **Notes** sit on a grid inside their section. `at` is `[column, row]`, from `[0, 0]` at the top left, unique within the section. Columns are a fixed width apart; each row is as tall as its tallest note.
+- **Kinds** set the colour: `component`, `store`, `data`, `external`, `step`, `note`. A `data` note is a schema: a title line, then one field per line, aligned top-left. A note the user recolours keeps their colour.
+- **Links** are arrows between two notes, in or across sections, with an optional `label`: a verb ("reads"), or the rough size on a data-flow arrow ("2 GB/day", "50 req/s").
 
-Kinds set a note's colour: `status`, `option`, `decision`, `hypothesis`, `probe`, `objection`. A note the user recolours keeps their colour. A link is an arrow: `D1 -> D2` when D2 depends on D1, `objection -> option` when an objection targets an option.
+Keep notes short: a title line, then at most three short lines (a `data` note may list more fields). A note's id never changes once written, because the id is how a user's move is traced back.
 
-Keep notes short: a title line, then at most three short lines. The detail is in `notes.md`; the board is the map of it. A note's id never changes once written (`done`, `opt-<slug>`, `D<n>`, `P<n>`, `H<n>`), because the id is how a user's move is traced back.
+The spec lists every section and note Claude wants as it stands, rebuilt from `notes.md` each write. A spec that drops a note leaves it on the board untouched; a write never deletes anything. A link label, once written, can be changed but not cleared.
 
-The spec lists every lane and note Claude wants as it stands, so it is rebuilt from `notes.md` each write, lanes in the order above. A spec that drops a note leaves it on the board untouched; moving it to `out` is how an option leaves. To adopt a note the user dragged out of every lane, give it `"lane": null`.
+## Layout
+
+Every write lays the whole board out: sections in spec order, each note at its cell, and each section sized to its grid plus one spare column and one spare row, so the user always has empty cells to drag into. Free text and other shapes in a section move with it. Arrows between notes are redrawn, with their labels centred on them.
+
+- **A drag to another cell** is read back by `board_read` as the note's new `at` (or `section` too, across sections), marked `user_changed`. Adopt it in the next spec, or argue it.
+- **A nudge inside a cell** is not a move: the next write puts the note back exactly on its cell.
+- **A drag onto an occupied cell** moves the dragged note to the nearest free cell; the note already there keeps its cell.
+- A spec cell that holds a note the spec does not name is refused; pick another cell, or adopt that note first.
+
+## The scratch area
+
+Everything outside every section, to the right of the sections, is the scratch area. A write never moves anything there. `board_read` lists scratch notes with `section` and `at` null. Ask where each new scratch note belongs (Scratch note choice point). To adopt one, first write it as it is, with `section` and `at` null; then give it a section and cell in the next write.
 
 ## Opening the board
 
 Tell the user once, at the first write, with the path `board_write` returned:
 
-> The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), or on excalidraw.com in a Chromium browser (Open, then Save writes back to the file). Neither reloads the file, so close and reopen the board after each of my turns. Drag notes between lanes, edit their text, add notes or arrows, and save; I read your changes at the start of every turn. To zoom: Ctrl/Cmd + scroll or pinch, Shift+1 to fit the whole board, Shift+2 to zoom to the selected notes.
+> The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), or on excalidraw.com in a Chromium browser (Open, then Save writes back to the file). Neither reloads the file, so close and reopen the board after each of my turns. Drag notes to other cells or sections, edit their text or an arrow's label, add notes or arrows, and save; I read your changes at the start of every turn. Put notes you are not sure about to the right of the sections; I never move those. To zoom: Ctrl/Cmd + scroll or pinch, Shift+1 to fit the whole board, Shift+2 to zoom to the selected notes.
 
-The extension's 3.9.x releases bundle Excalidraw 0.18.1. On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. A save from a tab not reopened since Claude's last write is caught by `board_read` as a stale save, and its edits are answered. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
+The extension's 3.9.x releases bundle Excalidraw 0.18.1. On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
 
-The small grey "Board revision N" line above the lanes is how a stale save is detected. Leave it on the board.
+## A stale save
 
-## `notes.md` template
-
-The full record. The board is built from it, and a new session resumes from it.
-
-```markdown
-# <problem name>
-
-Board: <path to board.excalidraw>
-Kind of work: <root cause | method choice | system design | feasibility | measurement design>
-Start: <frame first | working board | decide now>. Extra sections: <the ones picked at Open, or none>
-
-## Coverage
-| Area | Status | Notes |
-|---|---|---|
-| repo docs and rules | read / excluded | <which, or why excluded> |
-| earlier work and memory | read / excluded | ... |
-| code path | read / excluded | ... |
-| data sources | read / excluded | <ids, sample size, population counts> |
-| what the askers said | read / excluded | <where> |
-
-## Where we are
-Leading option: <name, or "none yet">
-Strongest open objection: <one line>
-Next step: <one line>
-
-## Aim
-- v1 (<date>): <one sentence>. Consumer: <who>. They will use it to: <action>.
-- v2 (<date>): <one sentence>. Changed because: <reason>.
-
-## Interview
-- In scope: <list>. Out of scope: <list>
-- Requirements: <list, each known / assumed / unknown>
-- Hard constraints: <list>
-- Resources: people <who, how much time>; time <deadline>; compute <what>; data <what, access>; budget <amount>
-- Consumer: <who uses the result, and what they will do with it>
-- Estimate: <what, at which unit>
-- Truth: <source, or the stand-in and what it cannot tell us>
-- Done when: <the criterion the Decision and the hand-off brief are judged against>
-- Success: <result that ends the work positively>. Stop: <result that ends it negatively>
-- Delivery: <what is handed over, to whom, in what form>
-- Confirmed by the user: <their words, date>
-
-## Glossary
-- <term>: <the one meaning used on this board>
-- `<data source id>`: <what it is, environment, version or date>
-
-## Theory and prior
-- Known: <mechanism or result, and its source>
-- Assumptions: <what each candidate takes as given>
-- Plausible approaches: <families the theory points to>
-- Expected failure modes: <approach: where theory says it breaks>
-
-## Hypotheses
-| Id | Hypothesis | Test | Disproved if | Status |
-|---|---|---|---|---|
-| H1 | ... | ... | ... | open / supported / disproved / strained by early look |
-
-## Decision tree
-| Id | Decision | Depends on | Status | Recommended | Settled as (by whom, date) |
-|---|---|---|---|---|---|
-| D1 | ... | - | open / waiting on lookup / settled | ... | |
-
-Frontier: <open decisions whose dependencies are all settled>
-
-## What we know
-| Claim | Tier | Source |
-|---|---|---|
-| ... | checked / documented / inferred / proposed / unknown (+ ladder rung for a causal claim) | path:line, run id, doc |
-
-## Idea round
-- Debate: <date>, outcome in one line.
-| Idea | Verdict | Reason | Tier | Reopen if |
-|---|---|---|---|---|
-
-## Options
-### <option> (alive | parked | ruled out)
-- Intuition: <one sentence>
-- Assumes: <about the state, the observations, the system>
-- Would break if: <the plot or count that would show it>
-- Cost: <build and run, rough>
-- For: <strongest point>. Against: <strongest point>.
-- Ruled out because: <one line, tier>. Reopen if: <condition>.
-
-## Probes
-### P<n> <name> (planned | running | done)
-- Tests: <hypothesis ids>. Baseline: <simplest comparison>.
-- Prediction (before running): <who wins and why>
-- Data: <real source, ids, sample and population>
-- Result: <both directions, with uncertainty, by slice>. Matched prediction: yes / no.
-- If no: <formulation, data, model assumption or evaluation design, and what changed>
-
-## Disagreements
-- <topic>: <user's position> vs <Claude's position>. Settled by: <probe | user's call | Claude's call>, <date>.
-
-## Parked
-- <ideas for other problems>
-
-## Decision
-- Decision: <what>. Why: <reasons, linked to probes and evidence>.
-- Done criterion: <how the decision meets the interview's Done when, or what it leaves short>
-- Rejected: <option, reason>
-- Residual risks: <list>. Revisit if: <result or event>.
-- Agreed by the user: <their words, date>. Dissent on record: <if any>.
-- Hand-off: <none | /sy:spike | /sy:plan | /sy:spec>
-
-## Log
-- <date>: <what changed and why>
-```
+A save from a tab not reopened since Claude's last write is caught by `board_read` as a stale save: the copy is kept aside, the last write is restored, and the copy's edits come back in `stale_save.changes`, cell moves and relabelled links included. Answer them per the skill. The small grey "Board revision N" line above the sections is how a stale save is detected. Leave it on the board.

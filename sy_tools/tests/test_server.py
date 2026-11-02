@@ -46,6 +46,7 @@ TOOL_NAMES = {
     "memory_list",
     "memory_refute",
     "memory_search",
+    "page_render",
     "plan_file",
     "post-comment",
     "post-log",

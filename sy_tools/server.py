@@ -35,7 +35,7 @@ from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
 from pydantic import Field, ValidationError
 import yaml
 
-from . import SERVER_NAME, SERVER_VERSION, board, config, memory, secrets, tracker, usage
+from . import SERVER_NAME, SERVER_VERSION, board, config, memory, page, secrets, tracker, usage
 from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
 from .atomic import atomic_write
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
@@ -1158,6 +1158,22 @@ def board_read(board_id: BoardId) -> dict[str, Any]:
     try:
         return board.read(_board_folder(board_id))
     except (FileNotFoundError, ValueError, config.ConfigError) as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="page_render")
+def page_render(board_id: BoardId) -> dict[str, Any]:
+    """Render the board's notes.md to page.html, the readable decision record that refreshes itself when open.
+
+    The first call creates the board's folder and a minimal notes.md, then renders it. Every call renders
+    notes.md as it stands to page.html and its refresh sidecar page.rev.js, so an open page picks up the
+    change within a second. Edit notes.md and call this again; never edit page.html by hand, the next
+    render replaces it. Raw HTML in notes.md shows as text. Returns `folder`, `notes`, `page` and the
+    section headings as `sections`.
+    """
+    try:
+        return page.write(_board_folder(board_id))
+    except (ValueError, FileNotFoundError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 
 

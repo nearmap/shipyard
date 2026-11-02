@@ -2,31 +2,42 @@
 
 ## Lanes and note kinds
 
-The board is what `board_write` renders: lanes (frames) left to right, notes inside them, links between notes. Start every board with these lanes, adding one only when the problem needs it:
+The board is what `board_write` renders: lanes (frames) left to right, notes inside them, links between notes. A normal `board_write` only appends a new lane on the right and never moves or removes one, so one lane order serves both layouts:
 
 | Lane id | Name | Holds |
 |---|---|---|
 | `now` | Where we are | one `status` note: leading option, strongest open objection, next step |
+| `problem` | Problem | the problem in the user's words: who is asking and what they will do with the answer |
+| `goal` | Goal | the goal and who uses the answer |
+| `constraints` | Constraints and non-goals | hard constraints and non-goals, one per note |
+| `theory` | Theory and hypotheses | one `hypothesis` note per `H<n>`: the test, and the result that would disprove it |
 | `frontier` | Open questions | one `decision` note per open decision (`D1 ...`), linked to the decisions it depends on |
+| `probes` | Probes | one `probe` note per probe: prediction, then result |
+| `ideas` | Ideas | framing only: one-line `option` notes, each naming the hypothesis it rests on |
 | `alive` | Alive | live options, ranked top to bottom, with their `objection` notes beside them |
 | `parked` | Parked | options set aside for a stated reason, and ideas for other problems |
 | `out` | Ruled out | options with their one-line reason, tier and what would reopen them |
-| `probes` | Probes | one `probe` note per probe: prediction, then result |
 | `decided` | Decided | settled decisions, and at convergence the Decision |
+
+Every board starts with `now`, `problem` and `goal`, then the extra sections the user picked at Open, in this order: `constraints` (Constraints and non-goals), `theory` (Theory and hypotheses), `frontier` (Open questions), `probes` (Probes). `problem` and `goal` hold `status` notes. Then:
+
+- **Framing layout** (Frame first): adds `ideas` and `out`.
+- **Working layout** (straight to the working board, or decide now): adds `frontier` and `probes` when they are not there yet, then `alive`, `parked`, `out` and `decided`.
+- **Switch from framing to working**: append `frontier` and `probes` when absent, then `alive`, `parked` and `decided`. `out` stays where the frame put it, so the user's frame-stage cuts carry into the working session, and the emptied `ideas` lane stays until the user deletes it. After a switch `out` sits left of `alive`, until a tidy puts the lanes into spec order.
 
 Kinds set a note's colour: `status`, `option`, `decision`, `hypothesis`, `probe`, `objection`. A note the user recolours keeps their colour. A link is an arrow: `D1 -> D2` when D2 depends on D1, `objection -> option` when an objection targets an option.
 
 Keep notes short: a title line, then at most three short lines. The detail is in `notes.md`; the board is the map of it. A note's id never changes once written (`opt-<slug>`, `D<n>`, `P<n>`, `H<n>`), because the id is how a user's move is traced back.
 
-The spec lists every lane and note Claude wants as it stands, so it is rebuilt from `notes.md` each write. A spec that drops a note leaves it on the board untouched; moving it to `out` is how an option leaves. To adopt a note the user dragged out of every lane, give it `"lane": null`.
+The spec lists every lane and note Claude wants as it stands, so it is rebuilt from `notes.md` each write, lanes in the order above. A spec that drops a note leaves it on the board untouched; moving it to `out` is how an option leaves. To adopt a note the user dragged out of every lane, give it `"lane": null`.
 
 ## Opening the board
 
 Tell the user once, at the first write, with the path `board_write` returned:
 
-> The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), which edits the file in place and reloads it when I update it. Drag notes between lanes, edit their text, add notes or arrows, and save; I read your changes at the start of every turn.
+> The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), or on excalidraw.com in a Chromium browser (Open, then Save writes back to the file). Neither reloads the file, so close and reopen the board after each of my turns. Drag notes between lanes, edit their text, add notes or arrows, and save; I read your changes at the start of every turn. To zoom: Ctrl/Cmd + scroll or pinch, Shift+1 to fit the whole board, Shift+2 to zoom to the selected notes.
 
-excalidraw.com (through Open, in a Chromium browser) also works, but it never reloads the file: the user reopens it after each of Claude's turns before editing, or a save writes back the older copy. `board_read` catches that case and keeps the stale copy aside, so nothing is lost, but the user then has to redo their edit. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
+The extension's 3.9.x releases bundle Excalidraw 0.18.1. On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. Both editors read the file once and never reload it: a save from a tab opened before Claude's last write is a stale save, which `board_read` catches, keeps aside and reports as `stale_save.changes` for Claude to answer. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
 
 The small grey "Board revision N" line above the lanes is how a stale save is detected. Leave it on the board.
 
@@ -39,6 +50,7 @@ The full record. The board is built from it, and a new session resumes from it.
 
 Board: <path to board.excalidraw>
 Kind of work: <root cause | method choice | system design | feasibility | measurement design>
+Start: <frame first | working board | decide now>. Extra sections: <the ones picked at Open, or none>
 
 ## Coverage
 | Area | Status | Notes |

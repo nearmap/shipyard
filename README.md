@@ -20,7 +20,7 @@ Point Shipyard at a task and it produces a PR that is ready to merge: the change
 
 Three disciplines shape the workflow: challenge the decision, independently inspect the plan and result, and keep working context focused.
 
-**Disagreement sharpens the decision.** Before a roadmap, execution plan, or spike verdict reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion`; the debate never loops until the agents agree or decides the fork for you.
+**Disagreement sharpens the decision.** Before a roadmap, execution plan, spike verdict, or whiteboard decision reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion`; the debate never loops until the agents agree or decides the fork for you.
 
 ![The debate coordinator runs three fresh debater calls, synthesizes their disagreement, and returns it to the parent workflow for the user to steer](docs/img/bounded-debate.png)
 
@@ -81,9 +81,9 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 
 ### Before the loop: whiteboard
 
-`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. Claude reads the theory and a small sample of real data, runs a broad idea round through the same `sy:debate`, then argues it out with you turn by turn until the two of you agree on one decision. Each turn ends on the open questions whose prerequisites are settled, each with Claude's recommended answer.
+`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. It opens by asking how to start and which sections the board shows; framing first agrees the problem, the goal and the candidate ideas with you on the board before any theory. Claude then reads the theory and a small sample of real data, runs a broad idea round through the same `sy:debate`, then argues it out with you turn by turn until the two of you agree on one decision. Each turn ends on the open questions whose prerequisites are settled, each with Claude's recommended answer.
 
-The working surface is a shared [Excalidraw](https://excalidraw.com) board, a plain `.excalidraw` file in this repository's scratch directory. You open it in VS Code with the Excalidraw extension and drag notes between lanes, edit their text, or add notes and arrows; Claude reads every change at the start of its next turn and answers it. Writes go through the `sy` server's `board_write`, which refuses to overwrite an edit of yours that the session has not answered. The decision then hands off: to `/sy:spike` when a gain still needs measuring, to `/sy:plan` or `/sy:spec` when it is ready to build.
+The working surface is a shared [Excalidraw](https://excalidraw.com) board, a plain `.excalidraw` file in this repository's scratch directory. You open it in VS Code with the Excalidraw extension, or on excalidraw.com, and drag notes between lanes, edit their text, or add notes and arrows; Claude reads every change at the start of its next turn and answers it. Neither editor reloads the file, so you reopen the board after each Claude turn; a save from a tab you forgot to reopen is kept aside and its edits answered, not lost. Writes go through the `sy` server's `board_write`, which refuses to overwrite an edit of yours that the session has not answered. The decision then hands off: to `/sy:spike` when a gain still needs measuring, to `/sy:plan` or `/sy:spec` when it is ready to build.
 
 ![A whiteboard board in Excalidraw: lanes for where we are, open questions, live, parked and ruled-out options](docs/img/whiteboard-board.png)
 

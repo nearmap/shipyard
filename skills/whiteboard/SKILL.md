@@ -1,8 +1,10 @@
 ---
 name: whiteboard
 description: >-
-  Work a fuzzy problem out with the user before anything is planned, measured or built. Look at the
-  theory and a small sample of real data, cut a broad idea round down with a debate, then argue it
+  Work a fuzzy problem out with the user before anything is planned, measured or built. Open by asking
+  how to start and which sections the board shows, frame the problem and goal with the user on the
+  board when they choose to, look at the theory and a small sample of real data, cut a broad idea
+  round down with a debate, then argue it
   out turn by turn over a shared Excalidraw board the user can drag and edit, until one decision
   both agree with. Hands an unproven gain to /sy:spike and a settled decision to /sy:plan or
   /sy:spec. Writes no production code and nothing to the tracker.
@@ -20,6 +22,7 @@ $ARGUMENTS
 ## Where it sits
 
 - Before `/sy:spike`, `/sy:plan` and `/sy:spec`. A spike measures a hypothesis; a whiteboard finds the hypothesis worth measuring, or shows none is needed.
+- It opens on one question: frame first, go straight to the working board, or decide now, and which sections the board starts with. Framing first agrees the problem, the goal and the candidate ideas on the board before any theory.
 - No tracker read or write, at any point, and no preflight. The commands it hands off to own the record.
 - No production code, branches or PRs. Small probe scripts only, in the board's own folder.
 
@@ -31,9 +34,20 @@ One folder per problem, keyed by the board's slug under this repository's scratc
 - `board.excalidraw`: the shared board. Write it only through `board_write` and read it only through `board_read`; never edit the scene JSON by hand.
 - `probes/`: probe scripts and their outputs.
 
-`references/board.md` holds the `notes.md` template, the lanes and note kinds, and the line telling the user how to open the board.
+`references/board.md` holds the `notes.md` template, the two lane layouts and the note kinds, and the lines telling the user how to open and zoom the board. The board is working state; the durable record is the hand-off brief.
 
-The board is the user's surface as much as Claude's. **Start every turn with `board_read`.** Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to Ruled out needs its reason recorded, a revived note gets argued on its merits, an edited text is a correction to adopt or dispute. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently. A non-null `stale_save` means the user's editor saved a copy opened before the last write: say so, show where it was kept, and ask what they changed in it.
+The board is the user's surface as much as Claude's. **Start every turn with `board_read`.** Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to Ruled out needs its reason recorded, a revived note gets argued on its merits, an edited text is a correction to adopt or dispute. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently.
+
+After every `board_write`, tell the user in one line to close and reopen the board tab: no editor reloads the file.
+
+**A stale save.** A non-null `stale_save` means the user's editor saved a copy opened before the last write, and the board now holds the last write again. Say where the old copy was kept, then answer each item in `stale_save.changes`:
+
+- a moved or edited note, or a renamed lane: re-apply it through `board_write`;
+- an added note or lane: add it again as Claude's own and say the owner changes, or ask the user to re-add it;
+- a deleted note: move it to Ruled out with the user's agreement, or the user deletes it again after reopening;
+- a deleted link or lane: the user deletes it again after reopening, because `board_write` never deletes.
+
+**Tidy, only when the user asks.** `board_read` and answer every change first, then `board_write` with `tidy` true, listing each lane's notes in the order `board_read` gives them (the user's top-to-bottom order) unless the user asked to re-rank. Adopt the user's own notes into that spec first, with their text unchanged (their colour is kept), so they keep their place; a note the spec does not name goes to the bottom of its lane. Organising in substance (merge, regroup, re-rank) goes through the normal spec, not a tidy.
 
 To resume: read `notes.md`, then `board_read`, then give a three-line recap (aim, leading option, strongest open objection) and carry on.
 
@@ -55,10 +69,24 @@ Every turn follows `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interact
 
 - Restate the problem in the user's words: who is asking and what they will do with the answer.
 - Name the kind of work: root cause, method choice, system design, feasibility, measurement design, or a mix. It decides what counts as an answer: a root-cause question needs causes found, not a design.
-- One aim per board; a second aim gets its own. Pick the slug and open the board with a first `board_write`: the lanes and the status note. Its `folder` is where `notes.md` and `probes/` go.
+- One aim per board; a second aim gets its own. Pick the slug. No board is written yet.
 - Suggest, as a single optional aside, `/rename whiteboard <slug>`.
+- Close with one batched `AskUserQuestion` call:
+  - "How should we start?": Frame first (Recommended), which agrees the problem, the goal and the candidate ideas on the board before any theory; Straight to the working board; Decide now, for when the user already knows the options, which skips the idea round and goes to the frontier and the decision.
+  - "Which extra sections should the board start with?", multi-select: Theory and hypotheses; Constraints and non-goals; Open questions; Probes. The question says that Where we are, Problem, Goal and Ruled out are always on the board.
 
-## 2. Theory first, then an early look (bounded)
+Right after the answers, the first `board_write` lays out what the user chose, per `references/board.md`: the framing layout for Frame first, the working layout for the other two, with the status note, the problem and the goal. Its `folder` is where `notes.md` and `probes/` go. Record the two answers in `notes.md` right after this write.
+
+## 2. Frame (Frame first only)
+
+Agree what the problem is before arguing how to solve it.
+
+- A bounded early look: the repository's docs per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`, durable memory on the topic, the code path behind today's behaviour, and what the people asking said, as the user gives it. No tracker read.
+- Then fill the framing board: the status note, the restated problem, the goal and who uses the answer, the sections the user chose, and 6 to 10 one-line ideas, each naming the hypothesis it rests on.
+- Each turn: `board_read`, answer every move (an idea dragged to Ruled out gets its reason recorded and stays out unless the user revives it; an edited goal is adopted or disputed), then add at most one thing.
+- The stage ends when the user says the frame is right, in their words.
+
+## 3. Theory first, then an early look (bounded)
 
 Write the **theory and prior** section of `notes.md` before reading any data, so the data can contradict it: what the code, the maths or the field already says (name the source), the assumptions each candidate rests on, the plausible approaches including ones nobody raised, and where theory says each one breaks.
 
@@ -66,18 +94,18 @@ Turn it into hypotheses `H1`, `H2`, ... Each names the measurement that tests it
 
 Then look at the problem:
 
-- the repository's own rules and docs first (its `CLAUDE.md` says where they are), and durable memory on the topic per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`;
+- the repository's own rules and docs first, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`, and durable memory on the topic per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/memory.md`;
 - the code path behind today's behaviour, if one exists;
 - real data: a sample of 20 to 50 real cases, the basic distributions, and a full-population count for anything that could be rare. No synthetic data here;
 - what the people asking actually said, in their words.
 
 Record which hypotheses the real data already strains; do not refit them to it. No conclusions, and nothing that costs more than a few minutes of compute: that becomes a planned probe. Keep a **coverage map** in `notes.md` (each area read, or excluded with its reason), so a blind spot is written down rather than read as covered.
 
-**Fast path.** When the look shows only one sensible option, say so with the reason and ask whether to go straight to a decision.
+When the look shows only one sensible option, say so with the reason and offer Decide now.
 
-## 3. Write the board, then the idea round
+## 4. Write the board, then the idea round
 
-Write `notes.md` and the first board. The glossary is written now, from the terms the code and docs already use, plus one line per data source (id, what it is, which version); use only those terms afterwards.
+Write `notes.md` and bring the board up to date. The glossary is written now, from the terms the code and docs already use, plus one line per data source (id, what it is, which version); use only those terms afterwards.
 
 Then open with breadth and cut it down before the user spends time on it:
 
@@ -86,7 +114,11 @@ Then open with breadth and cut it down before the user spends time on it:
 3. An idea leaves only with a concrete reason: an assumption the data or theory breaks, a constraint it violates, a cost the decision cannot carry, or an aim it cannot answer even if it works. Move it to Ruled out with that reason, its evidence tier and what would reopen it.
 4. Show the user the three strongest survivors, ranked, each with its strongest point for and against, plus one line on what was cut. The rest stay on the board.
 
-## 4. The discussion (most of the session)
+When the Frame stage ran, its ideas are the list: skip step 1. Step 2's debate still runs, unconditionally, but only over the ideas the user kept, and the user's own cuts are never re-litigated. Decide now skips the idea round and goes straight to the frontier.
+
+**Switch to the working layout** after the idea round, when the board started with the framing layout: add the working lanes to the spec (they land to the right of the lanes already there), move the surviving ideas to Alive, and leave the cut ones in Ruled out. No note is recreated, so ids and history survive. The emptied Ideas lane stays until the user deletes it after reopening the board; then drop it from the spec.
+
+## 5. The discussion (most of the session)
 
 Short turns, opinions, questions back. Each turn:
 
@@ -117,7 +149,7 @@ At most five live options in a turn, ranked. Side issues go to the parked list, 
 
 Write the board when something changes status (an option ruled out or revived, the aim moves, a probe returns, a decision settles), not every turn, and log each change in `notes.md` with its date.
 
-## 5. Probes
+## 6. Probes
 
 The smallest real-data check that separates surviving options or tests the assumption the leading one rests on: minutes to an hour. Each names its hypothesis.
 
@@ -130,7 +162,7 @@ The smallest real-data check that separates surviving options or tests the assum
 
 When a result misses its prediction, say so first. Then ask, in order, before patching anything: is the problem formulated wrongly, is the data wrong (selection, joins, units, labels), is a model assumption wrong, or is the evaluation design wrong? Log which, and correct the theory section if theory was wrong.
 
-## 6. Converge
+## 7. Converge
 
 The session converges when the frontier is empty and one option survives, or the remaining difference would not change the decision. "The data cannot separate these" is a valid end for a root-cause question when it names the intervention that would.
 

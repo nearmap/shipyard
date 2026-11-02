@@ -10,10 +10,10 @@ Before looking at any method, describe two processes in plain words.
 - **The real thing (the state).** Is it a category, an ordered category, a count, a continuous
   value, a shape, an event? How does it change: never, slowly, suddenly, at what rate? Can it be
   several things at once?
-- **How we observe it (the observations).** Which instrument or model produces the readings? How
-  noisy are they? Are the errors independent, or shared across readings (same sensor, same
-  survey, same season, reused inputs)? Are readings regular or irregular in time and space? What
-  is missing, and is it missing at random? Is there any ground truth?
+- **How we observe it (the observations).** Which instrument, system or model produces the
+  readings? How noisy are they? Are the errors independent, or shared across readings (same
+  source, same collection run, same time window, reused inputs)? Are readings taken at regular or
+  irregular intervals? What is missing, and is it missing at random? Is there any ground truth?
 
 Keep the observation separate from the thing observed. A reading is not the truth, and the time
 of a reading is not the time of an event.
@@ -42,9 +42,9 @@ it is false, then look. Typical ones:
 - distribution of gaps between readings (does irregular timing matter?);
 - disagreement between neighbouring readings against the gap between them (flat at short gaps
   means independent noise; lower at short gaps means shared errors);
-- results split by sensor, source, region or period (hidden bias);
+- results split by source, segment or period (hidden bias);
 - how often the input is split between classes (are the classes really exclusive?);
-- residuals against time or position (structure the model missed).
+- residuals against time, order or an input the model ignores (structure the model missed).
 
 Check a textbook formula against a simulation of the actual code before relying on it. A formula
 for a slightly different estimator gives a confidently wrong reference.
@@ -75,12 +75,13 @@ Pick the metric from the type of output, then state its assumptions.
 - **Probability:** log loss or Brier score, calibration and sharpness, reported separately from
   any decision threshold.
 - **Continuous value:** MAE, RMSE, quantile errors.
-- **Shape or region:** IoU or Dice, boundary error, with alignment errors controlled.
+- **Overlap (a span, a set, an extent):** IoU or Dice, boundary error, with alignment between
+  sources controlled.
 - **Event or change:** event precision and recall at a stated time tolerance, plus detection delay.
 - **Ranking:** average precision or NDCG, only when ranking is the real task.
 
-Give uncertainty with a bootstrap that resamples whole clusters (subject, region, survey) where
-cases are correlated. Split by space or time where neighbours would leak.
+Give uncertainty with a bootstrap that resamples whole clusters (subject, group, batch) where
+cases are correlated. Split by group or time where near-duplicates would leak.
 
 ## With no ground truth
 
@@ -88,7 +89,7 @@ Say plainly what cannot be claimed. Agreement between methods, stability over ti
 checks are diagnostics. They show consistency, not accuracy. Useful stand-ins:
 
 - held-out sources or periods the method never saw;
-- pairs that should agree (same subject, same day, different sensor) as a noise floor;
+- pairs that should agree (same subject, same moment, different source) as a noise floor;
 - blind review of real examples by someone who does not know which method produced which;
 - known-change cases, from an independent source, to test response.
 
@@ -99,12 +100,12 @@ Every claim that X causes Y says which rung it has reached. Lower rungs are lead
 1. **Pattern seen:** visible in a few examples.
 2. **Association:** X and Y move together across the data.
 3. **Controlled association:** they still move together with the obvious confounders held fixed
-   (place, time, sensor, season, matched controls).
+   (time, segment, source, matched controls).
 4. **Intervention:** changing X alone, with everything else fixed, changes Y.
-5. **Replicated intervention:** the intervention holds on new data (another region, period or run).
+5. **Replicated intervention:** the intervention holds on new data (another segment, period or run).
 
-When two causes always change together in the data (one sensor always paired with one processing
-chain), no amount of rung 2 or 3 evidence separates them. Name the intervention that would.
+When two causes always change together in the data (one input source always handled by one
+version of the code), no amount of rung 2 or 3 evidence separates them. Name the intervention that would.
 
 One case, or one pair of runs, is an observation. Generalise only after contrasting cases.
 

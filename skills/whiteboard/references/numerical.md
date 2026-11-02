@@ -5,7 +5,7 @@ to know what a method does to the data before trusting what it says about the wo
 
 ## Name the estimand
 
-- What exactly is being estimated, for which unit (pixel, object, subject, event, region), at which
+- What exactly is being estimated, for which unit (record, object, subject, event, group), at which
   time, and as of which date?
 - What would the perfect answer be if the truth were known? A method that cannot say what it is
   estimating cannot be evaluated.
@@ -30,7 +30,7 @@ to know what a method does to the data before trusting what it says about the wo
 ## Uncertainty
 
 - Give an interval for every headline number. Bootstrap by resampling whole clusters (subject,
-  region, survey, period) when cases inside a cluster are correlated. Resampling rows when they are
+  group, batch, period) when cases inside a cluster are correlated. Resampling rows when they are
   correlated gives intervals that are too narrow.
 - Propagate uncertainty through a chain of steps, or say plainly that it was not propagated.
 - A score called confidence or trust must come from the evidence, not from a hit rate against labels
@@ -38,20 +38,20 @@ to know what a method does to the data before trusting what it says about the wo
 
 ## Parameters and sensitivity
 
-- For each parameter: is it set by a physical rate, a stated reason, or fitting? Prefer the first two.
+- For each parameter: is it set by a known rate, a stated reason, or fitting? Prefer the first two.
 - Sweep each parameter across a plausible range and plot the trade-off it controls. A result that
   holds only at one setting is a fitted coincidence.
 - Ask whether the parameters are identifiable from the data at all. Two parameters that trade off
   perfectly cannot both be learned.
-- Would the setting hold on another region, period or dataset? Test on one held out.
+- Would the setting hold on another segment, period or dataset? Test on one held out.
 
 ## Selection effects and confounding
 
 - Regression to the mean: cases picked because they look extreme will look less extreme next time
   with no change at all.
-- Selection: examples chosen because they are easy to find (one region, one period, one source) do
+- Selection: examples chosen because they are easy to find (one segment, one period, one source) do
   not represent the population. Say where they came from.
-- Confounding: a difference between groups can come from a third factor (time, place, sensor, season).
+- Confounding: a difference between groups can come from a third factor (time, segment, source, a change in how the data was collected).
   Compare matched controls before attributing an effect.
 - Many comparisons: test enough slices and one will look significant by chance. Say how many were looked at.
 

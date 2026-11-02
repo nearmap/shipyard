@@ -4,7 +4,7 @@ Use when an option changes how something is built, run or delivered, not only wh
 uses. Start from what already exists in the repository (owners, modules, deployment, tests,
 interfaces, the repo's own standards). Never invent a file, interface or behaviour. Read it.
 
-## Requirements to pin down at Frame
+## Requirements to pin down in the interview
 
 Mark each one as known, assumed or unknown. An unknown requirement that decides between options
 becomes a question for the person who asked, not a guess.
@@ -45,12 +45,13 @@ data contracts) is known.
   running a stateful system.
 - **Change.** How is it rolled out, compared with the old behaviour, and rolled back?
 
-## Spatial and temporal checks (only when relevant)
+## Data alignment checks (only when relevant)
 
-- Coordinate systems and units, grid alignment, resolution, raster to vector conversion, edge rules.
-- Misalignment between sources, and how it moves the result.
+- Units, scales, time zones and identifiers that differ between sources, the conversions between
+  them, and the rule for a value that falls on a boundary.
+- Misalignment between sources (in time, keys or granularity), and how it moves the result.
 - Irregular sampling, gaps, censoring at the start or end of a record.
-- Correlated inputs that look independent (shared sensor, shared survey, reused source).
+- Correlated inputs that look independent (shared source, shared collection run, reused upstream data).
 
 ## Product checks
 
@@ -58,4 +59,4 @@ data contracts) is known.
 - Is it stable, so the same question gives the same answer unless something real changed?
 - Can it be explained in one sentence?
 - Mock the final answer with placeholder values and ask the consumer whether that is what they
-  need. Do it at Frame, before measuring anything.
+  need. Do it in the interview, before measuring anything.

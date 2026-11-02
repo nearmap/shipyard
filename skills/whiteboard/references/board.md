@@ -7,9 +7,9 @@ The board is what `board_write` renders: lanes (frames) left to right, notes ins
 | Lane id | Name | Holds |
 |---|---|---|
 | `now` | Where we are | one `status` note: leading option, strongest open objection, next step |
-| `problem` | Problem | the problem in the user's words: who is asking and what they will do with the answer |
-| `goal` | Goal | the goal and who uses the answer |
-| `constraints` | Constraints and non-goals | hard constraints and non-goals, one per note |
+| `problem` | Problem | the problem in the user's words: who is asking, what they will do with the answer, and the scope in and out |
+| `goal` | Goal | the goal, who uses the answer, and the `done` note: the criterion that says the work is done |
+| `constraints` | Constraints and non-goals | hard constraints, the resources available, and non-goals, one per note |
 | `theory` | Theory and hypotheses | one `hypothesis` note per `H<n>`: the test, and the result that would disprove it |
 | `frontier` | Open questions | one `decision` note per open decision (`D1 ...`), linked to the decisions it depends on |
 | `probes` | Probes | one `probe` note per probe: prediction, then result |
@@ -19,7 +19,7 @@ The board is what `board_write` renders: lanes (frames) left to right, notes ins
 | `out` | Ruled out | options with their one-line reason, tier and what would reopen them |
 | `decided` | Decided | settled decisions, and at convergence the Decision |
 
-Every board starts with `now`, `problem` and `goal`, then the extra sections the user picked at Open, in this order: `constraints` (Constraints and non-goals), `theory` (Theory and hypotheses), `frontier` (Open questions), `probes` (Probes). `problem` and `goal` hold `status` notes. Then:
+Every board starts with `now`, `problem`, `goal` and `constraints`, the lanes the interview fills, then the extra sections the user picked at Open, in this order: `theory` (Theory and hypotheses), `frontier` (Open questions), `probes` (Probes). `problem`, `goal` and `constraints` hold `status` notes. Then:
 
 - **Framing layout** (Frame first): adds `ideas` and `out`.
 - **Working layout** (straight to the working board, or decide now): adds `frontier` and `probes` when they are not there yet, then `alive`, `parked`, `out` and `decided`.
@@ -27,7 +27,7 @@ Every board starts with `now`, `problem` and `goal`, then the extra sections the
 
 Kinds set a note's colour: `status`, `option`, `decision`, `hypothesis`, `probe`, `objection`. A note the user recolours keeps their colour. A link is an arrow: `D1 -> D2` when D2 depends on D1, `objection -> option` when an objection targets an option.
 
-Keep notes short: a title line, then at most three short lines. The detail is in `notes.md`; the board is the map of it. A note's id never changes once written (`opt-<slug>`, `D<n>`, `P<n>`, `H<n>`), because the id is how a user's move is traced back.
+Keep notes short: a title line, then at most three short lines. The detail is in `notes.md`; the board is the map of it. A note's id never changes once written (`done`, `opt-<slug>`, `D<n>`, `P<n>`, `H<n>`), because the id is how a user's move is traced back.
 
 The spec lists every lane and note Claude wants as it stands, so it is rebuilt from `notes.md` each write, lanes in the order above. A spec that drops a note leaves it on the board untouched; moving it to `out` is how an option leaves. To adopt a note the user dragged out of every lane, give it `"lane": null`.
 
@@ -70,13 +70,18 @@ Next step: <one line>
 - v1 (<date>): <one sentence>. Consumer: <who>. They will use it to: <action>.
 - v2 (<date>): <one sentence>. Changed because: <reason>.
 
-## Frame
+## Interview
+- In scope: <list>. Out of scope: <list>
+- Requirements: <list, each known / assumed / unknown>
+- Hard constraints: <list>
+- Resources: people <who, how much time>; time <deadline>; compute <what>; data <what, access>; budget <amount>
+- Consumer: <who uses the result, and what they will do with it>
 - Estimate: <what, at which unit>
 - Truth: <source, or the stand-in and what it cannot tell us>
-- Hard constraints: <list>
-- Non-goals: <list>
-- Success: <result that ends the work positively>
-- Stop: <result that ends it negatively>
+- Done when: <the criterion the Decision and the hand-off brief are judged against>
+- Success: <result that ends the work positively>. Stop: <result that ends it negatively>
+- Delivery: <what is handed over, to whom, in what form>
+- Confirmed by the user: <their words, date>
 
 ## Glossary
 - <term>: <the one meaning used on this board>
@@ -135,6 +140,7 @@ Frontier: <open decisions whose dependencies are all settled>
 
 ## Decision
 - Decision: <what>. Why: <reasons, linked to probes and evidence>.
+- Done criterion: <how the decision meets the interview's Done when, or what it leaves short>
 - Rejected: <option, reason>
 - Residual risks: <list>. Revisit if: <result or event>.
 - Agreed by the user: <their words, date>. Dissent on record: <if any>.

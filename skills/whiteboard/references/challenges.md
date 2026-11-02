@@ -14,16 +14,16 @@ No case, no finding.
 - Could the thing that matters be rare (1 in 1,000 or rarer)? Has a full-population count been run
   for it, or only a sample?
 - Do labels exist? If not, what stands in for truth, and what can that stand-in not tell us?
-- Could the evaluation leak: neighbours in space or time, the same subject on both sides of a split,
-  the answer encoded in an input?
+- Could the evaluation leak: near-duplicates or neighbours in time across the split, the same subject
+  on both sides of it, the answer encoded in an input?
 - Was the result computed on synthetic data, and is that said everywhere it is quoted?
 
 ## Method
 
 - What does the method assume about how the data was made? Which plot or count would show the
   assumption is false? Has anyone looked?
-- Is each parameter justified by a physical rate or a stated reason, or tuned to this sample?
-  Would it hold on another region, period or dataset?
+- Is each parameter justified by a known rate or a stated reason, or tuned to this sample?
+  Would it hold on another segment, period or dataset?
 - Does it give the same output on every run with the same input?
 - Does it beat the simplest baseline, measured in both directions?
 - Does it win on average but lose on a slice that matters?

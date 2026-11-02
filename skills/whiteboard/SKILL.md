@@ -2,10 +2,10 @@
 name: whiteboard
 description: >-
   Work a fuzzy problem out with the user before anything is planned, measured or built. Open by asking
-  how to start and which sections the board shows, frame the problem and goal with the user on the
-  board when they choose to, look at the theory and a small sample of real data, cut a broad idea
-  round down with a debate, then argue it
-  out turn by turn over a shared Excalidraw board the user can drag and edit, until one decision
+  how to start and which sections the board shows, interview the user on scope, requirements,
+  constraints, resources and what done means, frame the candidate ideas with the user on the board
+  when they choose to, look at the theory and a small sample of real data, cut a broad idea round
+  down with a debate, then argue it out turn by turn over a shared Excalidraw board the user can drag and edit, until one decision
   both agree with. Hands an unproven gain to /sy:spike and a settled decision to /sy:plan or
   /sy:spec. Writes no production code and nothing to the tracker.
 argument-hint: "[the problem in your own words | a board slug to resume]"
@@ -22,7 +22,7 @@ $ARGUMENTS
 ## Where it sits
 
 - Before `/sy:spike`, `/sy:plan` and `/sy:spec`. A spike measures a hypothesis; a whiteboard finds the hypothesis worth measuring, or shows none is needed.
-- It opens on one question: how to start (frame first, the working board, or decide now) and which sections the board starts with. Framing first settles the problem, goal and ideas on the board before any theory.
+- It opens on one question: how to start (frame first, the working board, or decide now) and which sections the board starts with. An interview follows on every start and settles scope, requirements, constraints, resources, the consumer and what done means before any idea or theory. Framing first then settles the candidate ideas on the board.
 - No tracker read or write, at any point, and no preflight. The commands it hands off to own the record.
 - No production code, branches or PRs. Small probe scripts only, in the board's own folder.
 
@@ -72,19 +72,30 @@ Every turn follows `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interact
 - One aim per board; a second aim gets its own. Pick the slug. No board is written yet.
 - Suggest, as a single optional aside, `/rename whiteboard <slug>`.
 - Close with one batched `AskUserQuestion` call:
-  - "How should we start?": Frame first (Recommended), which agrees the problem, the goal and the candidate ideas on the board before any theory; Straight to the working board; Decide now, for when the user already knows the options, which skips the idea round and goes to the frontier and the decision.
-  - "Which extra sections should the board start with?", multi-select: Theory and hypotheses; Constraints and non-goals; Open questions; Probes. The question says that Where we are, Problem, Goal and Ruled out are always on the board.
+  - "How should we start?": Frame first (Recommended), which agrees the candidate ideas on the board before any theory; Straight to the working board; Decide now, for when the user already knows the options, which skips the idea round and goes to the frontier and the decision.
+  - "Which extra sections should the board start with?", multi-select: Theory and hypotheses; Open questions; Probes. The question says that Where we are, Problem, Goal, Constraints and non-goals, and Ruled out are always on the board.
 
-Right after the answers, the first `board_write` lays out what the user chose, per `references/board.md`: the framing layout for Frame first, the working layout for the other two, with the status note, the problem and the goal. Its `folder` is where `notes.md` and `probes/` go. Record the two answers in `notes.md` right after this write.
+Right after the answers, the first `board_write` lays out what the user chose, per `references/board.md`: the framing layout for Frame first, the working layout for the other two, with the status note and the problem and goal as stated so far. Its `folder` is where `notes.md` and `probes/` go. Record the two answers in `notes.md` right after this write, then start the interview.
 
-## 2. Frame (Frame first only)
+## 2. Interview (every start)
+
+Before any idea or theory, interview the user over several turns until the problem is understood well enough to argue about. It runs on every start. On Decide now it can be short, but it still confirms the done criterion and the hard constraints.
+
+- Cover, in whatever order the answers lead: scope (in and out), requirements, hard constraints, the resources available (people, time, compute, data, budget), who consumes the result and what they will do with it, and what done, success and delivery look like.
+- Ask only what the user owns: aims, priorities, limits and judgment calls. Anything code, data or docs can answer is looked up, not asked.
+- Every question goes through `AskUserQuestion`: at most four per call, each with the recommended answer first, labelled `(Recommended)`, and real alternatives after it. Never a list of questions in prose.
+- Each call follows from the last answers, not a fixed script: drill into a vague answer, a surprise or a conflict before moving on, and skip whatever an answer already settled.
+- After each answer, record it in the Interview section of `notes.md`, then bring the board up to date in one write per turn: the problem and the scope in `problem`, the goal and the consumer in `goal`, constraints, resources and non-goals in `constraints`, and the done criterion as the `done` note in `goal`.
+- When nothing is left open, send a short summary as direct text (scope, requirements, constraints, resources, consumer, done criterion), then ask whether it is right. The stage ends when the user confirms it, in their words; record those words in `notes.md`. A correction reopens the interview on that point.
+
+## 3. Frame (Frame first only)
 
 - A bounded early look: the repository's docs per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`, durable memory on the topic, the code path behind today's behaviour, and what the people asking said, as the user gives it. No tracker read.
-- Then fill the framing board: the status note, the restated problem, the goal and who uses the answer, the sections the user chose, and 6 to 10 one-line ideas, each naming the hypothesis it rests on.
+- Then fill the framing board: the status note, the sections the user chose, and 6 to 10 one-line ideas, each naming the hypothesis it rests on. The problem, goal and constraints are the interview's.
 - Each turn: `board_read`, answer every move (an idea dragged to Ruled out gets its reason recorded and stays out unless the user revives it; an edited goal is adopted or disputed), then add at most one thing.
 - The stage ends when the user says the frame is right, in their words.
 
-## 3. Theory first, then an early look (bounded)
+## 4. Theory first, then an early look (bounded)
 
 Write the **theory and prior** section of `notes.md` before reading any data, so the data can contradict it: what the code, the maths or the field already says (name the source), the assumptions each candidate rests on, the plausible approaches including ones nobody raised, and where theory says each one breaks.
 
@@ -101,7 +112,7 @@ Record which hypotheses the real data already strains; do not refit them to it. 
 
 When the look shows only one sensible option, say so with the reason and offer Decide now.
 
-## 4. Write the board, then the idea round
+## 5. Write the board, then the idea round
 
 Write `notes.md` and bring the board up to date. The glossary is written now, from the terms the code and docs already use, plus one line per data source (id, what it is, which version); use only those terms afterwards.
 
@@ -116,7 +127,7 @@ When the Frame stage ran, its ideas are the list: skip step 1. Step 2's debate s
 
 **Switch to the working layout** after the idea round, when the board started with the framing layout: add the working lanes per `references/board.md`, move the surviving ideas to Alive, and leave the cut ones in Ruled out. Recreate no note, so ids and history survive. Once the user deletes the emptied Ideas lane, drop it from the spec.
 
-## 5. The discussion (most of the session)
+## 6. The discussion (most of the session)
 
 Short turns, opinions, questions back. Each turn:
 
@@ -147,7 +158,7 @@ At most five live options in a turn, ranked. Side issues go to the parked list, 
 
 Write the board when something changes status (an option ruled out or revived, the aim moves, a probe returns, a decision settles), not every turn, and log each change in `notes.md` with its date.
 
-## 6. Probes
+## 7. Probes
 
 The smallest real-data check that separates surviving options or tests the assumption the leading one rests on: minutes to an hour. Each names its hypothesis.
 
@@ -160,12 +171,12 @@ The smallest real-data check that separates surviving options or tests the assum
 
 When a result misses its prediction, say so first. Then ask, in order, before patching anything: is the problem formulated wrongly, is the data wrong (selection, joins, units, labels), is a model assumption wrong, or is the evaluation design wrong? Log which, and correct the theory section if theory was wrong.
 
-## 7. Converge
+## 8. Converge
 
 The session converges when the frontier is empty and one option survives, or the remaining difference would not change the decision. "The data cannot separate these" is a valid end for a root-cause question when it names the intervention that would.
 
 1. Pressure-test the leading decision with `sy:debate`, unconditionally, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`, and answer its strongest objection on the board.
-2. Write the Decision: what, why, rejected alternatives with reasons, residual risks, and what result would make us revisit it. Compare the survivors side by side on quality against the baseline (with uncertainty), complexity, maintainability, compute cost and impact on the people using the result.
+2. Write the Decision: what, why, how it meets the done criterion from the interview (or what it leaves short), rejected alternatives with reasons, residual risks, and what result would make us revisit it. Compare the survivors side by side on quality against the baseline (with uncertainty), complexity, maintainability, compute cost and impact on the people using the result.
 3. Ask the user to agree or disagree in their own words. Hand nothing off until both of you state the same understanding. A disagreement goes to the probe that decides it, or is recorded as whose call it is, with Claude's objection kept beside the decision.
 
 ## Hand-off
@@ -176,6 +187,6 @@ Only when the user asks. The Decision section is the brief.
 - **A multi-task objective**: `/sy:plan <brief>`.
 - **One PR-sized change**: `/sy:spec <brief>`, or `/sy:spec <task>` with the brief when a task already exists.
 
-Each brief names the opportunity, the evidence, the success bar, the invariants, the failure modes and the open questions. End with the board's folder path and the kickoff line.
+Each brief names the opportunity, the evidence, the success bar (the interview's done criterion, as the user confirmed it), the invariants, the failure modes and the open questions. End with the board's folder path and the kickoff line.
 
 Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

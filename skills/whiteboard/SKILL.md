@@ -37,14 +37,14 @@ One folder per problem, keyed by the board's slug under this repository's scratc
 
 The durable record is the hand-off brief.
 
-The board is the user's surface as much as Claude's. **Start every turn with `board_read`** once the design board exists. Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to another cell or section is a layout choice to adopt, an edited text or label is a correction to adopt or dispute, a deleted note is a question about the design. Keeping a note or link the user deleted takes two writes: drop it from the spec, then add it again in the next one (a note whose text alone was cleared needs a note of Claude's own under a new id). A note with `kind: "text"` is free text, never adopted: to keep it, add a note of Claude's own with its text under a new id. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently.
+The board is the user's surface as much as Claude's. **Start every turn with `board_read`** once the design board exists. Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to another cell or section is a layout choice to adopt, an edited text or label is a correction to adopt or dispute, a deleted note is a question about the design. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently.
 
 After every `board_write`, tell the user in one line to close and reopen the board tab: no editor reloads the file.
 
 **A stale save.** A non-null `stale_save` means the user's editor saved a copy opened before the last write, and the board now holds the last write again. Say where the old copy was kept, then answer each item in `stale_save.changes`:
 
 - a moved or edited note of Claude's, a renamed section or a relabelled link: re-apply it through `board_write`, a cell move as the note's new `section` and `at` in the spec;
-- a move out of every section, an edit to a user's note, or an added scratch note: ask the user to redo it after reopening, because a write cannot move a note out of a section, edit a user's note, or add to scratch;
+- a move out of every section, an edit to a user's note, or an added scratch note: ask the user to redo it after reopening;
 - an added note in a section, or an added section: add it again as Claude's own and say the owner changes, or ask the user to re-add it;
 - a deleted note: ask whether it leaves the design; if it does, the user deletes it again after reopening;
 - a deleted link or section: the user deletes it again after reopening, because `board_write` never deletes.
@@ -81,7 +81,7 @@ Every stage ends each turn on ONE `AskUserQuestion` call with the questions, lab
 | Probe | "Run this probe?" (Probe) | Run it / Decide on what we have / Change the probe (Other) | run, skip, or redesign the probe |
 | Readiness | "Open the design board?" (Board); and "Which sections?" (Sections), multiSelect | Open now / Not yet / Page only from here | Open now: design stage. Not yet: back to the decisions, unmet items listed. Page only: the design goes in notes.md |
 | Design turn | "What next on the board?" (Next) | the next piece to draw (Recommended) / Rework a section / Back to the decisions / I'm drawing: read my changes next turn | the next design turn, or back to the decisions |
-| Scratch note | "Where does this note belong?" (Scratch) | each section by name / Leave it in scratch | adopt it into that section (free text: add Claude's own note with its text), or leave it |
+| Scratch note | "Where does this note belong?" (Scratch) | each section by name / Leave it in scratch | adopt it into that section, or leave it |
 | Converge | "Do you agree with this decision?" (Decision) | Agree / Agree, record my dissent / Disagree | Agree: hand-off. Dissent: recorded, then hand-off. Disagree: run the probe that decides it |
 | Hand-off | "What next?" (Next step) | /sy:spec / /sy:plan / /sy:spike / Stop here | the hand-off, or the session ends |
 
@@ -200,7 +200,7 @@ In Page first mode, offer the design board on the Readiness choice point once th
 - Sections follow the kind of work: Data model, Data flow, System design, Algorithm. With several live approaches, one section per approach and view ("Data flow: A").
 - Before the first data-flow drawing, size it roughly (volume, rate, latency, per `references/system-fit.md`) and put the numbers on the arrow labels.
 - Each design turn: `board_read`, answer every move, add one thing, and close on the Design turn choice point. A new open decision goes back to the decision tree, and the drawing that depends on it waits.
-- The scratch area, everything outside every section, is the user's: a write never moves it. Ask where each new scratch note belongs on the Scratch note choice point, and adopt it only once the user agrees. Free text (`kind: "text"`) is never adopted: keep it by adding a note of Claude's own with its text under a new id.
+- The scratch area, everything outside every section, is the user's: a write never moves it. Ask where each new scratch note belongs on the Scratch note choice point, and adopt it only once the user agrees.
 - Page only: the design goes in the Design section of `notes.md` as text and tables.
 
 ## 9. Converge

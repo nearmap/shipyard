@@ -275,7 +275,8 @@ def test_the_scratch_area_is_never_moved_and_reads_as_the_users(tmp_path):
         board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], scribble]})
 
 
-def test_an_arrow_between_two_scratch_notes_keeps_its_geometry(tmp_path):
+@pytest.mark.parametrize("frame_id", [None, "api"], ids=["unframed arrow", "arrow framed by the user"])
+def test_an_arrow_between_two_scratch_notes_keeps_its_geometry(tmp_path, frame_id):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
     _user_adds_note(scene, "a", "A", 2000, 40, None)
@@ -283,10 +284,13 @@ def test_an_arrow_between_two_scratch_notes_keeps_its_geometry(tmp_path):
     bound = {"focus": 0, "gap": 1}
     arrow = {**next(e for e in scene["elements"] if e["type"] == "arrow"), "id": "scratch-arrow", "x": 2100.0,
              "y": 90.0, "width": 123.0, "height": 77.0, "points": [[0, 0], [123.0, 77.0]], "boundElements": [],
-             "startBinding": {**bound, "elementId": "a"}, "endBinding": {**bound, "elementId": "b"}}
+             "startBinding": {**bound, "elementId": "a"}, "endBinding": {**bound, "elementId": "b"},
+             "frameId": frame_id}
     scene["elements"].append(arrow)
     _save(tmp_path, scene)
+    width = _element(scene, "api")["width"]
     board.write(tmp_path, SPEC)
+    assert _element(_scene(tmp_path), "api")["width"] == width, "a scratch arrow never sizes a frame it is tagged with"
     kept = _element(_scene(tmp_path), "scratch-arrow")
     assert (kept["x"], kept["y"], kept["width"], kept["height"], kept["points"]) == (
         2100.0, 90.0, 123.0, 77.0, [[0, 0], [123.0, 77.0]]
@@ -315,13 +319,15 @@ def test_a_deleted_note_is_reported_refuses_a_rewrite_and_is_forgotten_once_drop
     assert board.read(tmp_path)["deleted_notes"] == ["server"]
     with pytest.raises(board.BoardConflict, match="deleted"):
         board.write(tmp_path, SPEC)
-    board.write(tmp_path, {**SPEC, "notes": [SPEC["notes"][0], SPEC["notes"][2]], "links": []})
-    if removed == {"server:text"}:
-        with pytest.raises(ValueError, match="new id"):
-            board.write(tmp_path, SPEC)
-        return
+    without = {**SPEC, "notes": [SPEC["notes"][0], SPEC["notes"][2]]}
+    board.write(tmp_path, {**without, "links": []})
     assert board.read(tmp_path)["deleted_notes"] == [], "an answered deletion must not be reported again"
     assert board.read(tmp_path)["deleted_links"] == [], "nor its links, though a textless shape still binds them"
+    if removed == {"server:text"}:
+        with pytest.raises(ValueError, match="not a note"):
+            board.write(tmp_path, without)
+        with pytest.raises(ValueError, match="new id"):
+            board.write(tmp_path, SPEC)
 
 
 def _user_drags_out_of_every_section(directory: Path) -> None:
@@ -448,15 +454,20 @@ def test_a_re_pointed_arrow_and_its_link_added_again_get_distinct_ids(tmp_path):
     report = board.read(tmp_path)
     assert [(link["from"], link["to"]) for link in report["links"]] == [
         ("client", "server"), ("client", "users"), ("server", "users"),
-    ]
-    assert report["deleted_links"] == []
+    ], "all three links survive"
+    assert report["deleted_links"] == [], "the re-pointed link is answered"
 
 
-def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
+@pytest.mark.parametrize("notes_follow", [False, True], ids=["notes stay", "notes follow the frame"])
+def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path, notes_follow):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
     api = _element(scene, "api")
     api.update(x=api["x"] - 300, y=api["y"] - 200, width=api["width"] + 300, height=api["height"] + 200)
+    if notes_follow:
+        for element in scene["elements"]:
+            if element.get("frameId") == "api" and element["type"] != "arrow":
+                element.update(x=element["x"] - 300, y=element["y"] - 200)
     _save(tmp_path, scene)
     assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a resize moves no note"
     board.write(tmp_path, SPEC)
@@ -470,7 +481,8 @@ def test_a_nudged_note_keeps_its_cell_against_a_note_dropped_beside_it(tmp_path)
     _user_moves(scene, "client", x - 5, y - 5)
     _save(tmp_path, scene)
     report = board.read(tmp_path)
-    assert _note(report, "server")["at"] == [1, 0] and "user_changed" not in _note(report, "server")
+    assert _note(report, "server")["at"] == [1, 0], "the nudged note keeps its cell"
+    assert "user_changed" not in _note(report, "server"), "a nudge inside its cell is no change"
     assert _note(report, "client")["at"] != [1, 0], "the dropped note takes another cell"
 
 
@@ -485,8 +497,8 @@ def test_spec_ids_never_collide_with_derived_ids(tmp_path):
     }
     board.write(tmp_path, spec)
     report = board.read(tmp_path)
-    assert [s["id"] for s in report["sections"]] == ["sy-board-revision"]
-    assert [(n["id"], n["text"]) for n in report["notes"]] == [("srv", "A"), ("srv-text", "B")]
+    assert [s["id"] for s in report["sections"]] == ["sy-board-revision"], "the section keeps its id"
+    assert [(n["id"], n["text"]) for n in report["notes"]] == [("srv", "A"), ("srv-text", "B")], "both notes read back"
 
 
 @pytest.mark.parametrize(

@@ -133,7 +133,8 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         if current is None:
             if written is not None:
                 raise BoardConflict(
-                    f"section {section['id']!r} was deleted on the board; drop it from the spec or argue it"
+                    f"section {section['id']!r} was deleted on the board; drop it from this spec; to restore it, "
+                    "add it again in the next write"
                 )
             frame = _frame(section["id"], section["name"])
             elements.append(frame)
@@ -431,8 +432,9 @@ def _row_offset(rows: list[float], row: int) -> float:
 def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
     """Each framed note's cell, read back from its top-left against its section's recorded grid.
 
-    Per axis, the grid is anchored on the recorded frame origin when the frame's far edge is where the last
-    write left it (a resize from the top or left), else on the frame's current origin (a drag). A note whose
+    Per axis, the grid is anchored on whichever origin, the recorded frame's or its current one, puts more
+    of the notes with a recorded cell back on it (a resize from the top or left moves the frame but, in some
+    Excalidraw versions, not its notes); a tie goes to the current origin. A note whose
     nearest cell is the cell the last write gave it in this section keeps it; every other note, top to
     bottom, takes the nearest cell not already held, ties by (distance, row, column).
     """
@@ -448,12 +450,24 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
             "x": frame["x"], "y": frame["y"], "width": frame["width"], "height": frame["height"],
             "cols": 0, "rows": [], "cells": {},
         })
-        origin = [
-            recorded[axis] if abs(frame[axis] + frame[size] - recorded[axis] - recorded[size]) <= SAME_SPOT
-            else frame[axis]
-            for axis, size in (("x", "width"), ("y", "height"))
-        ]
         rows = recorded["rows"]
+        known = [(shape, recorded["cells"][shape["id"]]) for shape in shapes if shape["id"] in recorded["cells"]]
+
+        step = NOMINAL_ROW_HEIGHT + ROW_GAP
+        origin = []
+        for axis in ("x", "y"):
+            hits = []
+            for base in (recorded[axis], frame[axis]):
+                total = 0
+                for shape, cell in known:
+                    rel = shape[axis] - base
+                    if axis == "x":
+                        total += max(0, round((rel - SECTION_INSET) / CELL_WIDTH)) == cell[0]
+                    else:
+                        reach = range(max(0, round((rel - SECTION_TOP_INSET) / step)) + len(rows) + 2)
+                        total += min((abs(_row_offset(rows, r) - rel), r) for r in reach)[1] == cell[1]
+                hits.append(total)
+            origin.append(recorded[axis] if hits[0] > hits[1] else frame[axis])
         shapes.sort(key=lambda e: (e["y"], e["x"]))
         span = len(shapes) + 2
         candidates: dict[str, list[tuple[float, int, int]]] = {}
@@ -497,14 +511,17 @@ def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dic
         e for e in _frames_top_down(live) if e["id"] not in section_order
     ]
     notes = _note_ids(live)
-    linked: dict[str, tuple[str, str]] = {}
+    note_arrows: dict[str, tuple[str, str]] = {}
     for ident, element in live.items():
         if element["type"] == "arrow":
             a, b = _link_key(element, live)
-            framed = a in notes and b in notes and (live[a].get("frameId") or live[b].get("frameId"))
-            if framed:
-                linked[ident] = (a, b)
-    labels = {e["id"] for e in live.values() if e.get("containerId") in linked}
+            if a in notes and b in notes:
+                note_arrows[ident] = (a, b)
+    linked = {
+        ident: ends for ident, ends in note_arrows.items()
+        if any(_section_of(live[end], live) is not None for end in ends)
+    }
+    labels = {e["id"] for e in live.values() if e.get("containerId") in note_arrows}
     note_texts = {text["id"] for ident in cells if (text := _bound_text(live[ident], live)) is not None}
     grid: dict[str, Any] = {}
     y = 0.0
@@ -522,7 +539,7 @@ def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dic
             offset += heights.get(row, NOMINAL_ROW_HEIGHT) + ROW_GAP
         dx, dy = -frame["x"], y - frame["y"]
         frame["x"], frame["y"] = 0.0, y
-        laid_out = set(cells) | note_texts | set(linked) | labels
+        laid_out = set(cells) | note_texts | set(note_arrows) | labels
         others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
         for element in others:
             element["x"] += dx

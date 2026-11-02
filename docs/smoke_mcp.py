@@ -130,8 +130,9 @@ UNEXERCISED_TOOLS = frozenset({
 Named rather than implied so the self-test can compare the two sets exactly: a tool the server gains
 and nobody smokes has to be an explicit decision, not an omission that passes. None is a contract verb
 and none reaches the tracker — a live call would mutate the server's own config, or the operator's real
-memory root, or read whatever session happens to be running — so `sy_tools/tests/` covers them against
-fixtures (`test_config.py`, `test_usage.py`, `test_memory.py`, `test_board.py`, `test_page.py`) instead."""
+memory root, or read whatever session happens to be running, or write the repository's scratch
+directory — so `sy_tools/tests/` covers them against fixtures (`test_config.py`, `test_usage.py`,
+`test_memory.py`, `test_board.py`, `test_page.py`) instead."""
 
 SERVER_SOURCE = PLUGIN_ROOT / "sy_tools" / "server.py"
 TOOL_REGISTRATION = re.compile(r"""@mcp\.tool\(name=["']([^"']+)["']\)""")

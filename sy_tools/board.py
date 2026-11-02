@@ -14,14 +14,16 @@ Sections are Excalidraw frames, stacked top to bottom. Inside a section, notes s
 `at` = [column, row]: columns are a fixed width apart, and each row is as tall as its tallest note. A
 note is a rectangle with bound text, coloured by kind. A link is an arrow bound to two notes, and its
 label is a text element bound to the arrow. Element ids are the spec's ids, so the same note keeps the
-same id through every save.
+same id through every save; ids Claude derives (a note's text, an arrow, a label, the revision marker)
+contain ':', which no spec id can, so they never collide with one.
 
 Every write lays the whole board out again: sections in spec order, each note at its cell, every section
 sized to its grid plus one spare column and one spare row for the user to drag into, everything else
 framed in a section moved with it, and every arrow between two notes redrawn. Elements outside every
-section (the scratch area) are never moved. A note's cell is read back from where it sits: a note still
-where the last write left it keeps its cell, and any other takes the nearest cell no unmoved note holds,
-so a drag to another cell is a user edit and a nudge inside a cell snaps back on the next write.
+section (the scratch area) are never moved. A note's cell is read back from where it sits: a note whose
+nearest cell is still the one the last write gave it keeps that cell, and any other takes the nearest cell
+no such note holds, so a drag to another cell is a user edit and a nudge inside a cell snaps back on the
+next write.
 
 The write contract is one rule, applied to a note's text, section and cell, a section's name and a
 link's label: a field changes only when the board still holds what Claude last wrote there, or when the
@@ -39,7 +41,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from pathlib import Path
 import re
 import textwrap
@@ -53,7 +54,7 @@ SCENE_NAME = "board.excalidraw"
 STATE_NAME = "board.state.json"
 WRITTEN_NAME = "board.written.excalidraw"
 REVISIONS_NAME = "revisions"
-REVISION_ID = "sy-board-revision"
+REVISION_ID = "sy:board-revision"
 
 KIND_COLOURS = {
     "component": ("#d0ebff", "#1c4f7a"),
@@ -153,7 +154,15 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         text_el = _bound_text(current, live) if current is not None else None
         if text_el is None:
             if written is not None:
-                raise BoardConflict(f"note {note['id']!r} was deleted on the board; drop it from the spec or argue it")
+                raise BoardConflict(
+                    f"note {note['id']!r} was deleted on the board; drop it from this spec; to restore it, add it "
+                    "again in the next write"
+                )
+            if current is not None and current["type"] == "text":
+                raise ValueError(
+                    f"note {note['id']!r} is free text on the board, not a note: add a note of your own with its "
+                    "text under a new id; the user may delete the free text"
+                )
             if current is not None:
                 raise ValueError(f"note {note['id']!r} is a {current['type']} with no text on the board, not a note")
             _require_section(note, live)
@@ -188,6 +197,10 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
             _align_text(text_el, note["kind"])
             _set_text(text_el, current, text_el.get("originalText", text_el["text"]))
             changed.append(f"note {note['id']} is now a {note['kind']}")
+        elif written is None:
+            _align_text(text_el, note["kind"])
+            _place_text(text_el, current)
+            _touch(text_el)
 
     named = {note["id"]: note for note in notes}
     final = {ident: cell for ident, cell in cells.items() if ident not in named}
@@ -204,9 +217,10 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
 
     known = {(link["from"], link["to"]): link["label"] for link in state["links"]}
     arrows = _arrows(live)
+    note_ids = _note_ids(live)
     for link in links:
         for end in (link["from"], link["to"]):
-            if live.get(end, {}).get("type") not in _NOTE_SHAPES:
+            if end not in note_ids:
                 raise ValueError(f"link {link['from']}->{link['to']} names {end!r}, which is not a note on the board")
         key = (link["from"], link["to"])
         name = f"{key[0]}->{key[1]}"
@@ -214,6 +228,11 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
             arrow = arrows[key]
             label_el = _label(arrow, live)
             label_now = label_el.get("originalText", label_el["text"]) if label_el else ""
+            if key not in known and label_now == "" and link["label"]:
+                raise BoardConflict(
+                    f"link {name} is the user's and has no label: adopt it with label \"\" first, then label it "
+                    "in the next write"
+                )
             if _reconcile("link", name, "label", label_now, known.get(key, _NEVER), link["label"]):
                 if not link["label"]:
                     raise ValueError(f"link {name}: a write never deletes an element, so its label cannot be cleared")
@@ -224,8 +243,11 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
                 changed.append(f"link {name} relabelled")
             continue
         if key in known:
-            raise BoardConflict(f"link {name} was deleted on the board; drop it from the spec or argue it")
-        arrow = _arrow(live[key[0]], live[key[1]])
+            raise BoardConflict(
+                f"link {name} was deleted on the board; drop it from this spec; to restore it, add it again in "
+                "the next write"
+            )
+        arrow = _arrow(live[key[0]], live[key[1]], elements)
         elements.append(arrow)
         live[arrow["id"]] = arrow
         arrows[key] = arrow
@@ -239,10 +261,10 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     _stamp_revision(elements, live, revision)
     _frames_last(elements)
     present = _note_ids(live)
+    on_board = {(a, b) for a, b, _ in _links(live)}
     spec_links = {(link["from"], link["to"]): link["label"] for link in links}
     kept_links = {**known, **spec_links}
-    # Anything Claude wrote that the user has since deleted, and the spec no longer names, is forgotten here:
-    # the deletion has been answered, so a later read must not report it again.
+    # Answered deletions are forgotten, so a later read never reports them again.
     new_state = {
         "revision": revision,
         "sections": {
@@ -253,7 +275,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
             **{k: v for k, v in state["notes"].items() if k in present},
             **{n["id"]: {"section": n["section"], "text": n["text"], "kind": n["kind"], "at": n["at"]} for n in notes},
         },
-        "links": [{"from": a, "to": b, "label": kept_links[(a, b)]} for a, b in sorted(set(kept_links) & set(arrows))],
+        "links": [{"from": a, "to": b, "label": kept_links[(a, b)]} for a, b in sorted(set(kept_links) & on_board)],
         "grid": grid,
     }
     (directory / REVISIONS_NAME).mkdir(parents=True, exist_ok=True)
@@ -270,13 +292,16 @@ def read(directory: Path) -> dict[str, Any]:
     """Summarise the board: sections, notes and links with their owner and every user change, and deletions.
 
     Each section, note and link carries `owner`: `claude` for one a write placed, `user` for one added by
-    hand. `user_changed` lists the fields the user changed since the last write. Notes are listed in board
-    order: section by section from the top, each by row then column, then notes outside every section.
-    Every read records the save it saw in `revisions/seen-r<N>.json`, N being the revision the save
-    carries. When the board file is a stale save (an older revision than the last write), the file is
-    first moved aside and the last write restored, and `stale_save` names where the stale file was kept and
-    carries `changes`: the user's edits in it, against the last save read saw from that revision, or else
-    against what that revision wrote, in the shape the `board_read` tool documents. Raises
+    hand. Each note carries `kind`: the kind Claude last wrote, null for a user's shape, and `text` for free
+    text, which is never a note to adopt. `user_changed` lists the fields the user changed since the last
+    write. Notes are listed in board order: section by section from the top, each by row then column, then
+    notes outside every section. Every read records the save it saw in `revisions/seen-r<N>.json`, N being
+    the revision the save carries. When the board file is a stale save (an older revision than the last
+    write), the file is first moved aside and the last write restored, and `stale_save` names where the
+    stale file was kept and carries `changes`: the user's edits in it, against the last save read saw from
+    that revision, or else against what that revision wrote, in the shape the `board_read` tool documents.
+    A board is assumed open in one editor tab at a time: a saved file carries no tab identity, so two stale
+    tabs at one revision share a base. Raises
     `FileNotFoundError` when no board exists in `directory`, and `AssertionError` when a stale save has
     neither base to diff against.
     """
@@ -293,7 +318,7 @@ def read(directory: Path) -> dict[str, Any]:
         saved = _projection(_live(scene), json.loads(written_path.read_text(encoding="utf-8"))["grid"])
         changes = _diff(json.loads(base_path.read_text(encoding="utf-8")), saved)
         aside = directory / f"board.stale-r{stale}-{int(time.time())}.excalidraw"
-        os.replace(scene_path, aside)
+        scene_path.replace(aside)
         atomic_write(scene_path, (directory / WRITTEN_NAME).read_text(encoding="utf-8"))
         scene = _load_scene(scene_path)
         stale_save = {
@@ -315,9 +340,13 @@ def read(directory: Path) -> dict[str, Any]:
         sections.append(entry)
 
     notes = []
-    for ident, section, at, text in _board_notes(live, state["grid"]):
+    for ident, section, at, text, free in _board_notes(live, state["grid"]):
         written = state["notes"].get(ident)
-        entry = {"id": ident, "section": section, "at": at, "text": text, "owner": "claude" if written else "user"}
+        kind = written["kind"] if written else "text" if free else None
+        entry = {
+            "id": ident, "section": section, "at": at, "text": text, "kind": kind,
+            "owner": "claude" if written else "user",
+        }
         if written:
             now = {"section": section, "at": at, "text": text}
             if user_changed := [field for field in ("section", "at", "text") if written[field] != now[field]]:
@@ -358,8 +387,8 @@ def _section_of(element: Element, live: Live) -> str | None:
     return frame_id if frame_id is not None and live.get(frame_id, {}).get("type") == "frame" else None
 
 
-def _board_notes(live: Live, grid: dict[str, Any]) -> list[tuple[str, str | None, Cell | None, str]]:
-    """Every note and free text on the board as (id, section, at, text), in board order.
+def _board_notes(live: Live, grid: dict[str, Any]) -> list[tuple[str, str | None, Cell | None, str, bool]]:
+    """Every note and free text on the board as (id, section, at, text, is free text), in board order.
 
     Section by section from the top, each by row then column (free text in a section after its notes, top
     to bottom), then everything outside every section, top to bottom. The revision marker is no note, and a
@@ -381,7 +410,8 @@ def _board_notes(live: Live, grid: dict[str, Any]) -> list[tuple[str, str | None
         section = _section_of(element, live)
         at = cells.get(element["id"])
         order = (0, at[1], at[0]) if at is not None else (1, element["y"], element["x"])
-        found.append(((rank.get(section, math.inf), *order), (element["id"], section, at, text)))
+        free = element["type"] == "text"
+        found.append(((rank.get(section, math.inf), *order), (element["id"], section, at, text, free)))
     return [note for _, note in sorted(found, key=lambda pair: pair[0])]
 
 
@@ -398,9 +428,10 @@ def _row_offset(rows: list[float], row: int) -> float:
 def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
     """Each framed note's cell, read back from its top-left against its section's recorded grid.
 
-    The grid is re-anchored at the frame's current x/y, so a frame the user dragged keeps its cells. A note
-    exactly on a cell's top-left (where the last write left it) keeps that cell; any other, in board order,
-    takes the nearest cell no unmoved note and no earlier note holds, ties by (distance, row, column).
+    Per axis, the grid is anchored on the recorded frame origin when the frame's far edge is where the last
+    write left it (a resize from the top or left), else on the frame's current origin (a drag). A note whose
+    nearest cell is the cell the last write gave it in this section keeps it; every other note, top to
+    bottom, takes the nearest cell not already held, ties by (distance, row, column).
     """
     by_frame: dict[str, list[Element]] = {}
     for element in live.values():
@@ -410,13 +441,21 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
     cells: dict[str, Cell] = {}
     for section, shapes in by_frame.items():
         frame = live[section]
-        recorded = grid.get(section, {"cols": 0, "rows": []})
+        recorded = grid.get(section, {
+            "x": frame["x"], "y": frame["y"], "width": frame["width"], "height": frame["height"],
+            "cols": 0, "rows": [], "cells": {},
+        })
+        origin = [
+            recorded[axis] if abs(frame[axis] + frame[size] - recorded[axis] - recorded[size]) <= SAME_SPOT
+            else frame[axis]
+            for axis, size in (("x", "width"), ("y", "height"))
+        ]
         rows = recorded["rows"]
         shapes.sort(key=lambda e: (e["y"], e["x"]))
         span = len(shapes) + 2
         candidates: dict[str, list[tuple[float, int, int]]] = {}
         for shape in shapes:
-            rel_x, rel_y = shape["x"] - frame["x"], shape["y"] - frame["y"]
+            rel_x, rel_y = shape["x"] - origin[0], shape["y"] - origin[1]
             near_col = max(0, round((rel_x - SECTION_INSET) / CELL_WIDTH))
             near_row = max(0, round((rel_y - SECTION_TOP_INSET) / (NOMINAL_ROW_HEIGHT + ROW_GAP)))
             cols = range(max(near_col, recorded["cols"]) + span)
@@ -428,8 +467,8 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
         held: set[tuple[int, int]] = set()
         moved = []
         for shape in shapes:
-            distance, row, col = candidates[shape["id"]][0]
-            if distance <= SAME_SPOT and (col, row) not in held:
+            _, row, col = candidates[shape["id"]][0]
+            if recorded["cells"].get(shape["id"]) == [col, row]:
                 held.add((col, row))
                 cells[shape["id"]] = [col, row]
             else:
@@ -442,7 +481,7 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
 
 
 def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dict[str, Any]:
-    """Lay the board out and return the grid it laid, per section: frame x, y, column count and row offsets.
+    """Lay the board out and return the grid it laid, per section: frame box, columns, row offsets, note cells.
 
     Sections in `section_order`, then any other frame by current y, each at x = 0, stacked top to bottom.
     Each note in `cells` goes to its cell and its text follows; everything else framed in a section moves
@@ -495,7 +534,10 @@ def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dic
         right = max([SECTION_INSET + cols * CELL_WIDTH - CELL_GAP, *(_extent(e)[0] - frame["x"] for e in members)])
         bottom = max([offset - ROW_GAP, *(_extent(e)[1] - frame["y"] for e in members)])
         frame["width"], frame["height"] = right + SECTION_INSET, bottom + SECTION_INSET
-        grid[frame["id"]] = {"x": frame["x"], "y": frame["y"], "cols": cols, "rows": rows}
+        grid[frame["id"]] = {
+            "x": frame["x"], "y": frame["y"], "width": frame["width"], "height": frame["height"],
+            "cols": cols, "rows": rows, "cells": {shape["id"]: cells[shape["id"]] for shape in shapes},
+        }
         y += frame["height"] + SECTION_GAP
     for ident, (source, target) in linked.items():
         arrow = live[ident]
@@ -552,7 +594,7 @@ def _projection(live: Live, grid: dict[str, Any]) -> dict[str, Any]:
         "sections": {e["id"]: e.get("name") or "" for e in live.values() if e["type"] == "frame"},
         "notes": {
             ident: {"section": section, "at": at, "text": text}
-            for ident, section, at, text in _board_notes(live, grid)
+            for ident, section, at, text, _ in _board_notes(live, grid)
         },
         "links": [[a, b, label] for a, b, label in _links(live)],
     }
@@ -778,7 +820,7 @@ def _note(note: dict[str, Any]) -> tuple[Element, Element]:
     """A new note in its section, at the frame's origin until the layout puts it in its cell."""
     background, stroke = KIND_COLOURS[note["kind"]]
     shape = _base(note["id"], "rectangle", 0, 0, NOTE_WIDTH, NOMINAL_ROW_HEIGHT)
-    text_id = f"{note['id']}-text"
+    text_id = f"{note['id']}:text"
     shape.update(
         backgroundColor=background, strokeColor=stroke, roundness={"type": 3}, frameId=note["section"],
         boundElements=[{"id": text_id, "type": "text"}],
@@ -830,7 +872,7 @@ def _place_text(text_el: Element, shape: Element) -> None:
 
 def _add_label(arrow: Element, text: str, elements: list[Element], live: Live) -> Element:
     """A label bound to `arrow`, with every field Excalidraw needs to keep it when the arrow next moves."""
-    label = _base(f"{arrow['id']}-label", "text", 0, 0, 0, 0)
+    label = _base(_unused_id(f"{arrow['id']}:label", elements), "text", 0, 0, 0, 0)
     label.update(
         boundElements=None, fontSize=FONT_SIZE, fontFamily=1, textAlign="center", verticalAlign="middle",
         containerId=arrow["id"], lineHeight=LINE_HEIGHT, autoResize=True,
@@ -855,11 +897,11 @@ def _centre_label(label: Element, arrow: Element) -> None:
     label["x"], label["y"] = mid_x - label["width"] / 2, mid_y - label["height"] / 2
 
 
-def _arrow(source: Element, target: Element) -> Element:
+def _arrow(source: Element, target: Element, elements: list[Element]) -> Element:
     """An arrow bound to both notes and to no frame, so a link between two sections is never clipped."""
     (sx, sy), (tx, ty) = _facing_edges(source, target)
-    # ':' is outside the id alphabet, so two different links can never share an arrow id.
-    ident = f"link:{source['id']}:{target['id']}"
+    # A re-pointed arrow keeps its id, so the id this link derives may already be taken.
+    ident = _unused_id(f"link:{source['id']}:{target['id']}", elements)
     arrow = _base(ident, "arrow", sx, sy, abs(tx - sx), abs(ty - sy))
     arrow.update(
         points=[[0, 0], [tx - sx, ty - sy]], lastCommittedPoint=None, startArrowhead=None, endArrowhead="arrow",
@@ -871,6 +913,16 @@ def _arrow(source: Element, target: Element) -> Element:
         end["boundElements"] = [*(end.get("boundElements") or []), {"id": ident, "type": "arrow"}]
         _touch(end)
     return arrow
+
+
+def _unused_id(base: str, elements: list[Element]) -> str:
+    """`base`, or `base:2`, `base:3`... when an element in the scene, deleted or not, already has it."""
+    taken = {e["id"] for e in elements}
+    ident, n = base, 1
+    while ident in taken:
+        n += 1
+        ident = f"{base}:{n}"
+    return ident
 
 
 def _facing_edges(a: Element, b: Element) -> tuple[tuple[float, float], tuple[float, float]]:

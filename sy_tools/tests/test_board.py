@@ -45,7 +45,7 @@ def _cell_xy(directory: Path, scene: dict, section: str, col: int, row: int) -> 
 def _user_moves(scene: dict, note: str, x: float, y: float, section: str | None = "keep") -> None:
     shape = _element(scene, note)
     dx, dy = x - shape["x"], y - shape["y"]
-    for ident in (note, f"{note}-text"):
+    for ident in (note, f"{note}:text"):
         element = _element(scene, ident)
         element["x"] += dx
         element["y"] += dy
@@ -68,16 +68,16 @@ def _user_edits_text(directory: Path, ident: str, text: str, scene: dict | None 
 
 
 def _user_adds_note(scene: dict, ident: str, text: str, x: float, y: float, section: str | None) -> None:
-    label_id = f"{ident}-text"
+    label_id = f"{ident}:text"
     shape = {**_element(scene, "server"), "id": ident, "x": x, "y": y, "frameId": section,
              "boundElements": [{"id": label_id, "type": "text"}]}
-    label = {**_element(scene, "server-text"), "id": label_id, "containerId": ident, "x": x + 20, "y": y + 20,
+    label = {**_element(scene, "server:text"), "id": label_id, "containerId": ident, "x": x + 20, "y": y + 20,
              "frameId": section, "text": text, "originalText": text}
     scene["elements"] += [shape, label]
 
 
 def _free_text(scene: dict, ident: str, x: float, y: float, section: str | None) -> dict:
-    free = {**_element(scene, "client-text"), "id": ident, "containerId": None, "x": x, "y": y, "frameId": section,
+    free = {**_element(scene, "client:text"), "id": ident, "containerId": None, "x": x, "y": y, "frameId": section,
             "text": "aside", "originalText": "aside"}
     scene["elements"].append(free)
     return free
@@ -122,19 +122,20 @@ def test_a_first_write_lays_notes_in_their_cells_and_reads_back_unchanged(tmp_pa
     api, model = _element(scene, "api"), _element(scene, "model")
     assert api["x"] == model["x"] == 0 and api["y"] + api["height"] < model["y"], "sections stack top to bottom"
     for ident, frame in (("client", api), ("server", api), ("users", model)):
-        shape, text = _element(scene, ident), _element(scene, f"{ident}-text")
+        shape, text = _element(scene, ident), _element(scene, f"{ident}:text")
         assert text["containerId"] == ident and shape["frameId"] == text["frameId"] == frame["id"]
         assert _inside(shape, frame), f"{ident} must sit inside its section's frame"
     step = _element(scene, "server")["x"] - _element(scene, "client")["x"]
     assert step == board.CELL_WIDTH, "column 1 is one cell right of column 0"
-    assert _element(scene, "users-text")["textAlign"] == "left", "data notes read as a schema, top-left aligned"
-    label = _element(scene, "link:client:server-label")
+    assert _element(scene, "users:text")["textAlign"] == "left", "data notes read as a schema, top-left aligned"
+    label = _element(scene, "link:client:server:label")
     assert label["containerId"] == "link:client:server" and label["fontSize"] and label["width"], (
         "a label is bound text on its arrow with its font and size set, or Excalidraw drops it"
     )
     assert _element(scene, "link:server:users")["frameId"] is None, "a cross-section arrow is never clipped"
     report = board.read(tmp_path)
     assert _cells(report) == [("client", "api", [0, 0]), ("server", "api", [1, 0]), ("users", "model", [0, 0])]
+    assert _note(report, "users")["kind"] == "data", "a Claude note reads back with the kind it was written as"
     assert not any("user_changed" in n for n in report["notes"]), "nothing has been edited yet"
     assert [(link["from"], link["to"], link["label"], link["owner"]) for link in report["links"]] == [
         ("client", "server", "calls", "claude"), ("server", "users", "", "claude"),
@@ -146,7 +147,7 @@ def test_a_first_write_lays_notes_in_their_cells_and_reads_back_unchanged(tmp_pa
     [
         (lambda d: _user_drags(d, "server", "api", (1, 1)), "at", {"at": [1, 1]}),
         (lambda d: _user_drags(d, "server", "model", (1, 0)), "section", {"section": "model", "at": [1, 0]}),
-        (lambda d: _user_edits_text(d, "server-text", "API gateway"), "text", {"text": "API gateway"}),
+        (lambda d: _user_edits_text(d, "server:text", "API gateway"), "text", {"text": "API gateway"}),
     ],
     ids=["cell", "section", "text"],
 )
@@ -175,7 +176,7 @@ def test_a_nudge_inside_a_cell_is_no_edit_and_the_next_write_puts_the_note_back(
 
 def test_a_user_label_edit_is_reported_refuses_an_overwrite_and_clears_once_adopted(tmp_path):
     board.write(tmp_path, SPEC)
-    _user_edits_text(tmp_path, "link:client:server-label", "polls")
+    _user_edits_text(tmp_path, "link:client:server:label", "polls")
     link = board.read(tmp_path)["links"][0]
     assert (link["label"], link["user_changed"]) == ("polls", ["label"]), link
     with pytest.raises(board.BoardConflict, match="client->server"):
@@ -208,7 +209,7 @@ def test_a_stale_save_reports_a_cell_move_and_a_relabelled_link(tmp_path):
     board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], added]})
     x, y = _element(tab, "client")["x"], _element(tab, "client")["y"]
     _user_moves(tab, "client", x + 7, y + board.NOMINAL_ROW_HEIGHT + board.ROW_GAP + 9)
-    _element(tab, "link:client:server-label").update(text="polls", originalText="polls")
+    _element(tab, "link:client:server:label").update(text="polls", originalText="polls")
     _save(tmp_path, tab)
     with pytest.raises(board.BoardConflict, match="board_read"):
         board.write(tmp_path, SPEC)
@@ -258,16 +259,20 @@ def test_the_scratch_area_is_never_moved_and_reads_as_the_users(tmp_path):
     _user_adds_note(scene, "idea", "What about X?", 2000, 40, None)
     free = _free_text(scene, "scribble", 2000, 400, None)
     _save(tmp_path, scene)
-    kept = {i: (_element(scene, i)["x"], _element(scene, i)["y"]) for i in ("idea", "idea-text", "scribble")}
+    kept = {i: (_element(scene, i)["x"], _element(scene, i)["y"]) for i in ("idea", "idea:text", "scribble")}
     far = {"id": "w", "section": "api", "kind": "step", "text": "W", "at": [2, 3]}
     board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], far]})
     scene = _scene(tmp_path)
     assert {i: (_element(scene, i)["x"], _element(scene, i)["y"]) for i in kept} == kept, "a write never moves scratch"
     report = board.read(tmp_path)
     assert _note(report, "idea") == {
-        "id": "idea", "section": None, "at": None, "text": "What about X?", "owner": "user",
+        "id": "idea", "section": None, "at": None, "text": "What about X?", "kind": None, "owner": "user",
     }
     assert _note(report, "scribble")["section"] is None and free["id"] == "scribble"
+    assert _note(report, "scribble")["kind"] == "text", "free text reads back as text, not as a note to adopt"
+    scribble = {"id": "scribble", "section": None, "kind": "note", "text": "aside", "at": None}
+    with pytest.raises(ValueError, match="free text"):
+        board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], scribble]})
 
 
 def test_framed_free_text_moves_with_its_section_and_stays_inside_it(tmp_path):
@@ -283,7 +288,7 @@ def test_framed_free_text_moves_with_its_section_and_stays_inside_it(tmp_path):
     assert aside["y"] > model["y"] - 1 and _inside(aside, model), "framed free text moves with its section"
 
 
-@pytest.mark.parametrize("removed", [{"server", "server-text"}, {"server-text"}], ids=["whole note", "only its text"])
+@pytest.mark.parametrize("removed", [{"server", "server:text"}, {"server:text"}], ids=["whole note", "only its text"])
 def test_a_deleted_note_is_reported_refuses_a_rewrite_and_is_forgotten_once_dropped(tmp_path, removed):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
@@ -294,6 +299,7 @@ def test_a_deleted_note_is_reported_refuses_a_rewrite_and_is_forgotten_once_drop
         board.write(tmp_path, SPEC)
     board.write(tmp_path, {**SPEC, "notes": [SPEC["notes"][0], SPEC["notes"][2]], "links": []})
     assert board.read(tmp_path)["deleted_notes"] == [], "an answered deletion must not be reported again"
+    assert board.read(tmp_path)["deleted_links"] == [], "nor its links, though a textless shape still binds them"
 
 
 def _user_drags_out_of_every_section(directory: Path) -> None:
@@ -337,7 +343,7 @@ def test_a_reversed_decision_is_not_reported_again_by_a_later_save_from_the_same
     board.read(tmp_path)
     board.write(tmp_path, _with("server", at=[1, 1]))
     board.write(tmp_path, SPEC)
-    _user_edits_text(tmp_path, "client-text", "Browser", tab)
+    _user_edits_text(tmp_path, "client:text", "Browser", tab)
     changes = board.read(tmp_path)["stale_save"]["changes"]
     assert changes == _changes(notes_edited=[{"id": "client", "section": "api", "at": [0, 0], "text": "Browser"}]), (
         "the tab's earlier move was answered and reversed; only its new edit is the user's"
@@ -349,7 +355,7 @@ def test_a_stale_save_reports_a_deleted_note_and_an_added_one(tmp_path):
     tab = _scene(tmp_path)
     added = {"id": "cache", "section": "api", "kind": "store", "text": "Cache", "at": [2, 0]}
     board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], added]})
-    tab["elements"] = [e for e in tab["elements"] if e["id"] not in {"users", "users-text", "link:server:users"}]
+    tab["elements"] = [e for e in tab["elements"] if e["id"] not in {"users", "users:text", "link:server:users"}]
     _user_adds_note(tab, "hand1", "What about X?", 2000, 0, None)
     _save(tmp_path, tab)
     changes = board.read(tmp_path)["stale_save"]["changes"]
@@ -387,12 +393,78 @@ def test_a_note_the_user_adds_in_a_section_is_theirs_and_laid_out_like_any_other
     _user_adds_note(scene, "hand1", "What about X?", x + 12, y + 5, "api")
     _save(tmp_path, scene)
     assert _note(board.read(tmp_path), "hand1") == {
-        "id": "hand1", "section": "api", "at": [0, 1], "text": "What about X?", "owner": "user",
+        "id": "hand1", "section": "api", "at": [0, 1], "text": "What about X?", "kind": None, "owner": "user",
     }
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
     assert (_element(scene, "hand1")["x"], _element(scene, "hand1")["y"]) == _cell_xy(tmp_path, scene, "api", 0, 1)
-    assert _element(scene, "hand1-text")["originalText"] == "What about X?", "a write never edits a user note"
+    assert _element(scene, "hand1:text")["originalText"] == "What about X?", "a write never edits a user note"
+
+
+def test_a_user_note_adopted_as_data_takes_the_data_alignment(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    _user_adds_note(scene, "hand1", "What about X?", *_cell_xy(tmp_path, scene, "api", 0, 1), "api")
+    _save(tmp_path, scene)
+    hand1 = {"id": "hand1", "section": "api", "kind": "data", "text": "What about X?", "at": [0, 1]}
+    board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], hand1]})
+    text = _element(_scene(tmp_path), "hand1:text")
+    assert (text["textAlign"], text["verticalAlign"]) == ("left", "top"), text
+
+
+def test_a_re_pointed_arrow_and_its_link_added_again_get_distinct_ids(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    _element(scene, "link:client:server")["endBinding"]["elementId"] = "users"
+    _save(tmp_path, scene)
+    assert board.read(tmp_path)["deleted_links"] == ["client->server"]
+    adopted = {**SPEC, "links": [{"from": "client", "to": "users", "label": "calls"}, SPEC["links"][1]]}
+    board.write(tmp_path, adopted)
+    board.write(tmp_path, {**adopted, "links": [*adopted["links"], SPEC["links"][0]]})
+    ids = [e["id"] for e in _scene(tmp_path)["elements"]]
+    assert len(ids) == len(set(ids)), "every element id is unique"
+    report = board.read(tmp_path)
+    assert [(link["from"], link["to"]) for link in report["links"]] == [
+        ("client", "server"), ("client", "users"), ("server", "users"),
+    ]
+    assert report["deleted_links"] == []
+
+
+def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    api = _element(scene, "api")
+    api.update(x=api["x"] - 300, y=api["y"] - 200, width=api["width"] + 300, height=api["height"] + 200)
+    _save(tmp_path, scene)
+    assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a resize moves no note"
+    board.write(tmp_path, SPEC)
+
+
+def test_a_nudged_note_keeps_its_cell_against_a_note_dropped_beside_it(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    x, y = _cell_xy(tmp_path, scene, "api", 1, 0)
+    _user_moves(scene, "server", x + 3, y + 3)
+    _user_moves(scene, "client", x - 5, y - 5)
+    _save(tmp_path, scene)
+    report = board.read(tmp_path)
+    assert _note(report, "server")["at"] == [1, 0] and "user_changed" not in _note(report, "server")
+    assert _note(report, "client")["at"] != [1, 0], "the dropped note takes another cell"
+
+
+def test_spec_ids_never_collide_with_derived_ids(tmp_path):
+    spec = {
+        "sections": [{"id": "sy-board-revision", "name": "S"}],
+        "notes": [
+            {"id": "srv", "section": "sy-board-revision", "kind": "step", "text": "A", "at": [0, 0]},
+            {"id": "srv-text", "section": "sy-board-revision", "kind": "step", "text": "B", "at": [1, 0]},
+        ],
+        "links": [],
+    }
+    board.write(tmp_path, spec)
+    report = board.read(tmp_path)
+    assert [s["id"] for s in report["sections"]] == ["sy-board-revision"]
+    assert [(n["id"], n["text"]) for n in report["notes"]] == [("srv", "A"), ("srv-text", "B")]
 
 
 @pytest.mark.parametrize(

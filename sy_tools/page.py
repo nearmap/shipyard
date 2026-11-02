@@ -8,10 +8,7 @@ sidecar, `pageRev("<hash>");`, naming the revision `page.html` was rendered from
 The page refreshes itself. Every second it loads `page.rev.js` again through a fresh `<script>` tag, which
 works over `file://` where a fetch would not. When the named revision differs from the one embedded in
 the page, the page saves its scroll position and open sections to `sessionStorage` and navigates to
-itself with `?rev=<hash>` through `location.replace`, then restores them. It never calls
-`location.reload()`: a page rewritten in the same second as the last load is served as a 304 over http, so
-a reload keeps showing the old page and asks again forever, while a new query string is a new URL. The
-page is written before its sidecar, so a sidecar never names a page that is not there yet.
+itself with `?rev=<hash>` through `location.replace`, then restores them.
 
 Rendering escapes raw HTML: a `<script>` or an `<img onerror>` in `notes.md` shows as text, and a
 `javascript:` link becomes inert. The same `notes.md` always renders to the same bytes.
@@ -104,6 +101,7 @@ window.pageRev = function (h) {
     y: window.scrollY,
     open: [...document.querySelectorAll("details[open]")].map((d) => d.id),
   }));
+  // Never location.reload(): a same-second rewrite is a 304 over http, so it would show the old page and loop.
   location.replace(location.pathname + "?rev=" + h);
 };
 setInterval(() => {
@@ -158,6 +156,7 @@ def write(directory: Path) -> dict[str, Any]:
         atomic_write(notes, f"# {directory.name}\n\n## Where we are\n\nNothing yet.\n")
     markdown = notes.read_text(encoding="utf-8")
     page = directory / PAGE_NAME
+    # Page before sidecar, so a sidecar never names a page that is not there yet.
     atomic_write(page, render(markdown))
     atomic_write(directory / REV_NAME, f'pageRev("{_revision(markdown)}");\n')
     return {

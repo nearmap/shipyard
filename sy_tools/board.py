@@ -66,7 +66,7 @@ KIND_COLOURS = {
 LEFT_ALIGNED_KINDS = {"data"}
 
 NOTE_WIDTH = 280
-CELL_GAP = 100
+CELL_GAP = 140
 CELL_WIDTH = NOTE_WIDTH + CELL_GAP
 NOMINAL_ROW_HEIGHT = 80
 ROW_GAP = 70
@@ -77,7 +77,6 @@ FONT_SIZE = 16
 LINE_HEIGHT = 1.25
 WRAP_CHARS = 28
 TEXT_PADDING = 12
-BOUND_TEXT_PADDING = 5
 SAME_SPOT = 0.5
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -820,11 +819,11 @@ def _set_text(text_el: Element, shape: Element, text: str) -> None:
 def _place_text(text_el: Element, shape: Element) -> None:
     """Put bound text where its alignment says inside its shape: inset top-left, or centred."""
     if text_el.get("textAlign") == "left":
-        text_el["x"] = shape["x"] + BOUND_TEXT_PADDING
+        text_el["x"] = shape["x"] + TEXT_PADDING
     else:
         text_el["x"] = shape["x"] + (shape["width"] - text_el["width"]) / 2
     if text_el.get("verticalAlign") == "top":
-        text_el["y"] = shape["y"] + BOUND_TEXT_PADDING
+        text_el["y"] = shape["y"] + TEXT_PADDING
     else:
         text_el["y"] = shape["y"] + (shape["height"] - text_el["height"]) / 2
 

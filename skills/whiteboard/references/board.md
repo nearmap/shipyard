@@ -20,7 +20,7 @@ The board is where the design is drawn, once the user opens it. The record stays
 - **Sections** are frames, stacked top to bottom in spec order. One per view the user picked at Readiness: Data model, Data flow, System design, Algorithm, or one per approach and view ("Data flow: A").
 - **Notes** sit on a grid inside their section. `at` is `[column, row]`, from `[0, 0]` at the top left, unique within the section. Columns are a fixed width apart; each row is as tall as its tallest note.
 - **Kinds** set the colour: `component`, `store`, `data`, `external`, `step`, `note`. A `data` note is a schema: a title line, then one field per line, aligned top-left. A note the user recolours keeps their colour.
-- **Links** are arrows between two notes, in or across sections, with an optional `label`: a verb ("reads"), or the rough size on a data-flow arrow ("2 GB/day", "50 req/s").
+- **Links** are arrows between two notes, in or across sections, with an optional `label`: a verb ("reads"), or the rough size on a data-flow arrow ("2 GB/day", "50 req/s"). Arrows are straight, so put linked notes in neighbouring cells; an arrow between two notes with a third between them crosses it.
 
 Keep notes short: a title line, then at most three short lines (a `data` note may list more fields). A note's id never changes once written, because the id is how a user's move is traced back.
 

@@ -85,9 +85,9 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 
 The record is `notes.md`, rendered by the `sy` server's `page_render` into a decision page that refreshes itself in your browser as the session moves. When the open decisions are answered, Claude offers the design board: a shared [Excalidraw](https://excalidraw.com) file in this repository's scratch directory, with one section per view (data model, data flow, system design), notes on a grid of cells, and labelled arrows. You open it in VS Code with the Excalidraw extension, or on excalidraw.com, and drag notes to other cells or sections, edit text and labels, or add notes and arrows; Claude reads every change at the start of its next turn and answers it. Every write lays the board out again, so a nudged note snaps back and a note dragged to another cell is your edit to answer. Neither editor reloads the file, so you reopen the board after each Claude turn; a save from a tab you forgot to reopen is kept aside and its edits answered, not lost. `board_write` refuses to overwrite an edit of yours that the session has not answered. The decision then hands off: to `/sy:spike` when a gain still needs measuring, to `/sy:plan` or `/sy:spec` when it is ready to build.
 
-![A whiteboard decision page in a browser: numbered, collapsible sections for where we are, the aim and interview, the decision tree with each decision's reversal cost, and the options](docs/img/whiteboard-page.png)
+![A whiteboard decision page in a browser: numbered, collapsible sections, with where we are and the decision tree open and each decision's reversal cost in the table](docs/img/whiteboard-page.png)
 
-![A whiteboard design board in Excalidraw: two stacked sections, a data flow and a data model, with one note of each kind on a grid of cells and labelled arrows between them](docs/img/whiteboard-board.png)
+![A whiteboard design board in Excalidraw: two stacked sections, a data flow and a data model, with one note of each kind on a grid of cells and labelled arrows linking notes within and across the sections](docs/img/whiteboard-board.png)
 
 ## Working with you
 

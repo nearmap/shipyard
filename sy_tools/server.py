@@ -35,7 +35,7 @@ from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
 from pydantic import Field, ValidationError
 import yaml
 
-from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, tracker, usage
+from . import SERVER_NAME, SERVER_VERSION, board, config, memory, secrets, tracker, usage
 from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
 from .atomic import atomic_write
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
@@ -1093,6 +1093,54 @@ def scratch_dir(
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
     return {"path": str(directory)}
+
+
+BoardId = Annotated[
+    str,
+    Field(
+        description="The board's slug, e.g. `pricing-idea`. Resolves through `scratch_dir`, so the same slug "
+        "reaches the same board from every session and every worktree."
+    ),
+]
+
+
+@mcp.tool(name="board_write")
+def board_write(
+    board_id: BoardId,
+    spec: Annotated[
+        dict[str, Any],
+        Field(
+            description='The board as Claude wants it: {"lanes": [{"id", "name"}], "notes": [{"id", "lane", '
+            '"kind", "text"}], "links": [{"from", "to"}]}. `kind` is one of status, option, decision, '
+            "hypothesis, probe, objection. Lanes and notes already on the board keep their place; anything "
+            "the spec leaves out is left as it is, never deleted."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Merge a spec into the board's Excalidraw scene, creating it on first write, and list what changed.
+
+    Refused, with the note named, when the spec would overwrite a lane, text, colour or note the user changed
+    or deleted on the board since the last write: call `board_read`, answer the edit, then write a spec that
+    adopts it. `scene` is the `.excalidraw` file the user opens in any Excalidraw editor.
+    """
+    try:
+        return board.write(config.scratch_dir(board_id), spec)
+    except (ValueError, config.ConfigError) as exc:
+        raise ToolError(str(exc)) from None
+
+
+@mcp.tool(name="board_read")
+def board_read(board_id: BoardId) -> dict[str, Any]:
+    """Read the board back: lanes, notes with their owner and `user_changed` fields, links, and deletions.
+
+    `owner` is `claude` for a note a write placed and `user` for one added by hand. `user_changed` lists the
+    fields (`lane`, `text`) the user changed since the last write; `deleted_notes` and `deleted_links` are
+    what the user removed. Each is a move to answer before the next `board_write`.
+    """
+    try:
+        return board.read(config.scratch_dir(board_id))
+    except (FileNotFoundError, config.ConfigError) as exc:
+        raise ToolError(str(exc)) from None
 
 
 @mcp.tool(name="ship_state_update")

@@ -41,6 +41,7 @@ Three disciplines shape the workflow: challenge the decision, independently insp
 | a large objective or an existing roadmap | `/sy:plan` |
 | one PR-sized task that needs an executable plan | `/sy:spec <task>` |
 | an approved plan ready to build | `/sy:ship <task>` |
+| a fuzzy problem to work out with Claude before it is a hunch, a roadmap or a task | `/sy:whiteboard …` |
 | a hunch that needs data before it becomes a project | `/sy:spike …` |
 | an idea you want built and demoed fast, outside the merge standards, then harvested into real tasks | `/sy:mvp <task or objective>` |
 | a finished ticket's leftover worktrees, branches, and background tasks | `/sy:shutdown [task]` |
@@ -77,6 +78,14 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 **The review is adversarial, and it reviews exactly what you'll merge.** A separate `sy:gate` agent — running on a frontier-tier model, in its own read-only checkout pinned to the pushed commits — reviews the plan's obligations and design invariants, not just the diff, and every bug it suspects must survive an attempt to refute it before it is reported. If a fix is pushed, the review scope resets: the PR head, the CI-green commit, and the reviewed commit must be the *same commit* before anything hands off or merges. You are never reviewing one thing and merging another.
 
 ![The GATE controller coordinates CI, independent immutable review, and fixes until the same commit is ready for handoff](docs/img/immutable-gate.png)
+
+### Before the loop: whiteboard
+
+`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. Claude reads the theory and a small sample of real data, runs a broad idea round through the same `sy:debate`, then argues it out with you turn by turn until the two of you agree on one decision. Each turn ends on the open questions whose prerequisites are settled, each with Claude's recommended answer.
+
+The working surface is a shared [Excalidraw](https://excalidraw.com) board, a plain `.excalidraw` file in the board's scratch folder. You open it in VS Code or excalidraw.com and drag notes between lanes, edit their text, or add notes and arrows; Claude reads every change at the start of its next turn and answers it. Writes go through the `sy` server's `board_write`, which refuses to overwrite an edit of yours that the session has not answered. The decision then hands off: to `/sy:spike` when a gain still needs measuring, to `/sy:plan` or `/sy:spec` when it is ready to build.
+
+![A whiteboard board in Excalidraw: lanes for where we are, open questions, live, parked and ruled-out options](docs/img/whiteboard-board.png)
 
 ## Working with you
 
@@ -136,7 +145,7 @@ shipyard/
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate gate-triage spec-gate img-inspector explain-author debate debater repo-{standards,review} ship-{start,build,gate}
   skills/
-    plan/ spec/ ship/ spike/ mvp/ shutdown/ pr/ ci/ standards/ tighten/ explain/ help/ config/ init-repo/
+    plan/ spec/ ship/ spike/ mvp/ shutdown/ pr/ ci/ standards/ tighten/ explain/ whiteboard/ help/ config/ init-repo/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
       jira/    ADAPTER.md + references/

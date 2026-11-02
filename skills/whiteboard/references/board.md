@@ -37,7 +37,7 @@ Tell the user once, at the first write, with the path `board_write` returned:
 
 > The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), or on excalidraw.com in a Chromium browser (Open, then Save writes back to the file). Neither reloads the file, so close and reopen the board after each of my turns. Drag notes between lanes, edit their text, add notes or arrows, and save; I read your changes at the start of every turn. To zoom: Ctrl/Cmd + scroll or pinch, Shift+1 to fit the whole board, Shift+2 to zoom to the selected notes.
 
-The extension's 3.9.x releases bundle Excalidraw 0.18.1. On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. Both editors read the file once and never reload it: a save from a tab opened before Claude's last write is a stale save, which `board_read` catches, keeps aside and reports as `stale_save.changes` for Claude to answer. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
+The extension's 3.9.x releases bundle Excalidraw 0.18.1. On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. A save from a tab not reopened since Claude's last write is caught by `board_read` as a stale save, and its edits are answered. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
 
 The small grey "Board revision N" line above the lanes is how a stale save is detected. Leave it on the board.
 

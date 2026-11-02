@@ -22,7 +22,7 @@ $ARGUMENTS
 ## Where it sits
 
 - Before `/sy:spike`, `/sy:plan` and `/sy:spec`. A spike measures a hypothesis; a whiteboard finds the hypothesis worth measuring, or shows none is needed.
-- It opens on one question: frame first, go straight to the working board, or decide now, and which sections the board starts with. Framing first agrees the problem, the goal and the candidate ideas on the board before any theory.
+- It opens on one question: how to start (frame first, the working board, or decide now) and which sections the board starts with. Framing first settles the problem, goal and ideas on the board before any theory.
 - No tracker read or write, at any point, and no preflight. The commands it hands off to own the record.
 - No production code, branches or PRs. Small probe scripts only, in the board's own folder.
 
@@ -79,8 +79,6 @@ Right after the answers, the first `board_write` lays out what the user chose, p
 
 ## 2. Frame (Frame first only)
 
-Agree what the problem is before arguing how to solve it.
-
 - A bounded early look: the repository's docs per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`, durable memory on the topic, the code path behind today's behaviour, and what the people asking said, as the user gives it. No tracker read.
 - Then fill the framing board: the status note, the restated problem, the goal and who uses the answer, the sections the user chose, and 6 to 10 one-line ideas, each naming the hypothesis it rests on.
 - Each turn: `board_read`, answer every move (an idea dragged to Ruled out gets its reason recorded and stays out unless the user revives it; an edited goal is adopted or disputed), then add at most one thing.
@@ -116,7 +114,7 @@ Then open with breadth and cut it down before the user spends time on it:
 
 When the Frame stage ran, its ideas are the list: skip step 1. Step 2's debate still runs, unconditionally, but only over the ideas the user kept, and the user's own cuts are never re-litigated. Decide now skips the idea round and goes straight to the frontier.
 
-**Switch to the working layout** after the idea round, when the board started with the framing layout: add the working lanes to the spec (they land to the right of the lanes already there), move the surviving ideas to Alive, and leave the cut ones in Ruled out. No note is recreated, so ids and history survive. The emptied Ideas lane stays until the user deletes it after reopening the board; then drop it from the spec.
+**Switch to the working layout** after the idea round, when the board started with the framing layout: add the working lanes per `references/board.md`, move the surviving ideas to Alive, and leave the cut ones in Ruled out. Recreate no note, so ids and history survive. Once the user deletes the emptied Ideas lane, drop it from the spec.
 
 ## 5. The discussion (most of the session)
 

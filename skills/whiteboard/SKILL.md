@@ -82,7 +82,7 @@ Every stage ends each turn on ONE `AskUserQuestion` call with the questions, lab
 | Design turn | "What next on the board?" (Next) | the next piece to draw (Recommended) / Rework a section / Back to the decisions / I'm drawing: read my changes next turn | the next design turn, or back to the decisions |
 | Scratch note | "Where does this note belong?" (Scratch) | the likeliest section (Recommended) / the next two sections / Leave it in scratch; any other section (Other) | adopt it into that section, or leave it |
 | Converge | "Do you agree with this decision?" (Decision) | Agree / Agree, record my dissent / Disagree | Agree: hand-off. Dissent: recorded, then hand-off. Disagree: run the probe that decides it |
-| Hand-off | "What next?" (Next step) | the route Hand-off picks, or Stop here when none fits (Recommended) / the two next-closest routes / Stop here; the remaining route (Other) | the hand-off, or the session ends |
+| Hand-off | "What next?" (Next step) | the route Hand-off picks (Recommended) / the two next-closest routes / Stop here; when none fits, Stop here (Recommended) / the three closest routes; the remaining route (Other) | the hand-off, or the session ends |
 
 ## 1. Open (one turn)
 
@@ -218,8 +218,8 @@ Only when the user asks. The Decision section is the brief.
 - **Feasibility still in doubt** (a gain nobody has measured at representative scale): `/sy:spike <brief>`.
 - **A multi-task objective**: `/sy:plan <brief>`.
 - **A throwaway working version wanted first, with no spec or gate**: `/sy:mvp <brief>`.
-- **No route fits** (a do-not-build or root-cause ending): Stop here, and record `Hand-off: none`.
 - **One PR-sized change**: `/sy:spec <brief>`, or `/sy:spec <task>` with the brief when a task already exists.
+- **No route fits** (a do-not-build or root-cause ending): Stop here, and record `Hand-off: none`.
 
 Each brief names the opportunity, the evidence, the success bar (the interview's done criterion, as the user confirmed it), the invariants, the failure modes, the open questions, and the delivery shape: the smallest end-to-end version, its milestones, and acceptance checks written from the done criterion. End with the board's folder path and the kickoff line.
 

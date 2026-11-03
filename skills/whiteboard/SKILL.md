@@ -47,6 +47,12 @@ After every `board_write`, tell the user in one line to close and reopen the boa
 
 To resume: call `page_render` for the slug, read `notes.md`, then `board_read` when the board exists, then give a three-line recap (aim, leading option, strongest open objection) and carry on. A `page_render` that returns only a "Where we are" section, over "Nothing yet.", means the slug named no board: confirm the slug with the user before carrying on.
 
+**Writing for the reader.** Every text the user reads (the sections of `notes.md` that render on the page, board note text, turn summaries, the hand-off brief) follows the `text.reader` setting, resolved with `get_config` and written per `${CLAUDE_PLUGIN_ROOT}/skills/tighten/SKILL.md` § The reader: conclusion first, short sentences, dot points. Prefer a visual wherever it carries the point:
+
+- a table for options, decisions and numbers;
+- a figure for a probe result or a distribution, saved under `probes/` and embedded in `notes.md` as a relative image (`![what it shows](probes/p1.png)`), so the page shows it;
+- a diagram on the design board for structure and flow.
+
 ## Routing
 
 - small cohesive evidence ⇒ read directly;
@@ -184,7 +190,8 @@ The smallest real-data check that separates surviving options or tests the assum
 - Measure both directions: what improves and what gets worse, including the slices, chosen beforehand, where the preferred option should lose.
 - Give intervals from the right resampling unit (whatever the cases are correlated over), not from rows.
 - Real data from the real source. Synthetic data may stress a mechanism or check parameter recovery, labelled as such, never in place of a real result.
-- Agree with the user before anything costs real money or time. A figure is checked through `sy:img-inspector`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`.
+- Agree with the user before anything costs real money or time.
+- Report each result as a small stats table (estimate, interval, n), plus one figure when the result cannot be read without it. Check every figure through `sy:img-inspector`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`, before it goes into `notes.md`; never `Read` an image.
 
 When a result misses its prediction, say so first. Then ask, in order, before patching anything: is the problem formulated wrongly, is the data wrong (selection, joins, units, labels), is a model assumption wrong, or is the evaluation design wrong? Log which, and correct the theory section if theory was wrong.
 
@@ -215,6 +222,6 @@ Only when the user asks. The Decision section is the brief.
 - **A multi-task objective**: `/sy:plan <brief>`.
 - **One PR-sized change**: `/sy:spec <brief>`, or `/sy:spec <task>` with the brief when a task already exists.
 
-Each brief names the opportunity, the evidence, the success bar (the interview's done criterion, as the user confirmed it), the invariants, the failure modes, the open questions, and the delivery shape: the smallest end-to-end version, its milestones, and acceptance checks written from the done criterion. End with the board's folder path and the kickoff line.
+Each brief follows the reader rule above and names the opportunity, the evidence, the success bar (the interview's done criterion, as the user confirmed it), the invariants, the failure modes, the open questions, and the delivery shape: the smallest end-to-end version, its milestones, and acceptance checks written from the done criterion. End with the board's folder path and the kickoff line.
 
 Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

@@ -10,7 +10,7 @@ Tell the user once, at Open, with the `page` path `page_render` returned:
 
 ## `notes.md` template
 
-Sections in page order: what the user reads first comes first. Keep each section's heading as written, so links into the page (`page.html#decision-tree`) keep working.
+Sections in page order: what the user reads first comes first. Keep each section's heading as written, so links into the page (`page.html#decision-tree`) keep working. Options, decisions, assumptions and probe numbers are tables; a probe's figure is a relative image under `probes/`.
 
 ```markdown
 # <problem name>
@@ -20,9 +20,9 @@ Kind of work: <root cause | method choice | system design | feasibility | measur
 Mode: <page first | page and board | board only | page only>. Start: <explore | straight to the options | decide now>
 
 ## Where we are
-Leading option: <name, or "none yet">
-Strongest open objection: <one line>
-Next step: <one line>
+- Leading option: <name, or "none yet">
+- Strongest open objection: <one line>
+- Next step: <one line>
 
 ## Aim and interview
 - Aim v1 (<date>): <one sentence>. Consumer: <who>. They will use it to: <action>.
@@ -48,13 +48,9 @@ Frontier: <open decisions whose dependencies are all settled>
 ## Options
 - Idea round: <date>, debate outcome in one line.
 
-### <option> (idea | alive | parked | ruled out)
-- Intuition: <one sentence>. Rests on: <hypothesis ids>
-- Assumes: <about the state, the observations, the system>
-- Would break if: <the plot or count that would show it>
-- Cost: <build and run, rough>
-- For: <strongest point>. Against: <strongest point>.
-- Ruled out because: <one line, tier>. Reopen if: <condition>.
+| Option | Status | Rests on | Would break if | Cost | For | Against | Ruled out because (tier); reopen if |
+|---|---|---|---|---|---|---|---|
+| <name> | idea / alive / parked / ruled out | <hypothesis ids> | <the plot or count that would show it> | <build and run, rough> | <strongest point> | <strongest point> | <one line> |
 
 ## Theory, hypotheses and assumptions
 - Known: <mechanism or result, and its source>
@@ -79,7 +75,13 @@ Frontier: <open decisions whose dependencies are all settled>
 - Tests: <hypothesis ids>. Baseline: <simplest comparison>.
 - Prediction (before running): <who wins and why>
 - Data: <real source, ids, sample and population>
-- Result: <both directions, with uncertainty, by slice>. Matched prediction: yes / no.
+- Result: <one line, both directions>. Matched prediction: yes / no.
+
+| Measure | Estimate | Interval | n |
+|---|---|---|---|
+| <what, by slice> | ... | ... | ... |
+
+![<what the figure shows>](probes/p<n>.png)
 - If no: <formulation, data, model assumption or evaluation design, and what changed>
 
 ## Design

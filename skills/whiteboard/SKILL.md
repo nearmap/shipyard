@@ -75,14 +75,14 @@ Every stage ends each turn on ONE `AskUserQuestion` call with the questions, lab
 | Open, only when the page is in use and a hosted-page publishing tool exists | "Where should the page open?" (Page) | Local file (Recommended) / A private hosted page | where the page is shown |
 | Interview | "Is this summary right?" (Summary) | Yes / Fix one point / Keep grilling me | Yes: next stage. Fix one point: reopens it. Keep grilling me: another interview turn |
 | Explore | "Which ideas go?" (Cut), multiSelect, at most four ideas per question; and "Is the frame right?" (Frame) | Yes / Not yet / Add my idea (Other) | Yes: idea round. Not yet: another framing turn |
-| Idea round | "Which options go forward?" (Options), multiSelect | each surviving option; bring back a cut one (Other) | the ticked options stay alive |
-| Discussion | the frontier, at most four decisions per call | each decision's answers, recommended first | each answer settles its decision |
+| Idea round | "Which options go forward?" (Options), multiSelect | at most four surviving options per question, strongest first, split across further questions in the same call; bring back a cut one (Other) | the ticked options stay alive |
+| Discussion | the frontier, at most four decisions per call | at most four answers per decision, recommended first; any other answer (Other) | each answer settles its decision |
 | Probe | "Run this probe?" (Probe) | Run it / Decide on what we have / Change the probe (Other) | run, skip, or redesign the probe |
-| Readiness | "Open the design board?" (Board); and "Which sections?" (Sections), multiSelect | Open now / Not yet / Page only from here | Open now: design stage. Not yet: back to the decisions, unmet items listed. Page only: the design goes in notes.md |
+| Readiness | "Open the design board?" (Board); and "Which sections?" (Sections), multiSelect, at most four sections per question, likeliest first, split across the call's remaining questions | Open now / Not yet / Page only from here | Open now: design stage. Not yet: back to the decisions, unmet items listed. Page only: the design goes in notes.md |
 | Design turn | "What next on the board?" (Next) | the next piece to draw (Recommended) / Rework a section / Back to the decisions / I'm drawing: read my changes next turn | the next design turn, or back to the decisions |
-| Scratch note | "Where does this note belong?" (Scratch) | each section by name / Leave it in scratch | adopt it into that section, or leave it |
+| Scratch note | "Where does this note belong?" (Scratch) | the likeliest section (Recommended) / the next two sections / Leave it in scratch; any other section (Other) | adopt it into that section, or leave it |
 | Converge | "Do you agree with this decision?" (Decision) | Agree / Agree, record my dissent / Disagree | Agree: hand-off. Dissent: recorded, then hand-off. Disagree: run the probe that decides it |
-| Hand-off | "What next?" (Next step) | the route Hand-off picks (Recommended) / the two next-closest routes / Stop here; the remaining route (Other) | the hand-off, or the session ends |
+| Hand-off | "What next?" (Next step) | the route Hand-off picks, or Stop here when none fits (Recommended) / the two next-closest routes / Stop here; the remaining route (Other) | the hand-off, or the session ends |
 
 ## 1. Open (one turn)
 
@@ -103,7 +103,7 @@ Before any idea or theory, grill the user over several turns until the problem i
 
 - Cover, in whatever order the answers lead: scope (in and out), requirements, hard constraints, the resources available (people, time, compute, data, budget), who consumes the result and what they will do with it, and what done, success and delivery look like.
 - Challenge each answer: why, what if it is not so, what breaks, and what the user gives up by it. Drill into a vague or conflicting answer before moving on, and skip whatever an answer already settled.
-- Every question goes through `AskUserQuestion`: at most four per call, each with the recommended answer first, labelled `(Recommended)`, and real alternatives after it.
+- Every question goes through `AskUserQuestion`: at most four per call, each with the recommended answer first, labelled `(Recommended)`, and at most three real alternatives after it.
 - After each answer, record it in the Aim and interview section of `notes.md`.
 - When nothing is left open, send a short summary as direct text (scope, requirements, constraints, resources, consumer, done criterion), then close on the Interview choice point. Record the user's confirming words in `notes.md`.
 
@@ -157,7 +157,7 @@ Short turns, opinions, questions back. Each turn:
 
 At most five live options in a turn, ranked. Side issues go to the parked list, not the turn.
 
-**The frontier.** Open decisions form a tree in `notes.md`, each naming the decisions it depends on and its reversal cost. The frontier is every open decision whose prerequisites are settled. Close each turn on the Discussion choice point: one `AskUserQuestion` call holding the top of the frontier, at most four decisions, each with the recommended answer first, labelled `(Recommended)`, and a one-line why. A question that depends on another still open waits. A "no" with a reason is a challenge to answer on its merits.
+**The frontier.** Open decisions form a tree in `notes.md`, each naming the decisions it depends on and its reversal cost. The frontier is every open decision whose prerequisites are settled. Close each turn on the Discussion choice point: one `AskUserQuestion` call holding the top of the frontier, at most four decisions, each with the recommended answer first, labelled `(Recommended)`, a one-line why, and at most four answers per decision. A question that depends on another still open waits. A "no" with a reason is a challenge to answer on its merits.
 
 **Reversal cost.** Each decision is cheap or costly to undo, per `references/system-fit.md`. A costly one gets both lenses and a probe or a `sy:debate` before it settles; a cheap one is settled fast and revisited when it bites.
 
@@ -218,6 +218,7 @@ Only when the user asks. The Decision section is the brief.
 - **Feasibility still in doubt** (a gain nobody has measured at representative scale): `/sy:spike <brief>`.
 - **A multi-task objective**: `/sy:plan <brief>`.
 - **A throwaway working version wanted first, with no spec or gate**: `/sy:mvp <brief>`.
+- **No route fits** (a do-not-build or root-cause ending): Stop here, and record `Hand-off: none`.
 - **One PR-sized change**: `/sy:spec <brief>`, or `/sy:spec <task>` with the brief when a task already exists.
 
 Each brief names the opportunity, the evidence, the success bar (the interview's done criterion, as the user confirmed it), the invariants, the failure modes, the open questions, and the delivery shape: the smallest end-to-end version, its milestones, and acceptance checks written from the done criterion. End with the board's folder path and the kickoff line.

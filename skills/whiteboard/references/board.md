@@ -42,7 +42,7 @@ Tell the user once, at the first write, with the path `board_write` returned:
 
 The board needs Excalidraw 0.18 or later; older editors move a section's notes differently on a resize, and the board is not tested on them.
 
-Known limit: two opposite-edge resizes of one section with no write between them read as a drag, and framed free text can shift by under half a cell.
+Known limit: resizing a section's left or top edge and then, before the next write, resizing its opposite edge or dragging the section reads as a drag, and framed free text and shapes shift by as far as that edge moved: under half a cell in a section with notes unless the resize cropped them, by any amount in a section without notes.
 
 On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
 

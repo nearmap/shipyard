@@ -594,7 +594,7 @@ def test_framed_text_straddling_an_unresized_frame_keeps_its_place(tmp_path, edg
     assert (hang["x"] - client["x"], hang["y"] - client["y"]) == offset, "text over a frame edge keeps its place"
 
 
-@pytest.mark.parametrize("dies_at", [board.STATE_NAME, board.SCENE_NAME])
+@pytest.mark.parametrize("dies_at", [board.WRITTEN_NAME, board.STATE_NAME, board.SCENE_NAME])
 def test_a_write_that_dies_partway_never_reads_its_own_notes_as_user_edits(tmp_path, monkeypatch, dies_at):
     board.write(tmp_path, SPEC)
     real = board.atomic_write

@@ -295,7 +295,8 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     (directory / REVISIONS_NAME).mkdir(parents=True, exist_ok=True)
     if seen is not None:
         _write_json(directory / REVISIONS_NAME / f"seen-r{marked}.json", seen)
-    # Base, last write, state, scene: a crash anywhere leaves the scene no newer than the state, which read recovers.
+    # Base, last write, state, scene: a crash anywhere leaves the scene no newer than the state, which read recovers,
+    # when the scene carries its revision marker.
     _write_json(directory / REVISIONS_NAME / f"r{revision}.json", {**_projection(live, grid), "grid": grid})
     text = json.dumps(scene, indent=2) + "\n"
     atomic_write(directory / WRITTEN_NAME, text)

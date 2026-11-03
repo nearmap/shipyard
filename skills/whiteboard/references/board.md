@@ -42,6 +42,8 @@ Tell the user once, at the first write, with the path `board_write` returned:
 
 The board needs Excalidraw 0.18 or later; older editors move a section's notes differently on a resize, and the board is not tested on them.
 
+Known limit: two opposite-edge resizes of one section with no write between them read as a drag, and framed free text can shift by under half a cell.
+
 On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
 
 ## A stale save

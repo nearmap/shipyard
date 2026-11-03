@@ -40,6 +40,8 @@ Tell the user once, at the first write, with the path `board_write` returned:
 
 > The board is `<path>/board.excalidraw`. Open it in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), or on excalidraw.com in a Chromium browser (Open, then Save writes back to the file). Neither reloads the file, so close and reopen the board after each of my turns. Drag notes to other cells or sections, edit their text or an arrow's label, add notes or arrows, and save; I read your changes at the start of every turn. Put notes you are not sure about to the right of the sections; I never move those. To zoom: Ctrl/Cmd + scroll or pinch, Shift+1 to fit the whole board, Shift+2 to zoom to the selected notes.
 
+The board needs Excalidraw 0.18 or later; older editors move a section's notes differently on a resize, and the board is not tested on them.
+
 On excalidraw.com, a browser other than Chromium has no File System Access API, so Save downloads a copy instead of writing the file back. excalidraw.com keeps the scene in the browser unless the user starts a live collaboration or a share link; say so when the problem is sensitive.
 
 ## A stale save

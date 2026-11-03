@@ -460,18 +460,13 @@ def test_a_re_pointed_arrow_and_its_link_added_again_get_distinct_ids(tmp_path):
     assert report["deleted_links"] == [], "the re-pointed link is answered"
 
 
-@pytest.mark.parametrize("notes_follow", [False, True], ids=["notes stay", "notes follow the frame"])
-def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path, notes_follow):
+def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
     client = _element(scene, "client")
     _free_text(scene, "aside", client["x"] + 20, client["y"] + client["height"] + 20, "api")
     api = _element(scene, "api")
     api.update(x=api["x"] - 200, y=api["y"] - 40, width=api["width"] + 200, height=api["height"] + 40)
-    if notes_follow:
-        for element in scene["elements"]:
-            if element.get("frameId") == "api" and element["type"] != "arrow":
-                element.update(x=element["x"] - 200, y=element["y"] - 40)
     x, y = client["x"] + client["width"] + 40, client["y"] + client["height"] + 30
     scene["elements"].append({
         **_element(scene, "link:client:server"), "id": "into", "x": x, "y": y, "frameId": "api",
@@ -496,6 +491,66 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path, notes_foll
     assert (marker["frameId"], marker["x"], marker["y"]) == (None, 0, -48), (
         "the revision marker stays unframed above the sections"
     )
+
+
+def test_a_drag_in_the_same_save_as_a_top_left_resize_is_reported(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    api = _element(scene, "api")
+    api.update(x=api["x"] - 500, y=api["y"] - 40, width=api["width"] + 500, height=api["height"] + 40)
+    server = _element(scene, "server")
+    _user_moves(scene, "server", server["x"] + board.CELL_WIDTH, server["y"])
+    _save(tmp_path, scene)
+    moved = _note(board.read(tmp_path), "server")
+    assert (moved["at"], moved.get("user_changed")) == ([2, 0], ["at"]), (
+        "a drag in the same save as a resize reads back as moved"
+    )
+    with pytest.raises(board.BoardConflict, match="server"):
+        board.write(tmp_path, SPEC)
+
+
+def test_a_section_dragged_with_its_notes_keeps_every_cell(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    for element in scene["elements"]:
+        if element["id"] == "api" or (element.get("frameId") == "api" and element["type"] != "arrow"):
+            element.update(x=element["x"] + 300, y=element["y"] + 200)
+    _save(tmp_path, scene)
+    assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a dragged section moves no cell"
+
+
+def test_a_section_growing_over_a_scratch_element_is_refused_and_writes_nothing(tmp_path):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    api = _element(scene, "api")
+    _user_adds_note(scene, "idea", "What about X?", api["x"] + api["width"] + 120, 40, None)
+    _save(tmp_path, scene)
+    before = (tmp_path / board.SCENE_NAME).read_bytes()
+    far = {"id": "w", "section": "api", "kind": "step", "text": "W", "at": [2, 0]}
+    with pytest.raises(board.BoardConflict, match="idea"):
+        board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], far]})
+    assert (tmp_path / board.SCENE_NAME).read_bytes() == before, "a refused write leaves the board untouched"
+
+
+def test_a_save_a_write_saw_is_the_base_for_a_later_stale_save_from_the_same_tab(tmp_path):
+    board.write(tmp_path, SPEC)
+    tab = _scene(tmp_path)
+    x, y = _cell_xy(tmp_path, tab, "api", 2, 0)
+    _user_adds_note(tab, "hand", "Idea", x, y, "api")
+    _save(tmp_path, tab)
+    board.write(tmp_path, SPEC)
+    _user_edits_text(tmp_path, "client:text", "Browser", tab)
+    changes = board.read(tmp_path)["stale_save"]["changes"]
+    assert changes == _changes(notes_edited=[{"id": "client", "section": "api", "at": [0, 0], "text": "Browser"}]), (
+        "a note the write already saw from this tab is not reported as added again"
+    )
+
+
+def test_a_missing_board_file_after_a_first_write_is_refused_not_read_as_an_empty_board(tmp_path):
+    board.write(tmp_path, SPEC)
+    (tmp_path / board.SCENE_NAME).unlink()
+    with pytest.raises(FileNotFoundError, match=r"board\.written\.excalidraw"):
+        board.write(tmp_path, SPEC)
 
 
 def test_a_nudged_note_keeps_its_cell_against_a_note_dropped_beside_it(tmp_path):
@@ -536,6 +591,7 @@ def test_spec_ids_never_collide_with_derived_ids(tmp_path):
         (_with("client", at=[1, 0]), "share cell"),
         ({**SPEC, "links": [{"from": "client", "to": "api"}]}, "not a note"),
         ({**SPEC, "notes": SPEC["notes"] * 2}, "unique"),
+        ({**SPEC, "links": SPEC["links"] * 2}, "links must be unique"),
         ({**SPEC, "lanes": []}, "unknown keys"),
     ],
 )

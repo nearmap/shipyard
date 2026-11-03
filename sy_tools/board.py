@@ -7,7 +7,7 @@ notes between cells and sections, edit text and labels, add notes and draw arrow
 kind, each section's name, each link and its label, and the grid that write laid out. That record is what
 turns the user's edits into a diff Claude can answer. `board.written.excalidraw` is a copy of the scene
 as Claude last wrote it. `revisions/r<N>.json` is what revision N wrote plus its grid, and
-`revisions/seen-r<N>.json` is the last save `read` saw from an editor holding revision N; both are the
+`revisions/seen-r<N>.json` is the last save `read` or `write` saw from an editor holding revision N; both are the
 board's sections, notes and links without geometry.
 
 Sections are Excalidraw frames, stacked top to bottom. Inside a section, notes sit on a grid of cells,
@@ -31,8 +31,8 @@ spec already matches the board. A user edit Claude has not adopted makes the wri
 element, so the session has to read the board and answer the edit before it can overwrite it. Colour is
 cosmetic: a note the user recoloured keeps the user's colour. The write never deletes an element.
 
-Every write stamps a revision marker on the board, and every read records the save it saw under that
-revision. An editor that opened the board before a write and saves afterwards writes back an older
+Every write stamps a revision marker on the board, and every read and write records the save it saw
+under that revision. An editor that opened the board before a write and saves afterwards writes back an older
 revision, which would otherwise read as the user deleting everything that write added. `read` detects
 that, reports the user's edits as the difference from the last save it saw from that revision (or from
 what that revision wrote), moves the stale save aside rather than losing it, and restores the last write.
@@ -78,7 +78,6 @@ FONT_SIZE = 16
 LINE_HEIGHT = 1.25
 WRAP_CHARS = 28
 TEXT_PADDING = 12
-SAME_SPOT = 0.5
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _REVISION_TEXT = re.compile(r"revision (\d+)")
@@ -109,13 +108,21 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     section. A note's `section` and `at` may be null only to adopt a note the user dragged out of every
     section. After merging, the whole board is laid out (see the module docstring). Raises `ValueError`
     for a malformed spec or a spec cell another note the spec does not name already holds, and
-    `BoardConflict` when it would overwrite a user edit not yet adopted, or when the board file is a stale
-    save `read` has not yet restored.
+    `BoardConflict` when it would overwrite a user edit not yet adopted, when the board file is a stale
+    save `read` has not yet restored, or when a section's growth would cover a scratch element. Raises
+    `FileNotFoundError` when the board file is missing after a first write.
     """
     sections, notes, links = _parse_spec(spec)
     scene_path, state_path = directory / SCENE_NAME, directory / STATE_NAME
-    scene = _load_scene(scene_path) if scene_path.is_file() else _empty_scene()
     state = _load_state(state_path)
+    if scene_path.is_file():
+        scene = _load_scene(scene_path)
+    elif state["revision"] == 0:
+        scene = _empty_scene()
+    else:
+        raise FileNotFoundError(
+            f"{scene_path} is missing: restore it from {directory / WRITTEN_NAME}, the last write, then write again"
+        )
     if (stale := _stale_revision(scene, state)) is not None:
         raise BoardConflict(
             f"the board file is revision {stale}, older than the last write ({state['revision']}): an editor "
@@ -124,6 +131,8 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         )
     elements: list[Element] = scene["elements"]
     live = _live(scene)
+    marked = _marked_revision(scene)
+    seen = _projection(live, state["grid"]) if marked is not None else None
     cells, origins = _cells(live, state["grid"])
     changed: list[str] = []
 
@@ -283,6 +292,8 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "grid": grid,
     }
     (directory / REVISIONS_NAME).mkdir(parents=True, exist_ok=True)
+    if seen is not None:
+        _write_json(directory / REVISIONS_NAME / f"seen-r{marked}.json", seen)
     # Written before the state names this revision, so a crash never leaves a revision with no base to diff.
     _write_json(directory / REVISIONS_NAME / f"r{revision}.json", {**_projection(live, grid), "grid": grid})
     text = json.dumps(scene, indent=2) + "\n"
@@ -299,11 +310,12 @@ def read(directory: Path) -> dict[str, Any]:
     hand. Each note carries `kind`: the kind Claude last wrote, null for a user's shape, and `text` for free
     text, which is never a note to adopt. `user_changed` lists the fields the user changed since the last
     write. Notes are listed in board order: section by section from the top, each by row then column, then
-    notes outside every section. Every read records the save it saw in `revisions/seen-r<N>.json`, N being
-    the revision the save carries. When the board file is a stale save (an older revision than the last
-    write), the file is first moved aside and the last write restored, and `stale_save` names where the
-    stale file was kept and carries `changes`: the user's edits in it, against the last save read saw from
-    that revision, or else against what that revision wrote, in the shape `_diff` returns.
+    notes outside every section. Every read, and every write before it changes anything, records the save
+    it saw in `revisions/seen-r<N>.json`, N being the revision the save carries. When the board file is a
+    stale save (an older revision than the last write), the file is first moved aside and the last write
+    restored, and `stale_save` names where the stale file was kept and carries `changes`: the user's edits
+    in it, against the last save read saw from that revision, or else against what that revision wrote, in the
+    shape `_diff` returns.
     A board is assumed open in one editor tab at a time: a saved file carries no tab identity, so two stale
     tabs at one revision share a base. Raises
     `FileNotFoundError` when no board exists in `directory`, and `AssertionError` when a stale save has
@@ -322,7 +334,7 @@ def read(directory: Path) -> dict[str, Any]:
         saved = _projection(_live(scene), json.loads(written_path.read_text(encoding="utf-8"))["grid"])
         changes = _diff(json.loads(base_path.read_text(encoding="utf-8")), saved)
         aside = directory / f"board.stale-r{stale}-{int(time.time())}.excalidraw"
-        scene_path.replace(aside)
+        atomic_write(aside, scene_path.read_text(encoding="utf-8"))
         atomic_write(scene_path, (directory / WRITTEN_NAME).read_text(encoding="utf-8"))
         scene = _load_scene(scene_path)
         stale_save = {
@@ -432,11 +444,11 @@ def _row_offset(rows: list[float], row: int) -> float:
 def _cells(live: Live, grid: dict[str, Any]) -> tuple[dict[str, Cell], dict[str, tuple[float, float]]]:
     """Each framed note's cell, read back against its section's recorded grid, and each section's grid origin.
 
-    Per axis, the grid is anchored on whichever origin, the recorded frame's or its current one, puts more
-    of the notes with a recorded cell back on it; a tie goes to the origin that leaves those notes the
-    smaller total distance from their recorded cell positions, and an exact tie to the current origin. A
-    note whose nearest cell is the cell the last write gave it in this section keeps it; every other note,
-    top to bottom, takes the nearest cell not already held, ties by (distance, row, column).
+    Per axis, the grid keeps the recorded frame's origin when the frame's far edge is where the last write
+    left it (the frame was resized from its near edge, which does not move the notes) and takes the current
+    origin otherwise (the frame was dragged, and the notes went with it). A note whose nearest cell is the
+    cell the last write gave it in this section keeps it; every other note, top to bottom, takes the
+    nearest cell not already held, ties by (distance, row, column).
     """
     by_frame: dict[str, list[Element]] = {}
     for element in live.values():
@@ -452,27 +464,10 @@ def _cells(live: Live, grid: dict[str, Any]) -> tuple[dict[str, Cell], dict[str,
             "cols": 0, "rows": [], "cells": {},
         })
         rows = recorded["rows"]
-        known = [(shape, recorded["cells"][shape["id"]]) for shape in shapes if shape["id"] in recorded["cells"]]
-
-        step = NOMINAL_ROW_HEIGHT + ROW_GAP
         origin = []
-        for axis in ("x", "y"):
-            hits = []
-            for base in (recorded[axis], frame[axis]):
-                total = 0
-                residual = 0.0
-                for shape, cell in known:
-                    rel = shape[axis] - base
-                    if axis == "x":
-                        total += max(0, round((rel - SECTION_INSET) / CELL_WIDTH)) == cell[0]
-                        residual += abs(rel - SECTION_INSET - cell[0] * CELL_WIDTH)
-                    else:
-                        reach = range(max(0, round((rel - SECTION_TOP_INSET) / step)) + len(rows) + 2)
-                        total += min((abs(_row_offset(rows, r) - rel), r) for r in reach)[1] == cell[1]
-                        residual += abs(rel - _row_offset(rows, cell[1]))
-                hits.append((total, -residual))
-            # a top or left resize moves the frame but, in some Excalidraw versions, not its notes
-            origin.append(recorded[axis] if hits[0] > hits[1] else frame[axis])
+        for axis, size in (("x", "width"), ("y", "height")):
+            far_edge_kept = math.isclose(frame[axis] + frame[size], recorded[axis] + recorded[size], abs_tol=1)
+            origin.append(recorded[axis] if far_edge_kept else frame[axis])
         origins[section] = (origin[0], origin[1])
         shapes.sort(key=lambda e: (e["y"], e["x"]))
         span = len(shapes) + 2
@@ -576,6 +571,21 @@ def _layout(
             "cols": cols, "rows": rows, "cells": {shape["id"]: cells[shape["id"]] for shape in shapes},
         }
         y += frame["height"] + SECTION_GAP
+    for element in live.values():
+        if (
+            element.get("frameId") is None and element["type"] not in ("frame", "arrow", "line")
+            and not element.get("containerId") and element["id"] != REVISION_ID
+        ):
+            right, bottom = _extent(element)
+            for frame in frames:
+                if (
+                    element["x"] < frame["x"] + frame["width"] and right > frame["x"]
+                    and element["y"] < frame["y"] + frame["height"] and bottom > frame["y"]
+                ):
+                    raise BoardConflict(
+                        f"scratch element {element['id']!r} sits where section {frame['id']!r} now reaches: ask the "
+                        "user to move it, or adopt it, then write again"
+                    )
     for ident, (source, target) in linked.items():
         arrow = live[ident]
         (sx, sy), (tx, ty) = _facing_edges(live[source], live[target])
@@ -694,6 +704,9 @@ def _parse_spec(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[s
         _fields({"label": "", **link} if isinstance(link, dict) else link, "link", ("from", "to", "label"))
         for link in spec.get("links", [])
     ]
+    pairs = [(link["from"], link["to"]) for link in links]
+    if dupes := sorted({pair for pair in pairs if pairs.count(pair) > 1}):
+        raise ValueError(f"links must be unique by from and to; repeated: {dupes}")
     ids = [x["id"] for x in sections + notes]
     if dupes := sorted({i for i in ids if ids.count(i) > 1}):
         raise ValueError(f"ids must be unique across sections and notes; repeated: {dupes}")

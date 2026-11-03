@@ -1095,14 +1095,7 @@ def scratch_dir(
     return {"path": str(directory)}
 
 
-BoardId = Annotated[
-    str,
-    Field(
-        description="The board's slug, e.g. `pricing-idea`: letters, digits, '-' or '_'. Resolves under this "
-        "repository's own scratch directory, so the same slug reaches the same board from every session and "
-        "worktree of this repository, and never another repository's board."
-    ),
-]
+BoardId = Annotated[str, Field(description="The board's slug, e.g. `pricing-idea`.")]
 
 
 def _board_folder(board_id: str) -> Path:
@@ -1117,23 +1110,15 @@ def board_write(
         Field(
             description='The design board as Claude wants it: {"sections": [{"id", "name"}], "notes": [{"id", '
             '"section", "kind", "text", "at"}], "links": [{"from", "to", "label"}]}. `kind` is one of component, '
-            "store, data, external, step, note; `data` text is a title line then one field per line. `at` is "
-            "[column, row] in the note's section, unique within it. A link's `label` is optional. `section` and "
-            "`at` are null together, and only to adopt a note the user dragged out of every section. Anything "
-            "the spec leaves out stays on the board, never deleted."
+            "store, data, external, step, note. `at` is [column, row] in the note's section; a link's `label` is "
+            "optional. Anything the spec leaves out stays on the board, never deleted."
         ),
     ],
 ) -> dict[str, Any]:
     """Merge a spec into the board's Excalidraw scene, creating it on first write, lay it out, and list what changed.
 
-    Every write lays the whole board out: sections stacked in spec order, each note at its cell, one spare
-    column and row per section for the user to drag into, links touching a section's notes redrawn with their
-    labels. Notes outside every section (the scratch area) never move. Refused, with the element named, when the
-    spec would overwrite a note's text, section or cell, a section's name or a link's label the user changed, or
-    something the user deleted, since the last write: call `board_read`, answer the edit, then write a spec
-    that adopts it. Also refused, as a plain error, when a spec cell is held by a note the spec does not name,
-    and while the file is a stale editor save, until `board_read` restores it. `scene` is the `.excalidraw` file
-    the user opens in any Excalidraw editor; `folder` holds it and the board's notes.
+    Refused, naming the element, when the spec would overwrite something the user changed or deleted since the
+    last write: call `board_read` first and write a spec that adopts it.
     """
     try:
         return board.write(_board_folder(board_id), spec)
@@ -1145,21 +1130,9 @@ def board_write(
 def board_read(board_id: BoardId) -> dict[str, Any]:
     """Read the board back: sections, notes and links with their owner and `user_changed` fields, and deletions.
 
-    `owner` is `claude` for what a write placed and `user` for what was added by hand. A note's `kind` is
-    the kind Claude last wrote, null for a user's shape, and `text` for free text. `user_changed` lists the
-    fields the user changed since the last write: a section's `name`; a note's `section`, `at` or `text`; a
-    link's `label`. A note's `at` is read back from where it sits: a drag to another cell is a change, a nudge
-    inside its cell is not and snaps back on the next write. `deleted_notes` and `deleted_links` are what
-    the user removed. Each is a move to answer before the next `board_write`. Notes are listed section by
-    section from the top, each by row then column, then the notes outside every section with `section` and
-    `at` null. Every read records the save it saw in the board's folder. A non-null `stale_save` means an
-    editor saved a copy opened before the last write: that copy was kept aside at `kept_as` and the last
-    write restored. Its `changes` are the user's edits in that copy since the last save read saw from any
-    editor holding that revision: `{"notes":
-    {"added", "deleted", "moved", "edited"}, "sections": {"added", "deleted", "renamed"}, "links": {"added",
-    "deleted", "relabelled"}}`, each note `{"id", "section", "at", "text"}` (moved: its section or cell
-    changed), each section `{"id", "name"}`, each link `[from, to, label]`. Answer every one with the user,
-    per the skill.
+    Not read-only: when the board file is a stale editor save (opened before the last write), the read moves it
+    aside to `stale_save.kept_as`, restores the last write, and lists the user's edits in that copy as
+    `stale_save.changes`.
     """
     try:
         return board.read(_board_folder(board_id))
@@ -1171,11 +1144,7 @@ def board_read(board_id: BoardId) -> dict[str, Any]:
 def page_render(board_id: BoardId) -> dict[str, Any]:
     """Render the board's notes.md to page.html, the readable decision record that refreshes itself when open.
 
-    The first call creates the board's folder and a minimal notes.md, then renders it. Every call renders
-    notes.md as it stands to page.html and its refresh sidecar page.rev.js, so an open page picks up the
-    change within a second. Edit notes.md and call this again; never edit page.html by hand, the next
-    render replaces it. Raw HTML in notes.md shows as text. Returns `folder`, `notes`, `page` and the
-    section headings as `sections`.
+    Creates the board's folder and a minimal notes.md first when they are missing.
     """
     try:
         return page.write(_board_folder(board_id))

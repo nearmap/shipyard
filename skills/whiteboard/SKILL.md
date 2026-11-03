@@ -15,8 +15,6 @@ effort: max
 
 Two colleagues at a whiteboard, working out how to approach a problem before anyone builds it. The output is one decision both agree with, the reasoning behind it, and the evidence it rests on.
 
-The user often does not know the exact aim until they see the problem, and may not know the theory or design practice that bears on it. That is why the session exists: look at the problem first, bring that knowledge, and argue until the two of you agree.
-
 $ARGUMENTS
 
 ## Where it sits
@@ -35,9 +33,7 @@ One folder per problem, keyed by the board's slug under this repository's scratc
 - `board.excalidraw`: the design board, once it is opened. Write it only through `board_write` and read it only through `board_read`; never edit the scene JSON by hand. Its shape is in `references/board.md`.
 - `probes/`: probe scripts and their outputs.
 
-The durable record is the hand-off brief.
-
-The board is the user's surface as much as Claude's. **Start every turn with `board_read`** once the design board exists. Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to another cell or section is a layout choice to adopt, an edited text or label is a correction to adopt or dispute, a deleted note is a question about the design. `board_write` refuses to overwrite any user edit the spec has not adopted, so an unanswered move cannot be lost silently.
+The board is the user's surface as much as Claude's. **Start every turn with `board_read`** once the design board exists. Every `user_changed` field, `user` note or link, and deletion is a move to answer in that turn, before anything else: a note dragged to another cell or section is a layout choice to adopt, an edited text or label is a correction to adopt or dispute, a deleted note is a question about the design.
 
 After every `board_write`, tell the user in one line to close and reopen the board tab: no editor reloads the file.
 
@@ -67,7 +63,7 @@ Every turn follows `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interact
 
 ## Choice points
 
-Every stage ends each turn on ONE `AskUserQuestion` call with the questions, labels and exits below; the stages cite this table instead of restating them. A stage exits only on the user's choice. Never a question in prose. The user can switch mode at any turn by saying so; confirm the switch in the next question.
+Every stage ends each turn on ONE `AskUserQuestion` call with the questions, labels and exits below. A stage exits only on the user's choice. The user can switch mode at any turn by saying so; confirm the switch in the next question.
 
 | Stage | Question (header) | Options, recommended first | Exit |
 |---|---|---|---|
@@ -104,7 +100,6 @@ Before any idea or theory, grill the user over several turns until the problem i
 
 - Cover, in whatever order the answers lead: scope (in and out), requirements, hard constraints, the resources available (people, time, compute, data, budget), who consumes the result and what they will do with it, and what done, success and delivery look like.
 - Challenge each answer: why, what if it is not so, what breaks, and what the user gives up by it. Drill into a vague or conflicting answer before moving on, and skip whatever an answer already settled.
-- Ask only what the user owns: aims, priorities, limits and judgment calls. Anything code, data or docs can answer is looked up, not asked.
 - Every question goes through `AskUserQuestion`: at most four per call, each with the recommended answer first, labelled `(Recommended)`, and real alternatives after it.
 - After each answer, record it in the Aim and interview section of `notes.md`.
 - When nothing is left open, send a short summary as direct text (scope, requirements, constraints, resources, consumer, done criterion), then close on the Interview choice point. Record the user's confirming words in `notes.md`.
@@ -113,7 +108,7 @@ On Board only and Decide now the interview is short, but it still confirms the d
 
 ## 3. Explore (when Start is Explore the possibilities)
 
-- A bounded early look: the repository's docs per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`, durable memory on the topic, the code path behind today's behaviour, and what the people asking said, as the user gives it. No tracker read.
+- A bounded early look: the repository's docs per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/docs-mcp.md`, durable memory on the topic, the code path behind today's behaviour, and what the people asking said, as the user gives it.
 - Then write 6 to 10 one-line ideas in `notes.md`, each naming the hypothesis it rests on.
 - Each turn: answer the user's cuts and additions, add at most one thing, and close on the Explore choice point. A cut idea gets its reason recorded and stays out unless the user revives it.
 

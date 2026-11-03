@@ -36,8 +36,6 @@ For every assumption the leading options rest on, name the cheapest plot or coun
 - how often the input is split between classes (are the classes really exclusive?);
 - residuals against time, order or an input the model ignores (structure the model missed).
 
-Check a textbook formula against a simulation of the actual code before relying on it. A formula for a slightly different estimator gives a confidently wrong reference.
-
 ## 4. Check the constraints
 
 - Labels: needed, available?
@@ -92,8 +90,5 @@ One case, or one pair of runs, is an observation. Generalise only after contrast
 ## Signs of a bad fit
 
 - Results swing on one parameter.
-- It needs rules bolted on afterwards.
-- It wins on average and loses on a slice that matters.
-- Its outputs contradict each other.
 - Its confidence is always maximal.
 - Its parameters have to be refitted for each new dataset.

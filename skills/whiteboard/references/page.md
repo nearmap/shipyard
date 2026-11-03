@@ -1,16 +1,12 @@
 # The decision page
 
-`notes.md` is the record in every mode. `page_render` turns it into `page.html` beside it, one collapsible section per `## ` heading, and an open page refreshes itself. Raw HTML in `notes.md` shows as text.
-
-Edit `notes.md`, then call `page_render`. Never edit `page.html`: the next render replaces it.
+`page_render` turns `notes.md` into `page.html` beside it, one collapsible section per `## ` heading. Raw HTML in `notes.md` shows as text.
 
 ## Opening the page
 
 Tell the user once, at Open, with the `page` path `page_render` returned:
 
 > The decision page is `<path>/page.html`. Open it in a browser (`file://<path>/page.html`); it refreshes itself within a second of each of my updates. On a remote machine, open it from VS Code with the Live Preview extension (`ms-vscode.live-server`), which serves it over the forwarded port. If neither works, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
-
-Chromium browsers are tested; others should work but are not.
 
 ## `notes.md` template
 

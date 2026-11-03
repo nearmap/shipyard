@@ -27,7 +27,7 @@ The smallest option is preferred only once everything it must reach (callers, co
 
 ## Size it before designing
 
-Rough numbers at full scale, before the first data-flow drawing; they go on the board's arrow labels.
+Rough numbers at full scale:
 
 - Data volume: rows, files, bytes, now and per day.
 - Request rate, and its peak.
@@ -54,7 +54,7 @@ Rough numbers at full scale, before the first data-flow drawing; they go on the 
 
 ## Reversal cost
 
-Every decision is cheap or costly to undo. A cheap one (a parameter, an internal function, a probe script) is settled fast and revisited when it bites. A costly one gets both lenses and a probe or a debate before it settles: a published schema, a stored format, a public API and a new service are costly, because something outside the change comes to depend on them.
+Every decision is cheap or costly to undo. A parameter, an internal function or a probe script is cheap; a published schema, a stored format, a public API and a new service are costly, because something outside the change comes to depend on them.
 
 ## Data alignment checks (only when relevant)
 
@@ -65,7 +65,4 @@ Every decision is cheap or costly to undo. A cheap one (a parameter, an internal
 
 ## Product checks
 
-- Does the output answer the consumer's question in their terms?
-- Is it stable, so the same question gives the same answer unless something real changed?
-- Can it be explained in one sentence?
 - Mock the final answer with placeholder values and ask the consumer whether that is what they need. Do it in the interview, before measuring anything.

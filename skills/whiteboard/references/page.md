@@ -100,7 +100,7 @@ Frontier: <open decisions whose dependencies are all settled>
 - Residual risks: <list>. Revisit if: <result or event>.
 - Delivery shape: <smallest end-to-end version; milestones; acceptance checks from the done criterion>
 - Agreed by the user: <their words, date>. Dissent on record: <if any>.
-- Hand-off: <none | /sy:spike | /sy:plan | /sy:spec>
+- Hand-off: <none | /sy:spike | /sy:plan | /sy:spec | /sy:mvp>
 
 ## Coverage and glossary
 | Area | Status | Notes |

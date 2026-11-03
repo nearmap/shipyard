@@ -6,8 +6,9 @@ description: >-
   Every mode interviews the user hard on scope, requirements, constraints, resources and what done
   means, explores the possibilities, looks at the theory and a small sample of real data, cuts a broad
   idea round down with a debate, and argues it out turn by turn until one decision both agree with,
-  then designs it on the board when the user is ready. Hands an unproven gain to /sy:spike and a
-  settled decision to /sy:plan or /sy:spec. Writes no production code and nothing to the tracker.
+  then designs it on the board when the user is ready. Hands an unproven gain to /sy:spike, a
+  settled decision to /sy:plan or /sy:spec, and a working version wanted first to /sy:mvp. Writes no
+  production code and nothing to the tracker.
 argument-hint: "[the problem in your own words | a board slug to resume]"
 disable-model-invocation: true
 effort: max
@@ -19,7 +20,7 @@ $ARGUMENTS
 
 ## Where it sits
 
-- Before `/sy:spike`, `/sy:plan` and `/sy:spec`. A spike measures a hypothesis; a whiteboard finds the hypothesis worth measuring, or shows none is needed.
+- Before `/sy:spike`, `/sy:plan`, `/sy:spec` and `/sy:mvp`. A spike measures a hypothesis; a whiteboard finds the hypothesis worth measuring, or shows none is needed.
 - The user picks the surfaces at Open: the decision page, the design board, or both. Every mode interviews, explores and designs; the surfaces only change where the work is shown.
 - No tracker read or write, at any point, and no preflight. The commands it hands off to own the record.
 - No production code, branches or PRs. Small probe scripts only, in the board's own folder.
@@ -81,7 +82,7 @@ Every stage ends each turn on ONE `AskUserQuestion` call with the questions, lab
 | Design turn | "What next on the board?" (Next) | the next piece to draw (Recommended) / Rework a section / Back to the decisions / I'm drawing: read my changes next turn | the next design turn, or back to the decisions |
 | Scratch note | "Where does this note belong?" (Scratch) | each section by name / Leave it in scratch | adopt it into that section, or leave it |
 | Converge | "Do you agree with this decision?" (Decision) | Agree / Agree, record my dissent / Disagree | Agree: hand-off. Dissent: recorded, then hand-off. Disagree: run the probe that decides it |
-| Hand-off | "What next?" (Next step) | /sy:spec / /sy:plan / /sy:spike / /sy:mvp / Stop here | the hand-off, or the session ends |
+| Hand-off | "What next?" (Next step) | the route Hand-off picks (Recommended) / the two next-closest routes / Stop here; the remaining route (Other) | the hand-off, or the session ends |
 
 ## 1. Open (one turn)
 

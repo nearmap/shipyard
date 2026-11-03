@@ -34,7 +34,7 @@ cosmetic: a note the user recoloured keeps the user's colour. The write never de
 Every write stamps a revision marker on the board, and every read and write records the save it saw
 under that revision. An editor that opened the board before a write and saves afterwards writes back an older
 revision, which would otherwise read as the user deleting everything that write added. `read` detects
-that, reports the user's edits as the difference from the last save it saw from that revision (or from
+that, reports the user's edits as the difference from the last save a read or write saw from that revision (or from
 what that revision wrote), moves the stale save aside rather than losing it, and restores the last write.
 """
 from __future__ import annotations
@@ -109,7 +109,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     section. After merging, the whole board is laid out (see the module docstring). Raises `ValueError`
     for a malformed spec or a spec cell another note the spec does not name already holds, and
     `BoardConflict` when it would overwrite a user edit not yet adopted, when the board file is a stale
-    save `read` has not yet restored, or when a section's growth would cover a scratch element. Raises
+    save `read` has not yet restored, or when a laid-out section would cover a scratch element. Raises
     `FileNotFoundError` when the board file is missing after a first write.
     """
     sections, notes, links = _parse_spec(spec)
@@ -314,8 +314,8 @@ def read(directory: Path) -> dict[str, Any]:
     it saw in `revisions/seen-r<N>.json`, N being the revision the save carries. When the board file is a
     stale save (an older revision than the last write), the file is first moved aside and the last write
     restored, and `stale_save` names where the stale file was kept and carries `changes`: the user's edits
-    in it, against the last save read saw from that revision, or else against what that revision wrote, in the
-    shape `_diff` returns.
+    in it, against the last save a read or write saw from that revision, or else against what that revision
+    wrote, in the shape `_diff` returns.
     A board is assumed open in one editor tab at a time: a saved file carries no tab identity, so two stale
     tabs at one revision share a base. Raises
     `FileNotFoundError` when no board exists in `directory`, and `AssertionError` when a stale save has
@@ -457,18 +457,22 @@ def _cells(live: Live, grid: dict[str, Any]) -> tuple[dict[str, Cell], dict[str,
             by_frame.setdefault(section, []).append(element)
     cells: dict[str, Cell] = {}
     origins: dict[str, tuple[float, float]] = {}
-    for section, shapes in by_frame.items():
-        frame = live[section]
-        recorded = grid.get(section, {
+    recorded_grids: dict[str, dict[str, Any]] = {}
+    for frame in _frames_top_down(live):
+        recorded = grid.get(frame["id"], {
             "x": frame["x"], "y": frame["y"], "width": frame["width"], "height": frame["height"],
             "cols": 0, "rows": [], "cells": {},
         })
-        rows = recorded["rows"]
         origin = []
         for axis, size in (("x", "width"), ("y", "height")):
             far_edge_kept = math.isclose(frame[axis] + frame[size], recorded[axis] + recorded[size], abs_tol=1)
             origin.append(recorded[axis] if far_edge_kept else frame[axis])
-        origins[section] = (origin[0], origin[1])
+        recorded_grids[frame["id"]] = recorded
+        origins[frame["id"]] = (origin[0], origin[1])
+    for section, shapes in by_frame.items():
+        recorded = recorded_grids[section]
+        origin = origins[section]
+        rows = recorded["rows"]
         shapes.sort(key=lambda e: (e["y"], e["x"]))
         span = len(shapes) + 2
         candidates: dict[str, list[tuple[float, int, int]]] = {}
@@ -548,10 +552,7 @@ def _layout(
         laid_out = set(cells) | note_texts | set(note_arrows) | labels | {REVISION_ID}
         others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
         for element in others:
-            left, top = element["x"], element["y"]
-            if "points" in element:
-                left += min(point[0] for point in element["points"])
-                top += min(point[1] for point in element["points"])
+            left, top, _, _ = _extent(element)
             element["x"] += gdx if left + gdx >= 0 else dx
             element["y"] += gdy if top + gdy >= y else dy
         texts = []
@@ -563,8 +564,8 @@ def _layout(
             _place_text(text_el, shape)
             texts.append(text_el)
         members = [*shapes, *texts, *others]
-        right = max([SECTION_INSET + cols * CELL_WIDTH - CELL_GAP, *(_extent(e)[0] - frame["x"] for e in members)])
-        bottom = max([offset - ROW_GAP, *(_extent(e)[1] - frame["y"] for e in members)])
+        right = max([SECTION_INSET + cols * CELL_WIDTH - CELL_GAP, *(_extent(e)[2] - frame["x"] for e in members)])
+        bottom = max([offset - ROW_GAP, *(_extent(e)[3] - frame["y"] for e in members)])
         frame["width"], frame["height"] = right + SECTION_INSET, bottom + SECTION_INSET
         grid[frame["id"]] = {
             "x": frame["x"], "y": frame["y"], "width": frame["width"], "height": frame["height"],
@@ -576,15 +577,15 @@ def _layout(
             element.get("frameId") is None and element["type"] not in ("frame", "arrow", "line")
             and not element.get("containerId") and element["id"] != REVISION_ID
         ):
-            right, bottom = _extent(element)
+            left, top, right, bottom = _extent(element)
             for frame in frames:
                 if (
-                    element["x"] < frame["x"] + frame["width"] and right > frame["x"]
-                    and element["y"] < frame["y"] + frame["height"] and bottom > frame["y"]
+                    left < frame["x"] + frame["width"] and right > frame["x"]
+                    and top < frame["y"] + frame["height"] and bottom > frame["y"]
                 ):
                     raise BoardConflict(
                         f"scratch element {element['id']!r} sits where section {frame['id']!r} now reaches: ask the "
-                        "user to move it, or adopt it, then write again"
+                        "user to move it clear of that section, then write again"
                     )
     for ident, (source, target) in linked.items():
         arrow = live[ident]
@@ -598,13 +599,12 @@ def _layout(
     return grid
 
 
-def _extent(element: Element) -> tuple[float, float]:
+def _extent(element: Element) -> tuple[float, float, float, float]:
+    """The element's (left, top, right, bottom); an arrow's or stroke's points may run left or up from x, y."""
     if "points" in element:
-        return (
-            element["x"] + max(point[0] for point in element["points"]),
-            element["y"] + max(point[1] for point in element["points"]),
-        )
-    return element["x"] + element["width"], element["y"] + element["height"]
+        xs, ys = [point[0] for point in element["points"]], [point[1] for point in element["points"]]
+        return element["x"] + min(xs), element["y"] + min(ys), element["x"] + max(xs), element["y"] + max(ys)
+    return element["x"], element["y"], element["x"] + element["width"], element["y"] + element["height"]
 
 
 def _arrows(live: Live) -> dict[tuple[str, str], Element]:

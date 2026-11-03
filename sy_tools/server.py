@@ -1118,7 +1118,7 @@ def board_write(
     """Merge a spec into the board's Excalidraw scene, creating it on first write, lay it out, and list what changed."""
     try:
         return board.write(_board_folder(board_id), spec)
-    except (ValueError, config.ConfigError) as exc:
+    except (FileNotFoundError, ValueError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 
 

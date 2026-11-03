@@ -519,11 +519,16 @@ def test_a_section_dragged_with_its_notes_keeps_every_cell(tmp_path):
     assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a dragged section moves no cell"
 
 
-def test_a_section_growing_over_a_scratch_element_is_refused_and_writes_nothing(tmp_path):
+@pytest.mark.parametrize("kind", ["note", "freedraw drawn right to left"])
+def test_a_section_growing_over_a_scratch_element_is_refused_and_writes_nothing(tmp_path, kind):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
     api = _element(scene, "api")
-    _user_adds_note(scene, "idea", "What about X?", api["x"] + api["width"] + 120, 40, None)
+    if kind == "note":
+        _user_adds_note(scene, "idea", "What about X?", api["x"] + api["width"] + 120, 40, None)
+    else:
+        stroke = _free_text(scene, "idea", api["x"] + api["width"] + 600, 40, None)
+        stroke.update(type="freedraw", points=[[0, 0], [-450, 20]], width=450, height=20)
     _save(tmp_path, scene)
     before = (tmp_path / board.SCENE_NAME).read_bytes()
     far = {"id": "w", "section": "api", "kind": "step", "text": "W", "at": [2, 0]}
@@ -546,11 +551,25 @@ def test_a_save_a_write_saw_is_the_base_for_a_later_stale_save_from_the_same_tab
     )
 
 
-def test_a_missing_board_file_after_a_first_write_is_refused_not_read_as_an_empty_board(tmp_path):
-    board.write(tmp_path, SPEC)
-    (tmp_path / board.SCENE_NAME).unlink()
-    with pytest.raises(FileNotFoundError, match=r"board\.written\.excalidraw"):
-        board.write(tmp_path, SPEC)
+def test_a_missing_board_file_after_a_first_write_is_refused_not_read_as_an_empty_board(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "repo_scratch_dir", lambda: tmp_path)
+    server.board_write("pricing-idea", SPEC)
+    (tmp_path / "whiteboards" / "pricing-idea" / board.SCENE_NAME).unlink()
+    with pytest.raises(server.ToolError, match=r"board\.written\.excalidraw"):
+        server.board_write("pricing-idea", SPEC)
+
+
+def test_a_note_less_section_shrunk_from_its_left_keeps_its_free_text_inside(tmp_path):
+    spec = {**SPEC, "sections": [*SPEC["sections"], {"id": "empty", "name": "Notes"}]}
+    board.write(tmp_path, spec)
+    scene = _scene(tmp_path)
+    empty = _element(scene, "empty")
+    _free_text(scene, "aside", empty["x"] + 60, empty["y"] + 50, "empty")
+    empty.update(x=empty["x"] + 80, width=empty["width"] - 80)
+    _save(tmp_path, scene)
+    board.write(tmp_path, spec)
+    scene = _scene(tmp_path)
+    assert _inside(_element(scene, "aside"), _element(scene, "empty")), "free text stays inside its frame"
 
 
 def test_a_nudged_note_keeps_its_cell_against_a_note_dropped_beside_it(tmp_path):

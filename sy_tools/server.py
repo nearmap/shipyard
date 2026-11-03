@@ -1140,7 +1140,8 @@ def board_read(board_id: BoardId) -> dict[str, Any]:
 def page_render(board_id: BoardId) -> dict[str, Any]:
     """Render the board's notes.md to page.html, the readable decision record that refreshes itself when open.
 
-    Creates the board's folder and a minimal notes.md first when they are missing.
+    Creates the board's folder and a minimal notes.md first when they are missing, and returns `created: true`
+    when it made the folder.
     """
     try:
         return page.write(_board_folder(board_id))

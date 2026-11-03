@@ -295,12 +295,12 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     (directory / REVISIONS_NAME).mkdir(parents=True, exist_ok=True)
     if seen is not None:
         _write_json(directory / REVISIONS_NAME / f"seen-r{marked}.json", seen)
-    # Written before the state names this revision, so a crash never leaves a revision with no base to diff.
+    # Base, last write, state, scene: a crash anywhere leaves the scene no newer than the state, which read recovers.
     _write_json(directory / REVISIONS_NAME / f"r{revision}.json", {**_projection(live, grid), "grid": grid})
     text = json.dumps(scene, indent=2) + "\n"
-    atomic_write(scene_path, text)
     atomic_write(directory / WRITTEN_NAME, text)
     _write_json(state_path, new_state)
+    atomic_write(scene_path, text)
     return {"folder": str(directory), "scene": str(scene_path), "revision": revision, "changed": changed}
 
 
@@ -519,8 +519,9 @@ def _layout(
     every arrow between two notes, at least one framed in a section, is redrawn and its label centred on it.
     Unframed elements stay put, so an arrow between two scratch notes keeps its geometry.
 
-    Raises `BoardConflict` when an element framed in a section sits left of or above that origin, and when a
-    laid-out section would cover a scratch element.
+    Raises `BoardConflict` when an element framed in a section sits left of or above that origin in a margin a
+    resize opened (the frame's edge now lies past the origin on that axis), and when a laid-out section would
+    cover a scratch element.
     """
     before = {ident: _geometry(e) for ident, e in live.items()}
     frames = [live[ident] for ident in section_order] + [
@@ -555,12 +556,13 @@ def _layout(
             offset += heights.get(row, NOMINAL_ROW_HEIGHT) + ROW_GAP
         ox, oy = origins.get(frame["id"], (frame["x"], frame["y"]))
         gdx, gdy = -ox, y - oy
+        opened_x, opened_y = frame["x"] < ox - 1, frame["y"] < oy - 1
         frame["x"], frame["y"] = 0.0, y
         laid_out = set(cells) | note_texts | set(note_arrows) | labels | {REVISION_ID}
         others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
         for element in others:
             left, top, _, _ = _extent(element)
-            if left + gdx < 0 or top + gdy < y:
+            if (opened_x and left + gdx < 0) or (opened_y and top + gdy < y):
                 raise BoardConflict(
                     f"element {element['id']!r} sits in the margin a resize opened on section {frame['id']!r}, left "
                     "of or above its notes: ask the user to move it level with or right of and below the section's "

@@ -68,10 +68,13 @@ def test_the_tool_creates_the_folder_and_notes_then_renders_later_edits(tmp_path
     folder = tmp_path / "whiteboards" / "pricing-idea"
     result = server.page_render("pricing-idea")
     assert result["sections"] == ["Where we are"], result
+    assert result["created"] is True, "the first render makes the folder"
     assert (folder / page.NOTES_NAME).read_text(encoding="utf-8").startswith("# pricing-idea\n")
     assert "Nothing yet." in (folder / page.PAGE_NAME).read_text(encoding="utf-8")
     (folder / page.NOTES_NAME).write_text(NOTES, encoding="utf-8")
-    assert server.page_render("pricing-idea")["sections"] == ["Where we are", "Options", "Options"]
+    result = server.page_render("pricing-idea")
+    assert result["sections"] == ["Where we are", "Options", "Options"], result
+    assert result["created"] is False, "a later render finds the folder already there"
     assert "Intro above the sections." in (folder / page.PAGE_NAME).read_text(encoding="utf-8")
 
 

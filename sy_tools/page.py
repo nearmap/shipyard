@@ -148,9 +148,10 @@ def write(directory: Path) -> dict[str, Any]:
     """Render `directory`'s notes.md to page.html and its refresh sidecar, creating both folder and notes.md first.
 
     A missing notes.md is written as a minimal record titled with the folder's name. The page is written
-    before the sidecar, each atomically. Returns the folder, the notes.md and page.html paths, and the
-    section headings in page order.
+    before the sidecar, each atomically. Returns the folder, the notes.md and page.html paths, the section
+    headings in page order, and `created`, true when this call made the folder.
     """
+    created = not directory.is_dir()
     directory.mkdir(parents=True, exist_ok=True)
     notes = directory / NOTES_NAME
     if not notes.exists():
@@ -165,6 +166,7 @@ def write(directory: Path) -> dict[str, Any]:
         "notes": str(notes),
         "page": str(page),
         "sections": [_plain(t["children"]) for t in _parse(markdown) if _is_section(t)],
+        "created": created,
     }
 
 

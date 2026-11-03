@@ -543,19 +543,80 @@ def test_a_section_growing_over_a_scratch_element_is_refused_and_writes_nothing(
     assert (tmp_path / board.SCENE_NAME).read_bytes() == before, "a refused write leaves the board untouched"
 
 
-@pytest.mark.parametrize("section", ["api", "empty"], ids=["with notes", "note-less"])
-def test_free_text_in_the_margin_a_resize_opened_is_refused_and_writes_nothing(tmp_path, section):
+@pytest.mark.parametrize(
+    ("section", "resize", "element"),
+    [("api", "west", "text"), ("empty", "west", "text"), ("api", "north", "text"), ("api", "west", "arrow")],
+    ids=["with notes", "note-less", "north resize", "arrow into the margin"],
+)
+def test_free_text_in_the_margin_a_resize_opened_is_refused_and_writes_nothing(tmp_path, section, resize, element):
     spec = {**SPEC, "sections": [*SPEC["sections"], {"id": "empty", "name": "Notes"}]}
     board.write(tmp_path, spec)
     scene = _scene(tmp_path)
     frame = _element(scene, section)
-    frame.update(x=frame["x"] - 400, width=frame["width"] + 400)
-    _free_text(scene, "typed", frame["x"] + 30, frame["y"] + 45, section)
+    if resize == "west":
+        frame.update(x=frame["x"] - 400, width=frame["width"] + 400)
+    else:
+        frame.update(y=frame["y"] - 150, height=frame["height"] + 150)
+    if element == "arrow":
+        ident = "into"
+        client = _element(scene, "client")
+        x, y = client["x"] + client["width"] + 40, client["y"] + client["height"] + 30
+        scene["elements"].append({
+            **_element(scene, "link:client:server"), "id": ident, "x": x, "y": y, "frameId": "api",
+            "points": [[0, 0], [frame["x"] + 20 - x, frame["y"] + 10 - y]], "startBinding": None,
+            "endBinding": None, "boundElements": None,
+        })
+    else:
+        ident = "typed"
+        _free_text(scene, ident, frame["x"] + 30, frame["y"] + (45 if resize == "west" else 20), section)
     _save(tmp_path, scene)
     before = (tmp_path / board.SCENE_NAME).read_bytes()
-    with pytest.raises(board.BoardConflict, match=f"'typed'.*'{section}'"):
+    with pytest.raises(board.BoardConflict, match=f"'{ident}'.*'{section}'"):
         board.write(tmp_path, spec)
     assert (tmp_path / board.SCENE_NAME).read_bytes() == before, "a refused write leaves the board untouched"
+
+
+@pytest.mark.parametrize("edge", ["left", "top"])
+def test_framed_text_straddling_an_unresized_frame_keeps_its_place(tmp_path, edge):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    api, client = _element(scene, "api"), _element(scene, "client")
+    if edge == "left":
+        _free_text(scene, "hang", api["x"] - 15, client["y"] + client["height"] + 20, "api")
+    else:
+        _free_text(scene, "hang", client["x"] + 20, api["y"] - 10, "api")
+    _save(tmp_path, scene)
+    hang = _element(scene, "hang")
+    offset = (hang["x"] - client["x"], hang["y"] - client["y"])
+    assert board.write(tmp_path, SPEC)["changed"] == [], "the same spec over an unresized frame changes nothing"
+    scene = _scene(tmp_path)
+    hang, client = _element(scene, "hang"), _element(scene, "client")
+    assert (hang["x"] - client["x"], hang["y"] - client["y"]) == offset, "text over a frame edge keeps its place"
+
+
+@pytest.mark.parametrize("dies_at", [board.STATE_NAME, board.SCENE_NAME])
+def test_a_write_that_dies_partway_never_reads_its_own_notes_as_user_edits(tmp_path, monkeypatch, dies_at):
+    board.write(tmp_path, SPEC)
+    real = board.atomic_write
+
+    def dying(path: Path, text: str) -> None:
+        if path.name == dies_at:
+            raise OSError(f"disk gone writing {path.name}")
+        real(path, text)
+
+    monkeypatch.setattr(board, "atomic_write", dying)
+    far = {"id": "w", "section": "api", "kind": "step", "text": "W", "at": [2, 0]}
+    with pytest.raises(OSError, match="disk gone"):
+        board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], far]})
+    monkeypatch.undo()
+    report = board.read(tmp_path)
+    assert not any(n["owner"] == "user" or "user_changed" in n for n in report["notes"]), report["notes"]
+    assert report["deleted_notes"] == [], "no note this write placed reads as deleted"
+    if dies_at == board.SCENE_NAME:
+        assert report["stale_save"]["changes"] == _changes(), "the scene the write never reached holds no user edit"
+    else:
+        assert report["stale_save"] is None, "a write that died before its state leaves the board as it was"
+    assert board.read(tmp_path)["stale_save"] is None, "a recovered board is not stale again"
 
 
 def test_a_save_a_write_saw_is_the_base_for_a_later_stale_save_from_the_same_tab(tmp_path):

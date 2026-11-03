@@ -45,7 +45,7 @@ After every `board_write`, tell the user in one line to close and reopen the boa
 - a deleted note: ask whether it leaves the design; if it does, the user deletes it again after reopening;
 - a deleted link or section: the user deletes it again after reopening, because `board_write` never deletes.
 
-To resume: call `page_render` for the slug, read `notes.md`, then `board_read` when the board exists, then give a three-line recap (aim, leading option, strongest open objection) and carry on. A `page_render` that returns only a "Where we are" section, over "Nothing yet.", means the slug named no board: confirm the slug with the user before carrying on.
+To resume: call `page_render` for the slug, read `notes.md`, then `board_read` when the board exists, then give a three-line recap (aim, leading option, strongest open objection) and carry on. A `page_render` that returns `created: true` means the slug named no board: confirm the slug with the user before carrying on.
 
 **Writing for the reader.** The sections of `notes.md` that render on the page, and board note text, follow the `text.reader` setting, resolved with `get_config` and applied as written per `${CLAUDE_PLUGIN_ROOT}/skills/tighten/SKILL.md` § The reader (Precedence, The floor, Applied as written).
 

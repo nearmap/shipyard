@@ -69,6 +69,7 @@ pre code { padding: 0; }
 .table-wrap { overflow-x: auto; margin: 1rem 0; }
 table { border-collapse: collapse; }
 th, td { border: 1px solid var(--line); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
+main img { max-width: 100%; height: auto; }
 </style>
 </head>
 <body>

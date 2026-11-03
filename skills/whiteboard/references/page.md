@@ -10,7 +10,7 @@ Tell the user once, at Open, with the `page` path `page_render` returned:
 
 ## `notes.md` template
 
-Sections in page order: what the user reads first comes first. Keep each section's heading as written, so links into the page (`page.html#decision-tree`) keep working. Options, decisions, assumptions and probe numbers are tables; a probe's figure is a relative image under `probes/`.
+Sections in page order: what the user reads first comes first. Keep each section's heading as written, so links into the page (`page.html#decision-tree`) keep working.
 
 ```markdown
 # <problem name>
@@ -48,9 +48,9 @@ Frontier: <open decisions whose dependencies are all settled>
 ## Options
 - Idea round: <date>, debate outcome in one line.
 
-| Option | Status | Rests on | Would break if | Cost | For | Against | Ruled out because (tier); reopen if |
-|---|---|---|---|---|---|---|---|
-| <name> | idea / alive / parked / ruled out | <hypothesis ids> | <the plot or count that would show it> | <build and run, rough> | <strongest point> | <strongest point> | <one line> |
+| Option | Intuition | Status | Rests on (assumes) | Would break if | Cost | For | Against | Ruled out because (tier); reopen if |
+|---|---|---|---|---|---|---|---|---|
+| <name> | <one sentence> | idea / alive / parked / ruled out | <assumptions about state and observations; hypothesis ids> | <the plot or count that would show it> | <build and run, rough> | <strongest point> | <strongest point> | <one line> |
 
 ## Theory, hypotheses and assumptions
 - Known: <mechanism or result, and its source>

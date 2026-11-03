@@ -7,6 +7,7 @@ edit rewrites the bound text's `originalText`, a delete drops the elements.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -467,12 +468,6 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
     _free_text(scene, "aside", client["x"] + 20, client["y"] + client["height"] + 20, "api")
     api = _element(scene, "api")
     api.update(x=api["x"] - 200, y=api["y"] - 40, width=api["width"] + 200, height=api["height"] + 40)
-    x, y = client["x"] + client["width"] + 40, client["y"] + client["height"] + 30
-    scene["elements"].append({
-        **_element(scene, "link:client:server"), "id": "into", "x": x, "y": y, "frameId": "api",
-        "points": [[0, 0], [api["x"] + 20 - x, api["y"] + 10 - y]], "startBinding": None, "endBinding": None,
-        "boundElements": None,
-    })
     _element(scene, board.REVISION_ID)["frameId"] = "api"
     _save(tmp_path, scene)
     assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a resize moves no note"
@@ -482,18 +477,13 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
     assert (aside["x"] - client["x"], aside["y"] - client["y"]) == (20, client["height"] + 20), (
         "framed free text stays on its notes through a resize"
     )
-    api, into = _element(scene, "api"), _element(scene, "into")
-    tip_x, tip_y = into["x"] + into["points"][-1][0], into["y"] + into["points"][-1][1]
-    assert api["x"] <= tip_x <= api["x"] + api["width"] and api["y"] <= tip_y <= api["y"] + api["height"], (
-        "an arrow drawn into the margin a resize opened stays inside its frame"
-    )
     marker = _element(scene, board.REVISION_ID)
     assert (marker["frameId"], marker["x"], marker["y"]) == (None, 0, -48), (
         "the revision marker stays unframed above the sections"
     )
 
 
-@pytest.mark.parametrize("axes", ["xy", "x"], ids=["Alt-se both axes", "Shift-e one axis"])
+@pytest.mark.parametrize("axes", ["xy", "x"], ids=["Alt-se both axes", "Alt-e one axis"])
 def test_a_frame_resized_symmetrically_about_its_centre_keeps_every_cell(tmp_path, axes):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
@@ -532,13 +522,16 @@ def test_a_section_dragged_with_its_notes_keeps_every_cell(tmp_path):
     assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a dragged section moves no cell"
 
 
-@pytest.mark.parametrize("kind", ["note", "freedraw drawn right to left"])
+@pytest.mark.parametrize("kind", ["note", "freedraw drawn right to left", "rectangle at a quarter turn"])
 def test_a_section_growing_over_a_scratch_element_is_refused_and_writes_nothing(tmp_path, kind):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
     api = _element(scene, "api")
     if kind == "note":
         _user_adds_note(scene, "idea", "What about X?", api["x"] + api["width"] + 120, 40, None)
+    elif kind == "rectangle at a quarter turn":
+        bar = _free_text(scene, "idea", api["x"] + api["width"] + 470, api["y"] + api["height"] / 2 - 300, None)
+        bar.update(type="rectangle", width=20, height=600, angle=math.pi / 2)
     else:
         stroke = _free_text(scene, "idea", api["x"] + api["width"] + 600, 40, None)
         stroke.update(type="freedraw", points=[[0, 0], [-450, 20]], width=450, height=20)
@@ -547,6 +540,21 @@ def test_a_section_growing_over_a_scratch_element_is_refused_and_writes_nothing(
     far = {"id": "w", "section": "api", "kind": "step", "text": "W", "at": [2, 0]}
     with pytest.raises(board.BoardConflict, match="idea"):
         board.write(tmp_path, {**SPEC, "notes": [*SPEC["notes"], far]})
+    assert (tmp_path / board.SCENE_NAME).read_bytes() == before, "a refused write leaves the board untouched"
+
+
+@pytest.mark.parametrize("section", ["api", "empty"], ids=["with notes", "note-less"])
+def test_free_text_in_the_margin_a_resize_opened_is_refused_and_writes_nothing(tmp_path, section):
+    spec = {**SPEC, "sections": [*SPEC["sections"], {"id": "empty", "name": "Notes"}]}
+    board.write(tmp_path, spec)
+    scene = _scene(tmp_path)
+    frame = _element(scene, section)
+    frame.update(x=frame["x"] - 400, width=frame["width"] + 400)
+    _free_text(scene, "typed", frame["x"] + 30, frame["y"] + 45, section)
+    _save(tmp_path, scene)
+    before = (tmp_path / board.SCENE_NAME).read_bytes()
+    with pytest.raises(board.BoardConflict, match=f"'typed'.*'{section}'"):
+        board.write(tmp_path, spec)
     assert (tmp_path / board.SCENE_NAME).read_bytes() == before, "a refused write leaves the board untouched"
 
 

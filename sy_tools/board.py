@@ -109,7 +109,8 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     section. After merging, the whole board is laid out (see the module docstring). Raises `ValueError`
     for a malformed spec or a spec cell another note the spec does not name already holds, and
     `BoardConflict` when it would overwrite a user edit not yet adopted, when the board file is a stale
-    save `read` has not yet restored, or when a laid-out section would cover a scratch element. Raises
+    save `read` has not yet restored, when a laid-out section would cover a scratch element, or when an element
+    framed in a section sits left of or above the section's grid origin, in a margin a resize opened. Raises
     `FileNotFoundError` when the board file is missing after a first write.
     """
     sections, notes, links = _parse_spec(spec)
@@ -513,10 +514,13 @@ def _layout(
 
     Sections in `section_order`, then any other frame by current y, each at x = 0, stacked top to bottom.
     Each note in `cells` goes to its cell and its text follows; everything else framed in a section moves
-    with its notes, from the origin `_cells` chose, or with the frame where that would leave it outside;
-    each frame is sized to its grid (one spare column and row included) and to what it frames;
+    with its notes, from the origin `_cells` chose; each frame is sized to its grid (one spare column and row
+    included) and to what it frames;
     every arrow between two notes, at least one framed in a section, is redrawn and its label centred on it.
     Unframed elements stay put, so an arrow between two scratch notes keeps its geometry.
+
+    Raises `BoardConflict` when an element framed in a section sits left of or above that origin, and when a
+    laid-out section would cover a scratch element.
     """
     before = {ident: _geometry(e) for ident, e in live.items()}
     frames = [live[ident] for ident in section_order] + [
@@ -549,7 +553,6 @@ def _layout(
         for row in range(max((cells[s["id"]][1] for s in shapes), default=-1) + 2):
             rows.append(offset)
             offset += heights.get(row, NOMINAL_ROW_HEIGHT) + ROW_GAP
-        dx, dy = -frame["x"], y - frame["y"]
         ox, oy = origins.get(frame["id"], (frame["x"], frame["y"]))
         gdx, gdy = -ox, y - oy
         frame["x"], frame["y"] = 0.0, y
@@ -557,8 +560,14 @@ def _layout(
         others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
         for element in others:
             left, top, _, _ = _extent(element)
-            element["x"] += gdx if left + gdx >= 0 else dx
-            element["y"] += gdy if top + gdy >= y else dy
+            if left + gdx < 0 or top + gdy < y:
+                raise BoardConflict(
+                    f"element {element['id']!r} sits in the margin a resize opened on section {frame['id']!r}, left "
+                    "of or above its notes: ask the user to move it level with or right of and below the section's "
+                    "first cell, then write again"
+                )
+            element["x"] += gdx
+            element["y"] += gdy
         texts = []
         for shape in shapes:
             col, row = cells[shape["id"]]
@@ -604,11 +613,25 @@ def _layout(
 
 
 def _extent(element: Element) -> tuple[float, float, float, float]:
-    """The element's (left, top, right, bottom); an arrow's or stroke's points may run left or up from x, y."""
+    """The element's (left, top, right, bottom) once its `angle` turns it about the centre of its unturned box.
+
+    An arrow's or stroke's points may run left or up from x, y, so its unturned box spans its points.
+    """
+    x, y = element["x"], element["y"]
     if "points" in element:
-        xs, ys = [point[0] for point in element["points"]], [point[1] for point in element["points"]]
-        return element["x"] + min(xs), element["y"] + min(ys), element["x"] + max(xs), element["y"] + max(ys)
-    return element["x"], element["y"], element["x"] + element["width"], element["y"] + element["height"]
+        corners = [(x + point[0], y + point[1]) for point in element["points"]]
+    else:
+        right, bottom = x + element["width"], y + element["height"]
+        corners = [(x, y), (right, y), (x, bottom), (right, bottom)]
+    if element["angle"]:
+        xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        cos, sin = math.cos(element["angle"]), math.sin(element["angle"])
+        corners = [
+            (cx + (px - cx) * cos - (py - cy) * sin, cy + (px - cx) * sin + (py - cy) * cos) for px, py in corners
+        ]
+    xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def _arrows(live: Live) -> dict[tuple[str, str], Element]:

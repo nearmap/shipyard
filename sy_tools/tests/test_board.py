@@ -467,11 +467,18 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path, notes_foll
     client = _element(scene, "client")
     _free_text(scene, "aside", client["x"] + 20, client["y"] + client["height"] + 20, "api")
     api = _element(scene, "api")
-    api.update(x=api["x"] - 500, y=api["y"] - 40, width=api["width"] + 500, height=api["height"] + 40)
+    api.update(x=api["x"] - 200, y=api["y"] - 40, width=api["width"] + 200, height=api["height"] + 40)
     if notes_follow:
         for element in scene["elements"]:
             if element.get("frameId") == "api" and element["type"] != "arrow":
-                element.update(x=element["x"] - 500, y=element["y"] - 40)
+                element.update(x=element["x"] - 200, y=element["y"] - 40)
+    x, y = client["x"] + client["width"] + 40, client["y"] + client["height"] + 30
+    scene["elements"].append({
+        **_element(scene, "link:client:server"), "id": "into", "x": x, "y": y, "frameId": "api",
+        "points": [[0, 0], [api["x"] + 20 - x, api["y"] + 10 - y]], "startBinding": None, "endBinding": None,
+        "boundElements": None,
+    })
+    _element(scene, board.REVISION_ID)["frameId"] = "api"
     _save(tmp_path, scene)
     assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a resize moves no note"
     board.write(tmp_path, SPEC)
@@ -479,6 +486,15 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path, notes_foll
     client, aside = _element(scene, "client"), _element(scene, "aside")
     assert (aside["x"] - client["x"], aside["y"] - client["y"]) == (20, client["height"] + 20), (
         "framed free text stays on its notes through a resize"
+    )
+    api, into = _element(scene, "api"), _element(scene, "into")
+    tip_x, tip_y = into["x"] + into["points"][-1][0], into["y"] + into["points"][-1][1]
+    assert api["x"] <= tip_x <= api["x"] + api["width"] and api["y"] <= tip_y <= api["y"] + api["height"], (
+        "an arrow drawn into the margin a resize opened stays inside its frame"
+    )
+    marker = _element(scene, board.REVISION_ID)
+    assert (marker["frameId"], marker["x"], marker["y"]) == (None, 0, -48), (
+        "the revision marker stays unframed above the sections"
     )
 
 

@@ -303,7 +303,7 @@ def read(directory: Path) -> dict[str, Any]:
     the revision the save carries. When the board file is a stale save (an older revision than the last
     write), the file is first moved aside and the last write restored, and `stale_save` names where the
     stale file was kept and carries `changes`: the user's edits in it, against the last save read saw from
-    that revision, or else against what that revision wrote, in the shape the `board_read` tool documents.
+    that revision, or else against what that revision wrote, in the shape `_diff` returns.
     A board is assumed open in one editor tab at a time: a saved file carries no tab identity, so two stale
     tabs at one revision share a base. Raises
     `FileNotFoundError` when no board exists in `directory`, and `AssertionError` when a stale save has
@@ -550,11 +550,15 @@ def _layout(
         ox, oy = origins.get(frame["id"], (frame["x"], frame["y"]))
         gdx, gdy = -ox, y - oy
         frame["x"], frame["y"] = 0.0, y
-        laid_out = set(cells) | note_texts | set(note_arrows) | labels
+        laid_out = set(cells) | note_texts | set(note_arrows) | labels | {REVISION_ID}
         others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
         for element in others:
-            element["x"] += gdx if element["x"] + gdx >= 0 else dx
-            element["y"] += gdy if element["y"] + gdy >= y else dy
+            left, top = element["x"], element["y"]
+            if "points" in element:
+                left += min(point[0] for point in element["points"])
+                top += min(point[1] for point in element["points"])
+            element["x"] += gdx if left + gdx >= 0 else dx
+            element["y"] += gdy if top + gdy >= y else dy
         texts = []
         for shape in shapes:
             col, row = cells[shape["id"]]
@@ -634,7 +638,12 @@ def _projection(live: Live, grid: dict[str, Any]) -> dict[str, Any]:
 
 
 def _diff(base: dict[str, Any], now: dict[str, Any]) -> dict[str, Any]:
-    """What changed from projection `base` to projection `now`, in the shape `board_read` documents."""
+    """What changed from projection `base` to projection `now`.
+
+    `notes` holds `added`, `deleted`, `moved` and `edited`, each a list of `{id, section, at, text}`;
+    `sections` holds `added`, `deleted` and `renamed`, each a list of `{id, name}`; `links` holds `added`,
+    `deleted` and `relabelled`, each a list of `[from, to, label]`.
+    """
     before, after = base["notes"], now["notes"]
     old_sections, new_sections = base["sections"], now["sections"]
     old_links = {(a, b): label for a, b, label in base["links"]}
@@ -798,7 +807,7 @@ def _stamp_revision(elements: list[Element], live: Live, revision: int) -> None:
         )
         elements.append(marker)
         live[REVISION_ID] = marker
-    marker.update(text=label, originalText=label, width=len(label) * 12 * 0.55)
+    marker.update(text=label, originalText=label, width=len(label) * 12 * 0.55, frameId=None)
     _touch(marker)
 
 

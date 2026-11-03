@@ -1115,11 +1115,7 @@ def board_write(
         ),
     ],
 ) -> dict[str, Any]:
-    """Merge a spec into the board's Excalidraw scene, creating it on first write, lay it out, and list what changed.
-
-    Refused, naming the element, when the spec would overwrite something the user changed or deleted since the
-    last write: call `board_read` first and write a spec that adopts it.
-    """
+    """Merge a spec into the board's Excalidraw scene, creating it on first write, lay it out, and list what changed."""
     try:
         return board.write(_board_folder(board_id), spec)
     except (ValueError, config.ConfigError) as exc:

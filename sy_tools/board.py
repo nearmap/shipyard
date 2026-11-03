@@ -444,9 +444,10 @@ def _row_offset(rows: list[float], row: int) -> float:
 def _cells(live: Live, grid: dict[str, Any]) -> tuple[dict[str, Cell], dict[str, tuple[float, float]]]:
     """Each framed note's cell, read back against its section's recorded grid, and each section's grid origin.
 
-    Per axis, the grid keeps the recorded frame's origin when the frame's far edge is where the last write
-    left it (the frame was resized from its near edge, which does not move the notes) and takes the current
-    origin otherwise (the frame was dragged, and the notes went with it). A note whose nearest cell is the
+    Per axis, the grid keeps the recorded frame's origin when the frame's far edge or its centre is where the
+    last write left it (the frame was resized from its near edge, or symmetrically about its centre, which
+    does not move the notes) and takes the current origin otherwise (the frame was dragged, and the notes
+    went with it). A note whose nearest cell is the
     cell the last write gave it in this section keeps it; every other note, top to bottom, takes the
     nearest cell not already held, ties by (distance, row, column).
     """
@@ -466,7 +467,10 @@ def _cells(live: Live, grid: dict[str, Any]) -> tuple[dict[str, Cell], dict[str,
         origin = []
         for axis, size in (("x", "width"), ("y", "height")):
             far_edge_kept = math.isclose(frame[axis] + frame[size], recorded[axis] + recorded[size], abs_tol=1)
-            origin.append(recorded[axis] if far_edge_kept else frame[axis])
+            centre_kept = math.isclose(
+                2 * frame[axis] + frame[size], 2 * recorded[axis] + recorded[size], abs_tol=1
+            )
+            origin.append(recorded[axis] if far_edge_kept or centre_kept else frame[axis])
         recorded_grids[frame["id"]] = recorded
         origins[frame["id"]] = (origin[0], origin[1])
     for section, shapes in by_frame.items():

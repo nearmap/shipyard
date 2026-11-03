@@ -493,6 +493,19 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
     )
 
 
+@pytest.mark.parametrize("axes", ["xy", "x"], ids=["Alt-se both axes", "Shift-e one axis"])
+def test_a_frame_resized_symmetrically_about_its_centre_keeps_every_cell(tmp_path, axes):
+    board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    api = _element(scene, "api")
+    if "x" in axes:
+        api.update(x=api["x"] - board.CELL_WIDTH, width=api["width"] + 2 * board.CELL_WIDTH)
+    if "y" in axes:
+        api.update(y=api["y"] - 150, height=api["height"] + 300)
+    _save(tmp_path, scene)
+    assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a symmetric resize moves no note"
+
+
 def test_a_drag_in_the_same_save_as_a_top_left_resize_is_reported(tmp_path):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)

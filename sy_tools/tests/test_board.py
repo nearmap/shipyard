@@ -445,7 +445,9 @@ def test_a_re_pointed_arrow_and_its_link_added_again_get_distinct_ids(tmp_path):
     scene = _scene(tmp_path)
     _element(scene, "link:client:server")["endBinding"]["elementId"] = "users"
     _save(tmp_path, scene)
-    assert board.read(tmp_path)["deleted_links"] == ["client->server"]
+    assert board.read(tmp_path)["deleted_links"] == ["client->server"], (
+        "a re-pointed arrow reads as its old link deleted"
+    )
     adopted = {**SPEC, "links": [{"from": "client", "to": "users", "label": "calls"}, SPEC["links"][1]]}
     board.write(tmp_path, adopted)
     board.write(tmp_path, {**adopted, "links": [*adopted["links"], SPEC["links"][0]]})
@@ -462,15 +464,22 @@ def test_a_re_pointed_arrow_and_its_link_added_again_get_distinct_ids(tmp_path):
 def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path, notes_follow):
     board.write(tmp_path, SPEC)
     scene = _scene(tmp_path)
+    client = _element(scene, "client")
+    _free_text(scene, "aside", client["x"] + 20, client["y"] + client["height"] + 20, "api")
     api = _element(scene, "api")
-    api.update(x=api["x"] - 300, y=api["y"] - 200, width=api["width"] + 300, height=api["height"] + 200)
+    api.update(x=api["x"] - 500, y=api["y"] - 40, width=api["width"] + 500, height=api["height"] + 40)
     if notes_follow:
         for element in scene["elements"]:
             if element.get("frameId") == "api" and element["type"] != "arrow":
-                element.update(x=element["x"] - 300, y=element["y"] - 200)
+                element.update(x=element["x"] - 500, y=element["y"] - 40)
     _save(tmp_path, scene)
     assert not any("user_changed" in n for n in board.read(tmp_path)["notes"]), "a resize moves no note"
     board.write(tmp_path, SPEC)
+    scene = _scene(tmp_path)
+    client, aside = _element(scene, "client"), _element(scene, "aside")
+    assert (aside["x"] - client["x"], aside["y"] - client["y"]) == (20, client["height"] + 20), (
+        "framed free text stays on its notes through a resize"
+    )
 
 
 def test_a_nudged_note_keeps_its_cell_against_a_note_dropped_beside_it(tmp_path):

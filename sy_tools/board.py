@@ -124,7 +124,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         )
     elements: list[Element] = scene["elements"]
     live = _live(scene)
-    cells = _cells(live, state["grid"])
+    cells, origins = _cells(live, state["grid"])
     changed: list[str] = []
 
     for section in sections:
@@ -259,7 +259,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
             _add_label(arrow, link["label"], elements, live)
         changed.append(f"link {name} added")
 
-    grid = _layout(live, [section["id"] for section in sections], final)
+    grid = _layout(live, [section["id"] for section in sections], final, origins)
 
     revision = state["revision"] + 1
     _stamp_revision(elements, live, revision)
@@ -399,7 +399,7 @@ def _board_notes(live: Live, grid: dict[str, Any]) -> list[tuple[str, str | None
     shape whose text is gone is none either. Free text has no cell.
     """
     rank = {frame["id"]: i for i, frame in enumerate(_frames_top_down(live))}
-    cells = _cells(live, grid)
+    cells, _ = _cells(live, grid)
     found = []
     for element in live.values():
         if element["type"] in _NOTE_SHAPES:
@@ -429,14 +429,14 @@ def _row_offset(rows: list[float], row: int) -> float:
     return rows[-1] + (row - len(rows) + 1) * step
 
 
-def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
-    """Each framed note's cell, read back from its top-left against its section's recorded grid.
+def _cells(live: Live, grid: dict[str, Any]) -> tuple[dict[str, Cell], dict[str, tuple[float, float]]]:
+    """Each framed note's cell, read back against its section's recorded grid, and each section's grid origin.
 
     Per axis, the grid is anchored on whichever origin, the recorded frame's or its current one, puts more
-    of the notes with a recorded cell back on it (a resize from the top or left moves the frame but, in some
-    Excalidraw versions, not its notes); a tie goes to the current origin. A note whose
-    nearest cell is the cell the last write gave it in this section keeps it; every other note, top to
-    bottom, takes the nearest cell not already held, ties by (distance, row, column).
+    of the notes with a recorded cell back on it; a tie goes to the origin that leaves those notes the
+    smaller total distance from their recorded cell positions, and an exact tie to the current origin. A
+    note whose nearest cell is the cell the last write gave it in this section keeps it; every other note,
+    top to bottom, takes the nearest cell not already held, ties by (distance, row, column).
     """
     by_frame: dict[str, list[Element]] = {}
     for element in live.values():
@@ -444,6 +444,7 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
         if section is not None and element["type"] in _NOTE_SHAPES and _bound_text(element, live) is not None:
             by_frame.setdefault(section, []).append(element)
     cells: dict[str, Cell] = {}
+    origins: dict[str, tuple[float, float]] = {}
     for section, shapes in by_frame.items():
         frame = live[section]
         recorded = grid.get(section, {
@@ -459,15 +460,20 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
             hits = []
             for base in (recorded[axis], frame[axis]):
                 total = 0
+                residual = 0.0
                 for shape, cell in known:
                     rel = shape[axis] - base
                     if axis == "x":
                         total += max(0, round((rel - SECTION_INSET) / CELL_WIDTH)) == cell[0]
+                        residual += abs(rel - SECTION_INSET - cell[0] * CELL_WIDTH)
                     else:
                         reach = range(max(0, round((rel - SECTION_TOP_INSET) / step)) + len(rows) + 2)
                         total += min((abs(_row_offset(rows, r) - rel), r) for r in reach)[1] == cell[1]
-                hits.append(total)
+                        residual += abs(rel - _row_offset(rows, cell[1]))
+                hits.append((total, -residual))
+            # a top or left resize moves the frame but, in some Excalidraw versions, not its notes
             origin.append(recorded[axis] if hits[0] > hits[1] else frame[axis])
+        origins[section] = (origin[0], origin[1])
         shapes.sort(key=lambda e: (e["y"], e["x"]))
         span = len(shapes) + 2
         candidates: dict[str, list[tuple[float, int, int]]] = {}
@@ -494,15 +500,18 @@ def _cells(live: Live, grid: dict[str, Any]) -> dict[str, Cell]:
             _, row, col = next(c for c in candidates[shape["id"]] if (c[2], c[1]) not in held)
             held.add((col, row))
             cells[shape["id"]] = [col, row]
-    return cells
+    return cells, origins
 
 
-def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dict[str, Any]:
+def _layout(
+    live: Live, section_order: list[str], cells: dict[str, Cell], origins: dict[str, tuple[float, float]],
+) -> dict[str, Any]:
     """Lay the board out and return the grid it laid, per section: frame box, columns, row offsets, note cells.
 
     Sections in `section_order`, then any other frame by current y, each at x = 0, stacked top to bottom.
     Each note in `cells` goes to its cell and its text follows; everything else framed in a section moves
-    with it; each frame is sized to its grid (one spare column and row included) and to what it frames;
+    with its notes, from the origin `_cells` chose, or with the frame where that would leave it outside;
+    each frame is sized to its grid (one spare column and row included) and to what it frames;
     every arrow between two notes, at least one framed in a section, is redrawn and its label centred on it.
     Unframed elements stay put, so an arrow between two scratch notes keeps its geometry.
     """
@@ -538,12 +547,14 @@ def _layout(live: Live, section_order: list[str], cells: dict[str, Cell]) -> dic
             rows.append(offset)
             offset += heights.get(row, NOMINAL_ROW_HEIGHT) + ROW_GAP
         dx, dy = -frame["x"], y - frame["y"]
+        ox, oy = origins.get(frame["id"], (frame["x"], frame["y"]))
+        gdx, gdy = -ox, y - oy
         frame["x"], frame["y"] = 0.0, y
         laid_out = set(cells) | note_texts | set(note_arrows) | labels
         others = [e for e in live.values() if e.get("frameId") == frame["id"] and e["id"] not in laid_out]
         for element in others:
-            element["x"] += dx
-            element["y"] += dy
+            element["x"] += gdx if element["x"] + gdx >= 0 else dx
+            element["y"] += gdy if element["y"] + gdy >= y else dy
         texts = []
         for shape in shapes:
             col, row = cells[shape["id"]]

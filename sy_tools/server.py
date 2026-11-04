@@ -1171,8 +1171,7 @@ def page_serve(
     Loopback only, behind a token in the URL. Read-only except one thing: the board editor at `board_url` saves
     board.excalidraw, read back by board_read like any editor's save. The server lives as long as this sy server
     and keeps the same URL after a restart unless its port is taken; `port` overrides the derived one. `forward`
-    is the ssh line that opens the URL from another machine; its host is this machine's own name, so the user may
-    need to swap in the name they connect to.
+    is the ssh line that opens the URL from another machine.
     """
     try:
         folder = _board_folder(board_id)

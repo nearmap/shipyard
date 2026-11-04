@@ -384,9 +384,9 @@ def render(markdown: str) -> str:
         if _plain(heading["children"]) == "Comments":
             table = _first_table(body, "Comments")
             if table is not None:
-                head, rows = table["children"]
-                head["children"] = head["children"][1:]
-                for row in rows["children"]:
+                thead, tbody = table["children"]
+                thead["children"] = thead["children"][1:]
+                for row in tbody["children"]:
                     row["children"] = row["children"][1:]
         parts.append(_HTML(body, BlockState()) + "</details>\n")
     # escape=True means every literal "<table>" here came from the renderer, never from notes.md.
@@ -447,7 +447,7 @@ def decision_log(markdown: str) -> dict[str, Any]:
 
 
 def save_comments(directory: Path) -> dict[str, Any]:
-    """Replace comments.json from an ArtifactData listing of the hosted page's comment store into `directory`'s comments.json.
+    """Replace `directory`'s comments.json with an ArtifactData listing of the hosted page's comment store.
 
     Reads every `.comments-in/comments/<author>/items/<id>.json`, taking author and id from the path, writes
     them sorted by (at, author, id), then removes the staging folder. `pending` lists the comments whose
@@ -517,10 +517,11 @@ def _section(markdown: str, heading: str) -> list[dict[str, Any]]:
 
 def _first_table(tokens: list[dict[str, Any]], heading: str) -> dict[str, Any] | None:
     table = next((t for t in tokens if t["type"] == "table"), None)
-    if table is None and any(t["type"] == "paragraph" and _plain(t["children"]).lstrip().startswith("|") for t in tokens):
+    if any(t["type"] == "paragraph" and "|" in _plain(t["children"]) for t in tokens):
         raise ValueError(
-            f"the `## {heading}` table did not parse: a row's cell count or an unescaped `|` (code spans too) "
-            "broke it; escape a literal pipe as `\\|`"
+            f"the `## {heading}` table is broken: a row split off by a blank line or a following sentence, a "
+            "missing edge pipe, a wrong cell count, or an unescaped `|` (code spans too). "
+            "Escape a literal pipe as `\\|`"
         )
     return table
 
@@ -568,6 +569,7 @@ def serve(root: Path, port: int | None, probe: str) -> dict[str, Any]:
         token_file = root / TOKEN_NAME
         if not token_file.exists():
             staged = token_file.with_suffix(".tmp")
+            staged.unlink(missing_ok=True)
             descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(secrets.token_urlsafe(16))
@@ -772,6 +774,14 @@ let watching = false;
 let keepAside = false;
 let puts = 0;
 let timer = null;
+for (const type of ["keydown", "pointerdown", "paste", "drop"]) {
+  window.addEventListener(type, (e) => {
+    if (loading) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+}
 const version = () => X.getSceneVersion(api.getSceneElementsIncludingDeleted()) + "|"
   + Object.keys(api.getFiles()).sort().join(",");
 const unsaved = () => !loading && version() !== recorded;
@@ -885,14 +895,6 @@ window.addEventListener("keydown", (e) => {
     save();
   }
 }, true);
-for (const type of ["keydown", "pointerdown", "paste", "drop"]) {
-  window.addEventListener(type, (e) => {
-    if (loading) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
-  }, true);
-}
 setInterval(async () => {
   if (loading || saving || watching) return;
   watching = true;

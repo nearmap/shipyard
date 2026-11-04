@@ -116,6 +116,8 @@ def test_decisions_json_holds_the_tree_rows_and_the_decision_items_as_plain_text
     assert page.decision_log("# Idea\n\n## Decision tree\n\nNo table yet.\n")["tree"] == []
     assert page.decision_log("# Idea\n")["decision"] == []
     with pytest.raises(ValueError, match="Decision tree"):
+        page.decision_log("# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n\n| D2 | b |\n")
+    with pytest.raises(ValueError, match="Decision tree"):
         page.decision_log("# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 |\n| D2 | x | y |\n")
 
 
@@ -158,14 +160,16 @@ def test_comments_json_takes_author_and_id_from_the_store_paths_and_stays_pendin
     _stage(folder, "u_a", "c1", {**comment, "text": "first", "at": "2026-11-04T10:00:00Z"})
     page.write(folder)
     html = (folder / page.PAGE_NAME).read_text(encoding="utf-8")
-    assert "u_a/c1" not in html and "<th>Where</th>" in html and "<td>options</td>" in html
-    _stage(folder, "u_b", "c1", {**comment, "text": "second", "at": "2026-11-04T10:00:00Z"})
-    _stage(folder, "u_b", "c2", {**comment, "text": "third", "at": "2026-11-04T11:00:00Z"})
-    _stage(folder, "u_a", "c1", {**comment, "text": "first", "at": "2026-11-04T10:00:00Z"})
+    assert "u_a/c1" not in html and "<th>Comment</th>" not in html
+    assert "<th>Where</th>" in html and "<td>options</td>" in html
     assert [c["text"] for c in server.page_comments_save("idea")["pending"]] == ["second"]
     before = (folder / page.COMMENTS_NAME).read_bytes()
     notes.write_text("# Idea\n\n## Comments\n\n| Comment | Where |\n|---|---|\n| `a|b` | x |\n", encoding="utf-8")
     _stage(folder, "u_a", "c9", {**comment, "text": "new", "at": "2026-11-04T12:00:00Z"})
+    with pytest.raises(server.ToolError, match="Comments"):
+        server.page_comments_save("idea")
+    split_row = "# Idea\n\n## Comments\n\n| Comment | Where |\n|---|---|\n| u | x |\n\n| v | y |\n"
+    notes.write_text(split_row, encoding="utf-8")
     with pytest.raises(server.ToolError, match="Comments"):
         server.page_comments_save("idea")
     assert (folder / page.COMMENTS_IN).exists() and (folder / page.COMMENTS_NAME).read_bytes() == before
@@ -206,7 +210,6 @@ def test_the_server_answers_only_behind_its_token_inside_the_root_and_survives_a
     root = (tmp_path / "whiteboards").resolve()
     first = page._SERVERS[root][1]
     assert first is not None and first.server_address[0] == "127.0.0.1"
-    assert server.page_serve("idea") == served
     assert stat.S_IMODE((root / page.TOKEN_NAME).stat().st_mode) == 0o600
     page._SERVERS.clear()
     try:
@@ -216,7 +219,14 @@ def test_the_server_answers_only_behind_its_token_inside_the_root_and_survives_a
         first.shutdown()
         first.server_close()
     assert server.page_serve("idea") == served, "a borrowed server that is gone is bound here"
-    assert page._SERVERS[root][1] is not None and _call(served["url"])[0] == 200
+    rebound = page._SERVERS[root][1]
+    assert rebound is not None and _call(served["url"])[0] == 200
+    rebound.shutdown()
+    rebound.server_close()
+    page._SERVERS.clear()
+    (root / page.TOKEN_NAME).unlink()
+    (root / f"{page.TOKEN_NAME}.tmp").write_text("stale", encoding="utf-8")
+    assert server.page_serve("idea")["url"] != served["url"], "a stale staging file does not block a new token"
 
 
 def test_serving_before_any_render_is_refused(tmp_path, monkeypatch):

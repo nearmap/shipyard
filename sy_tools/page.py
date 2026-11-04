@@ -29,6 +29,7 @@ import hashlib
 import html
 import http.server
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -375,11 +376,18 @@ def render(markdown: str) -> str:
         else:
             head.append(token)
     parts = [_HTML(head, BlockState())]
-    used: set[str] = set()
+    used: set[str] = {"stopped"}
     for index, (heading, body) in enumerate(sections):
         summary = _HTML.render_tokens(heading["children"], BlockState())
         opened = " open" if index == 0 else ""
         parts.append(f'<details id="{_slug(_plain(heading["children"]), used)}"{opened}><summary>{summary}</summary>\n')
+        if _plain(heading["children"]) == "Comments":
+            table = _first_table(body, "Comments")
+            if table is not None:
+                head, rows = table["children"]
+                head["children"] = head["children"][1:]
+                for row in rows["children"]:
+                    row["children"] = row["children"][1:]
         parts.append(_HTML(body, BlockState()) + "</details>\n")
     # escape=True means every literal "<table>" here came from the renderer, never from notes.md.
     body_html = "".join(parts).replace("<table>", '<div class="table-wrap"><table>')
@@ -420,7 +428,7 @@ def write(directory: Path) -> dict[str, Any]:
 
 def decision_log(markdown: str) -> dict[str, Any]:
     """The decision tree's rows and the Decision section's top-level items as plain text, for /sy:plan and /sy:spec."""
-    tree = _first_table(_section(markdown, "Decision tree"))
+    tree = _first_table(_section(markdown, "Decision tree"), "Decision tree")
     rows: list[dict[str, str]] = []
     if tree is not None:
         head, body = tree["children"]
@@ -439,7 +447,7 @@ def decision_log(markdown: str) -> dict[str, Any]:
 
 
 def save_comments(directory: Path) -> dict[str, Any]:
-    """Merge an ArtifactData listing of the hosted page's comment store into `directory`'s comments.json.
+    """Replace comments.json from an ArtifactData listing of the hosted page's comment store into `directory`'s comments.json.
 
     Reads every `.comments-in/comments/<author>/items/<id>.json`, taking author and id from the path, writes
     them sorted by (at, author, id), then removes the staging folder. `pending` lists the comments whose
@@ -454,18 +462,18 @@ def save_comments(directory: Path) -> dict[str, Any]:
             body = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:
             raise ValueError(f"{path} is not a JSON comment: {exc}") from None
-        if not isinstance(body, dict):
-            raise ValueError(f"{path} is not a JSON object")
+        if not isinstance(body, dict) or not isinstance(body.get("at"), str):
+            raise ValueError(f"{path} is not a comment object with a string `at`")
         comments.append({**body, "id": path.stem, "author": path.parent.parent.name})
     comments.sort(key=lambda c: (c["at"], c["author"], c["id"]))
     keys = [f"{c['author']}/{c['id']}" for c in comments]
     assert len(set(keys)) == len(keys), f"duplicate comment keys in {staging}"
+    table = _first_table(_section((directory / NOTES_NAME).read_text(encoding="utf-8"), "Comments"), "Comments")
+    rows = table["children"][1]["children"] if table else []
+    answered = {_text(row["children"][0]["children"]).strip() for row in rows}
     target = directory / COMMENTS_NAME
     atomic_write(target, json.dumps(comments, indent=2, ensure_ascii=False) + "\n")
     shutil.rmtree(staging)
-    table = _first_table(_section((directory / NOTES_NAME).read_text(encoding="utf-8"), "Comments"))
-    rows = table["children"][1]["children"] if table else []
-    answered = {_text(row["children"][0]["children"]).strip() for row in rows}
     pending = [c for c, key in zip(comments, keys, strict=True) if key not in answered]
     return {"comments": str(target), "count": len(comments), "pending": pending}
 
@@ -507,8 +515,14 @@ def _section(markdown: str, heading: str) -> list[dict[str, Any]]:
     return body[:end]
 
 
-def _first_table(tokens: list[dict[str, Any]]) -> dict[str, Any] | None:
-    return next((t for t in tokens if t["type"] == "table"), None)
+def _first_table(tokens: list[dict[str, Any]], heading: str) -> dict[str, Any] | None:
+    table = next((t for t in tokens if t["type"] == "table"), None)
+    if table is None and any(t["type"] == "paragraph" and _plain(t["children"]).lstrip().startswith("|") for t in tokens):
+        raise ValueError(
+            f"the `## {heading}` table did not parse: a row's cell count or an unescaped `|` (code spans too) "
+            "broke it; escape a literal pipe as `\\|`"
+        )
+    return table
 
 
 def _slug(text: str, used: set[str]) -> str:
@@ -544,14 +558,20 @@ def serve(root: Path, port: int | None, probe: str) -> dict[str, Any]:
     root = root.resolve()
     with _SERVERS_LOCK:
         if root in _SERVERS:
-            running = _SERVERS[root][0]
-            if port is not None and port != running["port"]:
-                raise ValueError(f"the page server for {root} already runs on port {running['port']}, not {port}")
-            return running
+            running, owned = _SERVERS[root]
+            if owned is None and not _answers(running["base"] + probe):
+                del _SERVERS[root]
+            else:
+                if port is not None and port != running["port"]:
+                    raise ValueError(f"the page server for {root} already runs on port {running['port']}, not {port}")
+                return running
         token_file = root / TOKEN_NAME
         if not token_file.exists():
-            atomic_write(token_file, secrets.token_urlsafe(16))
-            token_file.chmod(0o600)
+            staged = token_file.with_suffix(".tmp")
+            descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(secrets.token_urlsafe(16))
+            os.replace(staged, token_file)
         token = token_file.read_text(encoding="utf-8")
         if port is None:
             port = 20000 + int(hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8], 16) % 10000
@@ -699,7 +719,7 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         with board_lock(target.parent):
             stale = expected is not None and expected != _etag(target.read_bytes())
             atomic_write(target, data.decode("utf-8"))
-        tag = _etag(data)
+            tag = _etag(target.read_bytes())
         self._send(200, json.dumps({"etag": tag, "stale": stale}).encode("utf-8"), "application/json", tag=tag)
 
 
@@ -792,7 +812,12 @@ async function save() {
   puts += 1;
   try {
     if (!keepAside) {
-      const check = await fetch(FILE, { cache: "no-store", headers: { "If-None-Match": etag } });
+      let check;
+      try {
+        check = await fetch(FILE, { cache: "no-store", headers: { "If-None-Match": etag } });
+      } catch (e) {
+        return failed(String(e));
+      }
       if (check.status === 200) {
         banner.hidden = false;
         return;
@@ -860,6 +885,14 @@ window.addEventListener("keydown", (e) => {
     save();
   }
 }, true);
+for (const type of ["keydown", "pointerdown", "paste", "drop"]) {
+  window.addEventListener(type, (e) => {
+    if (loading) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+}
 setInterval(async () => {
   if (loading || saving || watching) return;
   watching = true;

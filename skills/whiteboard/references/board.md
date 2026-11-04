@@ -44,7 +44,7 @@ Tell the user once, at the first write, with the `board_url` from `page_serve` a
 >
 > Drag notes to other cells or sections, edit their text or an arrow's label, add notes or arrows, and save; I read your changes at the start of every turn. Put notes you are not sure about to the right of the sections; I never move those. To zoom: Ctrl/Cmd + scroll or pinch, Shift+1 to fit the whole board, Shift+2 to zoom to the selected notes.
 
-The browser editor uses Excalidraw 0.18.0 from esm.sh, pinned. Offline, it says so and points to VS Code.
+The browser editor runs pinned Excalidraw code from esm.sh with the token, so that code can read and save any board in this repo's whiteboards folder. Offline, it says so and points to VS Code.
 
 The board needs Excalidraw 0.18 or later; older editors move a section's notes differently on a resize, and the board is not tested on them.
 

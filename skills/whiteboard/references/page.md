@@ -1,6 +1,6 @@
 # The decision page
 
-`page_render` turns `notes.md` into `page.html` beside it, one collapsible section per `## ` heading, and writes `decisions.json`. Raw HTML in `notes.md` shows as text.
+`page_render` turns `notes.md` into `page.html` beside it, one collapsible section per `## ` heading. Raw HTML in `notes.md` shows as text.
 
 ## Opening the page
 
@@ -8,7 +8,7 @@ Tell the user once, at Open, with the `url` and `forward` that `page_serve` retu
 
 > The decision page is at `<url>`. Open it in a browser. It refreshes itself within a second of each of my updates. First run `<forward>` on your own machine, or forward the port in your editor. One forward covers both the page and the board (same port). Swap the host for the name you normally ssh to. Without the server, open `file://<page path>`. As a last fallback, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
 
-The server listens on 127.0.0.1 only and lives as long as the `sy` server. When the page server stops, the open page shows a banner: call `page_serve` again.
+When the page server stops, the open page shows a banner: call `page_serve` again.
 
 ## The hosted page
 
@@ -30,7 +30,7 @@ Only when the user picked it on the Hosted choice point.
 - Later publishes omit `capabilities`.
 - Probe figures show only on the local page.
 
-Each colleague's comment is one document at `comments/<their id>/items/<id>`, with a marker document `comments/<their id>`. The page writes only those. Claude never writes the store.
+Each colleague's comment is one document at `comments/<their id>/items/<id>`, with a marker document `comments/<their id>`.
 
 ## Syncing comments
 
@@ -38,9 +38,7 @@ Each colleague's comment is one document at `comments/<their id>/items/<id>`, wi
 2. ArtifactData `list` of collection `comments`, `out_dir` `<folder>/.comments-in`, `query.limit` 1000.
 3. For each marker file `comments/<id>.json` it wrote, ArtifactData `list` of collection `comments/<id>/items` into the same `out_dir`. Follow `next_cursor` until it is empty.
 4. `page_comments_save`. It writes `comments.json`, removes the staging folder and returns `pending`.
-5. Answer each `pending` comment, and add its row to the `## Comments` table.
-
-A comment stays `pending` until its row exists.
+5. Answer the pending comments per SKILL.md § Colleague comments, adding each row to the `## Comments` table.
 
 ## Session output
 

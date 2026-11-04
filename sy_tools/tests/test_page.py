@@ -124,6 +124,10 @@ def test_decisions_json_holds_the_tree_rows_and_the_decision_items_as_plain_text
             "# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n\n### More\n\n"
             "| Id | Decision |\n|---|---|\n| D2 | b |\n"
         )
+    head = "# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n"
+    for broken in ("|---|---|\n", "| D2 | b |\n---\n", "- note A\n\n  | D2 | b |\n\n  note B\n"):
+        with pytest.raises(ValueError, match="Decision tree"):
+            page.decision_log(head + "\n" + broken)
     prose = (
         "# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n\n"
         "Chose A for cost \\| latency, `x | y`.\n"
@@ -176,6 +180,12 @@ def test_comments_json_takes_author_and_id_from_the_store_paths_and_stays_pendin
     before = (folder / page.COMMENTS_NAME).read_bytes()
     notes.write_text("# Idea\n\n## Comments\n\n| Comment | Where |\n|---|---|\n| `a|b` | x |\n", encoding="utf-8")
     _stage(folder, "u_a", "c9", {**comment, "text": "new", "at": "2026-11-04T12:00:00Z"})
+    with pytest.raises(server.ToolError, match="Comments"):
+        server.page_comments_save("idea")
+    two_tables = (
+        "# Idea\n\n## Comments\n\n| Comment | Where |\n|---|---|\n| u | x |\n\n### More\n\n| a | b |\n|---|---|\n"
+    )
+    notes.write_text(two_tables, encoding="utf-8")
     with pytest.raises(server.ToolError, match="Comments"):
         server.page_comments_save("idea")
     split_row = "# Idea\n\n## Comments\n\n| Comment | Where |\n|---|---|\n| u | x |\n\n| v | y |\n"

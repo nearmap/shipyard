@@ -519,12 +519,17 @@ def _section(markdown: str, heading: str) -> list[dict[str, Any]]:
 
 def _first_table(tokens: list[dict[str, Any]], heading: str) -> dict[str, Any] | None:
     tables = [t for t in tokens if t["type"] == "table"]
-    stray = any(
-        line.strip().startswith("|") or line.strip().endswith("|")
-        for t in tokens
-        if t["type"] != "table"
-        for line in _text([t], "\n").splitlines()
-    )
+    stray = False
+    stack = [t for t in tokens if t["type"] != "table"]
+    while stack:
+        token = stack.pop()
+        if token["type"] in ("block_quote", "list", "list_item"):
+            stack.extend(token["children"])
+        else:
+            stray = stray or any(
+                line.strip().startswith("|") or line.strip().endswith("|")
+                for line in _text([token], "\n").splitlines()
+            )
     divider = any(
         all(re.fullmatch(r":?-+:?", _text(cell["children"]).strip()) for cell in row["children"])
         for table in tables
@@ -785,6 +790,12 @@ let watching = false;
 let keepAside = false;
 let puts = 0;
 let timer = null;
+const pressed = new Set();
+window.addEventListener("pointerdown", (e) => pressed.add(e.pointerId), true);
+for (const type of ["pointerup", "pointercancel"]) {
+  window.addEventListener(type, (e) => pressed.delete(e.pointerId), true);
+}
+window.addEventListener("blur", () => pressed.clear());
 for (const type of [
   "keydown", "pointerdown", "paste", "drop", "click", "dblclick", "contextmenu", "auxclick", "touchstart",
   "beforeinput", "input", "cut",
@@ -798,14 +809,17 @@ for (const type of [
 }
 const version = () => X.getSceneVersion(api.getSceneElementsIncludingDeleted()) + "|"
   + Object.keys(api.getFiles()).sort().join(",");
+const ids = () => api.getSceneElementsIncludingDeleted().map((e) => e.id).sort().join(",") + "|"
+  + Object.keys(api.getFiles()).sort().join(",");
 const unsaved = () => !loading && version() !== recorded;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-async function settle() {
+async function settle(applied = null) {
   await document.fonts.ready;
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  recorded = version();
+  recorded = applied && ids() !== applied.ids ? applied.version : version();
   loading = false;
   statusLine.textContent = "Saved";
+  if (unsaved()) changed();
 }
 async function apply(tag, scene) {
   loading = true;
@@ -815,8 +829,9 @@ async function apply(tag, scene) {
   banner.hidden = true;
   api.addFiles(Object.values(scene.files || {}));
   api.updateScene({ elements: X.restoreElements(scene.elements, null), captureUpdate: X.CaptureUpdateAction.NEVER });
+  const applied = { ids: ids(), version: version() };
   etag = tag;
-  await settle();
+  await settle(applied);
 }
 async function loadLatest() {
   const r = await fetch(FILE, { cache: "no-store" });
@@ -897,7 +912,8 @@ try {
   while (!api || api.getAppState().isLoading) await wait(50);
   await settle();
 } catch (e) {
-  statusLine.textContent = "The board could not load: " + e;
+  loading = false;
+  statusLine.textContent = "The board could not load: " + e + ". Reload to retry.";
   throw e;
 }
 document.getElementById("load").onclick = loadLatest;
@@ -915,14 +931,15 @@ window.addEventListener("keydown", (e) => {
   }
 }, true);
 setInterval(async () => {
-  if (loading || saving || watching || api.getAppState().cursorButton === "down") return;
+  if (loading || saving || watching || pressed.size) return;
   watching = true;
   const before = puts;
   try {
     const r = await fetch(FILE, { cache: "no-store", headers: { "If-None-Match": etag } });
-    if (r.status !== 200 || saving || loading || puts !== before || api.getAppState().cursorButton === "down") return;
+    if (r.status !== 200 || saving || loading || puts !== before || pressed.size) return;
     const tag = r.headers.get("ETag");
     const latest = await r.json();
+    if (pressed.size) return;
     if (!unsaved()) await apply(tag, latest);
     else if (!keepAside) banner.hidden = false;
   } finally {

@@ -38,7 +38,7 @@ Everything outside every section, to the right of the sections, is the scratch a
 
 Tell the user once, at the first write, with the `board_url` and `forward` from `page_serve` and the path `board_write` returned:
 
-> First run `<forward>` on your own machine (the same forward as the page, with the host swapped for the name you ssh to). Then open the board at `<board_url>` in any browser. It saves by itself and loads my changes without a reload. It needs internet for Excalidraw's code. If you have unsaved edits when I change the board, it asks before it replaces them.
+> On a remote machine, forward the port first, the same way as for the page (one forward covers both; use `localhost` if `127.0.0.1` does not open). Then open the board at `<board_url>` in any browser. It saves by itself and loads my changes without a reload. It needs internet for Excalidraw's code. If you have unsaved edits when I change the board, it asks before it replaces them.
 >
 > Or open `<path>/board.excalidraw` in VS Code with the Excalidraw extension (`pomdtr.excalidraw-editor`), or on excalidraw.com in a Chromium browser (Open, then Save writes back to the file). These two do not reload the file, so close and reopen the board after each of my turns.
 >

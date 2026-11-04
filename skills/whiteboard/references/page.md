@@ -4,9 +4,16 @@
 
 ## Opening the page
 
-Tell the user once, at Open, with the `url` and `forward` that `page_serve` returned:
+Tell the user once, at Open, with the `url`, `port` and `forward` that `page_serve` returned:
 
-> The decision page is at `<url>`. Open it in a browser. It refreshes itself within a second of each of my updates. First run `<forward>` on your own machine, or forward the port in your editor. One forward covers both the page and the board (same port). Swap the host for the name you normally ssh to. Without the server, open `file://<page path>`. As a last fallback, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
+> The decision page is at `<url>`. Open it in a browser. It refreshes itself within a second of each of my updates. Without the server, open `file://<page path>`. As a last fallback, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
+>
+> If Claude runs on a remote machine, forward the port first. One forward covers both the page and the board (same port):
+>
+> - On your own machine, in a terminal you leave open, run `<forward>` with the host swapped for the name you normally type after `ssh`. The host in the line is the remote's own hostname, which can be a container name your machine cannot reach. `-N` prints nothing while it works; Ctrl+C stops it.
+> - Or, in VS Code Remote-SSH, open the Ports tab, choose Forward a Port, and enter `<port>`.
+> - Or add `LocalForward <port> 127.0.0.1:<port>` to that host's entry in your `~/.ssh/config`, so every ssh session forwards it.
+> - If `127.0.0.1` does not open on your machine but the port is forwarded, use `localhost` in the URL instead (same path). Something else on your machine holds that port on IPv4, so the forward listens on IPv6 only. Saves still work: the server accepts both names.
 
 When the page server stops, the open page shows a banner: call `page_serve` again.
 

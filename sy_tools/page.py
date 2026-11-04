@@ -558,7 +558,7 @@ def serve(root: Path, port: int | None, probe: str) -> dict[str, Any]:
         info = {
             "port": port,
             "base": f"http://127.0.0.1:{port}/{token}/",
-            "forward": f"ssh -L {port}:127.0.0.1:{port} {socket.gethostname()}",
+            "forward": f"ssh -N -L {port}:127.0.0.1:{port} {socket.gethostname()}",
         }
         handler = type("_RootHandler", (_Handler,), {"root": root, "token": token})
         try:

@@ -6,7 +6,7 @@
 
 Tell the user once, at Open, with the `url` and `forward` that `page_serve` returned:
 
-> The decision page is at `<url>`. Open it in a browser. It refreshes itself within a second of each of my updates. On a remote machine, first run `<forward>` on your own machine, or forward the port in your editor. Without the server, open `file://<page path>`. As a last fallback, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
+> The decision page is at `<url>`. Open it in a browser. It refreshes itself within a second of each of my updates. First run `<forward>` on your own machine, or forward the port in your editor. One forward covers both the page and the board (same port). Swap the host for the name you normally ssh to. Without the server, open `file://<page path>`. As a last fallback, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
 
 The server listens on 127.0.0.1 only and lives as long as the `sy` server. When the page server stops, the open page shows a banner: call `page_serve` again.
 

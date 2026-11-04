@@ -113,7 +113,7 @@ The Hosted question appears only when the page is in use and this session has th
 - The hosted page carries no `probes/` figures. Say once that they show only on the local page.
 - A denied publish is final: say so once and carry on with the local page.
 
-When the page is in use, call `page_render` and then `page_serve`. Give the user the `url`, and on a remote machine the `forward` line, once, per `references/page.md`. When `page_serve` says the port is taken, say so, and call it again with a `port` the user names.
+When the page is in use, call `page_render` and then `page_serve`. Give the user the `url`, and always the `forward` line (you cannot tell local from remote; one forward covers the page and the board, and the user swaps the host for the name they ssh to), once, per `references/page.md`. When `page_serve` says the port is taken, say so, and call it again with a `port` the user names.
 
 When the board opens, in any mode, call `page_serve` too, and give its `board_url` as the first way to open the board, per `references/board.md`.
 

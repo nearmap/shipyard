@@ -119,6 +119,16 @@ def test_decisions_json_holds_the_tree_rows_and_the_decision_items_as_plain_text
         page.decision_log("# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n\n| D2 | b |\n")
     with pytest.raises(ValueError, match="Decision tree"):
         page.decision_log("# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 |\n| D2 | x | y |\n")
+    with pytest.raises(ValueError, match="Decision tree"):
+        page.decision_log(
+            "# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n\n### More\n\n"
+            "| Id | Decision |\n|---|---|\n| D2 | b |\n"
+        )
+    prose = (
+        "# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n\n"
+        "Chose A for cost \\| latency, `x | y`.\n"
+    )
+    assert [row["Id"] for row in page.decision_log(prose)["tree"]] == ["D1"]
 
 
 def _stage(folder: Path, author: str, cid: str, body: dict) -> None:
@@ -211,6 +221,8 @@ def test_the_server_answers_only_behind_its_token_inside_the_root_and_survives_a
     first = page._SERVERS[root][1]
     assert first is not None and first.server_address[0] == "127.0.0.1"
     assert stat.S_IMODE((root / page.TOKEN_NAME).stat().st_mode) == 0o600
+    again = server.page_serve("idea")
+    assert again == served and page._SERVERS[root][1] is first, "a second call while owned returns the same server"
     page._SERVERS.clear()
     try:
         assert server.page_serve("idea") == served, "token on disk, derived port, the running server answers"

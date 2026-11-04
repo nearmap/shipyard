@@ -36,6 +36,7 @@ import secrets
 import shutil
 import socket
 from string import Template
+import tempfile
 import threading
 from typing import Any, cast
 import urllib.error
@@ -485,7 +486,7 @@ def _parse(markdown: str) -> list[dict[str, Any]]:
 
 
 def _is_section(token: dict[str, Any]) -> bool:
-    return token["type"] == "heading" and token["attrs"]["level"] == 2
+    return token["type"] == "heading" and token["attrs"]["level"] == 2 and token["style"] == "atx"
 
 
 def _revision(markdown: str) -> str:
@@ -496,10 +497,11 @@ def _plain(tokens: list[dict[str, Any]]) -> str:
     return "".join(t["raw"] if "raw" in t else _plain(t.get("children", [])) for t in tokens)
 
 
-def _text(tokens: list[dict[str, Any]]) -> str:
-    """Like `_plain`, but a soft or hard line break reads as one space, so a wrapped line keeps its word gap."""
+def _text(tokens: list[dict[str, Any]], brk: str = " ") -> str:
+    """Like `_plain`, but a soft or hard line break reads as `brk`, so a wrapped line keeps its word gap."""
     return "".join(
-        " " if t["type"] in ("softbreak", "linebreak") else t["raw"] if "raw" in t else _text(t.get("children", []))
+        brk if t["type"] in ("softbreak", "linebreak")
+        else t["raw"] if "raw" in t else _text(t.get("children", []), brk)
         for t in tokens
     )
 
@@ -516,14 +518,25 @@ def _section(markdown: str, heading: str) -> list[dict[str, Any]]:
 
 
 def _first_table(tokens: list[dict[str, Any]], heading: str) -> dict[str, Any] | None:
-    table = next((t for t in tokens if t["type"] == "table"), None)
-    if any(t["type"] == "paragraph" and "|" in _plain(t["children"]) for t in tokens):
+    tables = [t for t in tokens if t["type"] == "table"]
+    stray = any(
+        line.strip().startswith("|") or line.strip().endswith("|")
+        for t in tokens
+        if t["type"] != "table"
+        for line in _text([t], "\n").splitlines()
+    )
+    divider = any(
+        all(re.fullmatch(r":?-+:?", _text(cell["children"]).strip()) for cell in row["children"])
+        for table in tables
+        for row in table["children"][1]["children"]
+    )
+    if len(tables) > 1 or stray or divider:
         raise ValueError(
-            f"the `## {heading}` table is broken: a row split off by a blank line or a following sentence, a "
-            "missing edge pipe, a wrong cell count, or an unescaped `|` (code spans too). "
-            "Escape a literal pipe as `\\|`"
+            f"the `## {heading}` section is broken: keep one table with contiguous rows. Outside it, no line may "
+            "start or end with `|` (a split-off row, a row under a quote, list or indent, a second table or header). "
+            "In a cell, escape a literal `|` as `\\|`, code spans included"
         )
-    return table
+    return tables[0] if tables else None
 
 
 def _slug(text: str, used: set[str]) -> str:
@@ -568,9 +581,7 @@ def serve(root: Path, port: int | None, probe: str) -> dict[str, Any]:
                 return running
         token_file = root / TOKEN_NAME
         if not token_file.exists():
-            staged = token_file.with_suffix(".tmp")
-            staged.unlink(missing_ok=True)
-            descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            descriptor, staged = tempfile.mkstemp(dir=root, prefix=".serve-token.", suffix=".tmp")
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(secrets.token_urlsafe(16))
             os.replace(staged, token_file)
@@ -774,13 +785,16 @@ let watching = false;
 let keepAside = false;
 let puts = 0;
 let timer = null;
-for (const type of ["keydown", "pointerdown", "paste", "drop"]) {
+for (const type of [
+  "keydown", "pointerdown", "paste", "drop", "click", "dblclick", "contextmenu", "auxclick", "touchstart",
+  "beforeinput", "input", "cut",
+]) {
   window.addEventListener(type, (e) => {
     if (loading) {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
-  }, true);
+  }, type === "touchstart" ? { capture: true, passive: false } : true);
 }
 const version = () => X.getSceneVersion(api.getSceneElementsIncludingDeleted()) + "|"
   + Object.keys(api.getFiles()).sort().join(",");
@@ -865,22 +879,27 @@ function changed() {
   clearTimeout(timer);
   timer = setTimeout(save, 1000);
 }
-const first = await fetch(FILE, { cache: "no-store" });
-if (!first.ok) throw new Error("board.excalidraw answered " + first.status);
-etag = first.headers.get("ETag");
-const scene = await first.json();
-const appState = { ...scene.appState };
-delete appState.collaborators;
-ReactDOM.createRoot(document.getElementById("app")).render(React.createElement(X.Excalidraw, {
-  initialData: {
-    elements: X.restoreElements(scene.elements, null), appState, files: scene.files || {}, scrollToContent: true,
-  },
-  excalidrawAPI: (a) => { api = a; },
-  onChange: changed,
-  UIOptions: { canvasActions: { loadScene: false, saveToActiveFile: false, export: false, saveAsImage: false } },
-}));
-while (!api || api.getAppState().isLoading) await wait(50);
-await settle();
+try {
+  const first = await fetch(FILE, { cache: "no-store" });
+  if (!first.ok) throw new Error("board.excalidraw answered " + first.status);
+  etag = first.headers.get("ETag");
+  const scene = await first.json();
+  const appState = { ...scene.appState };
+  delete appState.collaborators;
+  ReactDOM.createRoot(document.getElementById("app")).render(React.createElement(X.Excalidraw, {
+    initialData: {
+      elements: X.restoreElements(scene.elements, null), appState, files: scene.files || {}, scrollToContent: true,
+    },
+    excalidrawAPI: (a) => { api = a; },
+    onChange: changed,
+    UIOptions: { canvasActions: { loadScene: false, saveToActiveFile: false, export: false, saveAsImage: false } },
+  }));
+  while (!api || api.getAppState().isLoading) await wait(50);
+  await settle();
+} catch (e) {
+  statusLine.textContent = "The board could not load: " + e;
+  throw e;
+}
 document.getElementById("load").onclick = loadLatest;
 document.getElementById("keep").onclick = () => {
   banner.hidden = true;
@@ -896,12 +915,12 @@ window.addEventListener("keydown", (e) => {
   }
 }, true);
 setInterval(async () => {
-  if (loading || saving || watching) return;
+  if (loading || saving || watching || api.getAppState().cursorButton === "down") return;
   watching = true;
   const before = puts;
   try {
     const r = await fetch(FILE, { cache: "no-store", headers: { "If-None-Match": etag } });
-    if (r.status !== 200 || saving || loading || puts !== before) return;
+    if (r.status !== 200 || saving || loading || puts !== before || api.getAppState().cursorButton === "down") return;
     const tag = r.headers.get("ETag");
     const latest = await r.json();
     if (!unsaved()) await apply(tag, latest);

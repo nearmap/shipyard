@@ -792,7 +792,7 @@ let puts = 0;
 let timer = null;
 const pressed = new Set();
 window.addEventListener("pointerdown", (e) => pressed.add(e.pointerId), true);
-for (const type of ["pointerup", "pointercancel"]) {
+for (const type of ["pointerup", "pointercancel", "contextmenu"]) {
   window.addEventListener(type, (e) => pressed.delete(e.pointerId), true);
 }
 window.addEventListener("blur", () => pressed.clear());

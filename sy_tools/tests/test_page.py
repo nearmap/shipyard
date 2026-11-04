@@ -125,7 +125,9 @@ def test_decisions_json_holds_the_tree_rows_and_the_decision_items_as_plain_text
             "| Id | Decision |\n|---|---|\n| D2 | b |\n"
         )
     head = "# Idea\n\n## Decision tree\n\n| Id | Decision |\n|---|---|\n| D1 | a |\n"
-    for broken in ("|---|---|\n", "| D2 | b |\n---\n", "- note A\n\n  | D2 | b |\n\n  note B\n"):
+    with pytest.raises(ValueError, match="Decision tree"):
+        page.decision_log(head + "| Id | Decision |\n|---|---|\n")
+    for broken in ("| D2 | b |\n---\n", "- note A\n\n  | D2 | b |\n\n  note B\n"):
         with pytest.raises(ValueError, match="Decision tree"):
             page.decision_log(head + "\n" + broken)
     prose = (

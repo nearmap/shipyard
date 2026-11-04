@@ -286,8 +286,9 @@ if (LOCAL) {
       button.type = "button";
       button.onclick = () => compose(a);
       a.host.appendChild(button);
-      const draft = sessionStorage.getItem(draftKey(a));
-      if (draft) compose(a);
+      if (!sessionStorage.getItem(draftKey(a))) continue;
+      lists[a.section].closest("details").open = true;
+      compose(a);
     }
   }
   const commenters = new Set();

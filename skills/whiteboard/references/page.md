@@ -1,12 +1,53 @@
 # The decision page
 
-`page_render` turns `notes.md` into `page.html` beside it, one collapsible section per `## ` heading. Raw HTML in `notes.md` shows as text.
+`page_render` turns `notes.md` into `page.html` beside it, one collapsible section per `## ` heading, and writes `decisions.json`. Raw HTML in `notes.md` shows as text.
 
 ## Opening the page
 
-Tell the user once, at Open, with the `page` path `page_render` returned:
+Tell the user once, at Open, with the `url` and `forward` that `page_serve` returned:
 
-> The decision page is `<path>/page.html`. Open it in a browser (`file://<path>/page.html`); it refreshes itself within a second of each of my updates. On a remote machine, open it from VS Code with the Live Preview extension (`ms-vscode.live-server`), which serves it over the forwarded port. If neither works, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
+> The decision page is at `<url>`. Open it in a browser. It refreshes itself within a second of each of my updates. On a remote machine, first run `<forward>` on your own machine, or forward the port in your editor. Without the server, open `file://<page path>`. As a last fallback, open `notes.md` in VS Code's Markdown preview (Ctrl/Cmd+Shift+V): same content, without the collapsing sections.
+
+The server listens on 127.0.0.1 only and lives as long as the `sy` server. When the page server stops, the open page shows a banner: call `page_serve` again.
+
+## The hosted page
+
+Only when the user picked it on the Hosted choice point.
+
+- First publish: the Artifact tool with `page.html` and these capabilities:
+
+```json
+{"db": {"rules": [
+  {"path": "", "read": "view", "write": "owner"},
+  {"path": "comments", "read": "view", "write": "owner"},
+  {"path": "comments/{self}", "read": "view", "write": "interact"}
+]}, "user": {"scopes": ["profile"]}}
+```
+
+- Record the URL in the `Hosted page:` line of `notes.md`.
+- Tell the user to share it at Contributor level or above with anyone who should comment.
+- Run one sync right after the first publish. It checks that the capabilities took.
+- Later publishes omit `capabilities`.
+- Probe figures show only on the local page.
+
+Each colleague's comment is one document at `comments/<their id>/items/<id>`, with a marker document `comments/<their id>`. The page writes only those. Claude never writes the store.
+
+## Syncing comments
+
+1. If `<folder>/.comments-in` is left from an aborted sync, remove that exact path with Bash `rm -rf`.
+2. ArtifactData `list` of collection `comments`, `out_dir` `<folder>/.comments-in`, `query.limit` 1000.
+3. For each marker file `comments/<id>.json` it wrote, ArtifactData `list` of collection `comments/<id>/items` into the same `out_dir`. Follow `next_cursor` until it is empty.
+4. `page_comments_save`. It writes `comments.json`, removes the staging folder and returns `pending`.
+5. Answer each `pending` comment, and add its row to the `## Comments` table.
+
+A comment stays `pending` until its row exists.
+
+## Session output
+
+| File | Written by | Shape |
+|---|---|---|
+| `decisions.json` | `page_render` | `{"rev": "<16 hex>", "tree": [{"<header>": "<cell text>"}], "decision": ["<item text>"]}`: one object per Decision tree row, one string per top-level Decision item |
+| `comments.json` | `page_comments_save` | `[{"section", "decision", "option", "text", "at", "rev", "id", "author"}]`, sorted by `(at, author, id)` |
 
 ## `notes.md` template
 
@@ -16,6 +57,7 @@ Sections in page order: what the user reads first comes first. Keep each section
 # <problem name>
 
 Board: <folder path>
+Hosted page: <url | none>
 Kind of work: <root cause | method choice | system design | feasibility | measurement design>
 Mode: <page first | page and board | board only | page only>. Start: <explore | straight to the options | decide now>
 
@@ -91,6 +133,13 @@ Frontier: <open decisions whose dependencies are all settled>
 
 ## Disagreements
 - <topic>: <user's position> vs <Claude's position>. Settled by: <probe | user's call | Claude's call>, <date>.
+
+## Comments
+| Comment | Where | Gist | Disposition |
+|---|---|---|---|
+| `<author>/<id>`, exactly as in comments.json | <section, decision or option> | <one line> | adopted: <what changed> / put to the user as D<n> / noted |
+
+Ids only, no colleague names. `page_comments_save` reads the first column.
 
 ## Decision
 - Decision: <what>. Why: <reasons, linked to probes and evidence>.

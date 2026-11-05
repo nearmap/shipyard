@@ -939,7 +939,7 @@ setInterval(async () => {
     if (r.status !== 200 || saving || loading || puts !== before || pressed.size) return;
     const tag = r.headers.get("ETag");
     const latest = await r.json();
-    if (pressed.size) return;
+    if (saving || loading || puts !== before || pressed.size) return;
     if (!unsaved()) await apply(tag, latest);
     else if (!keepAside) banner.hidden = false;
   } finally {

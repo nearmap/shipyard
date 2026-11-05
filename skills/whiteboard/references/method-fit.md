@@ -22,7 +22,7 @@ For each candidate give: the intuition in one sentence, what it assumes about th
 - a learned model;
 - reusing something that already exists.
 
-A learned model needs labels. With no labels it is out, unless the labels can be created.
+A supervised model needs labels. With no labels it is out, unless the labels can be created; an unsupervised or self-supervised model is judged on its own fit.
 
 Most candidates fail here in one line. That is the point of the step.
 

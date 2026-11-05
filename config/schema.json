@@ -118,7 +118,7 @@
         "max_depth_agents": {
           "type": "integer",
           "minimum": 1,
-          "description": "Cross-cutting cap on simultaneous depth-investigation subagents (sy:trace/sy:hunt/etc.) in flight per phase — ship, spec, spike, and sy:gate all read this same key."
+          "description": "Cross-cutting cap on simultaneous depth-investigation subagents (sy:trace/sy:hunt/etc.) in flight per phase — ship, spec, spike, whiteboard, and sy:gate all read this same key."
         }
       }
     },

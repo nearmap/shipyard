@@ -20,7 +20,7 @@ Point Shipyard at a task and it produces a PR that is ready to merge: the change
 
 Three disciplines shape the workflow: challenge the decision, independently inspect the plan and result, and keep working context focused.
 
-**Disagreement sharpens the decision.** Before a roadmap, execution plan, or spike verdict reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion`; the debate never loops until the agents agree or decides the fork for you.
+**Disagreement sharpens the decision.** Before a roadmap, execution plan, spike verdict, or whiteboard decision reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion`; the debate never loops until the agents agree or decides the fork for you.
 
 ![The debate coordinator runs three fresh debater calls, synthesizes their disagreement, and returns it to the parent workflow for the user to steer](docs/img/bounded-debate.png)
 
@@ -41,6 +41,7 @@ Three disciplines shape the workflow: challenge the decision, independently insp
 | a large objective or an existing roadmap | `/sy:plan` |
 | one PR-sized task that needs an executable plan | `/sy:spec <task>` |
 | an approved plan ready to build | `/sy:ship <task>` |
+| a fuzzy problem to work out with Claude before it is a hunch, a roadmap or a task | `/sy:whiteboard …` |
 | a hunch that needs data before it becomes a project | `/sy:spike …` |
 | an idea you want built and demoed fast, outside the merge standards, then harvested into real tasks | `/sy:mvp <task or objective>` |
 | a finished ticket's leftover worktrees, branches, and background tasks | `/sy:shutdown [task]` |
@@ -77,6 +78,16 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 **The review is adversarial, and it reviews exactly what you'll merge.** A separate `sy:gate` agent — running on a frontier-tier model, in its own read-only checkout pinned to the pushed commits — reviews the plan's obligations and design invariants, not just the diff, and every bug it suspects must survive an attempt to refute it before it is reported. If a fix is pushed, the review scope resets: the PR head, the CI-green commit, and the reviewed commit must be the *same commit* before anything hands off or merges. You are never reviewing one thing and merging another.
 
 ![The GATE controller coordinates CI, independent immutable review, and fixes until the same commit is ready for handoff](docs/img/immutable-gate.png)
+
+### Before the loop: whiteboard
+
+`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. It opens by asking how you want to work (a decision page, a design board, or both) and where to start, then grills you over a few turns on scope, requirements, constraints, resources, who uses the result and what done means, until you confirm its summary. That done criterion is what the decision and its hand-off are judged against. Claude then explores the possibilities with you, reads the theory and a small sample of real data, runs a broad idea round through the same `sy:debate`, and argues it out with you turn by turn until the two of you agree on one decision. Each turn ends on one question: the open decisions whose prerequisites are settled, each with Claude's recommended answer.
+
+The record is `notes.md`, rendered by the `sy` server's `page_render` into a decision page. `page_serve` serves it on 127.0.0.1 behind a token, and the page refreshes itself in your browser as the session moves. When the open decisions are answered, Claude offers the design board: a shared [Excalidraw](https://excalidraw.com) file in this repository's scratch directory, with one section per view (data model, data flow, system design), notes on a grid of cells, and labelled arrows. The first way to open it is the browser editor `page_serve` links to: it saves by itself and loads Claude's changes without a reload. VS Code with the Excalidraw extension and excalidraw.com work too. Drag notes to other cells or sections, edit text and labels, or add notes and arrows; Claude reads every change at the start of its next turn and answers it. Every write lays the board out again, so a nudged note snaps back and a note dragged to another cell is your edit to answer. VS Code and excalidraw.com do not reload the file, so with those you reopen the board after each Claude turn; a save from a tab you forgot to reopen is kept aside and its edits answered, not lost. `board_write` refuses to overwrite an edit of yours that the session has not answered. When the session has the Artifact tools, you can also publish the page as a hosted page where colleagues comment. Claude syncs the comments each turn and answers them. A comment never settles a decision. Two JSON files sit beside `notes.md` for `/sy:plan` and `/sy:spec`: `decisions.json` (the decision tree and the decision) and, when hosted, `comments.json`. The decision then hands off: to `/sy:spike` when a gain still needs measuring, to `/sy:plan` or `/sy:spec` when it is ready to build, or to `/sy:mvp` when a working version is wanted first.
+
+![A whiteboard decision page in a browser: numbered, collapsible sections, with where we are and the decision tree open and each decision's reversal cost in the table](docs/img/whiteboard-page.png)
+
+![A whiteboard design board in Excalidraw: two stacked sections, a data flow and a data model, with one note of each kind on a grid of cells and labelled arrows linking notes within and across the sections](docs/img/whiteboard-board.png)
 
 ## Working with you
 
@@ -136,7 +147,7 @@ shipyard/
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate gate-triage spec-gate img-inspector explain-author debate debater repo-{standards,review} ship-{start,build,gate}
   skills/
-    plan/ spec/ ship/ spike/ mvp/ shutdown/ pr/ ci/ standards/ tighten/ explain/ help/ config/ init-repo/
+    plan/ spec/ ship/ spike/ mvp/ shutdown/ pr/ ci/ standards/ tighten/ explain/ whiteboard/ help/ config/ init-repo/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
       jira/    ADAPTER.md + references/

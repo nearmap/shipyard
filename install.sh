@@ -83,6 +83,6 @@ Shipyard validated (tracker: $TRACKER). To load it:
     claude plugin marketplace add "$PLUGIN_ROOT"
     claude plugin install sy@shipyard      # or run /plugin and enable "sy"
 
-Commands are namespaced:  /sy:plan  /sy:spec  /sy:ship  /sy:spike  /sy:pr  /sy:ci  /sy:explain
+Commands are namespaced:  /sy:plan  /sy:spec  /sy:ship  /sy:spike  /sy:pr  /sy:ci  /sy:explain  /sy:whiteboard
                           /sy:help  /sy:init-repo  /sy:config
 EOF

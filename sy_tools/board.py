@@ -850,7 +850,7 @@ def _stamp_revision(elements: list[Element], live: Live, revision: int) -> None:
         )
         elements.append(marker)
         live[REVISION_ID] = marker
-    marker.update(text=label, originalText=label, width=len(label) * 12 * 0.55, frameId=None)
+    marker.update(text=label, originalText=label, width=len(label) * 12 * 0.55, frameId=None, locked=True)
     _touch(marker)
 
 

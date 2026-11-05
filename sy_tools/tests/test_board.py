@@ -478,8 +478,8 @@ def test_a_frame_resized_from_its_top_left_keeps_every_cell(tmp_path):
         "framed free text stays on its notes through a resize"
     )
     marker = _element(scene, board.REVISION_ID)
-    assert (marker["frameId"], marker["x"], marker["y"]) == (None, 0, -48), (
-        "the revision marker stays unframed above the sections"
+    assert (marker["frameId"], marker["x"], marker["y"], marker["locked"]) == (None, 0, -48, True), (
+        "the revision marker stays unframed and locked above the sections"
     )
 
 

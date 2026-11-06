@@ -70,7 +70,9 @@ def main(argv: list[str] | None = None) -> int:
 
 class _UniqueKeyLoader(yaml.SafeLoader):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[object, object]:
-        keys = [self.construct_object(key, deep=True) for key, _ in node.value if key.tag != "tag:yaml.org,2002:merge"]
+        if any(key.tag == "tag:yaml.org,2002:merge" for key, _ in node.value):
+            raise yaml.constructor.ConstructorError(None, None, "merge keys (<<) are not supported", node.start_mark)
+        keys = [self.construct_object(key, deep=True) for key, _ in node.value]
         for key in keys:
             if keys.count(key) > 1:
                 raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", node.start_mark)

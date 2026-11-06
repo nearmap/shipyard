@@ -50,6 +50,7 @@ def test_rule_2_a_repeated_key_fails():
     assert len(failures) == 1 and failures[0].startswith("rule 2:") and "pinned_patterns" in failures[0], failures
 
 
-def test_rule_2_a_yaml_merge_key_is_not_a_repeated_key():
-    pins = "pinned_patterns:\n  - &a {grade: LOW, pattern: p, recognise_by: t}\n  - {<<: *a, pattern: q}\n"
-    assert overlay.check('scale_mapping: []\n' + pins + 'notes: ""\n') == []
+def test_rule_2_a_yaml_merge_key_fails():
+    pins = "pinned_patterns:\n  - {<<: {grade: HIGH, grade: LOW, pattern: p, recognise_by: t}}\n"
+    failures = overlay.check("scale_mapping: []\n" + pins + 'notes: ""\n')
+    assert len(failures) == 1 and failures[0].startswith("rule 2:") and "merge keys" in failures[0], failures

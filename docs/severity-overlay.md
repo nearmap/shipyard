@@ -68,7 +68,7 @@ One finding traced through it: `code-review` labels a missing docstring on `_par
 Run against the target branch's copy, with `pixi run --manifest-path <plugin root>/pyproject.toml overlay check <absolute path>`, which runs from the plugin root:
 
 1. The file exists; a missing file exits 2. START tests existence with `git ls-tree` before running the check, so any non-zero exit from the check on START's copy returns `blocked`.
-2. The file parses as YAML into a mapping with exactly the keys `scale_mapping`, `pinned_patterns` and `notes`, where the first two are lists and `notes` is a string.
+2. The file parses as YAML into a mapping with exactly the keys `scale_mapping`, `pinned_patterns` and `notes`, where the first two are lists and `notes` is a string, with no key repeated and no `<<` merge key.
 3. Every `scale_mapping` entry is a mapping with exactly the keys `source`, `label` and `grade`, every `pinned_patterns` entry one with exactly `grade`, `pattern` and `recognise_by`, and each value is a non-empty string.
 4. Every `grade` is `HIGH`, `MED`, `LOW` or `NIT`.
 

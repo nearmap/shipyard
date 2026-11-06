@@ -12,7 +12,7 @@ Independently decide whether the supplied immutable change is safe to ship. Repo
 
 A pass here is a strong independent signal, not a correctness guarantee: a human backstop is retained while the gate runs in shadow mode, and a pass later shown wrong is recorded post-hoc as `gate_false_pass` in the ship metrics rather than papered over.
 
-Inputs: purpose/acceptance criteria; `REVIEW_BASE_SHA`; `REVIEWED_SHA`; isolated review worktree (under the caller's resolved `worktree.root`) pinned to `REVIEWED_SHA`; standards authority/risk lenses or enough scope to invoke `/sy:standards review` lazily through `Skill`; verification obligations and the compact design contract (invariants, accepted deviations) when the plan defines them.
+Inputs: purpose/acceptance criteria; `REVIEW_BASE_SHA`; `REVIEWED_SHA`; isolated review worktree (under the caller's resolved `worktree.root`) pinned to `REVIEWED_SHA`; standards authority/risk lenses or enough scope to invoke `/sy:standards review` lazily through `Skill`; verification obligations and the compact design contract (invariants, accepted deviations) when the plan defines them; `severity_overlay_path` when the repository has an overlay (§ Severity).
 
 First verify worktree HEAD equals `REVIEWED_SHA`; otherwise return `BLOCKED: review scope moved`.
 
@@ -36,11 +36,21 @@ First verify worktree HEAD equals `REVIEWED_SHA`; otherwise return `BLOCKED: rev
 - Rewording, retoning, or more fully restating prose — a comment, docstring, or doc — that is already true is not a finding.
 - Every non-obvious bug candidate gets `sy:hunt` refute mode. Drop killed candidates. Verify third-party claims against current primary docs.
 
+## Severity
+
+- HIGH: a realistic path produces wrong output, silent loss, or a broken release or deploy, or a check can silently not run. The fail-soft and skippable-test defaults in § Review are this grade.
+- MED: a realistic path breaks behaviour, including a crash on any reachable input, or a shipped claim (docs, docstring, PR description, rollout note) would lead a reader to the wrong action. The damage is bounded or recoverable.
+- LOW: latent (unreachable today), hardening, test quality, standards conformance, or imprecision that changes nobody's action.
+- NIT: true, but it changes nothing a user, caller or reader would see or do. You may emit NIT.
+- Test gaps and standards violations default to LOW unless they mask a realistic regression. That is the generic default, which an overlay may override.
+
+Repo overlay: when the dispatch names a `severity_overlay_path`, read that file and grade with it under `${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § Rules, and pass the path unchanged into every `sy:hunt` and `repo-review` dispatch. With no path, the generic scale applies unchanged.
+
 ## Return contract — target ≤1,200 tokens
 
 Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so persist it before returning per that file's § Persisting a report — `kind` `gate-verdict`, `scope` `<REVIEWED_SHA>` — and name its absolute path as `VERDICT_FILE:` in the block below, including on a `SPLIT_REQUIRED` return, so an incomplete pass is recognisably incomplete on disk rather than absent.
 
-No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap. Group by severity. Each finding must include `file:line`, issue, evidence/failure mode, concrete fix, and standards rule pointer only when applicable.
+No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap. Group by severity (§ Severity). Each finding must include `file:line`, issue, evidence/failure mode, concrete fix, and standards rule pointer only when applicable.
 
 End exactly with:
 

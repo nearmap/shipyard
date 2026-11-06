@@ -25,7 +25,7 @@ Try to kill exactly one candidate by chasing the strongest non-bug explanation: 
 
 Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
 
-No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap.
+No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap. Grade per `${CLAUDE_PLUGIN_ROOT}/agents/gate.md` § Severity, applying the `severity_overlay_path` the dispatch names, if any.
 
 ```text
 FINDINGS

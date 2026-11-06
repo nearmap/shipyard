@@ -44,11 +44,11 @@ Every finding you return is a candidate for `sy:gate`, which owns the verdict. Y
 
 Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
 
-No preamble, narration, praise, repeated conclusions, pasted diffs, or tool recap. Group by severity, graded per `${CLAUDE_PLUGIN_ROOT}/agents/gate.md` § Severity and applying the `severity_overlay_path` the dispatch names, if any.
+No preamble, narration, praise, repeated conclusions, pasted diffs, or tool recap. Group by severity, graded per `${CLAUDE_PLUGIN_ROOT}/agents/gate.md` § Severity and applying the `severity_overlay_path` the dispatch names, if any. In `rule:`, `<source>` is the resolved skill name and the label is verbatim: the per-finding label, never one on the class it cites, is what `${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § Rules rule (f) uses.
 
 ```text
 FINDINGS
-- HIGH|MED|LOW path:line — issue; evidence/failure mode; concrete fix
+- HIGH|MED|LOW path:line — issue; evidence/failure mode; concrete fix; rule: <source> <the skill's own rule or class id> [<the label the skill gave this finding>]
   verified: <the spans you read and what they confirmed> | unverified — <the part you could not confirm>
 
 CONTESTED: <the findings sy:gate should refute first, or none>

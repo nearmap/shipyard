@@ -15,7 +15,7 @@ This skill inherits caller model/effort. Assess scope before reading: a handful 
 
 Never operate on `main`. Confirm branch and PR state.
 
-- **No PR** ⇒ create; push first if needed.
+- **No PR** ⇒ create with `gh pr create --base <branch>`, the base the caller names, else the repo default; never infer a base from a branch name. Push first if needed.
 - **Draft exists** ⇒ promote/refresh when caller requests readiness.
 - **Open non-draft exists** ⇒ cleanup/update. If called directly by a human, ask via `AskUserQuestion` before rewriting mutable metadata (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`); when `/sy:ship` explicitly invokes promotion/refresh, that invocation is authorization for that operation.
 
@@ -90,7 +90,8 @@ Merging is never part of the create/promote/cleanup flow. Two callers reach it: 
 1. wait for CI on the current head with the shared poller (`${CLAUDE_PLUGIN_ROOT}/scripts/ci_poll.sh poll <pr> --repo <the PR's base repository> --head <head SHA>`, run in the background, adding `--allow-no-checks` only for a repository already known to have no CI, never inferred from an empty check set); a failure stops and reports;
 2. when `ship.request_ci_reviewer` resolves true and the automated reviewer has not reviewed the current head, request it per §3 and wait in the background for its review of that head, bounded by `ci.poll_timeout`;
 3. reconcile every thread per §3. A thread asking for a code change stops the merge and reports it: this mode pushes nothing. So does a requested review still pending at `ci.poll_timeout`, or any reviewer whose latest review is `CHANGES_REQUESTED`, inline threads or not; `--admin` never bypasses either;
-4. re-read the head and its checks. If the head moved since step 1, start again from step 1; a check on the same head that is now pending is waited for with the poller, and one that failed stops the merge; otherwise merge that SHA below.
+4. re-read the head and its checks. If the head moved since step 1, start again from step 1; a check on the same head that is now pending is waited for with the poller, and one that failed stops the merge; otherwise merge that SHA below;
+5. retarget dependents, immediately before the merge call and after every step above, so no earlier stop leaves them retargeted: list `gh pr list --base <this PR's head branch> --state open --json number` and retarget each with `gh pr edit <n> --base <this PR's base>`, since deleting the merged branch auto-closes a PR still based on it. If the merge call then fails for any reason, restore each retargeted PR's base. This step is the single owner of that duty; every other merge site cites it.
 
 This mode runs no `sy:gate`: the merge rests on CI and on the reviewers the PR already has.
 

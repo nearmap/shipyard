@@ -29,7 +29,7 @@ No preamble, narration, praise, repeated conclusions, pasted bodies, or tool rec
 
 ```text
 FINDINGS
-- HIGH|MED|LOW <confidence> path:line `symbol` — issue; failure mode
+- HIGH|MED|LOW <confidence> path:line `symbol` — issue; failure mode[; rule: <source> <pointer> [<label>]]
 # refute mode instead: SURVIVES|DIES — reason
 
 EVIDENCE

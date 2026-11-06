@@ -44,13 +44,13 @@ First verify worktree HEAD equals `REVIEWED_SHA`; otherwise return `BLOCKED: rev
 - NIT: true, but it changes nothing a user, caller or reader would see or do. You may emit NIT.
 - Test gaps and standards violations default to LOW unless they mask a realistic regression. That is the generic default, which an overlay may override.
 
-Repo overlay: when the dispatch names a `severity_overlay_path`, read that file and grade with it under `${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § Rules, and pass the path unchanged into every `sy:hunt` and `repo-review` dispatch. With no path, the generic scale applies unchanged.
+Repo overlay: when the dispatch names a `severity_overlay_path`, read that file and grade with it under `${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § Rules, and pass the path unchanged into every `sy:hunt` and `repo-review` dispatch. A finding that cites a repository rule carries `rule: <source> <pointer> [<label>]` and takes its grade and label source under rule (f) there; read a rule entry's metadata through the docs MCP where the repository names one. With no path, the generic scale applies unchanged and no rule label is read.
 
 ## Return contract — target ≤1,200 tokens
 
 Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`: this report is expensive to regenerate, so persist it before returning per that file's § Persisting a report — `kind` `gate-verdict`, `scope` `<REVIEWED_SHA>` — and name its absolute path as `VERDICT_FILE:` in the block below, including on a `SPLIT_REQUIRED` return, so an incomplete pass is recognisably incomplete on disk rather than absent.
 
-No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap. Group by severity (§ Severity). Each finding must include `file:line`, issue, evidence/failure mode, concrete fix, and standards rule pointer only when applicable.
+No preamble, narration, praise, repeated conclusions, pasted bodies, or tool recap. Group by severity (§ Severity). Each finding must include `file:line`, issue, evidence/failure mode, concrete fix, and the `rule:` field when it cites a repository rule (§ Severity).
 
 End exactly with:
 

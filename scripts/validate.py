@@ -22,7 +22,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config", "tighten", "mvp", "shutdown", "whiteboard",
+    "config", "tighten", "mvp", "shutdown", "whiteboard", "report",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -1516,6 +1516,12 @@ def check_invariants(errors: list[str]) -> None:
         )
     )
     shutdown = read("skills/shutdown/SKILL.md")
+    report = "\n".join(
+        read(rel) for rel in (
+            "skills/report/SKILL.md", "skills/report/references/data-contract.md",
+            "skills/report/references/figure-loop.md", "skills/report/references/check-publish.md",
+        )
+    )
     pr = read("skills/pr/SKILL.md")
     explain = read("skills/explain/SKILL.md")
     whiteboard = read("skills/whiteboard/SKILL.md")
@@ -1697,7 +1703,7 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (
         ("ship", ship + start + handoff), ("spec", spec), ("plan", plan), ("spike", spike),
         ("pr", pr), ("explain", explain), ("init-repo", init_repo), ("mvp", mvp), ("shutdown", shutdown),
-        ("whiteboard", whiteboard),
+        ("whiteboard", whiteboard), ("report", report),
     ):
         if "AskUserQuestion" not in text:
             fail(f"{name} skill must route user decisions through AskUserQuestion per user-interaction.md", errors)
@@ -1724,6 +1730,7 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} adapter must declare its preflight hook, cached inside the preflight tool", errors)
     for name, text in (
         ("plan", plan), ("spec", spec), ("ship", ship), ("spike", spike), ("mvp", mvp), ("shutdown", shutdown),
+        ("report", report),
     ):
         if "preflight.md" not in text:
             fail(f"{name} must run the tracker preflight (preflight.md) before other work", errors)
@@ -2237,7 +2244,7 @@ def check_invariants(errors: list[str]) -> None:
         ("immutable-gate", gate_ref), ("handoff-accounting", handoff), ("merge-accounting", merge),
         ("tracker", tracker_skill), ("roadmap-shaping", roadmap_shaping),
         ("checkpoint-handoff", checkpoint_handoff), ("gate", gate), ("mvp", mvp), ("shutdown", shutdown),
-        ("whiteboard", whiteboard),
+        ("whiteboard", whiteboard), ("report", report),
     ):
         if "config-values.md" not in text:
             fail(f"{name} names a live-resolved config value and must cite config-values.md", errors)

@@ -127,6 +127,7 @@ claude plugin install sy@shipyard --scope project   # shared with this repo via 
 - [`docs/configuration.md`](docs/configuration.md) — every setting, the three-layer merge chain, per-agent model floors, and how to retire the old `env` block.
 - [`docs/github-setup.md`](docs/github-setup.md) — one-time GitHub Projects board setup.
 - [`docs/usage.md`](docs/usage.md) — the day-to-day loop and the session-naming pattern.
+- [`docs/severity-overlay.md`](docs/severity-overlay.md) — tuning how `/sy:ship`'s reviewers grade findings in one repository.
 
 ## The rules it holds itself to
 

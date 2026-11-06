@@ -27,6 +27,8 @@ Put a value in the layer matching what it *is*. The tracker, the board, and the 
 
 Start a new file with `"$schema": "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json"` so your editor validates it as you type.
 
+A repository can also commit `.shipyard/severity-overlay.md` to tune how `/sy:ship`'s reviewers grade findings; it is not a config key, and [`severity-overlay.md`](severity-overlay.md) describes it.
+
 ## Every setting
 
 Shipped defaults live in exactly one place, `config/defaults.json` — this table documents what

@@ -37,6 +37,7 @@ mistune = ">=3.2"
 
 [tool.pixi.tasks]
 sy-server = "python -m sy_tools.server"
+overlay = "python -m sy_tools.overlay"
 pytest = "pytest"
 validate = "python scripts/validate.py"
 # The interpreter is named rather than left to the `#!` line: `[tool.pixi.workspace]` declares win-64,

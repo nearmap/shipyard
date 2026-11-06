@@ -20,13 +20,14 @@ The file is Markdown, and these three `##` sections are required, in this order.
   - `Source` names a review skill or standards doc.
   - `Label` is a severity label that source emits.
   - `Grade` is one of `HIGH`, `MED`, `LOW` or `NIT`.
-  - One row per label. The table may be empty, with a header row only.
+  - One row per label. The table may be a header row and its separator row only.
 - `## Pinned patterns`: one Markdown table with exactly the columns `Grade | Pattern | Recognise by`.
   - `Grade` is one of `HIGH`, `MED`, `LOW` or `NIT`.
   - `Pattern` names the defect class in one line.
   - `Recognise by` gives a concrete tell: a symbol, an import, a call shape, or a doc claim.
-  - The table may be empty.
+  - The table may be a header row and its separator row only.
 - `## Notes`: free prose, which may be empty. Put the rationale and links here, never in the tables.
+- Every table row, the separator included, starts with `|`, as in the worked example.
 
 ## Rules
 
@@ -68,7 +69,7 @@ One finding traced through it: `code-review` labels a missing docstring on `_par
 
 Run against the target branch's copy, with `PYTHONPATH=<plugin root> python -m sy_tools.overlay check <path>`:
 
-1. The file exists. A missing file exits 2, which START reads as "no overlay", never as an error.
+1. START tests existence with `git ls-tree` before running the check; a non-zero exit from the check on START's copy returns `blocked`.
 2. `## Scale mapping`, `## Pinned patterns` and `## Notes` are each present once, in that order.
 3. `## Scale mapping` holds one table whose header is exactly `Source | Label | Grade`, and `## Pinned patterns` holds one table whose header is exactly `Grade | Pattern | Recognise by`.
 4. Every `Grade` cell is `HIGH`, `MED`, `LOW` or `NIT`.

@@ -37,9 +37,9 @@ If START cannot run at the requested model, re-dispatch once at `START_MODEL_FAL
 1. fetch origin;
 2. run the sibling/stacked-PR scan: list open PRs, local and remote branches, and existing worktrees that touch the same surface. Overlap with an open sibling or stacked PR is resolved before branching — coordinate with it, stack on it explicitly, or stop — and the scan result is recorded in state so later phases inherit it;
 3. check plan-base freshness: diff the plan's `PLAN_BASE_SHA` against the fresh target/integration branch (`origin/main` where that is the target). Unrelated drift → continue. Drift touching plan anchors/dependencies → inspect those changes before building. Material contract or architecture drift → stop and return to `/sy:spec`;
-4. branch from the fresh target/integration branch;
-5. create the dedicated build worktree under the resolved worktree root (`get_config {"key": "worktree.root"}`; defaults to the sibling directory beside the repo, never inside it) and record its absolute path;
-6. read the severity overlay from the target branch only, after step 1's fetch, and never from the build worktree, a review worktree or the main checkout, so a PR's own overlay edits apply only once it merges. When `git ls-tree origin/<target> -- .shipyard/severity-overlay.md` lists nothing, stamp `severity_overlay_path: null`, which is not an error. Otherwise write `git show origin/<target>:.shipyard/severity-overlay.md` to `severity-overlay.md` in the task's resolved scratch directory, run `PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python -m sy_tools.overlay check <that copy>` (`${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § What START checks), and stamp the copy's absolute path as `severity_overlay_path`. A non-zero exit returns `blocked`, naming `origin/<target>:.shipyard/severity-overlay.md` and the rule lines the check printed;
+4. read the severity overlay from the target branch only, after step 1's fetch, and never from the build worktree, a review worktree or the main checkout, so a PR's own overlay edits apply only once it merges. When `git ls-tree origin/<target> -- .shipyard/severity-overlay.md` exits 0 and lists nothing, stamp `severity_overlay_path: null`, which is not an error. Otherwise write `git show origin/<target>:.shipyard/severity-overlay.md` to `severity-overlay.md` in the task's resolved scratch directory, run `PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python -m sy_tools.overlay check <that copy>` (`${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § What START checks), and stamp the copy's absolute path as `severity_overlay_path`. A non-zero exit returns `blocked`, naming `origin/<target>:.shipyard/severity-overlay.md` and the rule lines the check printed;
+5. branch from the fresh target/integration branch;
+6. create the dedicated build worktree under the resolved worktree root (`get_config {"key": "worktree.root"}`; defaults to the sibling directory beside the repo, never inside it) and record its absolute path;
 7. write local resume state, stamping the resolved-config fingerprint alongside the pinned SHAs — pinned and compared rather than re-read, because a setting that changes mid-run silently changes what later phases do:
 
 ```yaml
@@ -77,7 +77,7 @@ phase_active: null
 gate_rounds_total: 0
 gate_rounds_budget_base: 0
 gate_round_log: []
-severity_overlay_path: <step 6: the checked copy's absolute path, or null>
+severity_overlay_path: <step 4: the checked copy's absolute path, or null>
 ship_session_id: <current session id if available>
 ship_session_started_at: <timestamp>
 sibling_scan: <step-2 scan result: branches, open PRs, worktrees>

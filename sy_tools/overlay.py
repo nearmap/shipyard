@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 
 import yaml
+import yaml.constructor
 
 GRADES = ("HIGH", "MED", "LOW", "NIT")
 ENTRY_KEYS = {"scale_mapping": ("source", "label", "grade"), "pinned_patterns": ("grade", "pattern", "recognise_by")}
@@ -21,7 +22,7 @@ TOP_KEYS = (*ENTRY_KEYS, "notes")
 def check(text: str) -> list[str]:
     """Return one failure line per failed rule 2-4 of § What START checks; empty means well formed."""
     try:
-        overlay = yaml.safe_load(text)
+        overlay = yaml.load(text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as error:
         return [f"rule 2: not valid YAML: {' '.join(str(error).split())}"]
     if not isinstance(overlay, dict) or set(overlay) != set(TOP_KEYS):
@@ -65,6 +66,15 @@ def main(argv: list[str] | None = None) -> int:
     for line in failures:
         print(f"{args.path}: {line}", file=sys.stderr)
     return 1 if failures else 0
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[object, object]:
+        keys = [self.construct_object(key, deep=True) for key, _ in node.value]
+        for key in keys:
+            if keys.count(key) > 1:
+                raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", node.start_mark)
+        return super().construct_mapping(node, deep)
 
 
 def _is_entry(entry: object, keys: tuple[str, ...]) -> bool:

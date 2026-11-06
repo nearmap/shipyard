@@ -43,3 +43,8 @@ def test_rule_4_an_unknown_grade_fails():
     text = EMPTY.replace("pinned_patterns: []\n", PIN.format(grade="CRITICAL", tell="except pass"))
     failures = overlay.check(text)
     assert len(failures) == 1 and failures[0].startswith("rule 4:") and "'CRITICAL'" in failures[0], failures
+
+
+def test_rule_2_a_repeated_key_fails():
+    failures = overlay.check(EMPTY + "pinned_patterns: []\n")
+    assert len(failures) == 1 and failures[0].startswith("rule 2:") and "pinned_patterns" in failures[0], failures

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-An overlay tunes how `/sy:ship` grades findings in one repository. It maps the labels your own review skill or standards doc emits onto Shipyard's four grades, and pins defect classes your team has learned to treat as more or less serious than the generic scale would. `sy:gate`, `sy:hunt` and `repo-review` grade with it, and `sy:gate-triage` uses it when it decides whether a finding is `breaking`. It cannot make fail-soft handling or a check that can silently not run anything but HIGH, and it changes nothing about which reviewers run, at what model, or over what scope. The generic scale it adjusts is [`agents/gate.md` § Severity](../agents/gate.md#severity).
+An overlay tunes how `/sy:ship` grades findings in one repository. It maps the labels your own review skill or standards doc emits onto Shipyard's four grades, and pins defect classes your team has learned to treat as more or less serious than the generic scale would. It also lets a finding that cites one of your repository's rules take that rule's grade (rule f). `sy:gate`, `sy:hunt` and `repo-review` grade with it, and `sy:gate-triage` uses it when it decides whether a finding is `breaking`. It cannot make fail-soft handling or a check that can silently not run anything but HIGH, and it changes nothing about which reviewers run, at what model, or over what scope. The generic scale it adjusts is [`agents/gate.md` § Severity](../agents/gate.md#severity).
 
 ## Enabling it
 
@@ -17,7 +17,7 @@ If you want the overlay's content shown in other docs as well, link to the file 
 The file is YAML: one mapping with exactly these three top-level keys and no others, so a misspelt key fails the check rather than being silently ignored.
 
 - `scale_mapping`: a list with one entry per label, each a mapping with exactly these keys:
-  - `source` names a review skill or standards doc.
+  - `source` names a review skill or standards doc, matched against the source a finding's `rule:` citation names.
   - `label` is a severity label that source emits.
   - `grade` is one of `HIGH`, `MED`, `LOW` or `NIT`.
 - `pinned_patterns`: a list, each entry a mapping with exactly these keys:
@@ -37,6 +37,7 @@ Every overlay obeys these, and the agents enforce them when they grade:
 - (c) A pin may lower a finding to LOW or NIT, except under rule (a).
 - (d) When a finding matches both a `scale_mapping` entry and a pin, the pin wins.
 - (e) When it matches two pins, the higher grade wins.
+- (f) A finding that cites a repository rule takes the grade its label maps to under `scale_mapping`, in place of the generic scale. The label is the one the repository's own skill gave that finding when the skill raised it. Otherwise it is the label the cited rule's own entry exposes as metadata (frontmatter or its heading line), and only when that can be read without reading the rule's body. A label on a class of defects (a catalog entry graded by its worst incident) never grades a finding. With several cited rules, the highest grade wins. An inherited grade never goes below LOW. A cited rule with no readable label, or a label no `scale_mapping` entry maps, leaves the generic scale. Rules (a) and (d) still apply. The grade sets severity only, never `IMPACT`.
 
 ## Worked example
 
@@ -61,7 +62,7 @@ pinned_patterns:
 notes: "Labels are the ones the repository's `code-review` skill emits; revisit the pins after each incident review."
 ```
 
-One finding traced through it: `code-review` labels a missing docstring on `_parse_row` as `must-fix`. The mapping entry alone would grade it MED, but the LOW pin matches too and the pin wins (rule d), so `sy:gate` reports it under LOW. Nothing about it is fail-soft or a silenced check, so rule (a) does not apply and the lowering stands (rule c). Triage sets IMPACT `non-breaking`: it changes no behaviour and misleads no reader. A LOW, `non-breaking` accepted finding is deferrable, so on a terminal pass it is posted to the pull request as a deferred finding rather than fixed. Had the same label landed on an unbounded retry loop instead, the MED pin would make it `breaking` (rule b) and it would be fixed.
+One finding traced through it: `code-review` labels a missing docstring on `_parse_row` as `must-fix`. The mapping entry alone would grade it MED, but the LOW pin matches too and the pin wins (rule d), so `sy:gate` reports it under LOW. Nothing about it is fail-soft or a silenced check, so rule (a) does not apply and the lowering stands (rule c). Triage sets IMPACT `non-breaking`: it changes no behaviour and misleads no reader. A LOW, `non-breaking` accepted finding is deferrable, so on a terminal pass it is posted to the pull request as a deferred finding rather than fixed. Had the same label landed on an unbounded retry loop instead, the MED pin would make it `breaking` (rule b) and it would be fixed. Had `sy:gate` raised the same docstring finding itself, citing a `code-review` rule whose own entry is labelled `must-fix`, rule (f) grades it the same way: MED from the mapping, then LOW because the pin still wins (rule d).
 
 ## What START checks
 

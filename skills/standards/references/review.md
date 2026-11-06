@@ -8,11 +8,13 @@ Otherwise resolve authoritative repo docs and review only applicable rules. Ever
 
 ```text
 FINDINGS
-- HIGH|MED|LOW code/path:line — issue; rule/path:section — fix
+- HIGH|MED|LOW code/path:line — issue; rule: <source> <rule/path:section> [<label>] — fix
 
 CLEARED: <compact negative space>
 AUTHORITY: <skill/docs/fallback>
 BEHAVIOURAL_LENSES: <items gate/hunt must investigate as correctness, not conformance>
 ```
+
+`HIGH|MED|LOW` stays the generic grade. When the repository's own standards skill ran, `[<label>]` is that skill's label for the finding, verbatim. When `skills.standards` is null, take it only from the rule entry's metadata per `${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § Rules rule (f), never from a doc body and never a class label; otherwise omit it.
 
 Load `fallback-risk.md` only if the repository genuinely has no applicable authority or when a risk-lens catalogue is needed.

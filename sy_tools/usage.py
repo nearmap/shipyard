@@ -187,7 +187,7 @@ def observed_effort_ceiling(
     for meta_path in _newest_metas(root, limit):
         try:
             requested = json.loads(meta_path.read_text(encoding="utf-8")).get("effort")
-        except (OSError, json.JSONDecodeError, AttributeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
             continue
         if requested not in order:
             continue
@@ -199,15 +199,14 @@ def observed_effort_ceiling(
     return None
 
 
-def _newest_metas(root: Path, limit: int) -> Iterable[Path]:
-    # Sort session directories, not every meta file: a busy machine holds thousands of the latter.
-    seen = 0
+def _newest_metas(root: Path, limit: int) -> list[Path]:
+    # Stat only the newest session directories' metas, not every one on a busy machine, then order globally.
+    found: list[Path] = []
     for subagents in sorted(root.glob("*/*/subagents"), key=_mtime, reverse=True):
-        for meta in sorted(subagents.glob("*.meta.json"), key=_mtime, reverse=True):
-            if seen >= limit:
-                return
-            seen += 1
-            yield meta
+        if len(found) >= limit:
+            break
+        found.extend(subagents.glob("*.meta.json"))
+    return sorted(found, key=_mtime, reverse=True)[:limit]
 
 
 def _mtime(path: Path) -> float:
@@ -218,7 +217,7 @@ def _mtime(path: Path) -> float:
 
 
 def _first_observed_effort(path: Path) -> str | None:
-    with contextlib.suppress(OSError), path.open("r", encoding="utf-8") as fh:
+    with contextlib.suppress(OSError, UnicodeDecodeError), path.open("r", encoding="utf-8") as fh:
         for line in fh:
             try:
                 record = json.loads(line)

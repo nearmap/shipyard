@@ -147,7 +147,7 @@ End the `/sy:ship` part with `/sy:ship <task>` and a one-line ship profile that 
 
 Model tier is a quality floor, not a cost lever. Each phase's floor is declared in `config/floors.json` — `ship-start` cheap, `ship-build` standard, `sy:gate` frontier (frontier is absolute and cost-scaling-exempt, and the `GATE` model names the reviewer's tier rather than the lightweight GATE controller's) — and a plan may state a higher model for a phase when its own judgment calls for it. A stated model below a phase's floor is clamped up to the floor, never honored downward, by the resolver rather than by anyone remembering to. See `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`. Tune cost through **effort**, which the resolver clamps to the same floors: lower START effort, or raise BUILD effort, only with evidence the work calls for it, and never lower review effort.
 
-The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort (or the runtime's effort ceiling when lower), BUILD remains at least opus (the profile may raise it, never lower it).
+The ship profile never lowers review or build: `sy:gate` remains frontier tier and max effort, BUILD remains at least opus (the profile may raise it, never lower it).
 
 ### Step 1 — ask for sign-off on the judgment, not the mechanics
 

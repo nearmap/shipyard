@@ -83,7 +83,7 @@ Include `"$schema"` in a newly created file so editors validate it. After any ed
 agent_model {"name": "<name>"}
 ```
 
-Answers "what will `sy:hunt` actually run at, and why". The binding reports the resolved model and effort to dispatch with, what config (or a passed `model`/`effort` override) requested, and whether either was clamped up to a floor. Use it to explain a surprise: a `model_clamped: true` means config asked for something below the floor and the floor won. An `effort_capped: true` means the effort was lowered to the runtime's ceiling (`effort_ceiling`, from `models.max_effort` or observed in transcripts), which is the one thing below a floor.
+Answers "what will `sy:hunt` actually run at, and why". The binding reports the resolved model and effort to dispatch with, what config (or a passed `model`/`effort` override) requested, and whether either was clamped up to a floor. Use it to explain a surprise: a `model_clamped: true` means config asked for something below the floor and the floor won.
 
 When effort comes up: **`effort` in config is applied at dispatch**, the same way `model` is — the resolved value is passed as the `Agent` invocation's `effort` parameter, so a config edit changes the next dispatch, never a running agent. Frontmatter `effort:` is only the fallback when a dispatch passes none. The full explanation is `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`.
 

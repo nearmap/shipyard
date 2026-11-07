@@ -459,3 +459,20 @@ def test_observed_effort_ceiling_reads_the_newest_deciding_run(tmp_path, runs, e
         os.utime(meta, (1_000 + i, 1_000 + i))
     found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path)
     assert (found[0] if found else None) == expected, found
+
+
+def test_observed_effort_ceiling_orders_runs_by_their_own_mtime_not_their_directory(tmp_path):
+    """A newer session directory can hold an older deciding run; the newest run overall decides."""
+    for session, requested, observed, mtime in (("old", "max", "max", 2_000), ("new", "max", "xhigh", 1_000)):
+        subagents = tmp_path / "-repo" / session / "subagents"
+        subagents.mkdir(parents=True)
+        meta = subagents / "agent-a.meta.json"
+        meta.write_text(json.dumps({"effort": requested}), encoding="utf-8")
+        (subagents / "agent-a.jsonl").write_text(
+            json.dumps({"type": "assistant", "perTurnEffort": observed}) + "\n", encoding="utf-8"
+        )
+        os.utime(meta, (mtime, mtime))
+    os.utime(tmp_path / "-repo" / "old" / "subagents", (1_000, 1_000))
+    os.utime(tmp_path / "-repo" / "new" / "subagents", (3_000, 3_000))
+    found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path)
+    assert found is not None and found[0] == "max" and "/old/" in found[1], found

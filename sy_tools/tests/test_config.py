@@ -690,6 +690,7 @@ def test_agent_binding_reports_the_clamped_dispatch_values_and_where_they_came_f
     assert config.agent_binding("sweep") == {
         "agent": "sweep", "model": "opus", "effort": "high", "model_requested": "opus",
         "effort_requested": "high", "model_clamped": False, "effort_clamped": False,
+        "effort_expected": "high", "effort_ceiling": "max", "effort_ceiling_source": "none",
         "source": "repo-committed",
     }
     inspector = config.agent_binding("img-inspector")
@@ -707,7 +708,8 @@ def test_agent_binding_reports_the_clamped_dispatch_values_and_where_they_came_f
     assert config.agent_binding("gate") == {
         "agent": "gate", "model": tiers[floor["min_model"]], "effort": floor["min_effort"],
         "model_requested": "haiku", "effort_requested": "low", "model_clamped": True,
-        "effort_clamped": True, "source": "repo-local",
+        "effort_clamped": True, "effort_expected": floor["min_effort"], "effort_ceiling": "max",
+        "effort_ceiling_source": "none", "source": "repo-local",
     }
 
     with pytest.raises(config.ConfigError, match="unknown agent"):
@@ -738,6 +740,33 @@ def test_an_agent_binding_override_is_clamped_to_the_floor_and_an_unknown_one_is
     config.reload()
     with pytest.raises(config.ConfigError, match="not effort-capable"):
         config.agent_binding("sweep", model="haiku", effort="low")
+
+
+def test_an_effort_floor_above_the_runtime_ceiling_is_expected_at_the_ceiling(fixture_repo):
+    """The floor is still dispatched; only the expectation is capped, and config outranks what transcripts show."""
+    subagents = fixture_repo / "home" / ".claude" / "projects" / "-repo" / "session" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a.meta.json").write_text(json.dumps({"effort": "max"}), encoding="utf-8")
+    (subagents / "agent-a.jsonl").write_text(
+        json.dumps({"type": "assistant", "perTurnEffort": "xhigh"}) + "\n", encoding="utf-8"
+    )
+    config.reload()
+    gate = config.agent_binding("gate")
+    assert (gate["effort"], gate["effort_expected"], gate["effort_ceiling"]) == ("max", "xhigh", "xhigh"), gate
+    assert gate["effort_ceiling_source"].startswith("observed:"), gate
+    assert config.agent_binding("sweep")["effort_expected"] == "high", "an effort under the ceiling is expected as is"
+
+    local = fixture_repo / ".shipyard" / "config.local.json"
+    local.write_text(json.dumps({"models": {"max_effort": "high"}}), encoding="utf-8")
+    config.reload()
+    gate = config.agent_binding("gate")
+    assert (gate["effort"], gate["effort_expected"], gate["effort_ceiling_source"]) == ("max", "high", "config"), gate
+    assert not any("max_effort" in e for e in config.validate()), "a valid max_effort is not an error"
+
+    local.write_text(json.dumps({"models": {"max_effort": "extreme"}}), encoding="utf-8")
+    config.reload()
+    with pytest.raises(config.ConfigError, match=r"models\.max_effort"):
+        config.agent_binding("gate")
 
 
 def test_validate_reports_an_outranking_effort_level(fixture_repo, monkeypatch):

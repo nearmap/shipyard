@@ -57,6 +57,7 @@ show_config {}
 | `models.tiers.*` | no | Named tiers mapped to concrete model aliases. |
 | `models.agents.<name>.model` | no | Which tier or model an agent runs at. **Live at dispatch.** |
 | `models.agents.<name>.effort` | no | Effort an agent is dispatched at, clamped to its floor — see [Effort](#effort-is-set-per-dispatch). |
+| `models.max_effort` | no | The highest effort this runtime grants a subagent; observed efforts are checked against floors capped at it. Null reads it from transcripts — see [The effort ceiling](#the-effort-ceiling). |
 | `limits.max_depth_agents` | no | Cross-cutting cap on simultaneous depth-investigation subagents (`sy:trace`/`sy:hunt`/etc.) in flight per phase — `/sy:ship`, `/sy:spec`, `/sy:spike`, `/sy:mvp`, `/sy:whiteboard`, and `sy:gate` all read this one key. |
 | `plan.max_active_tasks` | no | Cap on `/sy:spec`-ready Tasks a roadmap keeps active under one Epic at once. `/sy:plan` and the `/sy:mvp` harvest read it. |
 | `spec.max_spec_gate_rounds` | no | How many times `/sy:spec` may dispatch `sy:spec-gate` for the same session before the guard denies a further dispatch and the session must stop and ask you how to proceed. Per session, not per plan — a session that runs `/sy:spec` on two tickets in a row shares one budget. A dispatch consumes a round even if later aborted. |
@@ -147,6 +148,16 @@ The `Agent` tool takes an `effort` parameter (Claude Code 2.1.292 and later), so
 - frontmatter `effort:` is only the fallback when a dispatch passes none, and it must not sit below the floor;
 - precedence is `CLAUDE_CODE_EFFORT_LEVEL`, then the per-dispatch parameter, then frontmatter, then the session's effort, and the `maxEffortLevel` setting caps all of them — which is why `validate_config` fails when `CLAUDE_CODE_EFFORT_LEVEL` is set;
 - the effort an agent actually ran at is the `efforts` list on its `by_agent` row of the `usage_summarize` roll-up.
+
+### The effort ceiling
+
+Some runtimes cap subagent effort below `max` — an account's `maxEffortLevel`, or an entitlement that tops out at `xhigh` or `high`. A dispatch requesting `max` there runs at the cap, so an observed effort is checked against "the floor, or the runtime's highest if that is lower". `agent_model` still reports the uncapped `effort` to dispatch, and adds `effort_expected` (that effort capped at the ceiling), `effort_ceiling`, and `effort_ceiling_source` saying where the ceiling came from:
+
+- `config`: `models.max_effort` is set in some layer. Like `models.tiers.frontier`, it describes what the account can run, so it usually belongs in the user-global layer, and it wins over anything observed.
+- `observed:<meta.json path>`: unset, the ceiling is read off the newest run that decides it among the 200 most recent subagent runs (by `meta.json` mtime) under `~/.claude/projects` — one that ran below the effort its `meta.json` requested (the ceiling is what it ran at), or one that requested `max` and ran at `max` (no ceiling). It is re-read on every `agent_model` call.
+- `none`: none of those 200 runs decides it, so `effort_expected` equals `effort`.
+
+The requested-versus-observed check compares against the `effort_expected` recorded when the gate was dispatched (the lowest across a ship's gate dispatches), so a gate that ran at or above `effort_expected` passes, and only one that ran below it fails. The dispatch is never capped: a capped request that is granted proves nothing about the ceiling, so capping it would hide a runtime that starts granting `max` again. Set `models.max_effort` when detection guesses wrong, for example on a fresh machine whose only gate round would otherwise be checked against `max`.
 
 One related trap the resolver does guard: effort is silently dropped for a model Claude Code does not treat as effort-capable, so an agent pinned to such a model loses its declared effort with no error and inherits the session's. Binding an agent with a declared effort to a non-effort-capable model is refused by name.
 

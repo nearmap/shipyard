@@ -6,6 +6,7 @@ written by the test, so nothing depends on whichever session happens to be runni
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -433,3 +434,63 @@ def test_by_agent_reports_the_efforts_its_requests_ran_at(tmp_path, monkeypatch,
     copy = _copy(3, content=[{"type": "text", "text": "ok"}], stop_reason="end_turn", **record)
     result = usage.summarize(_write_session(tmp_path, monkeypatch, [copy]), phase="ship", task=None)
     assert [row["efforts"] for row in result["by_agent"]] == [expected], result["by_agent"]
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([("max", "xhigh")], "xhigh"),
+        ([("max", "max")], "max"),
+        ([("high", "high")], None),
+        ([("max", "xhigh"), ("high", "high")], "xhigh"),
+    ],
+    ids=["capped", "uncapped-at-top", "undecided", "skips-a-granted-lower-request"],
+)
+def test_observed_effort_ceiling_reads_the_newest_deciding_run(tmp_path, runs, expected):
+    """Oldest first in `runs`: only a run held below its request, or granted the top effort, decides."""
+    subagents = tmp_path / "-repo" / "session" / "subagents"
+    subagents.mkdir(parents=True)
+    for i, (requested, observed) in enumerate(runs):
+        meta = subagents / f"agent-{i}.meta.json"
+        meta.write_text(json.dumps({"effort": requested}), encoding="utf-8")
+        (subagents / f"agent-{i}.jsonl").write_text(
+            json.dumps({"type": "assistant", "perTurnEffort": observed}) + "\n", encoding="utf-8"
+        )
+        os.utime(meta, (1_000 + i, 1_000 + i))
+    found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path)
+    assert (found[0] if found else None) == expected, found
+
+
+def test_observed_effort_ceiling_orders_runs_by_their_own_mtime_not_their_directory(tmp_path):
+    """A newer session directory can hold an older deciding run; the newest run overall decides."""
+    for session, requested, observed, mtime in (("old", "max", "max", 2_000), ("new", "max", "xhigh", 1_000)):
+        subagents = tmp_path / "-repo" / session / "subagents"
+        subagents.mkdir(parents=True)
+        meta = subagents / "agent-a.meta.json"
+        meta.write_text(json.dumps({"effort": requested}), encoding="utf-8")
+        (subagents / "agent-a.jsonl").write_text(
+            json.dumps({"type": "assistant", "perTurnEffort": observed}) + "\n", encoding="utf-8"
+        )
+        os.utime(meta, (mtime, mtime))
+    os.utime(tmp_path / "-repo" / "old" / "subagents", (1_000, 1_000))
+    os.utime(tmp_path / "-repo" / "new" / "subagents", (3_000, 3_000))
+    found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path)
+    assert found is not None and found[0] == "max" and "/old/" in found[1], found
+
+
+def test_observed_effort_ceiling_reads_past_a_full_newest_directory(tmp_path):
+    """An older directory can hold a meta newer than the limit-th one already collected, so it is still read."""
+    runs = (("new", "agent-a", "high", "high", 1_000), ("new", "agent-b", "high", "high", 1_001))
+    for session, agent, requested, observed, mtime in (*runs, ("old", "agent-c", "max", "xhigh", 1_500)):
+        subagents = tmp_path / "-repo" / session / "subagents"
+        subagents.mkdir(parents=True, exist_ok=True)
+        meta = subagents / f"{agent}.meta.json"
+        meta.write_text(json.dumps({"effort": requested}), encoding="utf-8")
+        (subagents / f"{agent}.jsonl").write_text(
+            json.dumps({"type": "assistant", "perTurnEffort": observed}) + "\n", encoding="utf-8"
+        )
+        os.utime(meta, (mtime, mtime))
+    os.utime(tmp_path / "-repo" / "old" / "subagents", (2_000, 2_000))
+    os.utime(tmp_path / "-repo" / "new" / "subagents", (3_000, 3_000))
+    found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path, limit=2)
+    assert found is not None and found[0] == "xhigh", found

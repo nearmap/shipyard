@@ -61,6 +61,7 @@ target_sha: null
 review_model_requested: null
 review_model_observed: null
 review_effort: <the effort `agent_model {"name": "gate"}` reports>
+review_effort_expected: null
 start_model_requested: <resolved START_MODEL>
 start_model_observed: null
 build_model_requested: null

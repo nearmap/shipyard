@@ -171,6 +171,65 @@ def resolve_main_transcript(session_id: str | None, transcript: str | None) -> P
     return matches[0]
 
 
+def observed_effort_ceiling(
+    order: tuple[str, ...], projects: Path | None = None, limit: int = 200
+) -> tuple[str, str] | None:
+    """The highest effort the runtime grants subagents, read off the newest decisive subagent run.
+
+    Returns `(effort, evidence_path)`, or None when no run among the newest `limit` decides it. A run
+    decides it when it ran below the effort its `meta.json` requested (the ceiling is what it ran at),
+    or when it requested the top of `order` and ran there (no ceiling below the top). A run granted a
+    lower request says nothing about the ceiling and is skipped.
+    """
+    root = projects or Path.home() / ".claude" / "projects"
+    if not root.is_dir():
+        return None
+    for meta_path in _newest_metas(root, limit):
+        try:
+            requested = json.loads(meta_path.read_text(encoding="utf-8")).get("effort")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            continue
+        if requested not in order:
+            continue
+        observed = _first_observed_effort(meta_path.with_name(meta_path.name.removesuffix(".meta.json") + ".jsonl"))
+        if observed not in order:
+            continue
+        if order.index(observed) < order.index(requested) or observed == requested == order[-1]:
+            return observed, str(meta_path)
+    return None
+
+
+def _newest_metas(root: Path, limit: int) -> list[Path]:
+    # Read directories newest first until one is older than the limit-th newest meta, not every one on a busy machine.
+    found: list[tuple[float, Path]] = []
+    for subagents in sorted(root.glob("*/*/subagents"), key=_mtime, reverse=True):
+        if len(found) >= limit and _mtime(subagents) < found[limit - 1][0]:
+            break
+        found = sorted([*found, *((_mtime(m), m) for m in subagents.glob("*.meta.json"))], reverse=True)[:limit]
+    return [meta for _, meta in found]
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _first_observed_effort(path: Path) -> str | None:
+    with contextlib.suppress(OSError, UnicodeDecodeError), path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and record.get("type") == "assistant":
+                value = record.get("perTurnEffort") or record.get("effort")
+                if isinstance(value, str) and value:
+                    return value
+    return None
+
+
 def _session_id_from_path(main: Path) -> str:
     return main.stem
 

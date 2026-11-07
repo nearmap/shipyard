@@ -24,6 +24,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from . import usage
 from .secrets import looks_like_secret_name
 
 CONFIG_DIRNAME = ".shipyard"
@@ -420,8 +421,10 @@ def agent_binding(name: str, model: str | None = None, effort: str | None = None
     """The model and effort one agent is dispatched with, after floor clamping.
 
     `model` (a model or tier name) and `effort` override the configured values before clamping, so an
-    override below a floor is raised to it like any configured value. An unknown override, or an effort
-    on a model that is not effort-capable, is a `ConfigError` rather than a value passed on.
+    override below a floor is raised to it like any configured value. The dispatched `effort` is never
+    capped, so a runtime that later grants more is seen granting it; `effort_expected` is that effort
+    capped at `effort_ceiling()`, the value an observed effort is checked against. An unknown override,
+    or an effort on a model that is not effort-capable, is a `ConfigError` rather than a value passed on.
     """
     values, provenance = resolve()
     agents = values.get("models", {}).get("agents", {})
@@ -437,6 +440,10 @@ def agent_binding(name: str, model: str | None = None, effort: str | None = None
         raise ConfigError(f"effort override {effort!r} for {name} is not one of {', '.join(EFFORT_ORDER)}.")
     resolved_model, model_clamped = _clamp(requested_model, _resolve_tier(floors.get("min_model"), tiers), MODEL_ORDER)
     resolved_effort, effort_clamped = _clamp(requested_effort, floors.get("min_effort"), EFFORT_ORDER)
+    ceiling, ceiling_source = effort_ceiling()
+    expected_effort = resolved_effort
+    if resolved_effort in EFFORT_ORDER and EFFORT_ORDER.index(str(resolved_effort)) > EFFORT_ORDER.index(ceiling):
+        expected_effort = ceiling
     overridden = model is not None or effort is not None
     if overridden and resolved_effort and resolved_model not in EFFORT_CAPABLE:
         raise ConfigError(
@@ -451,8 +458,30 @@ def agent_binding(name: str, model: str | None = None, effort: str | None = None
         "effort_requested": requested_effort,
         "model_clamped": model_clamped,
         "effort_clamped": effort_clamped,
+        "effort_expected": expected_effort,
+        "effort_ceiling": ceiling,
+        "effort_ceiling_source": ceiling_source,
         "source": "override" if overridden else provenance.get(f"models.agents.{name}.model", "shipped-default"),
     }
+
+
+def effort_ceiling() -> tuple[str, str]:
+    """The highest effort this runtime grants a subagent, and where that answer came from.
+
+    `models.max_effort`, when a layer sets it, wins outright, the way `models.tiers.frontier` names the
+    strongest model. Unset, the ceiling is read off the newest subagent transcript that decides it
+    (`usage.observed_effort_ceiling`), and with no such transcript it is the top of the effort order.
+    An observed effort is checked against a floor capped at it: "this effort, or the ceiling when lower".
+    """
+    configured = resolve()[0].get("models", {}).get("max_effort")
+    if configured is not None:
+        if configured not in EFFORT_ORDER:
+            raise ConfigError(f"models.max_effort {configured!r} is not one of {', '.join(EFFORT_ORDER)}.")
+        return configured, "config"
+    observed = usage.observed_effort_ceiling(EFFORT_ORDER)
+    if observed is None:
+        return EFFORT_ORDER[-1], "none"
+    return observed[0], f"observed:{observed[1]}"
 
 
 def scratch_dir(identifier: str) -> Path:

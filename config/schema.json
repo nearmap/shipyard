@@ -89,6 +89,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "max_effort": {
+          "type": ["string", "null"],
+          "enum": ["low", "medium", "high", "xhigh", "max", null],
+          "description": "The highest effort this runtime grants a subagent, for an account or runtime that caps effort below max. An observed effort is checked against the dispatched effort capped at it; the dispatch itself is not capped. Null reads it from the newest subagent transcript that shows it (see docs/configuration.md)."
+        },
         "tiers": {
           "type": "object",
           "description": "Named tiers mapped to concrete model aliases, so raising the frontier tier is one edit rather than one per agent.",

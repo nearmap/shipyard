@@ -54,6 +54,7 @@
     "extra_words": []
   },
   "models": {
+    "max_effort": null,
     "tiers": {
       "frontier": "fable",
       "frontier_fallback": "opus",

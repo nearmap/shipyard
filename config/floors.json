@@ -2,7 +2,7 @@
   "gate": {
     "min_model": "frontier",
     "min_effort": "max",
-    "why": "the independent reviewer is the one thing cost-scaling may never touch; a weaker reviewer silently weakens every verdict"
+    "why": "the independent reviewer is the one thing cost-scaling may never touch; a weaker reviewer silently weakens every verdict. Like every effort floor, max means max or the runtime's highest effort when that is lower (models.max_effort, or observed)"
   },
   "gate-triage": {
     "min_model": "standard",

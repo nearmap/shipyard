@@ -24,6 +24,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from . import usage
 from .secrets import looks_like_secret_name
 
 CONFIG_DIRNAME = ".shipyard"
@@ -71,6 +72,8 @@ class _Resolved:
 
 
 _STATE: _Resolved | None = None
+_CEILING_UNREAD = object()
+_OBSERVED_CEILING: tuple[str, str] | object | None = _CEILING_UNREAD
 
 
 class ConfigError(RuntimeError):
@@ -342,8 +345,9 @@ def reset_cache() -> None:
     """Drop everything memoized, so the next read sees the environment and the files as they are now."""
     # All three, never just `_STATE`: the root is memoized too, so clearing half of it makes a reload
     # after a `CLAUDE_PROJECT_DIR` change re-read the layers of whichever repo resolved first.
-    global _STATE, _REPO_ROOT, _REPO_ROOT_REFUSAL
+    global _STATE, _REPO_ROOT, _REPO_ROOT_REFUSAL, _OBSERVED_CEILING
     _STATE = None
+    _OBSERVED_CEILING = _CEILING_UNREAD
     _REPO_ROOT = None
     _REPO_ROOT_REFUSAL = None
 
@@ -420,8 +424,10 @@ def agent_binding(name: str, model: str | None = None, effort: str | None = None
     """The model and effort one agent is dispatched with, after floor clamping.
 
     `model` (a model or tier name) and `effort` override the configured values before clamping, so an
-    override below a floor is raised to it like any configured value. An unknown override, or an effort
-    on a model that is not effort-capable, is a `ConfigError` rather than a value passed on.
+    override below a floor is raised to it like any configured value. The effort is then capped at
+    `effort_ceiling()`, so a floor above what the runtime grants resolves to the runtime's highest, which
+    is what the dispatch will be observed running at. An unknown override, or an effort on a model that
+    is not effort-capable, is a `ConfigError` rather than a value passed on.
     """
     values, provenance = resolve()
     agents = values.get("models", {}).get("agents", {})
@@ -437,6 +443,14 @@ def agent_binding(name: str, model: str | None = None, effort: str | None = None
         raise ConfigError(f"effort override {effort!r} for {name} is not one of {', '.join(EFFORT_ORDER)}.")
     resolved_model, model_clamped = _clamp(requested_model, _resolve_tier(floors.get("min_model"), tiers), MODEL_ORDER)
     resolved_effort, effort_clamped = _clamp(requested_effort, floors.get("min_effort"), EFFORT_ORDER)
+    ceiling, ceiling_source = effort_ceiling()
+    effort_capped = (
+        isinstance(resolved_effort, str)
+        and resolved_effort in EFFORT_ORDER
+        and EFFORT_ORDER.index(resolved_effort) > EFFORT_ORDER.index(ceiling)
+    )
+    if effort_capped:
+        resolved_effort = ceiling
     overridden = model is not None or effort is not None
     if overridden and resolved_effort and resolved_model not in EFFORT_CAPABLE:
         raise ConfigError(
@@ -451,8 +465,31 @@ def agent_binding(name: str, model: str | None = None, effort: str | None = None
         "effort_requested": requested_effort,
         "model_clamped": model_clamped,
         "effort_clamped": effort_clamped,
+        "effort_capped": effort_capped,
+        "effort_ceiling": ceiling,
+        "effort_ceiling_source": ceiling_source,
         "source": "override" if overridden else provenance.get(f"models.agents.{name}.model", "shipped-default"),
     }
+
+
+def effort_ceiling() -> tuple[str, str]:
+    """The highest effort this runtime grants a subagent, and where that answer came from.
+
+    `models.max_effort`, when a layer sets it, wins outright, the way `models.tiers.frontier` names the
+    strongest model. Unset, the ceiling is read off the newest subagent transcript that decides it
+    (`usage.observed_effort_ceiling`), and with no such transcript it is the top of the effort order.
+    Every floor therefore means "this effort, or the ceiling when that is lower".
+    """
+    global _OBSERVED_CEILING
+    configured = resolve()[0].get("models", {}).get("max_effort")
+    if configured is not None:
+        return configured, "config"
+    if _OBSERVED_CEILING is _CEILING_UNREAD:
+        _OBSERVED_CEILING = usage.observed_effort_ceiling(EFFORT_ORDER)
+    if _OBSERVED_CEILING is None:
+        return EFFORT_ORDER[-1], "none"
+    assert isinstance(_OBSERVED_CEILING, tuple)
+    return _OBSERVED_CEILING[0], f"observed:{_OBSERVED_CEILING[1]}"
 
 
 def scratch_dir(identifier: str) -> Path:

@@ -6,6 +6,7 @@ written by the test, so nothing depends on whichever session happens to be runni
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -433,3 +434,28 @@ def test_by_agent_reports_the_efforts_its_requests_ran_at(tmp_path, monkeypatch,
     copy = _copy(3, content=[{"type": "text", "text": "ok"}], stop_reason="end_turn", **record)
     result = usage.summarize(_write_session(tmp_path, monkeypatch, [copy]), phase="ship", task=None)
     assert [row["efforts"] for row in result["by_agent"]] == [expected], result["by_agent"]
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([("max", "xhigh")], "xhigh"),
+        ([("max", "max")], "max"),
+        ([("high", "high")], None),
+        ([("max", "xhigh"), ("high", "high")], "xhigh"),
+    ],
+    ids=["capped", "uncapped-at-top", "undecided", "skips-a-granted-lower-request"],
+)
+def test_observed_effort_ceiling_reads_the_newest_deciding_run(tmp_path, runs, expected):
+    """Oldest first in `runs`: only a run held below its request, or granted the top effort, decides."""
+    subagents = tmp_path / "-repo" / "session" / "subagents"
+    subagents.mkdir(parents=True)
+    for i, (requested, observed) in enumerate(runs):
+        meta = subagents / f"agent-{i}.meta.json"
+        meta.write_text(json.dumps({"effort": requested}), encoding="utf-8")
+        (subagents / f"agent-{i}.jsonl").write_text(
+            json.dumps({"type": "assistant", "perTurnEffort": observed}) + "\n", encoding="utf-8"
+        )
+        os.utime(meta, (1_000 + i, 1_000 + i))
+    found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path)
+    assert (found[0] if found else None) == expected, found

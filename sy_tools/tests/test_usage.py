@@ -476,3 +476,21 @@ def test_observed_effort_ceiling_orders_runs_by_their_own_mtime_not_their_direct
     os.utime(tmp_path / "-repo" / "new" / "subagents", (3_000, 3_000))
     found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path)
     assert found is not None and found[0] == "max" and "/old/" in found[1], found
+
+
+def test_observed_effort_ceiling_reads_past_a_full_newest_directory(tmp_path):
+    """An older directory can hold a meta newer than the limit-th one already collected, so it is still read."""
+    runs = (("new", "agent-a", "high", "high", 1_000), ("new", "agent-b", "high", "high", 1_001))
+    for session, agent, requested, observed, mtime in (*runs, ("old", "agent-c", "max", "xhigh", 1_500)):
+        subagents = tmp_path / "-repo" / session / "subagents"
+        subagents.mkdir(parents=True, exist_ok=True)
+        meta = subagents / f"{agent}.meta.json"
+        meta.write_text(json.dumps({"effort": requested}), encoding="utf-8")
+        (subagents / f"{agent}.jsonl").write_text(
+            json.dumps({"type": "assistant", "perTurnEffort": observed}) + "\n", encoding="utf-8"
+        )
+        os.utime(meta, (mtime, mtime))
+    os.utime(tmp_path / "-repo" / "old" / "subagents", (2_000, 2_000))
+    os.utime(tmp_path / "-repo" / "new" / "subagents", (3_000, 3_000))
+    found = usage.observed_effort_ceiling(("low", "medium", "high", "xhigh", "max"), projects=tmp_path, limit=2)
+    assert found is not None and found[0] == "xhigh", found

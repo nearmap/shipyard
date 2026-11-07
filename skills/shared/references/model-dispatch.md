@@ -50,7 +50,7 @@ The `Agent` tool's `effort` parameter, added in Claude Code 2.1.292, sets one di
 
 - nested calls do not inherit an effort override (verified on Claude Code 2.1.303: a depth-2 dispatch passed no effort under a medium-effort parent ran at its own frontmatter's), so pass the resolved effort on every dispatch at every depth;
 - frontmatter `effort:` is the load-time fallback and must not sit below the agent's floor;
-- observed effort is the `efforts` list on the agent's `by_agent` entry of the `usage_summarize` roll-up; an observed effort that disagrees with the requested one is investigated like a model mismatch.
+- observed effort is the `efforts` list on the agent's `by_agent` entry of the `usage_summarize` roll-up; an observed effort below the binding's `effort_expected` is investigated like a model mismatch; one at or above it is not, because the cap can flip between runs.
 - compare the observed effort against the binding's `effort_expected`, not its `effort`: on a runtime that caps effort below `max`, a `max` dispatch runs at the cap, and `effort_expected` is the dispatched effort capped at that ceiling. Dispatch `effort` itself, never `effort_expected`, so a runtime that lifts its cap is seen doing so (`docs/configuration.md` § The effort ceiling).
 
 One live consequence worth knowing: effort is silently dropped for a model Claude Code does not treat as effort-capable — a subagent pinned to such a model records no effort and inherits the session's. The resolver refuses that combination by name, which is why `min_model` never drops to a non-effort-capable tier.

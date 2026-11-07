@@ -200,13 +200,13 @@ def observed_effort_ceiling(
 
 
 def _newest_metas(root: Path, limit: int) -> list[Path]:
-    # Stat only the newest session directories' metas, not every one on a busy machine, then order globally.
-    found: list[Path] = []
+    # Read directories newest first until one is older than the limit-th newest meta, not every one on a busy machine.
+    found: list[tuple[float, Path]] = []
     for subagents in sorted(root.glob("*/*/subagents"), key=_mtime, reverse=True):
-        if len(found) >= limit:
+        if len(found) >= limit and _mtime(subagents) < found[limit - 1][0]:
             break
-        found.extend(subagents.glob("*.meta.json"))
-    return sorted(found, key=_mtime, reverse=True)[:limit]
+        found = sorted([*found, *((_mtime(m), m) for m in subagents.glob("*.meta.json"))], reverse=True)[:limit]
+    return [meta for _, meta in found]
 
 
 def _mtime(path: Path) -> float:

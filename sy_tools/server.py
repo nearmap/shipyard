@@ -1119,7 +1119,7 @@ def board_write(
     try:
         folder = _board_folder(board_id)
         with page.board_lock(folder):
-            return board.write(folder, spec)
+            return board.write(folder, spec, str(config.get("whiteboard.font")))
     except (FileNotFoundError, ValueError, config.ConfigError) as exc:
         raise ToolError(str(exc)) from None
 

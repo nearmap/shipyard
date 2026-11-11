@@ -74,6 +74,7 @@ ROW_GAP = 70
 SECTION_INSET = 30
 SECTION_TOP_INSET = 40
 SECTION_GAP = 100
+FONT_FAMILIES = {"hand-drawn": 5, "normal": 6, "code": 8}
 FONT_SIZE = 16
 LINE_HEIGHT = 1.25
 WRAP_CHARS = 28
@@ -100,7 +101,7 @@ def folder(root: Path, board_id: str) -> Path:
     return root / board_id
 
 
-def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
+def write(directory: Path, spec: dict[str, Any], font: str = "normal") -> dict[str, Any]:
     """Merge `spec` into the board in `directory`, creating it on first write, lay it out, and report what changed.
 
     `spec` is `{"sections": [{"id", "name"}], "notes": [{"id", "section", "kind", "text", "at"}], "links":
@@ -111,9 +112,11 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
     `BoardConflict` when it would overwrite a user edit not yet adopted, when the board file is a stale
     save `read` has not yet restored, when a laid-out section would cover a scratch element, or when an element
     framed in a section sits left of or above the section's grid origin, in a margin a resize opened. Raises
-    `FileNotFoundError` when the board file is missing after a first write.
+    `FileNotFoundError` when the board file is missing after a first write. `font` is a `FONT_FAMILIES` key:
+    the font of the notes and labels this write adds, and the editor's default for new text.
     """
     sections, notes, links = _parse_spec(spec)
+    font_family = FONT_FAMILIES[font]
     scene_path, state_path = directory / SCENE_NAME, directory / STATE_NAME
     state = _load_state(state_path)
     if scene_path.is_file():
@@ -130,6 +133,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
             "saved a copy it opened before that write. Call board_read, which keeps that save aside and "
             "restores the last write, then answer it with the user"
         )
+    scene["appState"]["currentItemFontFamily"] = font_family
     elements: list[Element] = scene["elements"]
     live = _live(scene)
     marked = _marked_revision(scene)
@@ -180,7 +184,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
                     "your own with its text under a new id; the user may delete the empty shape"
                 )
             _require_section(note, live)
-            shape, text = _note(note)
+            shape, text = _note(note, font_family)
             elements.extend([shape, text])
             live[shape["id"]], live[text["id"]] = shape, text
             changed.append(f"note {note['id']} added to {note['section']} at {note['at']}")
@@ -251,7 +255,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
                 if not link["label"]:
                     raise ValueError(f"link {name}: a write never deletes an element, so its label cannot be cleared")
                 if label_el is None:
-                    label_el = _add_label(arrow, link["label"], elements, live)
+                    label_el = _add_label(arrow, link["label"], font_family, elements, live)
                 else:
                     _set_label(label_el, link["label"])
                 changed.append(f"link {name} relabelled")
@@ -266,7 +270,7 @@ def write(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
         live[arrow["id"]] = arrow
         arrows[key] = arrow
         if link["label"]:
-            _add_label(arrow, link["label"], elements, live)
+            _add_label(arrow, link["label"], font_family, elements, live)
         changed.append(f"link {name} added")
 
     grid = _layout(live, [section["id"] for section in sections], final, origins)
@@ -901,7 +905,7 @@ def _text_size(wrapped: str) -> tuple[float, float]:
     return max(len(line) for line in lines) * FONT_SIZE * 0.55, len(lines) * FONT_SIZE * LINE_HEIGHT
 
 
-def _note(note: dict[str, Any]) -> tuple[Element, Element]:
+def _note(note: dict[str, Any], font_family: int) -> tuple[Element, Element]:
     """A new note in its section, at the frame's origin until the layout puts it in its cell."""
     background, stroke = KIND_COLOURS[note["kind"]]
     shape = _base(note["id"], "rectangle", 0, 0, NOTE_WIDTH, NOMINAL_ROW_HEIGHT)
@@ -912,7 +916,7 @@ def _note(note: dict[str, Any]) -> tuple[Element, Element]:
     )
     text = _base(text_id, "text", 0, 0, 0, 0)
     text.update(
-        strokeColor=stroke, frameId=note["section"], boundElements=None, fontSize=FONT_SIZE, fontFamily=1,
+        strokeColor=stroke, frameId=note["section"], boundElements=None, fontSize=FONT_SIZE, fontFamily=font_family,
         containerId=note["id"], lineHeight=LINE_HEIGHT, autoResize=True,
     )
     _align_text(text, note["kind"])
@@ -955,11 +959,11 @@ def _place_text(text_el: Element, shape: Element) -> None:
         text_el["y"] = shape["y"] + (shape["height"] - text_el["height"]) / 2
 
 
-def _add_label(arrow: Element, text: str, elements: list[Element], live: Live) -> Element:
+def _add_label(arrow: Element, text: str, font_family: int, elements: list[Element], live: Live) -> Element:
     """A label bound to `arrow`, with every field Excalidraw needs to keep it when the arrow next moves."""
     label = _base(_unused_id(f"{arrow['id']}:label", elements), "text", 0, 0, 0, 0)
     label.update(
-        boundElements=None, fontSize=FONT_SIZE, fontFamily=1, textAlign="center", verticalAlign="middle",
+        boundElements=None, fontSize=FONT_SIZE, fontFamily=font_family, textAlign="center", verticalAlign="middle",
         containerId=arrow["id"], lineHeight=LINE_HEIGHT, autoResize=True,
     )
     _set_label(label, text)

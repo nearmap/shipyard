@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -712,3 +713,27 @@ def test_the_tools_resolve_the_board_from_its_identifier_and_surface_a_conflict(
     for tool in (server.board_read, lambda b: server.board_write(b, SPEC)):
         with pytest.raises(server.ToolError, match="board id"):
             tool("../elsewhere")
+
+
+@pytest.mark.parametrize(("layer", "family"), [({}, 6), ({"whiteboard": {"font": "code"}}, 8)])
+def test_the_board_font_follows_the_setting_and_defaults_to_normal(tmp_path, monkeypatch, layer, family):
+    repo = tmp_path / "repo"
+    (repo / ".shipyard").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / ".shipyard" / "config.json").write_text(json.dumps(layer), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(config, "repo_scratch_dir", lambda: tmp_path)
+    config.reload()
+    folder = tmp_path / "whiteboards" / "fonts"
+    folder.mkdir(parents=True)
+    board.write(folder, {**SPEC, "links": []}, font="hand-drawn")
+    server.board_write("fonts", SPEC)
+    monkeypatch.undo()
+    config.reset_cache()
+    scene = _scene(folder)
+    assert scene["appState"]["currentItemFontFamily"] == family, "every write sets the editor's font for new text"
+    assert _element(scene, "client:text")["fontFamily"] == 5, "a note already on the board keeps its font"
+    label = next(e for e in scene["elements"] if e.get("containerId") == "link:client:server")
+    assert label["fontFamily"] == family, "text a write adds takes the configured font"

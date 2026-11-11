@@ -221,6 +221,17 @@
         }
       }
     },
+    "whiteboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "font": {
+          "type": "string",
+          "enum": ["hand-drawn", "normal", "code"],
+          "description": "Excalidraw font for the text /sy:whiteboard writes on its design board, and the editor's default for new text: hand-drawn (Excalifont), normal (Nunito) or code (Comic Shanns)."
+        }
+      }
+    },
     "redaction": {
       "type": "object",
       "additionalProperties": false,

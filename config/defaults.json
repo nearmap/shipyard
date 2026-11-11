@@ -50,6 +50,9 @@
   "text": {
     "reader": "Use ste100 Simplified Technical English eli15 tldr dot points"
   },
+  "whiteboard": {
+    "font": "normal"
+  },
   "redaction": {
     "extra_words": []
   },

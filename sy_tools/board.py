@@ -116,6 +116,8 @@ def write(directory: Path, spec: dict[str, Any], font: str = "normal") -> dict[s
     the font of the notes and labels this write adds, and the editor's default for new text.
     """
     sections, notes, links = _parse_spec(spec)
+    if font not in FONT_FAMILIES:
+        raise ValueError(f"whiteboard.font {font!r} is not one of {', '.join(FONT_FAMILIES)}")
     font_family = FONT_FAMILIES[font]
     scene_path, state_path = directory / SCENE_NAME, directory / STATE_NAME
     state = _load_state(state_path)

@@ -828,7 +828,12 @@ async function apply(tag, scene) {
   keepAside = false;
   banner.hidden = true;
   api.addFiles(Object.values(scene.files || {}));
-  api.updateScene({ elements: X.restoreElements(scene.elements, null), captureUpdate: X.CaptureUpdateAction.NEVER });
+  const font = scene.appState.currentItemFontFamily;
+  api.updateScene({
+    elements: X.restoreElements(scene.elements, null),
+    ...(font && { appState: { currentItemFontFamily: font } }),
+    captureUpdate: X.CaptureUpdateAction.NEVER,
+  });
   const applied = { ids: ids(), version: version() };
   etag = tag;
   await settle(applied);
@@ -868,7 +873,10 @@ async function save() {
     const elements = api.getSceneElementsIncludingDeleted();
     const files = api.getFiles();
     const sent = X.getSceneVersion(elements) + "|" + Object.keys(files).sort().join(",");
-    const body = X.serializeAsJSON(api.getSceneElements(), api.getAppState(), files, "local");
+    const saved = JSON.parse(X.serializeAsJSON(api.getSceneElements(), api.getAppState(), files, "local"));
+    // A local export drops currentItemFontFamily; keep it so a reload keeps the board's font for new text.
+    saved.appState.currentItemFontFamily = api.getAppState().currentItemFontFamily;
+    const body = JSON.stringify(saved, null, 2);
     let r;
     try {
       r = await fetch(FILE, { method: "PUT", headers: { "If-Match": etag, "Content-Type": "application/json" }, body });

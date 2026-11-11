@@ -7,9 +7,12 @@ One document per row key (the format the standards contract names; a Quarto `.qm
 1. Classify what you asked for (table below).
 2. Dispatch `sy:slice` in the recorded worktree with the cell to add or change, the document, the parquet path and the standards primitives; it commits locally and returns the figure paths. One slice per turn; batch several small asks into it.
 3. Render to HTML in the worktree; route the render log to the scratch directory and read back only failures.
-4. Fan every new or changed figure out to `sy:img-inspector` with the cell's column names and the intended story (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`). A verdict of `regenerate` is folded into the same turn.
-5. Publish the HTML through the `Artifact` tool, republishing to the same URL per document and variant; record the version in `report-state.yaml`.
-6. Close with the status line and one `AskUserQuestion`: add · change · variant · publish · done.
+4. Run the checklist in `references/anticipate.md` over every new or changed figure and headline number; build the cell-cost hits now as variants under their primary figure, in the same slice, labelled and grouped as `references/variant-picker.md` § In the document says.
+5. Fan every new or changed figure, variants included, out to `sy:img-inspector` with the cell's column names and the intended story (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`). A verdict of `regenerate` is folded into the same turn.
+6. Render the draft with the picker profile and publish the HTML through the `Artifact` tool with `capabilities: {db: {}, user: {}}`, republishing to the same URL per document and parameter value; record the version in `report-state.yaml`.
+7. Close with the status line and one `AskUserQuestion`: the anticipate hits that cost a parameter or a change to the data contract first, each with its cost, then add · change · variant · publish · done.
+
+Before the next slice is dispatched, read the picker's selections back (`references/variant-picker.md` § Reading selections back) and record them in `report-state.yaml`; a variant omitted there is not re-rendered as kept.
 
 The first turn drafts every figure the intake listed on the sample parquet; once the full parquet lands, the next turn re-renders on it and the status turn names any headline number that moved.
 
@@ -17,7 +20,8 @@ The first turn drafts every figure the intake listed on the sample parquet; once
 
 | you ask for | classification | what happens |
 |---|---|---|
-| a figure, a section, an edit, a colour map | figure or edit | a cell; no contract change |
+| a figure, a section, an edit, a colour map | figure or edit | a cell; no contract change; its anticipate variants are built in the same slice |
+| keep or omit a variant | selection | done with the picker's buttons in the draft artifact, never as a turn; read back before the next slice |
 | the same report under a row filter, every cell and sentence applying to both | variant, parameter | a parameter on the one document, rendered once per value; a later figure lands in every render |
 | a variant that wants its own follow-up figures or its own conclusions | variant, fork | a second document on the same parquet and load cell, started as a copy with the parameter fixed; from here the two are edited separately and a turn names which document it is for. Promote a parameter to a fork at any turn; never the reverse |
 | a column derivable from the parquet | change, cell | a cell; no extraction |
@@ -31,9 +35,9 @@ The first turn drafts every figure the intake listed on the sample parquet; once
 Every status turn opens with one line, so where things are is never a question you have to ask:
 
 ```text
-<task> · head <sha> · artifact v<N> (<documents>) · site: <not uploaded | url> · data: <sample | full> · extraction: <done | p% ETA> · contract v<N>
+<task> · head <sha> · artifact v<N> (<documents>) · variants: <kept>/<built> · site: <not uploaded | url> · data: <sample | full> · extraction: <done | p% ETA> · contract v<N>
 ```
 
 ## Checkpoints
 
-`report-state.yaml` is updated before each `AskUserQuestion` and after each slice commit: contract version, parquet paths and hashes, documents and their variants, head SHA, artifact URLs and versions, the turn in flight. A resumed session reads it (`SKILL.md` § Rebuild first) and continues from the last closed turn; it re-does no committed slice and re-posts no comment.
+`report-state.yaml` is updated before each `AskUserQuestion` and after each slice commit: contract version, parquet paths and hashes, documents and their parameters, the variants built per primary figure and the selections last read, head SHA, artifact URLs and versions, the turn in flight. A resumed session reads it (`SKILL.md` § Rebuild first) and continues from the last closed turn; it re-does no committed slice and re-posts no comment.

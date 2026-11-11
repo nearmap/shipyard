@@ -1520,6 +1520,7 @@ def check_invariants(errors: list[str]) -> None:
         read(rel) for rel in (
             "skills/report/SKILL.md", "skills/report/references/data-contract.md",
             "skills/report/references/figure-loop.md", "skills/report/references/check-publish.md",
+            "skills/report/references/anticipate.md", "skills/report/references/variant-picker.md",
         )
     )
     pr = read("skills/pr/SKILL.md")

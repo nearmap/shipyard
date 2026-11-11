@@ -18,7 +18,7 @@ Read durable memory before the contract is drafted (`memory_list`, per `${CLAUDE
 
 ## 2. Contract: from the figure list to the columns
 
-Resolve each expected figure to the columns it needs. The contract is the union of those columns on the row key, plus the slice columns the user habitually asks for. Draft it as one table, then the lines below it:
+Resolve each expected figure to the columns it needs, then run the checklist in `references/anticipate.md` over the figure list: a hit that needs a column not yet named (the paired quantity, the other covariate, the unfiltered population) adds it here, where it costs one extraction instead of a later change. The contract is the union of those columns on the row key, plus the slice columns the user habitually asks for. Draft it as one table, then the lines below it:
 
 ```text
 Data contract v<N>

@@ -81,7 +81,7 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 
 ### Before the loop: whiteboard
 
-`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. Claude opens one shared Claude whiteboard, interviews you in chat, argues the options with theory and real data, and runs the leading decision through `sy:debate` before converging. You and your colleagues can edit and comment on the board, and Claude reads it at the start of every turn, but only your answer in chat settles a decision.
+`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. It needs a claude.ai login with Artifacts. Claude opens one shared Claude whiteboard, interviews you in chat, argues the options with theory and real data, and runs the leading decision through `sy:debate` before converging. You and your colleagues can edit and comment on the board, and Claude reads it at the start of every turn, but only your answer in chat settles a decision.
 
 ## Working with you
 

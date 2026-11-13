@@ -18,18 +18,25 @@ $ARGUMENTS
 
 - No tracker read or write, at any point. The commands it hands off to own the record.
 - No production code, branches or PRs. Probe scripts only, in the board's `probes/` folder.
+- Needs the Artifact, ArtifactData and ArtifactComments tools and the Whiteboard Artifact type. When a tool is missing, the type is not listed, or the create from its `type_url` is refused, say which and stop. Never build a local or hand-made board or page.
 
 ## The record
 
-`<folder>` is the `path` that `scratch_dir {"repo": true}` reports, then `whiteboards/<slug>/` (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). It holds:
+`<folder>` is the `whiteboard.dir` value that `get_config` reports, then `<slug>/` (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`).
 
-- `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, and a dated log. A new session resumes from it.
+When `whiteboard.dir` is not absolute or has a `.claude` path segment, or the slug (from Open, or from `$ARGUMENTS` on Resume) is not one segment of lowercase words and hyphens, name the value and stop.
+
+`<folder>` holds:
+
+- `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, pending moves, and a dated log. A new session resumes from it.
 - `probes/`: probe scripts and their outputs.
 
 ## Open
 
-- Restate the problem in the user's words: who is asking and what they will do with the answer. One aim per board; pick the slug.
-- Create the board per `references/board.md` § Open layout.
+1. Check the Artifact line in § Bounds first: run `references/board.md` § Open layout step 1. The tools must respond and the Whiteboard type must be listed.
+2. Restate the problem in the user's words: who is asking and what they will do with the answer. One aim per board.
+3. Pick a slug that has no folder under `whiteboard.dir` yet.
+4. Create the board per `references/board.md` § Open layout, from step 2.
 
 ## Every turn
 
@@ -46,6 +53,8 @@ Every turn follows `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interact
 - at most five questions, `Q1.` to `Q5.`, each ending `Recommend: X, because Y`;
 - "yes" accepts every recommendation;
 - the last line is: say 'editing' if you are still drawing.
+
+On 'editing', run `references/board.md` § Every turn step 1, acknowledge in one line, and end the turn. No board write, no `last/` re-list, no question round.
 
 ## Settling
 
@@ -78,6 +87,6 @@ Only when the user asks. The brief copies the board's Decisions table, the done 
 
 ## Resume
 
-`/sy:whiteboard <slug>` reads `notes.md`, re-lists the board, diffs it against `last/`, and gives a three-line recap: aim, leading option, strongest open objection.
+`/sy:whiteboard <slug>` reads `notes.md`, gives a three-line recap (aim, leading option, strongest open objection), then runs `references/board.md` § Every turn.
 
 Every subagent dispatch resolves its model and effort from config and passes them as the `Agent` invocation's actual `model` and `effort` parameters, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/model-dispatch.md`; a nested dispatch inherits nothing and must resolve again.

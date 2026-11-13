@@ -1,6 +1,6 @@
 # Challenge checklist
 
-Run it against every surviving option at each checkpoint, and against Claude's own claims before they reach `notes.md` and the page. Report what failed. Do not wait for the user to ask. Skip a question only when it plainly does not apply.
+Run it against every surviving option at each checkpoint, and against Claude's own claims before they reach `notes.md` and the board. Report what failed. Do not wait for the user to ask. Skip a question only when it plainly does not apply.
 
 Every failure reported needs a concrete case: this input or situation leads to this wrong result. No case, no finding.
 

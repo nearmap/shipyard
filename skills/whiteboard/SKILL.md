@@ -24,8 +24,6 @@ $ARGUMENTS
 `<folder>` is the `path` that `scratch_dir {"repo": true}` reports, then `whiteboards/<slug>/` (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). It holds:
 
 - `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, and a dated log. A new session resumes from it.
-- `last/`: the board snapshot after Claude's last write.
-- `read/`: this turn's listing of the board.
 - `probes/`: probe scripts and their outputs.
 
 ## Open

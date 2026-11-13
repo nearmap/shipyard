@@ -6,7 +6,7 @@ No Shipyard skill asks the user several questions as a prose list and expects a 
 
 A prose list asks the person to hold every question at once and compose a reply that maps back onto it, and a skipped or merged answer goes unnoticed. Batching belongs in `AskUserQuestion`: up to four questions in one call, each with its own options and a free-text "Other", so every answer arrives attached to its question. `skills/shared/references/user-interaction.md` § Question is the rule.
 
-`/sy:whiteboard` is the one exception: it closes each turn with one numbered prose round, at most five questions, each with a recommended answer. The decline does not hold there because a design session is a conversation, not a form, and about a third of the whiteboard's option menus did not fit the answer the user gave.
+`/sy:whiteboard` is the one exception, per `skills/whiteboard/SKILL.md` § Talking to the user. The decline does not hold there because a design session is a conversation, not a form, and about a third of the whiteboard's option menus did not fit the answer the user gave.
 
 ## Prior requests
 

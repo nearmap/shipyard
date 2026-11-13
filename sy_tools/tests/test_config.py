@@ -154,6 +154,8 @@ def test_layer_precedence_and_derived_defaults(fixture_repo):
     assert config.resolve()[1]["worktree.root"] == "derived-default"
     assert config.get("scratch.dir") == str(Path.home() / ".claude" / "shipyard" / "scratch")
     assert config.resolve()[1]["scratch.dir"] == "derived-default"
+    assert config.get("whiteboard.dir") == str(Path.home() / "whiteboards")
+    assert config.resolve()[1]["whiteboard.dir"] == "derived-default"
 
 
 def test_scratch_dir_creates_under_the_resolved_root_and_refuses_an_escape(fixture_repo):

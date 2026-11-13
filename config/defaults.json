@@ -9,6 +9,9 @@
   "scratch": {
     "dir": null
   },
+  "whiteboard": {
+    "dir": null
+  },
   "debug": {
     "evals": false
   },

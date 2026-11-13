@@ -18,17 +18,17 @@ $ARGUMENTS
 
 - No tracker read or write, at any point. The commands it hands off to own the record.
 - No production code, branches or PRs. Probe scripts only, in the board's `probes/` folder.
-- Needs the Artifact, ArtifactData and ArtifactComments tools and the Whiteboard Artifact type. When a tool is missing, the type is not listed, or the create from its `type_url` is refused, say which and stop. Never build a local or hand-made board or page.
+- Needs the Artifact, ArtifactData and ArtifactComments tools and the Whiteboard Artifact type, with ArtifactData `batch` taking `if_version` and `list` showing `version N` on each doc. When a tool, the type or either capability is missing, or the create from its `type_url` is refused, say which and stop. Never build a local or hand-made board or page.
 
 ## The record
 
 `<folder>` is the `whiteboard.dir` value that `get_config` reports, then `<slug>/` (tool names resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`).
 
-When `whiteboard.dir` is not absolute or has a `.claude` path segment, or the slug (from Open, or from `$ARGUMENTS` on Resume) is not one segment of lowercase words and hyphens, name the value and stop.
+When `whiteboard.dir` is not absolute or has a path segment starting with `.`, or the slug (from Open, or from `$ARGUMENTS` on Resume) is not one segment of lowercase words and hyphens, name the value and stop.
 
 `<folder>` holds:
 
-- `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, pending moves, and a dated log. A new session resumes from it.
+- `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, pending moves, answered comment ids, and a dated log. A new session resumes from it.
 - `probes/`: probe scripts and their outputs.
 
 ## Open

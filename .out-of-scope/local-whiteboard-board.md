@@ -7,6 +7,7 @@
 - One shared surface: the user, colleagues and Claude see and edit the same board, with no second copy to keep in step.
 - Colleagues co-edit and comment on the board itself, with no port forward, token or file hand-off.
 - Less code: no editor, page server, scene format or layout engine to keep in this repository.
+- The board needs a claude.ai login with the Artifact tools and Artifact types, so a session without them cannot run `/sy:whiteboard` and the skill stops. AM-1808 declined a hosted board because it needed an account. That cost is now accepted for one shared surface.
 
 ## Prior requests
 

@@ -28,7 +28,7 @@ When `whiteboard.dir` is not absolute or has a path segment starting with `.`, o
 
 `<folder>` holds:
 
-- `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, pending moves, answered comments, and a dated log. A new session resumes from it.
+- `notes.md`: the board URL, the aim, the decision tree (each decision with what it depends on, its reversal cost and its status), the evidence, the `Comments seen to` timestamp, and a dated log, one line per turn. A new session resumes from it.
 - `probes/`: probe scripts and their outputs.
 
 ## Open

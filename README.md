@@ -20,7 +20,7 @@ Point Shipyard at a task and it produces a PR that is ready to merge: the change
 
 Three disciplines shape the workflow: challenge the decision, independently inspect the plan and result, and keep working context focused.
 
-**Disagreement sharpens the decision.** Before a roadmap, execution plan, spike verdict, or whiteboard decision reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion`; the debate never loops until the agents agree or decides the fork for you.
+**Disagreement sharpens the decision.** Before a roadmap, execution plan, spike verdict, or whiteboard decision reaches sign-off, `sy:debate` coordinates three fresh `sy:debater` calls: an opening case, an adversarial challenge, and one rebuttal. It returns the agreement, remaining disagreement, and evidence that could settle it. The parent workflow brings the choice to you through `AskUserQuestion` (the whiteboard asks in prose); the debate never loops until the agents agree or decides the fork for you.
 
 ![The debate coordinator runs three fresh debater calls, synthesizes their disagreement, and returns it to the parent workflow for the user to steer](docs/img/bounded-debate.png)
 

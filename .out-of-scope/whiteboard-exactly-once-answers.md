@@ -1,6 +1,6 @@
 # Answering every whiteboard change exactly once
 
-`/sy:whiteboard` does not guarantee that every board change or comment is answered exactly once. A change made during Claude's turn may go unanswered, and a comment may be answered twice.
+`/sy:whiteboard` does not guarantee that every board change or comment is answered exactly once. A change made during Claude's turn may go unanswered, and a comment may be answered twice. A comment posted in the same minute as the newest comment Claude last read may go unanswered.
 
 ## Why
 

@@ -24,7 +24,7 @@ Representation asks (a colour map, a plot type, tick grouping) are not on the li
 
 Classify each hit as the figure loop classifies a turn: a **cell**, a **parameter**, or a **change to the data contract**. Then:
 
-- a cell-cost hit is built now, as a variant under its primary figure in the draft (`references/variant-picker.md`), never as a question;
+- a cell-cost hit is built now, as a variant under its primary figure in the document (`references/variant-picker.md`), never as a question;
 - a parameter-cost hit is built now when the render stays under a minute, else offered;
 - a hit that changes the data contract is offered, with its size and time, as the first option in the closing question, before `add · change · variant`.
 

@@ -5,11 +5,11 @@ One document per row key (the format the standards contract names; a Quarto `.qm
 ## A turn
 
 1. Classify what you asked for (table below).
-2. Dispatch `sy:slice` in the recorded worktree with the cell to add or change, the document, the parquet path and the standards primitives; it commits locally and returns the figure paths. One slice per turn; batch several small asks into it.
+2. Dispatch `sy:slice` in the recorded worktree with the cell to add or change, the document, the parquet path and the standards primitives; it commits locally and returns the figure paths, one image file per `fig-*` cell even when the document renders as one self-contained HTML. One slice per turn; batch several small asks into it.
 3. Render to HTML in the worktree; route the render log to the scratch directory and read back only failures.
 4. Run the checklist in `references/anticipate.md` over every new or changed figure and headline number; build the cell-cost hits now as variants under their primary figure, in the same slice, labelled and grouped as `references/variant-picker.md` § In the document says.
 5. Fan every new or changed figure, variants included, out to `sy:img-inspector` with the cell's column names and the intended story (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md`). A verdict of `regenerate` is folded into the same turn.
-6. Render the draft with the picker profile and publish the HTML through the `Artifact` tool with `capabilities: {db: {}, user: {}}`, republishing to the same URL per document and parameter value; record the version in `report-state.yaml`.
+6. Pull every figure and its caption out of the document into the artifact page (`references/variant-picker.md` § Extracting the figures, § The page) and publish that page, never the rendered HTML, through the `Artifact` tool with `capabilities: {db: {}, user: {}}`, republishing to the same URL per document and parameter value; record the version in `report-state.yaml`.
 7. Close with the status line and one `AskUserQuestion`: the anticipate hits that cost a parameter or a change to the data contract first, each with its cost, then add · change · variant · publish · done.
 
 Before the next slice is dispatched, read the picker's selections back (`references/variant-picker.md` § Reading selections back) and record them in `report-state.yaml`; a variant omitted there is not re-rendered as kept.
@@ -21,7 +21,7 @@ The first turn drafts every figure the intake listed on the sample parquet; once
 | you ask for | classification | what happens |
 |---|---|---|
 | a figure, a section, an edit, a colour map | figure or edit | a cell; no contract change; its anticipate variants are built in the same slice |
-| keep or omit a variant | selection | done with the picker's buttons in the draft artifact, never as a turn; read back before the next slice |
+| keep or omit a variant | selection | done with the keep/omit button below the variant in the artifact, never as a turn; read back before the next slice |
 | the same report under a row filter, every cell and sentence applying to both | variant, parameter | a parameter on the one document, rendered once per value; a later figure lands in every render |
 | a variant that wants its own follow-up figures or its own conclusions | variant, fork | a second document on the same parquet and load cell, started as a copy with the parameter fixed; from here the two are edited separately and a turn names which document it is for. Promote a parameter to a fork at any turn; never the reverse |
 | a column derivable from the parquet | change, cell | a cell; no extraction |

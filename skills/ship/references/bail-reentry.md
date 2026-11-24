@@ -44,7 +44,7 @@ Run `/sy:spec <task>` — it reads bail <id> off the Task, so nothing needs past
 
 ## Planned re-entry
 
-`bail` is unresolved when it is set and `bail_resolved_by` is `null`. On a resume, § State router routes here:
+`bail` is unresolved when it is set and `bail_resolved_by` is `null`. The parent reads the new plan's `resolves bail` value with one `grep -m1 'resolves bail' <plan path>` on the file `plan_file` materialised, never the whole plan. On a resume, § State router routes here:
 
 - **`reentry_pending` set and pin unchanged.** A re-entry was written but START never finished it. Dispatch START with `RE-ENTRY: <reentry_pending>` again. With the pin changed, a newer plan landed first: route it by the bullets below.
 - **Pin unchanged, `bail` unresolved.** Never dispatch. Re-post the Task comment if the Task carries none for `bail.id`, then re-render the stop message.

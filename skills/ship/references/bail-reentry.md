@@ -39,22 +39,24 @@ The parent ends the turn with one `## Action needed` block rendered from the rec
 Invalidated: <invalidates>. Owner options: <owner_options, or "none listed">.
 <PR #<pr> stays a draft at <head_sha>, or: no PR yet>.
 
-Run `/sy:spec <task>` — it reads bail <id> off the Task, so nothing needs pasting. Then `/sy:ship <task>` resumes this branch.
+Run `/sy:spec <task>` — it reads bail <id> off the Task, so nothing needs pasting. Then `/sy:ship <task>` resumes the run.
 ```
 
 ## Planned re-entry
 
 `bail` is unresolved when it is set and `bail_resolved_by` is `null`. On a resume, § State router routes here:
 
+- **`reentry_pending` set.** A re-entry was written but START never finished it. Dispatch START with `RE-ENTRY: <reentry_pending>` again, whatever the pin says.
 - **Pin unchanged, `bail` unresolved.** Never dispatch. Re-post the Task comment if the Task carries none for `bail.id`, then re-render the stop message.
 - **Pin changed, `bail` unresolved, and the new plan's `resolves bail` names `bail.id`.** This is a planned re-entry. Write one `ship_state_update` with:
   - `bail_resolved_by`: the new version;
+  - `reentry_pending`: the bail id, which START's § Re-entry clears;
   - the new `plan_path`, `plan_comment_id` and `plan_version`;
   - `phase_checkpoint: null`;
   - `gate_rounds_budget_base`: the current `gate_rounds_total`, so the revised plan starts with a full round budget while `gate_rounds_total` stays monotonic;
   - `plan_supersede_events`: the existing list with `{from, to, bail: <id>}` appended;
   - for a `blocker-closed` bail, all five `stacked_on_*` fields set to `null`, so the run no longer stacks on the closed PR.
 
-  Then dispatch START with `RE-ENTRY: <bail id>` in its prompt (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/start-resume.md` § Re-entry), then BUILD.
-- **Pin changed, `bail` unresolved, and the new plan does not name it.** Stop with `## Action needed`: plan v<N> does not resolve bail `<id>`, so re-run `/sy:spec <task>`, which revises against any bail no plan has resolved yet.
-- **Pin changed, no unresolved `bail`.** The plan was revised by hand mid-run. Re-enter as above, without `bail_resolved_by`, and with `bail: null` in the appended supersede event.
+  Then dispatch START with `RE-ENTRY: <bail id>` in its prompt (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/start-resume.md` § Re-entry). On its `done`, dispatch BUILD: a null `phase_checkpoint` after a re-entry always classifies to BUILD, never GATE.
+- **Pin changed, `bail` unresolved, and the new plan does not name it.** Re-post the Task comment if the Task carries none for `bail.id`, then stop with `## Action needed`: plan v<N> does not resolve bail `<id>`, so re-run `/sy:spec <task>`, which revises against any bail no plan has resolved yet.
+- **Pin changed, no unresolved `bail`.** The plan was revised by hand mid-run. Re-enter as above, without `bail_resolved_by`, with `reentry_pending` and the `RE-ENTRY` value set to `plan-revised`, and with `bail: null` in the appended supersede event.

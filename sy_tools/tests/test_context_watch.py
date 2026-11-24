@@ -95,3 +95,22 @@ def test_the_recycle_doc_states_the_hook_s_thresholds():
     text = DOC.read_text(encoding="utf-8")
     for tokens in (context_watch.RECYCLE_TOKENS, context_watch.BAND_TOKENS, context_watch.HARD_RECYCLE_TOKENS):
         assert f"{tokens // 1000}k" in text, f"context-recycle.md must state {tokens // 1000}k"
+
+
+def test_the_ttl_comes_from_the_newest_cache_write_not_any_in_the_tail(tmp_path):
+    dropped = _transcript(tmp_path, _request(0, 280_000, one_hour=True), _request(1, 300_000))
+    out = context_watch.hook_output({"hook_event_name": "Stop", "transcript_path": dropped})
+    assert out and "5 minutes" in out["systemMessage"], "a session dropped from 1h to 5m must not read 'an hour'"
+
+
+def test_transcript_format_drift_is_shown_on_stop_and_quiet_on_post_tool_use(tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps({"type": "assistant", "message": {"model": "m", "content": []}}) + "\n",
+                    encoding="utf-8")
+    stop = context_watch.hook_output({"hook_event_name": "Stop", "transcript_path": str(path)})
+    assert stop and "not working" in stop["systemMessage"], stop
+    assert context_watch.hook_output(_post(str(path))) is None
+    keyless = _transcript(tmp_path, [json.dumps({"type": "assistant", "requestId": "r0",
+                                                  "message": {"model": "m", "usage": {"tokens": 5}}})])
+    out = context_watch.hook_output({"hook_event_name": "Stop", "transcript_path": keyless})
+    assert out and "usage keys" in out["systemMessage"], out

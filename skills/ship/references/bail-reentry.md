@@ -26,7 +26,7 @@ bail:
 
 The worker's `BAIL-TO-SPEC` return supplies `kind`, `reason`, `invalidates`, `anchors` and the paths; the parent supplies the rest from state.
 
-The parent posts the record first, then writes it. It posts one `post-comment` on the Task: `human` is `# Bail to spec — <id>` with the reason and what the revision must decide, in two or three sentences; `agent_detail` is the record as a fenced YAML block. Then one `ship_state_update` writes `bail` as the whole mapping, `bail_resolved_by: null`, and `phase_active: null`. A later bail in the same run replaces both fields the same way. A bail from a fresh START, before `ship-state.yaml` exists, posts the comment only.
+The parent posts the record first, then writes it. It posts one `post-comment` on the Task: `human` is `# Bail to spec — <id>` with the reason and what the revision must decide, in two or three sentences; `agent_detail` is the record as a fenced YAML block. Then one `ship_state_update` writes `bail` as the whole mapping, `bail_resolved_by: null`, `reentry_pending: null`, and `phase_active: null`. A later bail in the same run replaces both fields the same way. A bail from a fresh START, before `ship-state.yaml` exists, posts the comment only.
 
 ## The stop message
 
@@ -46,11 +46,11 @@ Run `/sy:spec <task>` — it reads bail <id> off the Task, so nothing needs past
 
 `bail` is unresolved when it is set and `bail_resolved_by` is `null`. On a resume, § State router routes here:
 
-- **`reentry_pending` set.** A re-entry was written but START never finished it. Dispatch START with `RE-ENTRY: <reentry_pending>` again, whatever the pin says.
+- **`reentry_pending` set and pin unchanged.** A re-entry was written but START never finished it. Dispatch START with `RE-ENTRY: <reentry_pending>` again. With the pin changed, a newer plan landed first: route it by the bullets below.
 - **Pin unchanged, `bail` unresolved.** Never dispatch. Re-post the Task comment if the Task carries none for `bail.id`, then re-render the stop message.
 - **Pin changed, `bail` unresolved, and the new plan's `resolves bail` names `bail.id`.** This is a planned re-entry. Write one `ship_state_update` with:
   - `bail_resolved_by`: the new version;
-  - `reentry_pending`: the bail id, which START's § Re-entry clears;
+  - `reentry_pending`: the bail id, which START's § Re-entry step 4 clears;
   - the new `plan_path`, `plan_comment_id` and `plan_version`;
   - `phase_checkpoint: null`;
   - `gate_rounds_budget_base`: the current `gate_rounds_total`, so the revised plan starts with a full round budget while `gate_rounds_total` stays monotonic;

@@ -102,12 +102,12 @@ The state file is local resume state, not shared truth. Never prune unrelated wo
 
 ## Re-entry
 
-When the dispatch prompt carries `RE-ENTRY: <bail id or plan-revised>`, the plan was revised under a recorded branch, worktree and PR (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/bail-reentry.md` § Planned re-entry). Keep all three, and after the standards and memory steps above:
+When the dispatch prompt carries `RE-ENTRY: <bail id or plan-revised>`, the plan was revised under a recorded branch and worktree, and a PR when state names one (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/bail-reentry.md` § Planned re-entry). Keep them, skip every PR step when `pr` is null, and after the standards and memory steps above:
 
 1. fetch origin and run § Fresh run step 3 against the new plan's `PLAN_BASE_SHA`;
-2. when state carries no `stacked_on_pr` but the PR's base is not the target branch — the re-entry unstacked it — run `gh pr edit <pr> --base <target>`, then merge `origin/<target>` into the build worktree (merge, never rebase), resolving a conflict in the build worktree as `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/immutable-gate.md` § Fix cycle **Blocker landed** item 2 does, and push. A PR that GitHub closed when the blocker branch was deleted is reopened with `gh pr reopen <pr>` first; one that cannot be reopened returns `blocked`;
-3. stamp, in one `ship_state_update`: `plan_base_sha` and `pregate_checkpoint_channel` from the new plan, `pregate_checkpoint_cleared_sha: null`, `pregate_checkpoint_gate_dispatched: false`, `head_sha` as pushed, and `reentry_pending: null`;
-4. set the Task `in-progress` via the `tracker` skill, as § Fresh run step 8 does.
+2. when `bail.kind` is `blocker-closed`, run `gh pr edit <pr> --base <target>` unless the PR is already retargeted, then merge `origin/<target>` into the build worktree (merge, never rebase), resolving a conflict in the build worktree as `${CLAUDE_PLUGIN_ROOT}/skills/ship/references/immutable-gate.md` § Fix cycle **Blocker landed** item 2 does, and push. A PR that GitHub closed when the blocker branch was deleted is reopened with `gh pr reopen <pr>` first; one that cannot be reopened returns `blocked`;
+3. set the Task `in-progress` via the `tracker` skill, as § Fresh run step 8 does;
+4. stamp, in one `ship_state_update`: `plan_base_sha` and `pregate_checkpoint_channel` from the new plan, `pregate_checkpoint_cleared_sha: null`, `pregate_checkpoint_gate_dispatched: false`, `head_sha` as pushed, and `reentry_pending: null`.
 
 Return `done` with the state brief.
 

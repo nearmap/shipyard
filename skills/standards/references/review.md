@@ -13,7 +13,6 @@ FINDINGS
 CLEARED: <compact negative space>
 AUTHORITY: <skill/docs/fallback>
 BEHAVIOURAL_LENSES: <items gate/hunt must investigate as correctness, not conformance>
-SOURCES: <repo-relative paths the rules were read from, or `external`>
 ```
 
 `HIGH|MED|LOW` stays the generic grade. When the repository's own standards skill ran, `[<label>]` is that skill's label for the finding, verbatim. When `skills.standards` is null, take it only from the rule entry's metadata per `${CLAUDE_PLUGIN_ROOT}/docs/severity-overlay.md` § Rules rule (f), never from a doc body and never a class label; otherwise omit it.

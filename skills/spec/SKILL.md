@@ -17,6 +17,8 @@ Before anything else — before the surface scan below spends any research — r
 
 $ARGUMENTS
 
+When `$ARGUMENTS` names an existing Task and the directory `scratch_dir {"identifier": "<key>"}` reports holds `plan-draft.md`, with no plan comment on the Task newer than that file, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan, with debate and spec-gate already run, and go straight to §7 Step 1.
+
 ## Scope before routing
 
 - small cohesive module/doc/diff ⇒ read directly;
@@ -46,8 +48,6 @@ Draft Summary, Context/constraints, and Out of scope. Write the body as short na
 Read its body/comments directly and preserve settled decisions. Delegate only large parent-Epic or PR tails to `sy:sweep`. Edit the body only when research changes framing, and then as a deliberate full rewrite authored from scratch — never a merge around body content read back from the tracker, and it does not carry over rich text a description read cannot represent (see the selected adapter's `ADAPTER.md` on what that read does not guarantee). That governs research-phase edits; §7 Step 2 never writes the Task body at all. Ensure the parent Epic is `in-progress` when active work begins; the Task stays in `backlog` until its plan is approved (then `ready`, per step 7).
 
 When the Task carries a `# MVP reference` comment it was harvested from an `/sy:mvp` reference: set the plan's `reference` field (§7) to the comment's MVP branch and reference SHA. Each shortcut the comment says this Task owns becomes a verification obligation (lens: reference) or an out-of-scope entry with a reason, and the design invariants gain two: port by hand from the reference, never cherry-picking or checking out reference files; no MVP names (the ticket key, the MVP branch, `mvp`/`demo`/`spike`, demo prefixes) in shipped code.
-
-When the resolved scratch directory (`scratch_dir`) holds `<key>/plan-draft.md` and no plan comment on the Task is newer, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan and go straight to §7.
 
 ### Revising after a bail
 
@@ -182,6 +182,5 @@ Supersedes: v<N-1>   # omit for v1
 
 3. verify by rereading that this is the highest plan version on the issue and that no other comment claims it.
 4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
-5. write §3's resolve return verbatim to `<key>/standards-contract.md` in the resolved scratch directory (`scratch_dir`), under three header lines: `plan_version: v<N>`, `target_sha: <origin/<target> SHA when it was resolved>`, and `sources:` copied from its `SOURCES`. `/sy:ship`'s START reuses it rather than resolving again (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/start-resume.md` step 4).
 
 The bar: a fresh session reading the Task and its highest plan version can implement and open the PR without missing design decisions.

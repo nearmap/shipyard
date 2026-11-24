@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Tell the main thread, and the user, when its context is large enough that an idle gap costs real money.
 
-A main-thread request at context C that follows a gap longer than the prompt-cache TTL re-writes all of C
-into cache. Above `RECYCLE_TOKENS` that re-write is the largest avoidable cost of a long session, so:
+A main-thread request that follows a gap longer than the prompt-cache TTL re-writes its whole context into
+cache. Above `RECYCLE_TOKENS` that re-write is the largest avoidable cost of a long session, so:
 
-- PostToolUse (main thread only): when the latest request's context first crosses a band boundary
-  (`RECYCLE_TOKENS`, then every `BAND_TOKENS` above it), add one line of model context naming the size
-  and the recycle rule in `skills/shared/references/context-recycle.md`.
-- Stop: when the context is at or above `RECYCLE_TOKENS`, show the user one warning line.
+- PostToolUse (main thread only): when the request that issued this tool call is in a higher band than the
+  last request that issued one (`RECYCLE_TOKENS`, then every `BAND_TOKENS` above it), add one line of model
+  context naming the size and `skills/shared/references/context-recycle.md`. It fires for that request's
+  first tool call only, so parallel tool calls add it once.
+- Stop: at or above `RECYCLE_TOKENS`, show the user one warning line naming the TTL the session is on.
 
-Stateless: a crossing is read off the transcript's last two main-thread requests, so nothing is stored.
+Stateless: everything is read off the transcript tail, so nothing is stored.
 
 Commands:
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.context_watch hook
@@ -18,44 +19,54 @@ Commands:
 from __future__ import annotations
 
 # Runs on whatever bare `python` is on `PATH` (3.9 on some machines): stdlib-only, like `usage.py`.
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
 import sys
 
 RECYCLE_TOKENS = 250_000
-HARD_RECYCLE_TOKENS = 400_000
 BAND_TOKENS = 150_000
-# Enough tail to hold the last two main-thread requests; one tool result can be a few hundred KB.
+HARD_RECYCLE_TOKENS = RECYCLE_TOKENS + BAND_TOKENS
+# Enough tail to hold the last few main-thread requests; one tool result can be a few hundred KB.
 TAIL_BYTES = 2 * 1024 * 1024
+
+
+@dataclass
+class Request:
+    """One main-thread API request, merged across the several records the transcript writes for it."""
+
+    context: int
+    tool_use_ids: list[str] = field(default_factory=list)
+    one_hour_ttl: bool = False
 
 
 def hook_output(event: dict) -> dict | None:
     """The hook JSON to print for one hook event, or None when there is nothing to say."""
-    if event.get("agent_id"):
+    if event.get("agent_id") or not event.get("transcript_path"):
         return None
-    path = event.get("transcript_path")
-    if not path:
+    requests = recent_requests(Path(event["transcript_path"]))
+    if not requests:
         return None
-    sizes = last_context_sizes(Path(path))
-    if not sizes:
-        return None
-    current = sizes[-1]
+    current = requests[0]
     name = event.get("hook_event_name")
     if name == "PostToolUse":
-        previous = sizes[-2] if len(sizes) > 1 else 0
-        if band(current) <= band(previous):
+        tool_use_id = event.get("tool_use_id")
+        if tool_use_id and current.tool_use_ids and tool_use_id != current.tool_use_ids[0]:
+            return None
+        previous = next((r for r in requests[1:] if r.tool_use_ids), None)
+        if band(current.context) <= band(previous.context if previous else 0):
             return None
         root = os.environ.get("CLAUDE_PLUGIN_ROOT", "<shipyard plugin root>")
         return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
-            f"sy: main-thread context is about {current // 1000}k tokens (recycle at {RECYCLE_TOKENS // 1000}k, "
-            f"spike/mvp hard recycle at {HARD_RECYCLE_TOKENS // 1000}k). At the next phase boundary apply "
-            f"{root}/skills/shared/references/context-recycle.md."
+            f"sy: main-thread context is about {current.context // 1000}k tokens. "
+            f"Apply {root}/skills/shared/references/context-recycle.md at the next phase boundary."
         )}}
-    if name == "Stop" and current >= RECYCLE_TOKENS:
+    if name == "Stop" and current.context >= RECYCLE_TOKENS:
+        ttl = "an hour" if any(r.one_hour_ttl for r in requests) else "5 minutes"
         return {"systemMessage": (
-            f"Context is about {current // 1000}k tokens. After a gap of more than 5 minutes your next message "
-            "re-writes all of it into cache. Stepping away? Ask for a checkpoint first, then /clear and resume."
+            f"Context is about {current.context // 1000}k tokens. After a gap of more than {ttl}, your next "
+            "message re-writes all of it into cache. Stepping away? Ask for a checkpoint first, then /clear and resume."
         )}
     return None
 
@@ -67,8 +78,8 @@ def band(tokens: int) -> int:
     return 1 + (tokens - RECYCLE_TOKENS) // BAND_TOKENS
 
 
-def last_context_sizes(path: Path) -> list[int]:
-    """Context sizes of the transcript's last two distinct main-thread requests, oldest first."""
+def recent_requests(path: Path) -> list[Request]:
+    """Main-thread requests in the transcript tail, newest first; empty when the file cannot be read."""
     try:
         with path.open("rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -76,27 +87,36 @@ def last_context_sizes(path: Path) -> list[int]:
             lines = fh.read().splitlines()
     except OSError:
         return []
-    sizes: list[int] = []
-    seen: set[str] = set()
+    order: list[str] = []
+    by_id: dict[str, Request] = {}
     for raw in reversed(lines):
-        if b'"usage"' not in raw:
+        if b'"requestId"' not in raw:
             continue
         try:
             record = json.loads(raw)
-        except json.JSONDecodeError:
-            continue  # the first line of a tail read is usually cut mid-record
-        if record.get("type") != "assistant" or record.get("isSidechain"):
+        # A tail read starts mid-record, sometimes mid-character: UnicodeDecodeError is a ValueError.
+        except ValueError:
             continue
+        message = record.get("message") or {}
         rid = record.get("requestId")
-        usage = (record.get("message") or {}).get("usage")
-        if not rid or rid in seen or not isinstance(usage, dict):
+        if record.get("type") != "assistant" or record.get("isSidechain") or not rid:
             continue
-        seen.add(rid)
-        sizes.append(sum(int(usage.get(k) or 0) for k in (
+        if message.get("model") == "<synthetic>":
+            continue
+        usage = message.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        request = by_id.get(rid)
+        if request is None:
+            request = by_id[rid] = Request(context=0)
+            order.append(rid)
+        request.context = max(request.context, sum(int(usage.get(k) or 0) for k in (
             "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
-        if len(sizes) == 2:
-            break
-    return sizes[::-1]
+        request.one_hour_ttl |= bool((usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens"))
+        ids = [b["id"] for b in message.get("content") or [] if isinstance(b, dict) and b.get("type") == "tool_use"]
+        request.tool_use_ids = ids + [i for i in request.tool_use_ids if i not in ids]
+    if lines and not order:
+        print("context_watch: no main-thread request found in the transcript tail", file=sys.stderr)
+    return [by_id[rid] for rid in order]
 
 
 def main() -> int:
@@ -106,7 +126,7 @@ def main() -> int:
         return 2
     try:
         event = json.load(sys.stdin)
-    except json.JSONDecodeError:
+    except ValueError:
         return 0
     out = hook_output(event) if isinstance(event, dict) else None
     if out:

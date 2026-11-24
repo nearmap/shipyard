@@ -16,7 +16,7 @@ $ARGUMENTS
 
 Before anything else, run the tracker preflight (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/preflight.md`); a failure stops here with its single `## Action needed` block, before any baseline work starts.
 
-Create/load the spike Task via the `tracker` skill: discover candidate hackday Epics in the configured project (owned by the `tracker` skill), let the user choose the parent via `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), create the Task, set it `in-progress`, and self-assign. For an existing Task, resume from the next step of its newest `# Spike checkpoint` comment. Checkpoint and recycle the context per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Keep tracker command mechanics in the `tracker` skill (`/sy:tracker`), not here.
+Create/load the spike Task via the `tracker` skill: discover candidate hackday Epics in the configured project (owned by the `tracker` skill), let the user choose the parent via `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), create the Task, set it `in-progress`, and self-assign. For an existing Task, resume from the next step of its newest `# Spike checkpoint` comment. Keep tracker command mechanics in the `tracker` skill (`/sy:tracker`), not here.
 
 ## Routing
 

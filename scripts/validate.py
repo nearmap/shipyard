@@ -1833,10 +1833,10 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} dispatches sy:sweep and must state it never points sy:sweep at the tracker", errors)
     if {"Agent", "Skill"} & _grants("spec-gate"):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
-    completeness = ("docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
+    completeness = ("standards exceptions", "docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
     if any(field not in spec for field in completeness):
         fail(
-            "spec's /sy:ship section must require the docs-sync, visual-debug, and pre-gate-checkpoint "
+            "spec's /sy:ship section must require the standards-exceptions, docs-sync, visual-debug, and pre-gate-checkpoint "
             "completeness fields",
             errors,
         )

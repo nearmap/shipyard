@@ -1963,7 +1963,7 @@ async def test_plan_file_reports_a_pin_that_a_revised_plan_moves(monkeypatch, sc
     """A plan superseded between sessions has to be detectable, never silently read as the current one.
 
     The comparison itself is the `/sy:ship` parent's — `skills/ship/SKILL.md` § State router routes a
-    changed pin exactly as a `bail-to-spec`. What the tool owes that comparison is a pin that actually
+    changed pin to a planned re-entry. What the tool owes that comparison is a pin that actually
     moves: a return naming only the path, or one that reported the superseded comment because it came
     first in the thread, would leave a resume unable to tell a revision from a re-read.
     """

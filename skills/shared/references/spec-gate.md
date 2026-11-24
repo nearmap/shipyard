@@ -22,7 +22,7 @@ Three are required-field completeness — the plan's `/sy:ship` section either c
 
 One is both — a required field and reviewer judgment over it:
 
-7. **Standards conformance.** `standards exceptions` must be present, as a list or the literal `none`. Check every shape the ordered changes mandate — where code lives, a tuned value as a constant or a config field, what a key or identifier is derived from, where a fact or fixture is homed — against the resolved standards contract, reading a cited rule's source where the contract only names it. A mandated shape that a rule rejects and the field does not list is a finding, and so is an entry whose reason the rule's own exception terms do not accept. Its fix is a changed shape or an honest entry. Grade it by the cited rule's severity: `sy:gate` will.
+7. **Standards conformance.** `standards exceptions` must be present, as a list or the literal `none`. Check every shape the ordered changes mandate — where code lives, a tuned value as a constant or a config field, what a key or identifier is derived from, where a fact or fixture is homed — against the resolved standards contract, reading a cited rule's source where the contract only names it. A mandated shape that a rule rejects and the field does not list is a finding, and so is an entry whose reason the rule's own exception terms do not accept. Its fix is a changed shape or an honest entry. Grade it by the cited rule's severity.
 
 ## When the plan sets a reference
 

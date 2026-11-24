@@ -6,11 +6,11 @@ cache. Above `RECYCLE_TOKENS` that re-write is the largest avoidable cost of a l
 
 - PostToolUse (main thread only): the first time the newest main-thread request on disk is in a band
   (`RECYCLE_TOKENS`, then every `BAND_TOKENS` above it), add one line of model context naming the size
-  and `skills/shared/references/context-recycle.md`. Each band is announced once per session, claimed by
-  creating a marker file exclusively, so parallel tool calls and a transcript that lags behind the hook
-  neither repeat nor lose it. A drop below `RECYCLE_TOKENS` (a compaction) clears the markers.
+  and `skills/shared/references/context-recycle.md`. Each band is announced once per session; a drop
+  below `RECYCLE_TOKENS` (a compaction) re-arms them.
 - Stop: at or above `RECYCLE_TOKENS`, with no background task still running, show the user one warning
-  line naming the TTL of the newest cache write. Transcript-format drift is reported here too.
+  line naming the TTL of the newest cache write. Transcript drift and an unwritable marker root are
+  reported here too.
 
 Commands:
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.context_watch hook
@@ -50,6 +50,8 @@ def hook_output(event: dict) -> dict | None:
         return None
     name = event.get("hook_event_name")
     requests, problem = recent_requests(Path(event["transcript_path"]))
+    if name == "Stop" and not problem:
+        problem = marker_root_problem()
     if problem:
         # PostToolUse stays quiet; Stop is the one surface a user sees, so drift is reported there.
         return {"systemMessage": f"sy context_watch is not working: {problem}"} if name == "Stop" else None
@@ -82,6 +84,17 @@ def band(tokens: int) -> int:
     return 1 + (tokens - RECYCLE_TOKENS) // BAND_TOKENS
 
 
+def marker_root_problem() -> str | None:
+    """Why `claim_band` cannot record a band, or None when it can."""
+    try:
+        MARKER_ROOT.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"cannot write {MARKER_ROOT} ({exc}), so no context line reaches the model"
+    if not os.access(MARKER_ROOT, os.W_OK):
+        return f"cannot write {MARKER_ROOT}, so no context line reaches the model"
+    return None
+
+
 def claim_band(session_id: str, level: int) -> bool:
     """True exactly once per session for each band above 0; band 0 clears the session's claims."""
     if not session_id:
@@ -90,13 +103,14 @@ def claim_band(session_id: str, level: int) -> bool:
     if level == 0:
         shutil.rmtree(directory, ignore_errors=True)
         return False
+    # An exclusive create, not a transcript read: the transcript lags the hook, and parallel calls race.
     try:
         directory.mkdir(parents=True, exist_ok=True)
         os.close(os.open(directory / f"band-{level}", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
     except FileExistsError:
         return False
     except OSError:
-        return False  # an unwritable marker root must never cost the session a tool call
+        return False  # reported on Stop by `marker_root_problem`
     return True
 
 
@@ -135,8 +149,10 @@ def recent_requests(path: Path) -> tuple[list[Request], str | None]:
         if request is None:
             request = by_id[rid] = Request()
             order.append(rid)
-        request.context = max(request.context, sum(int(usage.get(k) or 0) for k in (
-            "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
+        # Both spellings occur across Claude Code surfaces, as `usage.py` notes.
+        request.context = max(request.context, int(usage.get("input_tokens") or 0)
+                              + int(usage.get("cache_read_input_tokens", usage.get("cache_read_tokens")) or 0)
+                              + int(usage.get("cache_creation_input_tokens", usage.get("cache_creation_tokens")) or 0))
         cache = usage.get("cache_creation") or {}
         one_hour, five_min = cache.get("ephemeral_1h_input_tokens"), cache.get("ephemeral_5m_input_tokens")
         if not request.wrote_cache and (one_hour or five_min):

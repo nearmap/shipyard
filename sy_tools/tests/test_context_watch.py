@@ -58,8 +58,10 @@ def test_each_band_is_announced_once_per_session(tmp_path):
 def test_a_crossing_the_transcript_has_not_written_yet_is_announced_at_the_next_tool_call(tmp_path):
     lagging = _transcript(tmp_path, _request(0, 240_000))
     assert context_watch.hook_output(_post(lagging)) is None, "only the older request is on disk yet"
+    # The crossing request r1 lands only after r2 has gone out, so r2's tool call, with r2 not yet on disk,
+    # is the first to see it.
     caught_up = _transcript(tmp_path, _request(0, 240_000), _request(1, 262_000))
-    assert context_watch.hook_output(_post(caught_up)), "the crossing must not be lost to transcript lag"
+    assert context_watch.hook_output(_post(caught_up, tool_use_id="t2")), "the crossing must not be lost to lag"
 
 
 def test_a_compaction_below_the_threshold_re_arms_the_bands(tmp_path):
@@ -128,3 +130,19 @@ def test_the_recycle_doc_states_the_hook_s_thresholds():
     text = DOC.read_text(encoding="utf-8")
     for tokens in (context_watch.RECYCLE_TOKENS, context_watch.BAND_TOKENS, context_watch.HARD_RECYCLE_TOKENS):
         assert f"{tokens // 1000}k" in text, f"context-recycle.md must state {tokens // 1000}k"
+
+
+def test_short_usage_spellings_count_toward_context(tmp_path):
+    usage = {"input_tokens": 2, "cache_read_tokens": 299_000, "cache_creation_tokens": 1000}
+    path = _transcript(tmp_path, [json.dumps({"type": "assistant", "requestId": "r0",
+                                               "message": {"model": "m", "usage": usage}})])
+    out = context_watch.hook_output(_stop(path))
+    assert out and "300k" in out["systemMessage"], out
+
+
+def test_stop_reports_an_unwritable_marker_root(tmp_path, monkeypatch):
+    blocker = tmp_path / "file"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setattr(context_watch, "MARKER_ROOT", blocker / "markers")
+    out = context_watch.hook_output(_stop(_transcript(tmp_path, _request(0, 120_000))))
+    assert out and "cannot write" in out["systemMessage"], out

@@ -1833,10 +1833,10 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} dispatches sy:sweep and must state it never points sy:sweep at the tracker", errors)
     if {"Agent", "Skill"} & _grants("spec-gate"):
         fail("spec-gate reviews a plan and dispatches nothing; it must carry no Agent/Skill tool", errors)
-    completeness = ("docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
+    completeness = ("standards exceptions", "docs requiring updates", "visual-debug obligations", "`pre-gate checkpoint: ")
     if any(field not in spec for field in completeness):
         fail(
-            "spec's /sy:ship section must require the docs-sync, visual-debug, and pre-gate-checkpoint "
+            "spec's /sy:ship section must require the standards-exceptions, docs-sync, visual-debug, and pre-gate-checkpoint "
             "completeness fields",
             errors,
         )
@@ -2278,6 +2278,26 @@ def check_invariants(errors: list[str]) -> None:
             "ship SKILL's § Worker contract must route a `reason: reviewer_findings` return to AskUserQuestion "
             "rather than resolving it itself; a carve-out with no parent-side disposition is resolved by the "
             "parent exactly like the ordinary needs-decision it was written to escape",
+            errors,
+        )
+    if fix_cycle_start is not None and "reason: plan_contract_choice" not in gate_ref[fix_cycle_start.end():]:
+        fail(
+            "immutable-gate § Fix cycle must return an `ESCALATE: owner-choice` finding as a needs-decision tagged "
+            "`reason: plan_contract_choice`; routed to bail-to-spec instead, an owner pick between listed options "
+            "costs a full re-spec",
+            errors,
+        )
+    if "reason: plan_contract_choice" not in ship_worker or "bail-reentry.md" not in ship_worker:
+        fail(
+            "ship SKILL's § Worker contract must route `reason: plan_contract_choice` to AskUserQuestion and a "
+            "bail-to-spec through references/bail-reentry.md; without the record the stop message is improvised "
+            "and /sy:spec re-derives why the run stopped",
+            errors,
+        )
+    if "owner-choice" not in read("agents/gate-triage.md") or "resolves bail" not in spec:
+        fail(
+            "gate-triage must offer `ESCALATE: owner-choice` and spec must write `resolves bail`; the first keeps "
+            "owner picks off the bail path, the second is the key /sy:ship re-enters a bailed run on",
             errors,
         )
     # Names `repo-review` and its labelling in one literal: a bare `repo-review` containment leg beside this

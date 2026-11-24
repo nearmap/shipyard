@@ -16,15 +16,14 @@ def _markers(tmp_path, monkeypatch):
     monkeypatch.setattr(context_watch, "MARKER_ROOT", tmp_path / "markers")
 
 
-def _request(i: int, ctx: int, *, sidechain: bool = False, one_hour: bool = False,
-             model: str = "claude-opus-5-5") -> list[str]:
+def _request(i: int, ctx: int, *, sidechain: bool = False, one_hour: bool = False) -> list[str]:
     cache = {"ephemeral_1h_input_tokens": 1000} if one_hour else {"ephemeral_5m_input_tokens": 1000}
     usage = {"input_tokens": 2, "cache_read_input_tokens": ctx - 1002, "cache_creation_input_tokens": 1000,
              "cache_creation": cache}
     blocks = [{"type": "text", "text": "x"}, {"type": "tool_use", "id": f"t{i}"}]
     # One request is written as several records, one content block each, every one replaying the usage.
     return [json.dumps({"type": "assistant", "requestId": f"r{i}", "isSidechain": sidechain,
-                        "message": {"model": model, "usage": usage, "content": [b]}}) for b in blocks]
+                        "message": {"model": "claude-opus-5-5", "usage": usage, "content": [b]}}) for b in blocks]
 
 
 def _transcript(tmp_path, *requests: list[str], name: str = "t.jsonl") -> str:

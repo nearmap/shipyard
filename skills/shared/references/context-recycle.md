@@ -4,7 +4,7 @@ Shipyard's `context_watch` hook adds a `sy: main-thread context is about <N>k to
 
 ## At 250k: checkpoint before you wait
 
-After that line has appeared, write the skill's checkpoint at the boundary its row names, then end the turn with one Optional suggestion (`user-interaction.md`): `/clear`, then `<resume command>`, resumes from `<checkpoint>`.
+After that line has appeared, write the skill's checkpoint at the boundary its row names, then add one Optional suggestion (`user-interaction.md`) before the turn's Question or `## Action needed` block, which stays last: `/clear`, then `<resume command>`, resumes from `<checkpoint>`.
 
 | Skill | Boundary | Checkpoint | Resume command |
 |---|---|---|---|

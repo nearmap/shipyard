@@ -12,6 +12,8 @@ A choice only you can make, answerable by picking among options. Ask through the
 
 Use this mode for: a `needs-decision` escalation the parent cannot resolve from plan/standards/code itself, a ship profile below the plan's, choosing a spike's parent Epic, the plan sign-off gate (approve / request changes / see the fuller sign-off half), `/sy:ship`'s merge authorization (merge once CI is green and reviewers are settled / hold), confirming a rewrite of an open PR's mutable metadata, `/sy:explain`'s per-layer checkpoint (continue / question / challenge / skip ahead), `/sy:whiteboard`'s frontier round (up to four open decisions, each with the recommended answer first), and any other real fork that research or code cannot settle.
 
+Once the `sy: main-thread context is about <N>k tokens` line has appeared, a turn that asks a Question or waits on a long background run first writes its checkpoint per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`.
+
 ## Action needed
 
 Something outside a multiple-choice pick that only you can do — resolve external state, run a command. Close the turn with one isolated block, headed `## Action needed`, stating exactly what's needed and why the run is waiting on it. It is the last thing in the turn, at most one per turn.

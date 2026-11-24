@@ -31,6 +31,9 @@ LENSES
 
 CONFLICTS/UNKNOWNS
 - <owner decision; or none>
+
+SOURCES
+- <repo-relative path of each file or directory the authority was read from; `external` when any of it lives outside the repository>
 ```
 
 Do not paste generic style into every Task. `/sy:spec` records authority and unusual task-specific constraints; `/sy:ship` and `sy:slice` receive the relevant compact contract.

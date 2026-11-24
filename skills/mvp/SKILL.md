@@ -34,6 +34,7 @@ A reference read earlier in this session is only a summary after compaction; re-
 - A deploy is verified by the brief's version check reporting the pushed SHA, never by readiness alone.
 - A ledger entry is posted on each deploy, each new user rule, and each hold change (`references/loop.md`).
 - Every shortcut gets a `Shortcut: <what was faked> -> <what production needs>` trailer on the commit that takes it.
+- Checkpoint and recycle the context per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`.
 - Ask only through `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`).
 - Tracker mechanics belong to the `tracker` skill (`/sy:tracker`); this skill names canonical verbs only.
 

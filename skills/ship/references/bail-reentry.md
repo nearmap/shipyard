@@ -53,6 +53,7 @@ Run `/sy:spec <task>` — it reads bail <id> off the Task, so nothing needs past
   - `reentry_pending`: the bail id, which START's § Re-entry step 4 clears;
   - the new `plan_path`, `plan_comment_id` and `plan_version`;
   - `phase_checkpoint: null`;
+  - `standards_reviewed_sha: null`, because the revised plan's `standards exceptions` can change what an earlier pass cleared;
   - `gate_rounds_budget_base`: the current `gate_rounds_total`, so the revised plan starts with a full round budget while `gate_rounds_total` stays monotonic;
   - `plan_supersede_events`: the existing list with `{from, to, bail: <id>}` appended;
   - for a `blocker-closed` bail, all five `stacked_on_*` fields set to `null`, so the run no longer stacks on the closed PR.

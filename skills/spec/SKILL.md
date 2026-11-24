@@ -47,6 +47,8 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 
 When the Task carries a `# MVP reference` comment it was harvested from an `/sy:mvp` reference: set the plan's `reference` field (§7) to the comment's MVP branch and reference SHA. Each shortcut the comment says this Task owns becomes a verification obligation (lens: reference) or an out-of-scope entry with a reason, and the design invariants gain two: port by hand from the reference, never cherry-picking or checking out reference files; no MVP names (the ticket key, the MVP branch, `mvp`/`demo`/`spike`, demo prefixes) in shipped code.
 
+When the resolved scratch directory (`scratch_dir`) holds `<key>/plan-draft.md` and no plan comment on the Task is newer, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan and go straight to §7.
+
 ### Revising after a bail
 
 When the Task carries a `# Bail to spec — <id>` comment whose id no plan version's `resolves bail` names (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/bail-reentry.md` § The bail record), this run writes the next plan version, starting from that record. Do not re-derive why the ship stopped. Read the record's `agent_detail`, the verdict and `pending_fixes` files it names, and the branch head, and state the bail's reason in one sentence before any research. Scope research to what the record invalidates. Skip the §1 prior-work search, keep the premise check for the bail's own claim, and re-resolve standards only for rules the bail cites. The §3 debate still runs, over the revised decision and seeded with the record. The revised plan's `/sy:ship` half sets `resolves bail: <bail id>` and `carried fixes`, and keeps the bailed run's branch and PR. Its `PLAN_BASE_SHA` is fresh `origin/main` as usual. When the record names a `branch`, its ordered changes are a delta on the record's `head_sha`; when it names none, as for a bail before the branch existed, it is a full plan from `PLAN_BASE_SHA`. When the bail turns out not to need a plan change, the revision still names it in `resolves bail`, and its sign-off says why. Its sign-off summary opens with why the ship bailed and what changed.
@@ -180,5 +182,6 @@ Supersedes: v<N-1>   # omit for v1
 
 3. verify by rereading that this is the highest plan version on the issue and that no other comment claims it.
 4. set the Task to `ready` via the `tracker` skill — the plan is approved and it is now shippable.
+5. write §3's resolve return verbatim to `<key>/standards-contract.md` in the resolved scratch directory (`scratch_dir`), under three header lines: `plan_version: v<N>`, `target_sha: <origin/<target> SHA when it was resolved>`, and `sources:` copied from its `SOURCES`. `/sy:ship`'s START reuses it rather than resolving again (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/start-resume.md` step 4).
 
 The bar: a fresh session reading the Task and its highest plan version can implement and open the PR without missing design decisions.

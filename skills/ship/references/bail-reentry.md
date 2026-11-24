@@ -21,7 +21,7 @@ bail:
   verdict: <verdict file path(s), or null>
   branch: <branch>
   pr: <PR number, or null>
-  head_sha: <pushed head at the bail>
+  head_sha: <`git rev-parse HEAD` in the recorded build worktree, pushed first when unpushed; null only when no branch exists>
 ```
 
 The worker's `BAIL-TO-SPEC` return supplies `kind`, `reason`, `invalidates`, `anchors` and the paths; the parent supplies the rest from state.

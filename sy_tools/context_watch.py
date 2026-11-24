@@ -110,7 +110,7 @@ def claim_band(session_id: str, level: int) -> bool:
     except FileExistsError:
         return False
     except OSError:
-        return False  # reported on Stop by `marker_root_problem`
+        return False  # an unwritable root is reported on Stop; a per-session create failure only loses the line
     return True
 
 
@@ -166,14 +166,14 @@ def recent_requests(path: Path) -> tuple[list[Request], str | None]:
 
 
 def main() -> int:
-    """Run the `hook` command; malformed stdin exits 0 so a broken payload never interrupts the session."""
+    """Run the `hook` command."""
     if (sys.argv[1] if len(sys.argv) > 1 else None) != "hook":
         print("usage: python -m sy_tools.context_watch hook", file=sys.stderr)
         return 2
     try:
         event = json.load(sys.stdin)
     except ValueError:
-        return 0
+        return 0  # a broken payload must never interrupt the session
     out = hook_output(event) if isinstance(event, dict) else None
     if out:
         print(json.dumps(out))

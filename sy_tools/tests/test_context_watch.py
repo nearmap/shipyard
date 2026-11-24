@@ -75,7 +75,9 @@ def test_subagent_sidechain_and_synthetic_records_never_count_as_the_main_thread
     assert context_watch.hook_output(_post(path, agent_id="a1")) is None
     sidechain = _transcript(tmp_path, _request(0, 240_000), _request(1, 900_000, sidechain=True))
     assert context_watch.hook_output(_post(sidechain)) is None, "the sidechain's 900k is not the main thread's"
-    synthetic = _transcript(tmp_path, _request(0, 240_000), _request(1, 1002, model="<synthetic>"))
+    zero = {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    synthetic = _transcript(tmp_path, _request(0, 240_000), [json.dumps(
+        {"type": "assistant", "requestId": "r1", "message": {"model": "<synthetic>", "usage": zero}})])
     assert context_watch.hook_output(_stop(synthetic)) is None, "a zero-usage synthetic record is not drift"
 
 

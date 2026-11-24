@@ -17,7 +17,7 @@ Before anything else — before the surface scan below spends any research — r
 
 $ARGUMENTS
 
-When `$ARGUMENTS` names an existing Task and the directory `scratch_dir {"identifier": "<key>"}` reports holds `plan-draft.md`, with no plan comment on the Task newer than that file, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan, with debate and spec-gate already run, and go straight to §7 Step 1. The sign-off summary names the resumed draft and its date, and any Task body or comment change made since then.
+When `$ARGUMENTS` names an existing Task and the directory `scratch_dir {"identifier": "<key>"}` reports holds `plan-draft.md`, with no plan or `# Bail to spec` comment on the Task newer than that file, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan, with debate and spec-gate already run, and go straight to §7 Step 1. The sign-off summary names the resumed draft and its date, and any Task body or comment change made since then.
 
 ## Scope before routing
 
@@ -163,7 +163,7 @@ Present a short natural-prose summary: what you are going to do, why this way, t
 
 Send that summary as direct text first, in full — two acts, not one, and the summary is never folded into the question call or replaced by a pointer at it. Only then close the turn with a single `AskUserQuestion` call — approve as-is / request changes / see the fuller version / other — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. Name the mutation the approval authorizes: on approval the run will post the full plan as one new comment at the next version and set the Task `ready` — it edits no comment already on the issue, and it does not touch the Task body (a body edit during research, §2, is governed separately by that section, not by this rule). Under auto-mode this sign-off is the consent point for those writes, so it states them rather than implying them. This is the plan's sign-off gate: do not infer approval from a reply that doesn't answer it.
 
-A `request changes` answer revises the draft, rewrites `plan-draft.md` with the revision first when that file exists, and returns to this step; re-run `sy:spec-gate` only when that revision is material, per the re-dispatch rule in its reference. One option sends the pre-pass sign-off half in full and returns to this step. It is not a re-run, and it does not count against `spec.max_spec_gate_rounds`. What it expands is that pre-pass draft — never the `/sy:ship` half, which stays a Step 2 reveal.
+A `request changes` answer revises the draft and returns to this step, rewriting `plan-draft.md` when that file exists after any `sy:spec-gate` re-run below; re-run `sy:spec-gate` only when that revision is material, per the re-dispatch rule in its reference. One option sends the pre-pass sign-off half in full and returns to this step. It is not a re-run, and it does not count against `spec.max_spec_gate_rounds`. What it expands is that pre-pass draft — never the `/sy:ship` half, which stays a Step 2 reveal.
 
 ### Step 2 — after approval, post the full plan
 

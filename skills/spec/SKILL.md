@@ -141,7 +141,7 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - `reference: <branch>@<sha>` — optional, present only for a Task harvested from an `/sy:mvp` reference (§2): the MVP branch and commit the Task ports from by hand;
 - tests and acceptance criteria;
 - plan base: `PLAN_BASE_SHA` of the inspected base;
-- `resolves bail: <bail id>` and `carried fixes: <finding ids from the bail's parked dispositions, or 'none'>` — present only on a revision after a bail (§2 Revising after a bail); `/sy:ship` re-enters the bailed run only when the id matches.
+- `resolves bail: <bail id>`, written verbatim as that one line, and `carried fixes: <finding ids from the bail's parked dispositions, or 'none'>` — present only on a revision after a bail (§2 Revising after a bail); `/sy:ship` re-enters the bailed run only when the id matches.
 
 Backtick every identifier, path and URL in the `/sy:ship` half that contains a `_` or a `*`: `/sy:ship` reads this half back off the tracker with `plan_file`, and a rich-text tracker escapes un-backticked Markdown punctuation on the way through, so a bare `some_name` reaches the builder as `some\_name`.
 

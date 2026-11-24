@@ -4,13 +4,13 @@
 A main-thread request that follows a gap longer than the prompt-cache TTL re-writes its whole context into
 cache. Above `RECYCLE_TOKENS` that re-write is the largest avoidable cost of a long session, so:
 
-- PostToolUse (main thread only): when the request that issued this tool call is in a higher band than the
-  last request that issued one (`RECYCLE_TOKENS`, then every `BAND_TOKENS` above it), add one line of model
-  context naming the size and `skills/shared/references/context-recycle.md`. It fires for that request's
-  first tool call only, so parallel tool calls add it once.
-- Stop: at or above `RECYCLE_TOKENS`, show the user one warning line naming the TTL the session is on.
-
-Stateless: everything is read off the transcript tail, so nothing is stored.
+- PostToolUse (main thread only): the first time the newest main-thread request on disk is in a band
+  (`RECYCLE_TOKENS`, then every `BAND_TOKENS` above it), add one line of model context naming the size
+  and `skills/shared/references/context-recycle.md`. Each band is announced once per session, claimed by
+  creating a marker file exclusively, so parallel tool calls and a transcript that lags behind the hook
+  neither repeat nor lose it. A drop below `RECYCLE_TOKENS` (a compaction) clears the markers.
+- Stop: at or above `RECYCLE_TOKENS`, with no background task still running, show the user one warning
+  line naming the TTL of the newest cache write. Transcript-format drift is reported here too.
 
 Commands:
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.context_watch hook
@@ -19,10 +19,12 @@ Commands:
 from __future__ import annotations
 
 # Runs on whatever bare `python` is on `PATH` (3.9 on some machines): stdlib-only, like `usage.py`.
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sys
 
 RECYCLE_TOKENS = 250_000
@@ -30,14 +32,14 @@ BAND_TOKENS = 150_000
 HARD_RECYCLE_TOKENS = RECYCLE_TOKENS + BAND_TOKENS
 # Enough tail to hold the last few main-thread requests; one tool result can be a few hundred KB.
 TAIL_BYTES = 2 * 1024 * 1024
+MARKER_ROOT = Path.home() / ".claude" / "shipyard" / "context-watch"
 
 
 @dataclass
 class Request:
     """One main-thread API request, merged across the several records the transcript writes for it."""
 
-    context: int
-    tool_use_ids: list[str] = field(default_factory=list)
+    context: int = 0
     wrote_cache: bool = False
     one_hour_ttl: bool = False
 
@@ -55,18 +57,14 @@ def hook_output(event: dict) -> dict | None:
         return None
     current = requests[0]
     if name == "PostToolUse":
-        tool_use_id = event.get("tool_use_id")
-        if tool_use_id and current.tool_use_ids and tool_use_id != current.tool_use_ids[0]:
-            return None
-        previous = next((r for r in requests[1:] if r.tool_use_ids), None)
-        if band(current.context) <= band(previous.context if previous else 0):
+        if not claim_band(str(event.get("session_id") or ""), band(current.context)):
             return None
         root = os.environ.get("CLAUDE_PLUGIN_ROOT", "<shipyard plugin root>")
         return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
             f"sy: main-thread context is about {current.context // 1000}k tokens. "
             f"Apply {root}/skills/shared/references/context-recycle.md at the next phase boundary."
         )}}
-    if name == "Stop" and current.context >= RECYCLE_TOKENS:
+    if name == "Stop" and current.context >= RECYCLE_TOKENS and not event.get("background_tasks"):
         newest_write = next((r for r in requests if r.wrote_cache), None)
         ttl = "an hour" if newest_write and newest_write.one_hour_ttl else "5 minutes"
         return {"systemMessage": (
@@ -82,6 +80,24 @@ def band(tokens: int) -> int:
     if tokens < RECYCLE_TOKENS:
         return 0
     return 1 + (tokens - RECYCLE_TOKENS) // BAND_TOKENS
+
+
+def claim_band(session_id: str, level: int) -> bool:
+    """True exactly once per session for each band above 0; band 0 clears the session's claims."""
+    if not session_id:
+        return False
+    directory = MARKER_ROOT / re.sub(r"[^A-Za-z0-9_-]", "_", session_id)
+    if level == 0:
+        shutil.rmtree(directory, ignore_errors=True)
+        return False
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(directory / f"band-{level}", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
+    except OSError:
+        return False  # an unwritable marker root must never cost the session a tool call
+    return True
 
 
 def recent_requests(path: Path) -> tuple[list[Request], str | None]:
@@ -117,7 +133,7 @@ def recent_requests(path: Path) -> tuple[list[Request], str | None]:
         usage = usage if isinstance(usage, dict) else {}
         request = by_id.get(rid)
         if request is None:
-            request = by_id[rid] = Request(context=0)
+            request = by_id[rid] = Request()
             order.append(rid)
         request.context = max(request.context, sum(int(usage.get(k) or 0) for k in (
             "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
@@ -125,8 +141,6 @@ def recent_requests(path: Path) -> tuple[list[Request], str | None]:
         one_hour, five_min = cache.get("ephemeral_1h_input_tokens"), cache.get("ephemeral_5m_input_tokens")
         if not request.wrote_cache and (one_hour or five_min):
             request.wrote_cache, request.one_hour_ttl = True, bool(one_hour)
-        ids = [b["id"] for b in message.get("content") or [] if isinstance(b, dict) and b.get("type") == "tool_use"]
-        request.tool_use_ids = ids + [i for i in request.tool_use_ids if i not in ids]
     requests = [by_id[rid] for rid in order]
     if saw_main_assistant and not requests:
         return [], "no main-thread request with a requestId in the transcript tail; its format may have changed"

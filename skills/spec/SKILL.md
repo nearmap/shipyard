@@ -17,7 +17,7 @@ Before anything else — before the surface scan below spends any research — r
 
 $ARGUMENTS
 
-When `$ARGUMENTS` names an existing Task and the directory `scratch_dir {"identifier": "<key>"}` reports holds `plan-draft.md`, with no plan comment on the Task newer than that file, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan, with debate and spec-gate already run, and go straight to §7 Step 1.
+When `$ARGUMENTS` names an existing Task and the directory `scratch_dir {"identifier": "<key>"}` reports holds `plan-draft.md`, with no plan comment on the Task newer than that file, an earlier run checkpointed at sign-off per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-recycle.md`. Take that file as the drafted plan, with debate and spec-gate already run, and go straight to §7 Step 1. The sign-off summary names the resumed draft and its date, and any Task body or comment change made since then.
 
 ## Scope before routing
 

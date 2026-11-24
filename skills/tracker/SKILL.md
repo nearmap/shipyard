@@ -70,6 +70,7 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 - `# Ship retrospective` — human-readable shipped-vs-plan lessons.
 - `# Claude Code usage` — standalone JSON usage log (`post-log`).
 - `# Claude Code ship metrics` — standalone JSON outcome log (`post-log`).
+- `# Spike checkpoint` — a spike's resume point when its context was recycled; the newest one is current.
 - `# MVP brief` — the MVP's objective and scope, written at KICKOFF.
 - `# MVP ledger` — append-only MVP state; the newest entry is the full live state.
 - `# MVP coverage manifest` — every changed path and shortcut mapped to an owning task or a recorded drop.

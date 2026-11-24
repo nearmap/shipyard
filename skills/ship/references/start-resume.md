@@ -78,6 +78,7 @@ phase_active: null
 gate_rounds_total: 0
 gate_rounds_budget_base: 0
 gate_round_log: []
+bail: null
 severity_overlay_path: <step 4: the checked copy's absolute path, or null>
 ship_session_id: <current session id if available>
 ship_session_started_at: <timestamp>

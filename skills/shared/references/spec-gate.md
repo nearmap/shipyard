@@ -6,7 +6,7 @@ It is not a second debate. `sy:debate` has already settled the core decision (`$
 
 The checklist below is the single copy. Cite this file from the dispatch prompt and from the agent's own instructions; never restate the axes at the call site, because a restated checklist drifts from this one and the drift is invisible from either end.
 
-## The six axes
+## The seven axes
 
 Three are reviewer judgment — the reviewer has to think, and a pass with nothing found is a real result:
 
@@ -20,9 +20,13 @@ Three are required-field completeness — the plan's `/sy:ship` section either c
 5. **Visual-debug flagging.** `visual-debug obligations` must be present and honest: every figure, screenshot, plot, or rendered visual the work produces, regenerates, selects among, or invalidates — each one a verification obligation whose named evidence is an `sy:img-inspector` text verdict per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/image-inspection.md` — or the literal `none`. Work that touches a visual with `none` here is a finding.
 6. **Pre-gate-checkpoint flagging.** `pre-gate checkpoint` must be present, naming a channel (`draft PR` or `running preview`) or the literal `none`. Checked for presence only: whether a task warrants a human checkpoint is the plan author's call, not a fact this axis checks against the diff, so — unlike axes 4–5 — a `none` here is never itself a finding; an *omitted* field is.
 
+One is both — a required field and reviewer judgment over it:
+
+7. **Standards conformance.** `standards exceptions` must be present, as a list or the literal `none`. Check every shape the ordered changes mandate — where code lives, a tuned value as a constant or a config field, what a key or identifier is derived from, where a fact or fixture is homed — against the resolved standards contract, reading a cited rule's source where the contract only names it. A mandated shape that a rule rejects and the field does not list is a finding, and so is an entry whose reason the rule's own exception terms do not accept. Its fix is a changed shape or an honest entry. Grade it by the cited rule's severity: `sy:gate` will.
+
 ## When the plan sets a reference
 
-A plan carrying `reference` ports a Task from an `/sy:mvp` reference, and the caller passes the shortcuts that Task owns. Every one of them is either closed by a verification obligation or named under out of scope with a reason; a shortcut that is neither is a finding. A plan that sets `reference` with no owned-shortcuts input passed (neither shortcuts nor the comment's literal `none`) is a finding against the caller's input, not a clean pass. This is a check alongside the six axes, not a seventh.
+A plan carrying `reference` ports a Task from an `/sy:mvp` reference, and the caller passes the shortcuts that Task owns. Every one of them is either closed by a verification obligation or named under out of scope with a reason; a shortcut that is neither is a finding. A plan that sets `reference` with no owned-shortcuts input passed (neither shortcuts nor the comment's literal `none`) is a finding against the caller's input, not a clean pass. This is a check alongside the seven axes, not an eighth.
 
 ## When it runs
 

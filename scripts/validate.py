@@ -2280,6 +2280,26 @@ def check_invariants(errors: list[str]) -> None:
             "parent exactly like the ordinary needs-decision it was written to escape",
             errors,
         )
+    if fix_cycle_start is not None and "reason: plan_contract_choice" not in gate_ref[fix_cycle_start.end():]:
+        fail(
+            "immutable-gate § Fix cycle must return an `ESCALATE: owner-choice` finding as a needs-decision tagged "
+            "`reason: plan_contract_choice`; routed to bail-to-spec instead, an owner pick between listed options "
+            "costs a full re-spec",
+            errors,
+        )
+    if "reason: plan_contract_choice" not in ship_worker or "bail-reentry.md" not in ship_worker:
+        fail(
+            "ship SKILL's § Worker contract must route `reason: plan_contract_choice` to AskUserQuestion and a "
+            "bail-to-spec through references/bail-reentry.md; without the record the stop message is improvised "
+            "and /sy:spec re-derives why the run stopped",
+            errors,
+        )
+    if "owner-choice" not in read("agents/gate-triage.md") or "resolves bail" not in spec:
+        fail(
+            "gate-triage must offer `ESCALATE: owner-choice` and spec must write `resolves bail`; the first keeps "
+            "owner picks off the bail path, the second is the key /sy:ship re-enters a bailed run on",
+            errors,
+        )
     # Names `repo-review` and its labelling in one literal: a bare `repo-review` containment leg beside this
     # one could never fail on its own, because no text satisfying this pin fails that one.
     if gate_review is not None and "repo-review`-originated" not in gate_review:

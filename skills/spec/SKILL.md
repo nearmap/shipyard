@@ -47,6 +47,10 @@ Read its body/comments directly and preserve settled decisions. Delegate only la
 
 When the Task carries a `# MVP reference` comment it was harvested from an `/sy:mvp` reference: set the plan's `reference` field (§7) to the comment's MVP branch and reference SHA. Each shortcut the comment says this Task owns becomes a verification obligation (lens: reference) or an out-of-scope entry with a reason, and the design invariants gain two: port by hand from the reference, never cherry-picking or checking out reference files; no MVP names (the ticket key, the MVP branch, `mvp`/`demo`/`spike`, demo prefixes) in shipped code.
 
+### Revising after a bail
+
+When the Task carries a `# Bail to spec` comment newer than its highest plan version (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/bail-reentry.md` § The bail record), this run writes the next plan version, starting from that record. Do not re-derive why the ship stopped. Read the record's `agent_detail`, the verdict and dispositions files it names, and the branch head, and state the bail's reason in one sentence before any research. Scope research to what the record invalidates. Skip the §1 prior-work search, keep the premise check for the bail's own claim, and re-resolve standards only for rules the bail cites. Run the §3 debate only when the revision changes the core decision; a revision that keeps the decision and fixes the plan built on it goes straight to `sy:spec-gate`. The revised plan's `/sy:ship` half sets `resolves bail: <bail id>` and `carried fixes`, and keeps the bailed run's branch and PR. Its sign-off summary opens with why the ship bailed and what changed.
+
 ## 3. Resolve standards and deep research
 
 - Resolve standards in the `repo-standards` delegate (running `/sy:standards resolve <scope>` at the model and effort `agent_model {"name": "repo-standards"}` reports) that returns only the compact contract — authority, task-relevant constraints, primitives, risk lenses; the raw rule and doc reads stay out of the spec context, where standards loaded early would be re-paid on every later turn.
@@ -129,17 +133,19 @@ The plan itself has two clearly labeled parts, so a human reviewer and a fresh `
 - standards authority and task-specific constraints/risk lenses;
 - verification obligations (lens → claim → named evidence);
 - design invariants — the deliberately small load-bearing list `sy:gate` must protect;
+- `standards exceptions: <list, or 'none'>` — each shape the ordered changes mandate that a resolved standards rule would otherwise reject: the rule cited, the shape, and the reason the rule's own exception terms accept, so `sy:gate-triage` rejects a finding against it rather than escalating;
 - `docs requiring updates: <list, or 'none'>`;
 - `visual-debug obligations: <list, or 'none'>`;
 - `pre-gate checkpoint: <channel: 'draft PR' or 'running preview'>, or 'none'` — whether `/sy:ship`'s parent pauses for a human look at the draft PR (or a running local preview) before dispatching GATE, framed as "is this the right thing", never as a correctness review; `/sy:ship` never launches a preview itself, only points at the channel declared here. Default when absent is `none`: an unattended or overnight ship run that never declares one sees no change at all;
 - `reviewer orientation: <one sentence>` — optional: one sentence telling the repository's own reviewer what this ticket is really about, such as that it is a performance change rather than a feature. It reaches `repo-review` appended to that agent's instructions as orientation only, and can never override its return contract, its never-fixes/promotes/dispositions rule, or its five `blocked` returns. Omit the field and nothing is appended;
 - `reference: <branch>@<sha>` — optional, present only for a Task harvested from an `/sy:mvp` reference (§2): the MVP branch and commit the Task ports from by hand;
 - tests and acceptance criteria;
-- plan base: `PLAN_BASE_SHA` of the inspected base.
+- plan base: `PLAN_BASE_SHA` of the inspected base;
+- `resolves bail: <bail id>` and `carried fixes: <finding ids from the bail's parked dispositions, or 'none'>` — present only on a revision after a bail (§2 Revising after a bail); `/sy:ship` re-enters the bailed run only when the id matches.
 
 Backtick every identifier, path and URL in the `/sy:ship` half that contains a `_` or a `*`: `/sy:ship` reads this half back off the tracker with `plan_file`, and a rich-text tracker escapes un-backticked Markdown punctuation on the way through, so a bare `some_name` reaches the builder as `some\_name`.
 
-The docs-sync, visual-debug, and pre-gate-checkpoint fields are all required and all legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–6 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder; a `none` on the pre-gate checkpoint is the plan author's call, and is never second-guessed that way.
+The standards-exceptions, docs-sync, visual-debug, and pre-gate-checkpoint fields are all required and all legitimately answerable with `none`; what counts for each, and what an honest answer looks like, is axes 4–7 of `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/spec-gate.md` — read it there rather than from a copy here. An omitted field is what `sy:spec-gate` flags; a `none` on work that plainly touches a doc or a visual is what it flags harder; a `none` on the pre-gate checkpoint is the plan author's call, and is never second-guessed that way.
 
 `reviewer orientation` is the one field collected by asking, and only when there is a reviewer to orient: resolve `skills.reviewer` (per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) while drafting this half and, when it is non-null, close that drafting step with one `AskUserQuestion` — the sentence you would write / a different sentence / none — per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`. When it resolves `null` the question is never asked and the field is never written, so a repository naming no reviewer skill sees no extra question and no extra field. Ask it here, while drafting, never folded into Step 1's sign-off call below, which stays a single question about the plan itself.
 

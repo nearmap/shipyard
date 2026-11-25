@@ -52,6 +52,20 @@
           {
             "type": "command",
             "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.eval_events hook"
+          },
+          {
+            "type": "command",
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.context_watch hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.context_watch hook"
           }
         ]
       }

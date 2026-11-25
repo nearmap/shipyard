@@ -19,6 +19,6 @@ Return `blocked` rather than a partial contract when the caller names no scope, 
 
 Hand back exactly once, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/agent-returns.md`.
 
-No preamble, narration, praise, or tool recap. Emit the invoked mode's own return block — `AUTHORITY` / `CONTRACT` / `PRIMITIVES` / `LENSES` / `CONFLICTS/UNKNOWNS` for resolve, `FINDINGS` / `CLEARED` / `AUTHORITY` / `BEHAVIOURAL_LENSES` for review — every entry carrying its source pointer. Add nothing around it.
+No preamble, narration, praise, or tool recap. Emit the invoked mode's own return block — `AUTHORITY` / `CONTRACT` / `PRIMITIVES` / `LENSES` / `CONFLICTS/UNKNOWNS` / `SOURCES` for resolve, `FINDINGS` / `CLEARED` / `AUTHORITY` / `BEHAVIOURAL_LENSES` for review — every entry carrying its source pointer. Add nothing around it.
 
 If honest coverage cannot fit, return `SPLIT_REQUIRED` with coherent scope partitions rather than truncating.

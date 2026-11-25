@@ -255,6 +255,7 @@ REQUIRED = {
     "scripts/ci_poll.sh",
     "sy_tools/usage.py",
     "sy_tools/eval_events.py",
+    "sy_tools/context_watch.py",
     "sy_tools/memory.py",
     "sy_tools/preflight.py",
     "sy_tools/secrets.py",
@@ -1451,6 +1452,7 @@ def check_hooks(errors: list[str]) -> None:
         ("sy_tools.guards.spec_gate_cap_guard", ("PreToolUse",)),
         ("sy_tools.usage", ("Stop", "SubagentStop")),
         ("sy_tools.eval_events", ("PreToolUse", "SubagentStop", "Stop")),
+        ("sy_tools.context_watch", ("PostToolUse", "Stop")),
     ):
         for event in events:
             if not any(f"python -m {module}" in command for command in commands_by_event.get(event, [])):

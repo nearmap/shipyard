@@ -43,12 +43,12 @@ Each verb has **exactly one** documented, implemented path: the MCP tool of the 
 2. Implement **every** contract verb from `CONTRACT.md` on the `TrackerAdapter` protocol in `sy_tools/tracker/__init__.py`, mapping each to the native system, and document what the native system does with it in `ADAPTER.md`. Document any deliberate asymmetry (e.g. GitHub's attachments are a private gist, not a native file; its `done` transition is native project automation). `sy_tools/tests/tracker/test_canonical.py` fails the build on a missing verb.
 3. Include a **status mapping table** (canonical → native) and a **type mapping table** (`epic`/`task`/`bug` → native), matching the existing adapters' layout (`jira/ADAPTER.md`, `github/ADAPTER.md`).
 4. Keep all tracker-native names, helper scripts, and node-id juggling inside `skills/tracker/<name>/` — never in core.
-5. Declare the adapter's required config in `skills/tracker/<name>/config-map.json` (`legacy_env`, `required`, `secret_env`) so the `validate_config` tool enforces it, and fail fast when it is missing. Select it at runtime with `"tracker": "<name>"` in `.shipyard/config.local.json` (step 6).
+5. Declare the adapter's required config in `skills/tracker/<name>/config-map.json` (`legacy_env`, `required`, `secret_env`) so the `validate_config` tool enforces it, and fail fast when it is missing. Select it at runtime with `"tracker": "<name>"` in `.shipyard/config.local.json` (Dev loop step 6).
 6. Verify every write by reading it back; treat empty results or errors as failure.
 
 ## Before every PR
 
 - Run `pixi run validate`, `pixi run pytest`, `pixi run ruff check sy_tools/`, and `pixi run ty check sy_tools/`, and make sure all four pass.
-- `docs/smoke_mcp.py` exercises every canonical verb live, against the tracker `.shipyard/config.local.json` configures (step 6), through the real MCP server (it creates real issues on a real board — read its header first and point it at a scratch project).
+- `docs/smoke_mcp.py` exercises every canonical verb live, against the tracker `.shipyard/config.local.json` configures (Dev loop step 6), through the real MCP server (it creates real issues on a real board — read its header first and point it at a scratch project).
 - Keep PR descriptions short: the diff shows *what* changed; the description explains *why*.
 - If the change is consumer-visible, bump the plugin version per `docs/standards/SY-012-version-bump.md`.

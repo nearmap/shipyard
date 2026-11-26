@@ -56,7 +56,7 @@ Run `/sy:spec <task>` — it reads bail <id> off the Task, so nothing needs past
   - `standards_reviewed_sha: null`, because the revised plan's `standards exceptions` can change what an earlier pass cleared;
   - `gate_rounds_budget_base`: the current `gate_rounds_total`, so the revised plan starts with a full round budget while `gate_rounds_total` stays monotonic;
   - `plan_supersede_events`: the existing list with `{from, to, bail: <id>}` appended;
-  - for a `blocker-closed` bail, all five `stacked_on_*` fields set to `null`, so the run no longer stacks on the closed PR.
+  - for a `blocker-closed` bail, `stacked_on_pr: null`, so the run no longer stacks on the closed PR.
 
   Then dispatch START with `RE-ENTRY: <bail id>` in its prompt (`${CLAUDE_PLUGIN_ROOT}/skills/ship/references/start-resume.md` § Re-entry). On its `done`, dispatch BUILD: a null `phase_checkpoint` after a re-entry always classifies to BUILD, never GATE.
 - **Pin changed, `bail` unresolved, and the new plan does not name it.** Re-post the Task comment if the Task carries none for `bail.id`, then stop with `## Action needed`: plan v<N> does not resolve bail `<id>`, so re-run `/sy:spec <task>`, which revises against any bail no plan has resolved yet.

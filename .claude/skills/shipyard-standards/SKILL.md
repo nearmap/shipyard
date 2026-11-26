@@ -24,7 +24,7 @@ Return the block in `skills/standards/references/resolve.md` § Compact return c
 
 ## `review <base>..<head> [paths]`
 
-Read `git diff <base>..<head>`, limited to `paths` when given. Check added lines against SY-1, SY-3, SY-4 and SY-5 only: SY-2 needs the PR body, which this pass cannot see, and SY-6 is an acceptance bar, not a rule text can break.
+Read `git diff <base>..<head>`, limited to `paths` when given. Check added lines against every part except SY-2, SY-6 and SY-11: SY-2 needs the PR body, which this pass cannot see; SY-6 is an acceptance bar, not a rule text can break; a test enforces SY-11.
 
 Return the block in `skills/standards/references/review.md` § Compact return contract. Each finding's grade equals its part's `severity` and carries `rule: shipyard-standards <id> [<severity>]`. Set `BEHAVIOURAL_LENSES` to name SY-6 when the range touches text it covers.
 

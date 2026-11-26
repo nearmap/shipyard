@@ -11,26 +11,13 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 4. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
 5. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:whiteboard`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 
-Keep prose (READMEs, roadmaps, docs) clear and unwrapped; keep machine-facing text (agent briefs, contracts, JSON logs) terse and structured. How hard to cut either, and the two tests to cut by, is `skills/shared/references/context-economy.md`; `/sy:tighten` is the pass that applies it to one drafted piece of either kind.
-
 ## Standards
 
-Shipyard's own rules are the parts in `docs/standards/`, one file per rule; spec-gate and gate cite them through the repo-local `shipyard-standards` skill that `.shipyard/config.json` names. After pulling a change to them, restart the session and run `reload_config`: skills load at session start, and the server caches config.
+Shipyard's own rules are the parts in `docs/standards/`, one file per rule: how text is written and what it loads (applying `skills/shared/references/context-economy.md`), how skills and agents are written, comments and docstrings, and where tests live. Read them before changing any of those. Spec-gate and gate cite them through the repo-local `shipyard-standards` skill that `.shipyard/config.json` names; `/sy:tighten` applies the text rules to one drafted piece. After pulling a change to them, restart the session and run `reload_config`: skills load at session start, and the server caches config.
 
 ## Declined ideas
 
 Before proposing a change, check `.out-of-scope/`: one file per idea Shipyard deliberately declined, with the reason and every request that raised it. A declined idea can come back when its reason no longer holds; say why and update or delete the file in the same PR. When you decline a proposal for a durable reason, record it there.
-
-## Comments and docstrings
-
-Two audiences, two places, and the split between them is the whole rule. A **docstring** is written for a caller: what this does and what its contract is, just enough and no more. A **comment** is written for the next person editing this code: the one thing they cannot recover by reading it.
-
-- A docstring that restates the signature, re-lists parameters the type hints already name, or narrates the implementation is worse than no docstring — it is a second source of truth that no test checks and that drifts silently. Public functions, tool surfaces, and modules get one; a private helper whose name and types already say it does not.
-- A genuinely non-obvious **why** does not belong in the docstring. Move it to an inline comment at the exact line it explains, where the reader meets the surprise, rather than in a summary they read before they need it.
-- Every comment earns its keep individually. It is untested and untestable, nothing fails when the code beside it changes, and it therefore costs more to maintain than that code. Write one where a reader would otherwise "simplify" something and break it invisibly: a measured result, a rejected alternative and the reason it was rejected, an ordering that is load-bearing, a workaround for behaviour outside this repo.
-- One line by default. A paragraph has to be carrying a paragraph's worth of *why*.
-- Restate nothing the code already says.
-- **No ticket or PR references.** They rot into a lookup the reader cannot perform and a claim they cannot check; the history is in git. The single exception is a literal `TODO`, where naming the ticket is the point.
 
 ## The tracker seam rule
 
@@ -48,10 +35,6 @@ No `jira`, `acli`, `gh issue`, `gh-project`, ADF, or any other tracker-native te
 Core speaks **only** the canonical vocabulary in `skills/tracker/CONTRACT.md`: the verbs (`preflight`, `create-issue`, `create-child`, `get-issue`, `update-issue`, `find-issues`, `set-status`, `assign`, `link-parent`, `add-dependency`, `add-label`, `type-convert`, `post-comment`, `post-log`, `attach-artifact`, `attachment-download`, `attachment-update`, `link-pr`), the canonical statuses, and the canonical types.
 
 Each verb has **exactly one** documented, implemented path: the MCP tool of the same name. There is deliberately no parallel CLI recipe for a tracker operation anywhere outside `sy_tools/` — a second path is a second thing to keep correct, and the recipes this replaced had drifted into a truncating read that looked like it worked. If you need tracker-specific behaviour, it belongs in an adapter, reached through a contract verb.
-
-## Where a test lives
-
-Tests mirror the package they cover from one root: `sy_tools/tests/`, never co-located with their source. `sy_tools/tests/test_layout.py` enforces it. `sy_tools/tests/tracker/` mirrors `sy_tools/tracker/` and is the one place a test may name a concrete tracker — an adapter's tests have to, which is the exemption `sy_tools/tests/test_tracker_seam.py` documents and scopes to that directory. A test written beside its adapter would silently keep passing while sitting outside the mirror, which is why the layout is asserted rather than assumed.
 
 ## Adding a new tracker adapter
 

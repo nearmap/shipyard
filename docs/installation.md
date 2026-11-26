@@ -14,13 +14,13 @@ Two ways, depending on whether you want it for one session or permanently.
 claude --plugin-dir /path/to/shipyard
 ```
 
-The plugin is available only for that invocation — nothing is registered.
+The plugin is available only for that invocation — nothing is registered. If `sy@shipyard` is also installed, that session loads the checkout and skips the installed copy. Run `/reload-plugins` in the session to pick up edits.
 
 ### Persistent (across sessions)
 
-Persistent installs come from a **marketplace**: a directory or repo that contains a `.claude-plugin/marketplace.json` listing one or more plugins. This repo ships one (it lists the `sy` plugin at its root), so it is its own marketplace. Add the marketplace, then install the plugin from it — you can do this straight from GitHub without cloning, or from a local checkout.
+Persistent installs come from a **marketplace**: a directory or repo that contains a `.claude-plugin/marketplace.json` listing one or more plugins. This repo ships one (it lists the `sy` plugin at its root), so it is its own marketplace. Add the marketplace from GitHub, then install the plugin from it.
 
-**From GitHub (no clone).** `claude plugin marketplace add` accepts a GitHub `owner/repo` shorthand (or a full `https://`/`git@` URL); Claude Code clones it for you. Append `@<ref>` to pin a branch or tag, and private repos authenticate with your existing git credentials (`gh auth login`, SSH agent, or a credential helper). `marketplace add` itself always registers globally (`~/.claude/plugins/known_marketplaces.json`) — it just makes the catalog visible; scope is chosen at `install`, below.
+**From GitHub (no clone).** `claude plugin marketplace add` accepts a GitHub `owner/repo` shorthand (or a full `https://`/`git@` URL); Claude Code clones it for you. Append `#<ref>` (or `@<ref>`) to pin a branch, a tag, or a full 40-character commit SHA; a SHA pin needs Claude Code 2.1.325 or later. Private repos authenticate with your existing git credentials (`gh auth login`, SSH agent, or a credential helper). `marketplace add` just makes the catalog visible; the plugin's scope is chosen at `install`, below.
 
 ```bash
 claude plugin marketplace add nearmap/shipyard   # registers the marketplace, named "shipyard"
@@ -29,12 +29,11 @@ claude plugin install sy@shipyard --scope project   # install the plugin, scoped
 
 A marketplace install has no checkout to pre-warm, so the first launch of the bundled `sy` MCP server materialises its pixi environment on the spot (~10s on a fast connection); on a slow link that first connect can exceed Claude Code's 30s MCP timeout — just reconnect — the package cache persists, so the retry picks up where it left off.
 
-**From a local checkout.** Point the same command at the directory instead:
+To change the pin later, run `claude plugin marketplace remove shipyard` first, then add and install again. Claude Code refuses to re-add `shipyard` from a different ref (`its source doesn't match its extraKnownMarketplaces entry`), and the remove also uninstalls `sy@shipyard`; `sy` keeps no plugin options or data, so reinstalling loses nothing. To go back, run the same three commands with plain `nearmap/shipyard`.
 
-```bash
-claude plugin marketplace add /path/to/shipyard
-claude plugin install sy@shipyard --scope project
-```
+A branch or tag pin moves to that ref's latest commit on `claude plugin marketplace update shipyard`. A SHA pin stays put.
+
+**From a local checkout.** Use `--plugin-dir`, the one-session route above. `claude plugin marketplace add /path/to/shipyard` does not add a second marketplace: the checkout's marketplace is also named `shipyard`, so the command re-points the one you already have, and an installed `sy@shipyard` then updates from your working tree.
 
 `claude plugin install` takes `<plugin>@<marketplace>`; here the plugin is `sy` and the marketplace is `shipyard` (the `name` in `marketplace.json`). Equivalently, run `/plugin`, go to **Discover**, and choose a scope in the interactive UI.
 

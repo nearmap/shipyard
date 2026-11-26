@@ -47,6 +47,7 @@ TOOL_NAMES = {
     "plan_file",
     "post-comment",
     "post-log",
+    "pr_comment",
     "preflight",
     "reload_config",
     "scratch_dir",
@@ -1473,6 +1474,38 @@ async def test_post_log_scrubs_its_title_and_its_serialised_payload_alike(monkey
     assert sent.count(f"<REDACTED:{FAKE_SECRET_VAR}>") == 2, f"post-log redacted only part of the log: {sent}"
     assert _payload(result)["scrub"]["redactions"] == 2, _payload(result)
     assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
+
+
+@pytest.mark.anyio
+async def test_pr_comment_scrubs_the_body_and_forwards_every_argument(monkeypatch):
+    """Off the `SCRUB_WRITES` table: it bypasses the tracker adapter, so it is pinned at its own seam."""
+    monkeypatch.setenv(FAKE_SECRET_VAR, FAKE_SECRET)
+    sent: list[tuple] = []
+
+    def post(*args):
+        sent.append(args)
+        return {"url": "https://h/o/r/pull/9#issuecomment-1", "id": 1, "session": args[2]}
+
+    monkeypatch.setattr(server.pr_comments, "post", post)
+    arguments = {"pr_url": "https://h/o/r/pull/9", "session": "s", "reply_to": 5}
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("pr_comment", {**arguments, "body": f"{FAKE_SECRET} and {FAKE_SECRET}"})
+    assert result.is_error is False, result.content
+    (args,) = sent
+    assert FAKE_SECRET not in args[1], "pr_comment handed the credential to the code host"
+    assert args[1].count(f"<REDACTED:{FAKE_SECRET_VAR}>") == 2, args[1]
+    assert (args[0], args[2], args[3]) == ("https://h/o/r/pull/9", "s", 5), args
+    assert _payload(result)["scrub"]["redactions"] == 2, _payload(result)
+    assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
+
+    def refuse(*_args):
+        raise server.pr_comments.CommentError("refused: may already be posted")
+
+    monkeypatch.setattr(server.pr_comments, "post", refuse)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("pr_comment", {**arguments, "body": "x"})
+    assert result.is_error is True, "a CommentError must come back as a tool error"
+    assert "may already be posted" in _text(result), _text(result)
 
 
 @pytest.mark.anyio

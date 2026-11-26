@@ -1,8 +1,8 @@
 ---
-id: SY-9
+id: SY-009
 severity: MED
 ---
-# SY-9 Skills and agents are written to be followed
+# SY-009 Skills and agents are written to be followed
 
 Applies to `skills/**` and `agents/**`.
 

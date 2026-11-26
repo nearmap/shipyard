@@ -1,8 +1,8 @@
 ---
-id: SY-2
+id: SY-002
 severity: MED
 ---
-# SY-2 Agent-facing text justifies its growth
+# SY-002 Agent-facing text justifies its growth
 
 Each net-new addition to agent-facing text carries a justification line, with the scope, carrier and keep/cut test in `skills/ship/references/immutable-gate.md` § Net-new agent-facing text. The words a phase loads (its skill, the references it reads, the agents it dispatches) do not grow without one, and moving text between files does not hide growth.
 

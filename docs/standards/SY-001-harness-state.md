@@ -1,8 +1,8 @@
 ---
-id: SY-1
+id: SY-001
 severity: MED
 ---
-# SY-1 Harness state is code's job
+# SY-001 Harness state is code's job
 
 State the harness owns (SHAs, statuses, counts, round numbers, phases, tool arguments) is written and checked by code. It is never kept in prose for a model to track, and never derived by parsing prose or model output. Where a tool would parse prose, change its interface to take structured fields instead, as `post-comment` does with `human` and `agent_detail` (`sy_tools/server.py`).
 

@@ -1,8 +1,8 @@
 ---
-id: SY-8
+id: SY-008
 severity: MED
 ---
-# SY-8 Context is loaded when it is used
+# SY-008 Context is loaded when it is used
 
 Applies to skills and agent briefs.
 

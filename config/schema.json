@@ -42,6 +42,16 @@
         }
       }
     },
+    "whiteboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": ["string", "null"],
+          "description": "Root of /sy:whiteboard board folders, one <slug>/ per board. Null means ~/whiteboards."
+        }
+      }
+    },
     "debug": {
       "type": "object",
       "additionalProperties": false,

@@ -1,0 +1,29 @@
+{
+  "search": {
+    "issueCount": 2,
+    "pageInfo": {"hasNextPage": false, "endCursor": "cursor-2"},
+    "nodes": [
+      {
+        "number": 12,
+        "url": "https://example.test/acme/widget/pull/12",
+        "title": "Draft: widget colours",
+        "body": null,
+        "state": "OPEN",
+        "createdAt": "2026-10-06T00:00:00Z",
+        "mergedAt": null,
+        "closedAt": null,
+        "headRefName": "feat/colours",
+        "baseRefName": "main",
+        "additions": 5,
+        "deletions": 0,
+        "changedFiles": 1,
+        "author": {"__typename": "User", "login": "dev-one"},
+        "mergeCommit": null,
+        "commits": {"totalCount": 101, "nodes": [{"commit": {"oid": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", "statusCheckRollup": null}}]},
+        "reviews": {"totalCount": 0, "nodes": []},
+        "reviewThreads": {"totalCount": 0, "nodes": []},
+        "comments": {"totalCount": 0, "nodes": []}
+      }
+    ]
+  }
+}

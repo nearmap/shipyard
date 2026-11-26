@@ -1,0 +1,19 @@
+{
+  "search": {
+    "pageInfo": {"hasNextPage": false, "endCursor": null},
+    "nodes": [
+      {"number": 8, "url": "https://example.test/acme/widget/pull/8", "title": "Revert \"Add widget sizing\"",
+       "body": "Reverts acme/widget#7", "createdAt": "2026-10-02T00:00:00Z"},
+      {"number": 9, "url": "https://example.test/acme/widget/pull/9", "title": "Clamp widget bounds",
+       "body": "Follow-up to #7: tighten bounds.", "createdAt": "2026-10-05T00:00:00Z"},
+      {"number": 10, "url": "https://example.test/acme/widget/pull/10", "title": "Later tidy",
+       "body": "Long after https://example.test/acme/widget/pull/7 landed.", "createdAt": "2026-11-15T00:00:00Z"},
+      {"number": 11, "url": "https://example.test/acme/widget/pull/11", "title": "Back out sizing on release branch",
+       "body": "This reverts commit f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed.", "createdAt": "2026-10-03T00:00:00Z"},
+      {"number": 13, "url": "https://example.test/acme/widget/pull/13", "title": "Bump limits",
+       "body": "See #70.", "createdAt": "2026-10-04T00:00:00Z"},
+      {"number": 14, "url": "https://example.test/acme/widget/pull/14", "title": "Prep for #7",
+       "body": "", "createdAt": "2026-09-30T00:00:00Z"}
+    ]
+  }
+}

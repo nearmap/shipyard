@@ -36,6 +36,10 @@ ADAPTER_TESTS = MCP_ROOT / "tests" / "tracker"
 # command out exactly as the matcher does.
 GUARDS_ZONES = (MCP_ROOT / "guards", MCP_ROOT / "tests" / "guards")
 
+# PR outcomes read the code host's pull requests through its CLI, not a tracker; the CLI's bare name is its whole
+# exemption, so the host's own name and every tracker token still fire in it.
+PR_OUTCOMES = MCP_ROOT / "pr_outcomes.py"
+
 # Each token, and the directories where that token alone does not apply — `None` for almost all of them.
 # Per-token rather than a whole-file `_exempt()` entry on purpose: widening `_exempt()` would let every
 # tracker name into the guard directories at once and gut the neutral-stand-in discipline above.
@@ -43,7 +47,7 @@ TRACKER_TOKENS: list[tuple[re.Pattern[str], tuple[Path, ...] | None]] = [
     (re.compile(p, f), zone) for p, f, zone in [
         (r"\bjira\b", re.I, None), (r"\bacli\b", re.I, None), (r"\batlassian\b", re.I, None),
         (r"\.atlassian\.net", 0, None), (r"\bADF\b", re.I, None),
-        (r"\bgithub\b", re.I, None), (r"\bgh\b", re.I, GUARDS_ZONES), (r"\bgist\b", re.I, None),
+        (r"\bgithub\b", re.I, None), (r"\bgh\b", re.I, (*GUARDS_ZONES, PR_OUTCOMES)), (r"\bgist\b", re.I, None),
         (r"\bissueType\b", 0, None), (r"\bsubtask\b", re.I, None),
     ]
 ]
@@ -67,7 +71,7 @@ def _file_violation(path: Path, text: str) -> str | None:
     a second copy of it that could drift into agreeing with itself.
     """
     for pattern, exempt_zones in TRACKER_TOKENS:
-        if exempt_zones is not None and any(zone in path.parents for zone in exempt_zones):
+        if exempt_zones is not None and any(zone == path or zone in path.parents for zone in exempt_zones):
             continue
         match = pattern.search(text)
         if match:
@@ -102,17 +106,16 @@ def test_the_legal_zone_exists_and_is_where_the_adapters_live():
     assert (LEGAL_ZONE / "__init__.py").is_file(), "tracker selection must have exactly one home"
 
 
-def test_the_guard_zones_lose_only_the_bare_gh_token():
-    """Every other tracker name still violates inside `guards/`; the exemption is one token, not the directory.
+def test_the_gh_zones_lose_only_the_bare_gh_token():
+    """Every other tracker name still violates inside `guards/` and `pr_outcomes.py`; the exemption is one token.
 
     The failure this pins is a widened `_exempt()`, which would have been the easy way to let the matcher
     name `gh` and would have taken the whole neutral-stand-in discipline with it.
     """
-    for zone in GUARDS_ZONES:
+    for probe in (*(zone / "probe.py" for zone in GUARDS_ZONES), PR_OUTCOMES):
         for name in ("jira", "acli", "atlassian", "github", "gist", "subtask"):
-            probe = zone / "probe.py"
             assert _file_violation(probe, f"X = '{name}'\n") is not None, (
-                f"{name!r} must still violate inside {zone.name}/; only the bare `gh` token is scoped"
+                f"{name!r} must still violate in {probe.relative_to(MCP_ROOT)}; only the bare `gh` token is scoped"
             )
 
 

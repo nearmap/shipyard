@@ -30,6 +30,7 @@ from pathlib import Path
 import re
 from typing import Annotated, Any
 
+from anyio import to_thread
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
 from pydantic import Field, ValidationError
@@ -38,6 +39,7 @@ import yaml
 from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, tracker, usage
 from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
 from .atomic import atomic_write
+from .pr import comment as pr_comments
 from .ship_metrics import SCHEMA_ID, ShipMetricsV1
 
 mcp = MCPServer(name=SERVER_NAME, version=SERVER_VERSION)
@@ -389,6 +391,41 @@ async def post_log(
     adapter = tracker.adapter()
     _validate_body_size(body, adapter.body_limit)
     posted = await adapter.post_comment(issue, body)
+    return {**posted, "scrub": scrub}
+
+
+@mcp.tool(name="pr_comment")
+async def pr_comment(
+    pr_url: Annotated[
+        str,
+        Field(description="The pull request's web URL, `https://<host>/<owner>/<repo>/pull/<n>`."),
+    ],
+    body: Annotated[str, Field(description="The comment's Markdown. Never include the session marker yourself.")],
+    session: Annotated[
+        str,
+        Field(
+            description="Your Claude Code session id: exactly what `echo \"$CLAUDE_CODE_SESSION_ID\"` prints in "
+            "your own Bash tool. A hook denies any other value."
+        ),
+    ],
+    reply_to: Annotated[
+        int | None,
+        Field(description="A review comment id to reply to in its thread; omit for a top-level comment."),
+    ] = None,
+) -> dict[str, Any]:
+    """Post a comment on a pull request, marked as written by an agent in the named session.
+
+    The tool appends `<!-- shipyard:agent session=<id> -->` as the body's last line, so every agent comment
+    carries the session that wrote it; a body already holding that marker is refused. The body is
+    credential-scrubbed first, and the stored body is read back and must equal the one sent. A correction
+    is a new comment, never an edit of a posted one.
+    """
+    _required(pr_url=pr_url, body=body, session=session)
+    (body,), scrub = _scrub_texts(body)
+    try:
+        posted = await to_thread.run_sync(pr_comments.post, pr_url, body, session, reply_to)
+    except pr_comments.CommentError as exc:
+        raise ToolError(str(exc)) from None
     return {**posted, "scrub": scrub}
 
 

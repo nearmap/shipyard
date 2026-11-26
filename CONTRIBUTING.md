@@ -45,6 +45,8 @@ Core speaks **only** the canonical vocabulary in `skills/tracker/CONTRACT.md`: t
 
 Each verb has **exactly one** documented, implemented path: the MCP tool of the same name. There is deliberately no parallel CLI recipe for a tracker operation anywhere outside `sy_tools/` — a second path is a second thing to keep correct, and the recipes this replaced had drifted into a truncating read that looked like it worked. If you need tracker-specific behaviour, it belongs in an adapter, reached through a contract verb.
 
+Pull requests are not tracker objects: they live on the code host whichever tracker a repository uses. So `sy_tools/pr/` and its tests may call `gh`, for pull requests only, and `sy_tools/tests/test_tracker_seam.py` exempts that one token there and nothing else; the code host's name and every tracker name still fail the scan in both places.
+
 ## Where a test lives
 
 Tests mirror the package they cover from one root: `sy_tools/tests/`, never co-located with their source. `sy_tools/tests/test_layout.py` enforces it. `sy_tools/tests/tracker/` mirrors `sy_tools/tracker/` and is the one place a test may name a concrete tracker — an adapter's tests have to, which is the exemption `sy_tools/tests/test_tracker_seam.py` documents and scopes to that directory. A test written beside its adapter would silently keep passing while sitting outside the mirror, which is why the layout is asserted rather than assumed.

@@ -47,6 +47,7 @@ TOOL_NAMES = {
     "plan_file",
     "post-comment",
     "post-log",
+    "pr_comment",
     "preflight",
     "reload_config",
     "scratch_dir",

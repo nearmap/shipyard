@@ -65,6 +65,7 @@
       "cheap": "sonnet"
     },
     "agents": {
+      "delegate": { "model": "cheap", "effort": "medium" },
       "debate": { "model": "standard", "effort": "high" },
       "debater": { "model": "standard", "effort": "high" },
       "explain-author": { "model": "standard", "effort": "high" },

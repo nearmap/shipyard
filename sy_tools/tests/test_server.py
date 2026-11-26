@@ -8,6 +8,7 @@ wire.
 The gate tests call the tool functions directly. `@mcp.tool` registers and returns the function
 unchanged, so a direct call keeps a gate assertion about *not doing work* readable.
 """
+
 from __future__ import annotations
 
 import json
@@ -61,32 +62,57 @@ TOOL_NAMES = {
 }
 
 WIRING = [
-    ("create-issue", {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"},
-     "create_issue", (), {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"}),
+    (
+        "create-issue",
+        {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"},
+        "create_issue",
+        (),
+        {"issue_type": "task", "title": "T", "body": "B", "parent": "PROJ-1"},
+    ),
     ("get-issue", {"issue": "PROJ-2"}, "get_issue", ("PROJ-2",), {}),
     ("update-issue", {"issue": "PROJ-3", "body": "replacement"}, "update_issue", ("PROJ-3", "replacement"), {}),
-    ("find-issues",
-     {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"},
-     "find_issues", (),
-     {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"}),
-    ("find-issues", {}, "find_issues", (),
-     {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50, "page_token": None}),
+    (
+        "find-issues",
+        {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"},
+        "find_issues",
+        (),
+        {"status": "ready", "issue_type": "bug", "parent": "PROJ-4", "text": "seam", "limit": 5, "page_token": "abc"},
+    ),
+    (
+        "find-issues",
+        {},
+        "find_issues",
+        (),
+        {"status": None, "issue_type": None, "parent": None, "text": None, "limit": 50, "page_token": None},
+    ),
     ("set-status", {"issue": "PROJ-5", "status": "in-review"}, "set_status", ("PROJ-5", "in-review"), {}),
     ("assign", {"issue": "PROJ-6"}, "assign", ("PROJ-6", "@me"), {}),
     ("link-parent", {"issue": "PROJ-7", "parent": "PROJ-8"}, "link_parent", ("PROJ-7", "PROJ-8"), {}),
-    ("add-dependency", {"issue": "PROJ-9", "blocked_by": "PROJ-10"},
-     "add_dependency", ("PROJ-9", "PROJ-10"), {}),
+    ("add-dependency", {"issue": "PROJ-9", "blocked_by": "PROJ-10"}, "add_dependency", ("PROJ-9", "PROJ-10"), {}),
     ("add-label", {"issue": "PROJ-11", "label": "needs-spec"}, "add_label", ("PROJ-11", "needs-spec"), {}),
-    ("post-comment", {"issue": "PROJ-12", "human": "TL;DR: done", "agent_detail": "HEAD abc123"},
-     "post_comment",
-     ("PROJ-12", "TL;DR: done" + server._AGENT_DETAIL_OPEN + "HEAD abc123" + server._AGENT_DETAIL_CLOSE), {}),
-    ("post-log", {"issue": "PROJ-15", "title": "Claude Code usage", "payload": {"schema": "shipyard.claude_usage.v1"}},
-     "post_comment", ("PROJ-15", '# Claude Code usage\n\n```json\n{\n  "schema": "shipyard.claude_usage.v1"\n}\n```\n'),
-     {}),
+    (
+        "post-comment",
+        {"issue": "PROJ-12", "human": "TL;DR: done", "agent_detail": "HEAD abc123"},
+        "post_comment",
+        ("PROJ-12", "TL;DR: done" + server._AGENT_DETAIL_OPEN + "HEAD abc123" + server._AGENT_DETAIL_CLOSE),
+        {},
+    ),
+    (
+        "post-log",
+        {"issue": "PROJ-15", "title": "Claude Code usage", "payload": {"schema": "shipyard.claude_usage.v1"}},
+        "post_comment",
+        ("PROJ-15", '# Claude Code usage\n\n```json\n{\n  "schema": "shipyard.claude_usage.v1"\n}\n```\n'),
+        {},
+    ),
     ("preflight", {}, "preflight", (), {}),
     ("type-convert", {"issue": "PROJ-13", "issue_type": "epic"}, "type_convert", ("PROJ-13", "epic"), {}),
-    ("attachment-download", {"issue": "PROJ-14", "filename_or_id": "log.txt", "output_path": "/tmp/log.txt"},
-     "attachment_download", ("PROJ-14", "log.txt", Path("/tmp/log.txt")), {}),
+    (
+        "attachment-download",
+        {"issue": "PROJ-14", "filename_or_id": "log.txt", "output_path": "/tmp/log.txt"},
+        "attachment_download",
+        ("PROJ-14", "log.txt", Path("/tmp/log.txt")),
+        {},
+    ),
 ]
 """Every canonical-verb tool, the adapter method it must reach, and the arguments it must pass.
 
@@ -176,14 +202,17 @@ async def test_initialize_list_and_call_roundtrip():
             "every find-issues filter is optional; a required one makes the tool uncallable as a plain list"
         )
         assert set(schemas["find-issues"]["properties"]) == {
-            "status", "issue_type", "parent", "text", "limit", "page_token"
+            "status",
+            "issue_type",
+            "parent",
+            "text",
+            "limit",
+            "page_token",
         }, "the cursor a page returns has to be sendable back, or the paging it advertises is unusable"
 
         # The two-part split is only real if the *schema* refuses a one-part call: a default of `""` on
         # either half would let a caller keep writing single-blob comments and be told nothing.
-        assert set(schemas["post-comment"]["required"]) == {"issue", "human", "agent_detail"}, (
-            schemas["post-comment"]
-        )
+        assert set(schemas["post-comment"]["required"]) == {"issue", "human", "agent_detail"}, schemas["post-comment"]
         assert "body" not in schemas["post-comment"]["properties"], (
             "a surviving `body` is the escape hatch the split exists to remove"
         )
@@ -253,10 +282,7 @@ async def test_post_comment_assembles_both_halves_in_order_with_the_boundary_bet
     assert result.is_error is False, result.content
     sent = _body_sent(recorder)
     assert sent == (
-        "TL;DR: the gate passed."
-        + server._AGENT_DETAIL_OPEN
-        + "HEAD 6144373"
-        + server._AGENT_DETAIL_CLOSE
+        "TL;DR: the gate passed." + server._AGENT_DETAIL_OPEN + "HEAD 6144373" + server._AGENT_DETAIL_CLOSE
     ), sent
     assert sent.index("TL;DR") < sent.index("6144373"), "the human half leads; a reader opens the rest"
 
@@ -279,9 +305,7 @@ async def test_post_comment_encloses_the_agent_half_in_one_closed_collapsed_sect
         )
     assert result.is_error is False, result.content
     sent = _body_sent(recorder)
-    assert sent == (
-        human.strip() + server._AGENT_DETAIL_OPEN + agent_detail.strip() + server._AGENT_DETAIL_CLOSE
-    ), sent
+    assert sent == (human.strip() + server._AGENT_DETAIL_OPEN + agent_detail.strip() + server._AGENT_DETAIL_CLOSE), sent
     assert sent.count(server._AGENT_DETAIL_OPEN) == 1, f"the section is opened more than once: {sent!r}"
     assert sent.endswith(server._AGENT_DETAIL_CLOSE), f"the body carries content past the section: {sent!r}"
 
@@ -321,9 +345,9 @@ async def test_post_comment_still_takes_a_half_carrying_some_other_disclosure_bl
             "post-comment", {"issue": "PROJ-1", "human": human, "agent_detail": "HEAD 6144373"}
         )
     assert result.is_error is False, result.content
-    assert _body_sent(recorder) == (
-        human + server._AGENT_DETAIL_OPEN + "HEAD 6144373" + server._AGENT_DETAIL_CLOSE
-    ), _body_sent(recorder)
+    assert _body_sent(recorder) == (human + server._AGENT_DETAIL_OPEN + "HEAD 6144373" + server._AGENT_DETAIL_CLOSE), (
+        _body_sent(recorder)
+    )
 
 
 @pytest.mark.anyio
@@ -415,18 +439,18 @@ case here re-derive it; the guard's behaviour is the same at any limit.
 """
 
 SIZE_WRITES = [
-    ("create-issue",
-     lambda filler: {"issue_type": "task", "title": "T", "body": filler},
-     lambda filler: filler),
-    ("update-issue",
-     lambda filler: {"issue": "PROJ-1", "body": filler},
-     lambda filler: filler),
-    ("post-comment",
-     lambda filler: {"issue": "PROJ-1", "human": "TL;DR: sized.", "agent_detail": filler},
-     lambda filler: "TL;DR: sized." + server._AGENT_DETAIL_OPEN + filler + server._AGENT_DETAIL_CLOSE),
-    ("post-log",
-     lambda filler: {"issue": "PROJ-1", "title": "Claude Code usage", "payload": {"note": filler}},
-     lambda filler: f'# Claude Code usage\n\n```json\n{json.dumps({"note": filler}, indent=2)}\n```\n'),
+    ("create-issue", lambda filler: {"issue_type": "task", "title": "T", "body": filler}, lambda filler: filler),
+    ("update-issue", lambda filler: {"issue": "PROJ-1", "body": filler}, lambda filler: filler),
+    (
+        "post-comment",
+        lambda filler: {"issue": "PROJ-1", "human": "TL;DR: sized.", "agent_detail": filler},
+        lambda filler: "TL;DR: sized." + server._AGENT_DETAIL_OPEN + filler + server._AGENT_DETAIL_CLOSE,
+    ),
+    (
+        "post-log",
+        lambda filler: {"issue": "PROJ-1", "title": "Claude Code usage", "payload": {"note": filler}},
+        lambda filler: f"# Claude Code usage\n\n```json\n{json.dumps({'note': filler}, indent=2)}\n```\n",
+    ),
 ]
 """Each writer the size guard covers, its arguments for a filler string, and the body it assembles.
 
@@ -475,11 +499,15 @@ def test_the_size_refusal_names_shortening_before_splitting():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("heading", [
-    "# Execution Plan v1",
-    "## Execution Plan v3",
-    "# Execution Plan v3 — revised",
-], ids=["the template's own heading", "a mis-levelled heading", "a decorated heading"])
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "# Execution Plan v1",
+        "## Execution Plan v3",
+        "# Execution Plan v3 — revised",
+    ],
+    ids=["the template's own heading", "a mis-levelled heading", "a decorated heading"],
+)
 async def test_an_oversized_plan_comment_is_refused_with_no_offer_to_split_it(monkeypatch, heading):
     """A plan split across comments reads back with a half missing, so the guard must not suggest it.
 
@@ -535,6 +563,7 @@ async def test_a_tracker_failure_comes_back_as_a_tool_result(monkeypatch):
     Asserted once because the mechanism is shared by every tool, and asserted at all because a
     swallowed TrackerError would look like a successful no-op to the model.
     """
+
     class _Refusing:
         async def get_issue(self, issue: str) -> dict:
             raise server.tracker.TrackerError(f"no such issue {issue}")
@@ -568,6 +597,7 @@ def test_validate_config_reports_an_unresolvable_config_rather_than_crashing(mon
     must come back `valid: false` — not escalate into a tool error because the trailing
     tracker/fingerprint lookups re-ran `resolve()` and hit the same failure.
     """
+
     def broken(*_args: Any, **_kwargs: Any) -> None:
         raise server.config.ConfigError("repo layer is not valid JSON")
 
@@ -592,9 +622,7 @@ def test_validate_config_reports_two_columns_configured_under_one_name(monkeypat
         "columns.in_review": "In Review",
         "columns.done": "Closed",
     }
-    monkeypatch.setattr(
-        server.tracker.config, "get", lambda key, *, default=None: colliding.get(key, default)
-    )
+    monkeypatch.setattr(server.tracker.config, "get", lambda key, *, default=None: colliding.get(key, default))
     report = server.validate_config()
     assert report["valid"] is False, report
     assert any("columns.ready" in e and "columns.in_progress" in e for e in report["errors"]), report
@@ -607,6 +635,7 @@ def test_validate_config_reports_a_column_read_that_refuses_rather_than_answerin
     parses for the selected tracker and not for another — so swallowing this one answers
     `valid: true, errors: []` for a config the very next tool call would refuse.
     """
+
     def refuses(key: str, *, default: Any = None) -> None:
         raise server.config.ConfigError(f"config key {key!r} is credential-shaped and is never read")
 
@@ -863,7 +892,7 @@ async def test_post_log_validates_the_payload_it_serialises_before_the_adapter_i
 @pytest.mark.parametrize(
     ("case", "body"),
     [
-        ("no task at all", "# Claude Code ship metrics\n\n```json\n{\"schema\": \"" + SCHEMA_ID + "\"}\n```\n"),
+        ("no task at all", '# Claude Code ship metrics\n\n```json\n{"schema": "' + SCHEMA_ID + '"}\n```\n'),
         ("misspelled field", _metrics_comment(ci_fix_round=2)),
         ("null where the field is never null", _metrics_comment(human_review_defects=None)),
         ("a count below zero", _metrics_comment(ci_fix_rounds=-1)),
@@ -1104,8 +1133,8 @@ def test_an_escaped_second_record_is_counted_beside_a_literal_valid_one():
     claims by literal text found only the first, validated it alone, and posted a `gate_false_pass`
     the schema would have rejected — the ambiguity case wearing an escape instead of a trailing comma.
     """
-    body = _metrics_comment() + "\nAnd the correction:\n\n" + _escaped_metrics_block(
-        task="PROJ-1", gate_false_pass=True
+    body = (
+        _metrics_comment() + "\nAnd the correction:\n\n" + _escaped_metrics_block(task="PROJ-1", gate_false_pass=True)
     )
     text = _refused(body)
     assert SCHEMA_ID in text and "2" in text, (
@@ -1165,9 +1194,7 @@ def test_an_escaped_id_earns_the_same_answer_as_a_literal_one_in_every_shape(cas
     escaped = shape.format(record=_claiming_record(_escaped_id()))
     assert SCHEMA_ID not in escaped, f"the escaped body must not arm a literal-text check: {escaped}"
     answers = [_refused(body) for body in (literal, escaped)]
-    assert answers[0] == answers[1], (
-        f"{case} answers the two spellings differently: {answers[0]!r} vs {answers[1]!r}"
-    )
+    assert answers[0] == answers[1], f"{case} answers the two spellings differently: {answers[0]!r} vs {answers[1]!r}"
 
 
 @pytest.mark.parametrize(
@@ -1185,7 +1212,7 @@ def test_content_json_cannot_parse_at_all_is_a_refusal_not_a_crash(case, payload
     let a body choose which uncaught exception escaped the tool instead of being answered as content
     that does not parse — which is the fallback path, and a refusal.
     """
-    body = f"```json\n{{\"schema\": \"{SCHEMA_ID}\", \"n\": {payload}\n```\n"
+    body = f'```json\n{{"schema": "{SCHEMA_ID}", "n": {payload}\n```\n'
     assert "carries no fenced block that parses as one" in _refused(body), (
         f"{case} must be answered as unparseable content, not as an uncaught exception"
     )
@@ -1234,7 +1261,7 @@ def test_fence_detection_stays_linear_on_a_body_of_unclosed_openers():
     ("case", "body"),
     [
         ("plain prose", "TL;DR: the gate passed."),
-        ("a different machine log", "# Claude Code usage\n\n```json\n{\"schema\": \"shipyard.claude_usage.v1\"}\n```"),
+        ("a different machine log", '# Claude Code usage\n\n```json\n{"schema": "shipyard.claude_usage.v1"}\n```'),
         ("prose about metrics that names no schema", "TL;DR: the ship metrics log is on the task."),
         ("a fenced block that is not JSON", "```bash\ngit status --short\n```"),
         ("a valid log beside an unrelated fenced block", _metrics_comment() + "\n```bash\ngit log -1\n```\n"),
@@ -1388,6 +1415,7 @@ def _assembled(tool: str, text: str) -> str:
         return text.strip() + server._AGENT_DETAIL_OPEN + AGENT_DETAIL + server._AGENT_DETAIL_CLOSE
     return text
 
+
 FAKE_SECRET_VAR = "SY_TEST_FAKE_TOKEN"
 """A test-only variable name, credential-shaped by the same word heuristic discovery uses.
 
@@ -1445,8 +1473,10 @@ async def test_a_body_holding_no_known_secret_is_written_byte_for_byte(monkeypat
     assert result.is_error is False, result.content
     assert _body_sent(recorder) == _assembled(tool, text), f"{tool} rewrote prose holding nothing to redact"
     assert _payload(result)["scrub"] == {
-        "scrubbed_vars": [], "redactions": 0,
-        "declared_absent_from_env": [], "declared_below_length_floor": [],
+        "scrubbed_vars": [],
+        "redactions": 0,
+        "declared_absent_from_env": [],
+        "declared_below_length_floor": [],
     }, _payload(result)
 
 
@@ -1513,16 +1543,21 @@ async def test_one_scrub_report_counts_every_field_of_a_write_not_just_the_body(
     recorder = _Recorder()
     monkeypatch.setattr(server.tracker, "adapter", lambda: recorder)
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("create-issue", {
-            "issue_type": "task",
-            "title": f"TL;DR: {FAKE_SECRET}",
-            "body": f"it printed {FAKE_SECRET} twice: {FAKE_SECRET}\n",
-        })
+        result = await client.call_tool(
+            "create-issue",
+            {
+                "issue_type": "task",
+                "title": f"TL;DR: {FAKE_SECRET}",
+                "body": f"it printed {FAKE_SECRET} twice: {FAKE_SECRET}\n",
+            },
+        )
     assert result.is_error is False, result.content
     report = _payload(result)["scrub"]
     assert report == {
-        "scrubbed_vars": [FAKE_SECRET_VAR], "redactions": 3,
-        "declared_absent_from_env": [], "declared_below_length_floor": [],
+        "scrubbed_vars": [FAKE_SECRET_VAR],
+        "redactions": 3,
+        "declared_absent_from_env": [],
+        "declared_below_length_floor": [],
     }, f"the report must total the title's redaction with the body's two: {report}"
 
 
@@ -1573,8 +1608,10 @@ async def test_a_declared_credential_is_scrubbed_even_where_discovery_would_skip
         + server._AGENT_DETAIL_CLOSE
     ), _body_sent(recorder)
     assert _payload(result)["scrub"] == {
-        "scrubbed_vars": ["SY_TEST_DECLARED"], "redactions": 2,
-        "declared_absent_from_env": [], "declared_below_length_floor": [],
+        "scrubbed_vars": ["SY_TEST_DECLARED"],
+        "redactions": 2,
+        "declared_absent_from_env": [],
+        "declared_below_length_floor": [],
     }, _payload(result)
 
 
@@ -1597,11 +1634,13 @@ async def test_a_declared_value_under_the_length_floor_is_reported_rather_than_r
             "post-comment", {"issue": "PROJ-1", "human": human, "agent_detail": "HEAD abc123"}
         )
     assert result.is_error is False, result.content
-    assert _body_sent(recorder) == (
-        human + server._AGENT_DETAIL_OPEN + "HEAD abc123" + server._AGENT_DETAIL_CLOSE
-    ), f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
+    assert _body_sent(recorder) == (human + server._AGENT_DETAIL_OPEN + "HEAD abc123" + server._AGENT_DETAIL_CLOSE), (
+        f"a sub-floor value must not rewrite the body: {_body_sent(recorder)}"
+    )
     assert _payload(result)["scrub"] == {
-        "scrubbed_vars": [], "redactions": 0, "declared_absent_from_env": [],
+        "scrubbed_vars": [],
+        "redactions": 0,
+        "declared_absent_from_env": [],
         "declared_below_length_floor": ["SY_TEST_DECLARED"],
     }, _payload(result)
 
@@ -1614,15 +1653,19 @@ def _synthetic_session(root: Path) -> Path:
             json.dumps(record) + "\n"
             for record in (
                 {
-                    "type": "assistant", "timestamp": "2026-07-09T10:00:00Z",
+                    "type": "assistant",
+                    "timestamp": "2026-07-09T10:00:00Z",
                     "message": {
-                        "id": "m1", "model": "probe-model",
+                        "id": "m1",
+                        "model": "probe-model",
                         "content": [{"type": "text", "text": "rendered body"}],
-                        "usage": {"input_tokens": 11, "output_tokens": 3}, "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 11, "output_tokens": 3},
+                        "stop_reason": "end_turn",
                     },
                 },
                 {
-                    "type": "user", "timestamp": "2026-07-09T10:00:01Z",
+                    "type": "user",
+                    "timestamp": "2026-07-09T10:00:01Z",
                     "message": {"content": [{"type": "text", "text": "thanks"}]},
                 },
             )
@@ -1639,9 +1682,15 @@ async def test_usage_summarize_returns_the_roll_up_the_retired_subcommand_printe
     main = _synthetic_session(tmp_path)
     destination = tmp_path / "usage.json"
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("usage_summarize", {
-            "transcript": str(main), "phase": "ship", "task": "PROJ-1", "output": str(destination),
-        })
+        result = await client.call_tool(
+            "usage_summarize",
+            {
+                "transcript": str(main),
+                "phase": "ship",
+                "task": "PROJ-1",
+                "output": str(destination),
+            },
+        )
     assert result.is_error is False, result.content
     payload = _payload(result)
     assert payload["schema"] == "shipyard.claude_usage.v1", payload
@@ -1666,10 +1715,14 @@ def _handback_session(root: Path) -> Path:
     """Session `h1`: one subagent refused twice, another delivered once. Returns the main transcript."""
     main = root / "h1.jsonl"
     main.write_text(
-        json.dumps({
-            "type": "assistant", "sessionId": "h1",
-            "message": {"id": "m1", "model": "probe-model", "content": [{"type": "text", "text": "dispatching"}]},
-        }) + "\n",
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "h1",
+                "message": {"id": "m1", "model": "probe-model", "content": [{"type": "text", "text": "dispatching"}]},
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     subagents = root / "h1" / "subagents"
@@ -1677,19 +1730,27 @@ def _handback_session(root: Path) -> Path:
 
     def _call(tool_use_id: str) -> dict[str, Any]:
         return {
-            "type": "assistant", "sessionId": "h1",
+            "type": "assistant",
+            "sessionId": "h1",
             "message": {"content": [{"type": "tool_use", "id": tool_use_id, "name": "SubagentHandback"}]},
         }
 
     def _result(tool_use_id: str, *, success: bool) -> dict[str, Any]:
-        body = json.dumps({"success": success, "message": "delivered" if success else "already delivered"},
-                          separators=(",", ":"))
+        body = json.dumps(
+            {"success": success, "message": "delivered" if success else "already delivered"}, separators=(",", ":")
+        )
         return {
-            "type": "user", "sessionId": "h1",
-            "message": {"content": [{
-                "type": "tool_result", "tool_use_id": tool_use_id,
-                "content": [{"type": "text", "text": body}],
-            }]},
+            "type": "user",
+            "sessionId": "h1",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": [{"type": "text", "text": body}],
+                    }
+                ]
+            },
         }
 
     def _write(name: str, agent_id: str, agent_type: str, records: list[dict[str, Any]]) -> None:
@@ -1698,10 +1759,17 @@ def _handback_session(root: Path) -> Path:
             encoding="utf-8",
         )
 
-    _write("gate.jsonl", "agent-gate", "sy:gate", [
-        _call("toolu_1"), _result("toolu_1", success=False),
-        _call("toolu_2"), _result("toolu_2", success=False),
-    ])
+    _write(
+        "gate.jsonl",
+        "agent-gate",
+        "sy:gate",
+        [
+            _call("toolu_1"),
+            _result("toolu_1", success=False),
+            _call("toolu_2"),
+            _result("toolu_2", success=False),
+        ],
+    )
     _write("slice.jsonl", "agent-slice", "sy:slice", [_call("toolu_3"), _result("toolu_3", success=True)])
     return main
 
@@ -1746,7 +1814,10 @@ async def test_worker_handbacks_reports_an_unresolvable_transcript_as_a_warning(
         ("worker_handbacks", {"session_id": "t1", "transcript": "/tmp/t1.jsonl"}),
     ],
     ids=[
-        "summarize-neither", "summarize-both", "handbacks-neither", "handbacks-both",
+        "summarize-neither",
+        "summarize-both",
+        "handbacks-neither",
+        "handbacks-both",
     ],
 )
 async def test_the_transcript_tools_take_exactly_one_source(tool, arguments):
@@ -2038,16 +2109,20 @@ version its refusal must name as the remedy."""
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(("bodies", "flagged", "version", "next_version"), CONTINUATION_CASES, ids=[
-    "a same-version continuation",
-    "a continuation behind a leading blank line",
-    "a superseded stub under a newer plan",
-    "prose quoting a plan heading",
-    "a level-two heading stranded stub",
-    "a strict heading with trailing spaces",
-    "a strict heading with a carriage return",
-    "a continuation ahead of the selected plan's version",
-])
+@pytest.mark.parametrize(
+    ("bodies", "flagged", "version", "next_version"),
+    CONTINUATION_CASES,
+    ids=[
+        "a same-version continuation",
+        "a continuation behind a leading blank line",
+        "a superseded stub under a newer plan",
+        "prose quoting a plan heading",
+        "a level-two heading stranded stub",
+        "a strict heading with trailing spaces",
+        "a strict heading with a carriage return",
+        "a continuation ahead of the selected plan's version",
+    ],
+)
 async def test_plan_file_refuses_a_continuation_stranded_at_or_above_the_selected_plans_version(
     monkeypatch, scratch_root, bodies, flagged, version, next_version
 ):
@@ -2148,45 +2223,55 @@ def fixed_config(monkeypatch) -> dict[str, Any]:
     return values
 
 
-def test_get_config_reads_a_list_of_keys_in_one_call_and_leaves_the_single_key_return_alone(fixed_config):
-    """The list form is additive: every caller parsing `key`/`value` today has to keep working."""
+def test_get_config_reads_keys_in_one_call_and_leaves_the_single_key_return_alone(fixed_config):
+    """`keys` is additive: every caller parsing `key`/`value` today has to keep working."""
     keys = ["ci.poll_timeout", "columns.ready"]
-    assert server.get_config(keys) == {"values": {k: fixed_config[k] for k in keys}}, (
-        "a list must report every key it was given, keyed by name"
+    assert server.get_config(keys=keys) == {"values": {k: fixed_config[k] for k in keys}}, (
+        "`keys` must report every key it was given, keyed by name"
     )
     assert server.get_config("columns.ready") == {"key": "columns.ready", "value": "Fixture Ready"}, (
         "the single-key return shape must be unchanged"
     )
 
 
-def test_get_config_refuses_an_unknown_key_anywhere_in_a_list_and_defaults_every_key_alike(fixed_config):
-    """Per-key behaviour is what the single form already does, applied to each entry rather than the first."""
+def test_get_config_refuses_an_unknown_key_unless_a_default_or_optional_covers_it(fixed_config):
     with pytest.raises(server.ToolError, match=re.escape("ghost.key")):
-        server.get_config(["columns.ready", "ghost.key"])
-    assert server.get_config(["ghost.key", "columns.ready"], default="fallback") == {
+        server.get_config(keys=["columns.ready", "ghost.key"])
+    assert server.get_config(keys=["ghost.key", "columns.ready"], default="fallback") == {
         "values": {"ghost.key": "fallback", "columns.ready": "Fixture Ready"}
-    }, "a default must cover every key in the list, not only the ones the resolver knows first"
+    }, "a default must cover every key in `keys`"
+    assert server.get_config("ghost.key", optional=True) == {"key": "ghost.key", "value": ""}, (
+        "`optional` must return an empty default for an unconfigured key"
+    )
 
 
-@pytest.mark.parametrize("key", [[], ["columns.ready", " "]], ids=["empty list", "blank entry"])
-def test_get_config_refuses_a_list_that_names_no_readable_key(fixed_config, key):
-    with pytest.raises(server.ToolError, match="'key' is required"):
-        server.get_config(key)
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({}, "either `key` or `keys`"),
+        ({"key": "a", "keys": ["b"]}, "either `key` or `keys`"),
+        ({"keys": ["columns.ready", " "]}, "'keys' is required"),
+    ],
+    ids=["neither", "both", "blank entry"],
+)
+def test_get_config_refuses_a_call_that_names_no_readable_key(fixed_config, kwargs, match):
+    with pytest.raises(server.ToolError, match=match):
+        server.get_config(**kwargs)
 
 
-def test_agent_model_resolves_a_list_of_agents_in_one_call_and_leaves_the_single_name_return_alone(monkeypatch):
+def test_agent_model_resolves_names_in_one_call_with_or_without_the_plugin_prefix(monkeypatch):
     """Dispatching a phase reads several bindings at once; one binding still comes back as the binding itself."""
     bindings = {
         "gate": {"model": "opus", "effort": "high", "clamped": False},
         "ship-build": {"model": "sonnet", "effort": "medium", "clamped": True},
     }
     monkeypatch.setattr(server.config, "agent_binding", lambda name, **_: bindings[name])
-    assert server.agent_model(["ship-build", "gate"]) == {
-        "agents": {"ship-build": bindings["ship-build"], "gate": bindings["gate"]}
-    }, "a list must report one binding per name, keyed by name"
-    assert server.agent_model("gate") == bindings["gate"], "the single-name return shape must be unchanged"
-    with pytest.raises(server.ToolError, match="single `name`"):
-        server.agent_model(["gate"], effort="high")
+    assert server.agent_model(names=["sy:ship-build", "gate"]) == {
+        "agents": {"sy:ship-build": bindings["ship-build"], "gate": bindings["gate"]}
+    }, "`names` must report one binding per name as given, resolved without the `sy:` prefix"
+    assert server.agent_model("sy:gate") == bindings["gate"], "the single-name return shape must be unchanged"
+    with pytest.raises(server.ToolError, match="pass `name`, not `names`"):
+        server.agent_model(names=["gate"], effort="high")
     calls = []
     monkeypatch.setattr(server.config, "agent_binding", lambda name, **kw: calls.append((name, kw)) or bindings[name])
     server.agent_model("gate", model="opus", effort="max")

@@ -18,6 +18,10 @@ Three properties of the mechanism make this non-optional rather than a nicety:
 - **Frontmatter is the load-time fallback, not the operative value.** Its `model:` and `effort:` are what run when a dispatch passes neither, so they must never sit below the agent's declared floor — `scripts/validate.py` checks that — but the resolved values are what should actually run.
 - **The resolver has already clamped the value to the agent's declared floor.** `config/floors.json` holds a `min_model`/`min_effort` per agent that no config layer can lower, so a config trying to drop `sy:gate` below the frontier tier is refused by name before it reaches you. You do not need to re-check the floor at the dispatch site — but you must not substitute a weaker model of your own either.
 
+## Skill delegates
+
+`/sy:pr` and `/sy:ci` are skills, not agents. A delegate that runs one is a `general-purpose` agent whose prompt invokes the skill, dispatched at the model and effort `agent_model {"name": "delegate"}` reports, and it enters `agents_used` and `require_agent` as `general-purpose`. Never pass `pr` or `ci` to `agent_model`, to `require_agent`, or as a `subagent_type`.
+
 ## Nesting is capped
 
 Claude Code allows three levels of subagent nesting, and the cap is silent. An agent at the third level is not given the `Agent` tool at all — its frontmatter grant is not honoured, no error is raised, and nothing in its return says a dispatch was refused rather than skipped. Measured across 1,776 subagent runs of this plugin: 654 at depth 1, 685 at depth 2, 437 at depth 3, and none anywhere at depth 4.

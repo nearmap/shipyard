@@ -21,6 +21,7 @@ process's cwd is always the plugin's checkout, never the consumer project's. Lau
 command instead of the declared task was the other candidate and was rejected: it dodges the cwd
 reset, but `python -m sy_tools.server` then cannot import `sy_tools` at all in a real install.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -65,6 +66,11 @@ def _required(**fields: str | list[str]) -> None:
         entries = value if isinstance(value, list) else [value]
         if not entries or any(not entry.strip() for entry in entries):
             raise ToolError(f"{name!r} is required and must be a non-empty string")
+
+
+def _bare_agent(name: str) -> str:
+    """An agent name without its plugin namespace, the form config and accounting key agents by."""
+    return name.strip().split(":")[-1]
 
 
 def _scrub_texts(*texts: str) -> tuple[list[str], dict[str, Any]]:
@@ -393,8 +399,7 @@ async def post_log(
 
 
 _AGENT_DETAIL_OPEN = (
-    "\n\n<details>\n\n<summary>Below this line: for a future agent "
-    "session, not for your judgment.</summary>\n\n"
+    "\n\n<details>\n\n<summary>Below this line: for a future agent session, not for your judgment.</summary>\n\n"
 )
 """Opens the collapsed half `post-comment` writes around `agent_detail`, fixed here so no caller invents
 its own. The tags are never inline: that form can lose the caption, and the enclosed body needs the
@@ -571,9 +576,7 @@ async def plan_file(issue: IssueId) -> dict[str, Any]:
         f"agent-facing half of comment {comment_id} on {issue}. The plan comment is the record of truth. -->\n"
         "<!-- Read back exactly as the tracker returned it: a rich-text tracker's conversion escapes "
         "un-backticked Markdown punctuation (`_` arrives as `\\_`) and wraps a link target in `<>`, leaving "
-        "backticked spans verbatim; a plain-Markdown tracker returns it unchanged. -->\n\n"
-        + _agent_half(body)
-        + "\n"
+        "backticked spans verbatim; a plain-Markdown tracker returns it unchanged. -->\n\n" + _agent_half(body) + "\n"
     )
     try:
         destination = config.scratch_dir(issue) / f"plan-v{version}.md"
@@ -890,7 +893,9 @@ async def attachment_download(
         str,
         Field(description="The attachment's filename, or its tracker-native id when duplicate names exist."),
     ],
-    output_path: Annotated[str, Field(description="Local path to write the downloaded bytes to.")],
+    output_path: Annotated[
+        str, Field(description="Local path to write the bytes to; missing parent folders are created.")
+    ],
 ) -> dict[str, Any]:
     """Download one artifact already attached to an issue, to a local path.
 
@@ -898,7 +903,9 @@ async def attachment_download(
     ambiguous or absent match fails rather than picking one, which is what the native id is for.
     """
     _required(issue=issue, filename_or_id=filename_or_id, output_path=output_path)
-    return await tracker.adapter().attachment_download(issue, filename_or_id, Path(output_path))
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return await tracker.adapter().attachment_download(issue, filename_or_id, target)
 
 
 @mcp.tool(name="attachment-update")
@@ -979,35 +986,42 @@ def validate_config() -> dict[str, Any]:
 @mcp.tool(name="get_config")
 def get_config(
     key: Annotated[
-        str | list[str],
-        Field(
-            description="Dotted config key to read, e.g. `columns.ready`, `worktree.root`, `ci.poll_timeout`. "
-            "A list reads every key in one call and reports them, keyed by name, under `values`."
-        ),
-    ],
+        str,
+        Field(description="One dotted config key to read, e.g. `columns.ready`, `worktree.root`. Give this or `keys`."),
+    ] = "",
+    keys: Annotated[
+        tuple[str, ...],
+        Field(description="Several dotted keys to read in one call, reported under `values`. Give this or `key`."),
+    ] = (),
     default: Annotated[
-        str | None,
+        str,
         Field(
-            description="Value to return when the key is not configured. Omit it to make an unknown "
-            "key an error, which is what a caller that believes the key exists wants."
+            description="Value to return for a key that is not configured. Leave it unset to make an unknown key "
+            "an error, which is what a caller that believes the key exists wants."
         ),
-    ] = None,
+    ] = "",
+    optional: Annotated[
+        bool,
+        Field(description="Return `default` (empty unless given) for an unconfigured key instead of failing."),
+    ] = False,
 ) -> dict[str, Any]:
     """Read resolved configuration values by dotted key.
 
     Resolution is the merged layer chain, so this is the only correct way to learn a setting: reading a
-    layer file directly misses whatever a higher layer overrode. A missing key raises unless a
-    non-`None` `default` is given — `default=None` behaves like omitting it. A credential-shaped key is
-    refused outright: secrets are never read from a
-    config file, and `check_env` is how to ask about one.
+    layer file directly misses whatever a higher layer overrode. A missing key raises unless `optional`
+    is true or a non-empty `default` is given. A credential-shaped key is refused outright: secrets are
+    never read from a config file, and `check_env` is how to ask about one.
     """
-    _required(key=key)
-    keys = key if isinstance(key, list) else [key]
+    if bool(key.strip()) == bool(keys):
+        raise ToolError("give either `key` or `keys`, not both and not neither")
+    names = list(keys) or [key]
+    _required(keys=names)
+    fallback = optional or bool(default)
     try:
-        values = {k: config.get(k) if default is None else config.get(k, default=default) for k in keys}
+        values = {k: config.get(k, default=default) if fallback else config.get(k) for k in names}
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
-    return {"values": values} if isinstance(key, list) else {"key": key, "value": values[key]}
+    return {"values": values} if keys else {"key": key, "value": values[key]}
 
 
 @mcp.tool(name="show_config")
@@ -1028,41 +1042,44 @@ def show_config() -> dict[str, Any]:
 @mcp.tool(name="agent_model")
 def agent_model(
     name: Annotated[
-        str | list[str],
-        Field(
-            description="Agent to resolve, as named under `models.agents`, e.g. `gate`, `ship-build`. A list "
-            "resolves every name in one call and reports them, keyed by name, under `agents`."
-        ),
-    ],
+        str,
+        Field(description="One agent to resolve, e.g. `gate` or `sy:gate`. Give this or `names`."),
+    ] = "",
+    names: Annotated[
+        tuple[str, ...],
+        Field(description="Several agents to resolve in one call, reported under `agents`. Give this or `name`."),
+    ] = (),
     model: Annotated[
-        str | None,
+        str,
         Field(
             description="Model or tier name to dispatch with in place of the configured one, e.g. a ship "
-            "profile's phase model. Clamped up to the agent's floor like a configured value. Single `name` only."
+            "profile's phase model. Clamped up to the agent's floor like a configured value. `name` only."
         ),
-    ] = None,
+    ] = "",
     effort: Annotated[
-        str | None,
+        str,
         Field(
             description="Effort to dispatch with in place of the configured one, one of low, medium, high, "
-            "xhigh, max. Clamped up to the agent's floor like a configured value. Single `name` only."
+            "xhigh, max. Clamped up to the agent's floor like a configured value. `name` only."
         ),
-    ] = None,
+    ] = "",
 ) -> dict[str, Any]:
     """The model and effort each named agent must be dispatched with, after floor clamping.
 
-    The reported `model` and `effort` are what the `Agent` invocation passes as its `model` and `effort`
-    parameters, never the configured or overridden value read raw: a per-agent floor is a quality floor
-    rather than a cost dial, so an override may raise one and never lower it, and the report says whether
-    either value was clamped.
+    Names are taken with or without the `sy:` prefix. The reported `model` and `effort` are what the
+    `Agent` invocation passes as its `model` and `effort` parameters, never the configured or overridden
+    value read raw: a per-agent floor is a quality floor rather than a cost dial, so an override may raise
+    one and never lower it, and the report says whether either value was clamped.
     """
-    _required(name=name)
-    if isinstance(name, list) and (model is not None or effort is not None):
-        raise ToolError("a model or effort override applies to one agent: pass a single `name`, not a list")
+    if bool(name.strip()) == bool(names):
+        raise ToolError("give either `name` or `names`, not both and not neither")
+    if names and (model or effort):
+        raise ToolError("a model or effort override applies to one agent: pass `name`, not `names`")
+    _required(names=list(names) or [name])
     try:
-        if isinstance(name, list):
-            return {"agents": {n: config.agent_binding(n) for n in name}}
-        return config.agent_binding(name, model=model, effort=effort)
+        if names:
+            return {"agents": {n: config.agent_binding(_bare_agent(n)) for n in names}}
+        return config.agent_binding(_bare_agent(name), model=model or None, effort=effort or None)
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
 
@@ -1195,12 +1212,12 @@ def usage_summarize(
         Field(description="Issue id to record in the output, when the roll-up belongs to one."),
     ] = None,
     require_agent: Annotated[
-        list[str] | None,
+        tuple[str, ...],
         Field(
-            description="Agent types that must appear in the roll-up. Naming an agent that dispatched "
-            "turns an absent transcript into an error instead of a quietly-low total."
+            description="Agent types that must appear in the roll-up, with or without the `sy:` prefix. "
+            "Naming an agent that dispatched turns an absent transcript into an error instead of a quietly-low total."
         ),
-    ] = None,
+    ] = (),
     output: Annotated[
         str | None,
         Field(description="Path to also write the summary JSON to. The summary is returned either way."),
@@ -1217,7 +1234,7 @@ def usage_summarize(
     main = _transcript_source(session_id, transcript)
     result = usage.summarize(main, phase=phase, task=task)
     present = {row["agent_type"] for row in result["by_agent"]}
-    missing = sorted(set(require_agent or []) - present)
+    missing = sorted({_bare_agent(a) for a in require_agent} - present)
     if missing:
         raise ToolError("usage roll-up missing expected agent transcript(s): " + ", ".join(missing))
     if output:

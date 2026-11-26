@@ -13,7 +13,7 @@ Every canonical verb is one call to the `sy` MCP server's tool of the same name;
 3. **Config present** — one call covers this and step 4: the `validate_config` tool. Resolve the two values once and reuse them:
    ```
    PROJECT = get_config {"key": "tracker_config.project"}            → <owner>/<number>, the Projects v2 board. Required.
-   REPO    = get_config {"key": "tracker_config.repo", "default": ""} → <owner>/<repo>. Optional, so it is read with a
+   REPO    = get_config {"key": "tracker_config.repo", "optional": true} → <owner>/<repo>. Optional, so it is read with a
                                                                        default; empty means the current repo.
    ```
    Board owner is `@me` or your login for a user-owned board, or the org login for an org board. Pass `gh -R "$REPO"` on every issue command when `REPO` is non-empty.

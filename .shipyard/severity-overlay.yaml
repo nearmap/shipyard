@@ -1,0 +1,12 @@
+scale_mapping:
+  - source: shipyard-standards
+    label: HIGH
+    grade: HIGH
+  - source: shipyard-standards
+    label: MED
+    grade: MED
+  - source: shipyard-standards
+    label: LOW
+    grade: LOW
+pinned_patterns: []
+notes: "Labels are the severity frontmatter of each docs/standards/*.md part."

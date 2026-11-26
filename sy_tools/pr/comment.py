@@ -119,7 +119,7 @@ def _gh(host: str, endpoint: str, payload: dict[str, str] | None) -> dict[str, A
         ) from None
     if not isinstance(got, dict) or "id" not in got or "html_url" not in got:
         raise CommentError(
-            f"gh api {endpoint} returned no object with id and html_url: {_scrubbed(str(got))[:200]}"
+            f"gh api {endpoint} returned no object with id and html_url: {_scrubbed(str(got))[:200]}{may_be_posted}"
         )
     return got
 

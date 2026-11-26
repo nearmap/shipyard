@@ -2523,6 +2523,12 @@ def main() -> int:
     run_self_test("scripts/ci_poll.sh", errors)
     run_self_test("docs/smoke_mcp.py", errors)
 
+    # Imported here: test_validate.py loads this file by path, where `scripts/` is not importable.
+    from word_count import growth_warnings
+
+    for warning in growth_warnings(ROOT):
+        print(f"WARN: {warning}", file=sys.stderr)
+
     if errors:
         print("Shipyard validation FAILED:", file=sys.stderr)
         for error in errors:

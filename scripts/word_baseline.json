@@ -1,0 +1,236 @@
+{
+  "core_workflow_names": 92,
+  "phases": {
+    "agent:debate": {
+      "agents": 13423,
+      "own": 539,
+      "reach": 50536,
+      "refs": 1910,
+      "total": 15872
+    },
+    "agent:debater": {
+      "agents": 1737,
+      "own": 448,
+      "reach": 50984,
+      "refs": 712,
+      "total": 2897
+    },
+    "agent:explain-author": {
+      "agents": 0,
+      "own": 670,
+      "reach": 50536,
+      "refs": 1738,
+      "total": 2408
+    },
+    "agent:gate": {
+      "agents": 8696,
+      "own": 1808,
+      "reach": 50536,
+      "refs": 9121,
+      "total": 19625
+    },
+    "agent:gate-triage": {
+      "agents": 8657,
+      "own": 1147,
+      "reach": 50536,
+      "refs": 3980,
+      "total": 13784
+    },
+    "agent:hunt": {
+      "agents": 8181,
+      "own": 524,
+      "reach": 51060,
+      "refs": 3546,
+      "total": 12251
+    },
+    "agent:img-inspector": {
+      "agents": 0,
+      "own": 451,
+      "reach": 50987,
+      "refs": 712,
+      "total": 1163
+    },
+    "agent:repo-review": {
+      "agents": 7120,
+      "own": 1236,
+      "reach": 50536,
+      "refs": 11269,
+      "total": 19625
+    },
+    "agent:repo-standards": {
+      "agents": 0,
+      "own": 378,
+      "reach": 50914,
+      "refs": 1368,
+      "total": 1746
+    },
+    "agent:seam": {
+      "agents": 0,
+      "own": 345,
+      "reach": 50881,
+      "refs": 1082,
+      "total": 1427
+    },
+    "agent:ship-build": {
+      "agents": 12956,
+      "own": 597,
+      "reach": 51133,
+      "refs": 5265,
+      "total": 18818
+    },
+    "agent:ship-gate": {
+      "agents": 8668,
+      "own": 740,
+      "reach": 51276,
+      "refs": 7010,
+      "total": 16418
+    },
+    "agent:ship-start": {
+      "agents": 12548,
+      "own": 380,
+      "reach": 50916,
+      "refs": 4623,
+      "total": 17551
+    },
+    "agent:slice": {
+      "agents": 0,
+      "own": 386,
+      "reach": 50922,
+      "refs": 1082,
+      "total": 1468
+    },
+    "agent:spec-gate": {
+      "agents": 2188,
+      "own": 752,
+      "reach": 51288,
+      "refs": 2231,
+      "total": 5171
+    },
+    "agent:sweep": {
+      "agents": 0,
+      "own": 347,
+      "reach": 50883,
+      "refs": 1738,
+      "total": 2085
+    },
+    "agent:trace": {
+      "agents": 0,
+      "own": 340,
+      "reach": 50876,
+      "refs": 1082,
+      "total": 1422
+    },
+    "skill:ci": {
+      "agents": 14034,
+      "own": 376,
+      "reach": 2230,
+      "refs": 1198,
+      "total": 15608
+    },
+    "skill:config": {
+      "agents": 13031,
+      "own": 1196,
+      "reach": 51732,
+      "refs": 2479,
+      "total": 16706
+    },
+    "skill:explain": {
+      "agents": 14357,
+      "own": 316,
+      "reach": 51171,
+      "refs": 2142,
+      "total": 16815
+    },
+    "skill:help": {
+      "agents": 16195,
+      "own": 450,
+      "reach": 15455,
+      "refs": 13151,
+      "total": 29796
+    },
+    "skill:init-repo": {
+      "agents": 0,
+      "own": 1302,
+      "reach": 51838,
+      "refs": 4499,
+      "total": 5801
+    },
+    "skill:mvp": {
+      "agents": 16565,
+      "own": 590,
+      "reach": 51415,
+      "refs": 3952,
+      "total": 21107
+    },
+    "skill:plan": {
+      "agents": 12699,
+      "own": 661,
+      "reach": 51197,
+      "refs": 5470,
+      "total": 18830
+    },
+    "skill:pr": {
+      "agents": 12354,
+      "own": 1876,
+      "reach": 50536,
+      "refs": 3966,
+      "total": 18196
+    },
+    "skill:ship": {
+      "agents": 10462,
+      "own": 4673,
+      "reach": 50536,
+      "refs": 17097,
+      "total": 32232
+    },
+    "skill:shutdown": {
+      "agents": 10273,
+      "own": 1007,
+      "reach": 51832,
+      "refs": 3824,
+      "total": 15104
+    },
+    "skill:spec": {
+      "agents": 17550,
+      "own": 3963,
+      "reach": 50536,
+      "refs": 15553,
+      "total": 37066
+    },
+    "skill:spike": {
+      "agents": 15053,
+      "own": 714,
+      "reach": 51250,
+      "refs": 3848,
+      "total": 19615
+    },
+    "skill:standards": {
+      "agents": 13687,
+      "own": 146,
+      "reach": 2000,
+      "refs": 1198,
+      "total": 15031
+    },
+    "skill:tighten": {
+      "agents": 11582,
+      "own": 4422,
+      "reach": 50536,
+      "refs": 15620,
+      "total": 31624
+    },
+    "skill:tracker": {
+      "agents": 0,
+      "own": 1006,
+      "reach": 50536,
+      "refs": 3874,
+      "total": 4880
+    },
+    "skill:whiteboard": {
+      "agents": 17449,
+      "own": 1381,
+      "reach": 50536,
+      "refs": 11608,
+      "total": 30438
+    }
+  }
+}

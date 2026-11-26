@@ -459,6 +459,7 @@ def summarize(
     *,
     phase: str,
     task: str | None,
+    agent_ledger: bool = True,
 ) -> dict[str, Any]:
     """The `shipyard.claude_usage.v1` roll-up for one session: totals plus a row per agent and model.
 
@@ -466,12 +467,13 @@ def summarize(
     one request counts once: its largest recorded output, and, when no copy carries a final
     `stop_reason`, an `output_tokens_estimated` share that is never folded into `output_tokens`. Each row
     carries the `efforts` its requests ran at. A transcript that cannot be read, or a line that will not
-    parse, becomes a `warnings` entry, never a failure.
+    parse, becomes a `warnings` entry, never a failure. `agent_ledger=False` skips the hook ledger that names
+    subagent rows, which costs seconds per call; totals and per-model sums do not depend on it.
     """
     session_id = _session_id_from_path(main)
     warnings: list[str] = []
     transcripts = _discover_transcripts(main, warnings)
-    by_path, by_id = _load_agent_map(session_id)
+    by_path, by_id = _load_agent_map(session_id) if agent_ledger else ({}, {})
     requests: dict[str, _Request] = {}
     agent_of: dict[Path, str] = {}
 

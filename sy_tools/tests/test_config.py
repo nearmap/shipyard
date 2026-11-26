@@ -1462,9 +1462,9 @@ def test_a_skills_key_resolves_to_its_shipped_default_and_a_layer_outranks_it(fi
     assert values["skills"][key] is None
     assert provenance[f"skills.{key}"] == "shipped-default"
 
-    _write_skills_layer(fixture_repo, {key: "nearmap-reviewer"})
+    _write_skills_layer(fixture_repo, {key: "team-reviewer"})
     values, provenance = config.resolve()
-    assert values["skills"][key] == "nearmap-reviewer", "a repo layer must outrank the shipped default"
+    assert values["skills"][key] == "team-reviewer", "a repo layer must outrank the shipped default"
     assert provenance[f"skills.{key}"] == "repo-committed"
 
 
@@ -1492,7 +1492,7 @@ def test_a_skill_name_over_the_length_cap_is_refused(fixture_repo, key):
 
 
 @pytest.mark.parametrize("key", ["standards", "reviewer"])
-@pytest.mark.parametrize("value", ["Nearmap-Reviewer", "-hunt", "a b", "/sy:standards", "plugin:"])
+@pytest.mark.parametrize("value", ["Team-Reviewer", "-hunt", "a b", "/sy:standards", "plugin:"])
 def test_a_skill_name_the_pattern_rejects_is_refused(fixture_repo, key, value):
     """A leading slash, a capital, or a space names no invokable skill; unrefused it fails only at dispatch."""
     _write_skills_layer(fixture_repo, {key: value})

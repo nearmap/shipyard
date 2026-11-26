@@ -1,0 +1,6 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nearmap/shipyard/main/config/schema.json",
+  "skills": {
+    "standards": "shipyard-standards"
+  }
+}

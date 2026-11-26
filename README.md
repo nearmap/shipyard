@@ -111,7 +111,7 @@ Shipyard is a plugin, so it is loaded, not symlinked:
 claude --plugin-dir /path/to/shipyard               # this session only
 
 # persistent: this repo ships a marketplace manifest, so add it, then install the plugin
-claude plugin marketplace add nearmap/shipyard   # a GitHub owner/repo (cloned for you) or a local path
+claude plugin marketplace add nearmap/shipyard   # a GitHub owner/repo, cloned for you
 claude plugin install sy@shipyard --scope project   # shared with this repo via .claude/settings.json (recommended)
 ```
 

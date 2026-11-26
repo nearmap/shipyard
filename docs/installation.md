@@ -20,7 +20,7 @@ The plugin is available only for that invocation — nothing is registered. If `
 
 Persistent installs come from a **marketplace**: a directory or repo that contains a `.claude-plugin/marketplace.json` listing one or more plugins. This repo ships one (it lists the `sy` plugin at its root), so it is its own marketplace. Add the marketplace from GitHub, then install the plugin from it.
 
-**From GitHub (no clone).** `claude plugin marketplace add` accepts a GitHub `owner/repo` shorthand (or a full `https://`/`git@` URL); Claude Code clones it for you. Append `#<ref>` (or `@<ref>`) to pin a branch, a tag, or a full 40-character commit SHA; a SHA pin needs Claude Code 2.1.325 or later. Private repos authenticate with your existing git credentials (`gh auth login`, SSH agent, or a credential helper). `marketplace add` itself always registers globally (`~/.claude/plugins/known_marketplaces.json`) — it just makes the catalog visible; scope is chosen at `install`, below.
+**From GitHub (no clone).** `claude plugin marketplace add` accepts a GitHub `owner/repo` shorthand (or a full `https://`/`git@` URL); Claude Code clones it for you. Append `#<ref>` (or `@<ref>`) to pin a branch, a tag, or a full 40-character commit SHA; a SHA pin needs Claude Code 2.1.325 or later. Private repos authenticate with your existing git credentials (`gh auth login`, SSH agent, or a credential helper). `marketplace add` just makes the catalog visible; the plugin's scope is chosen at `install`, below.
 
 ```bash
 claude plugin marketplace add nearmap/shipyard   # registers the marketplace, named "shipyard"

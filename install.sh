@@ -80,7 +80,7 @@ Shipyard validated (tracker: $TRACKER). To load it:
     claude --plugin-dir "$PLUGIN_ROOT"
 
   Persistent install (this repo ships a marketplace manifest; add it, then install):
-    claude plugin marketplace add "$PLUGIN_ROOT"
+    claude plugin marketplace add nearmap/shipyard
     claude plugin install sy@shipyard      # or run /plugin and enable "sy"
 
 Commands are namespaced:  /sy:plan  /sy:spec  /sy:ship  /sy:spike  /sy:pr  /sy:ci  /sy:explain  /sy:whiteboard

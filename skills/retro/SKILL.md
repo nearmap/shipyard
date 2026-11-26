@@ -17,23 +17,17 @@ Only `discover` exists so far; any other mode stops with that sentence. The wind
 
 ## 1. Collect, in code
 
-Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. Find the candidate repositories:
+Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. Build the session table, in the background, and wait for its completion notice; it prints the candidate repositories:
 
 ```
-pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -m sy_tools.retro repos --since <date>
+pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -m sy_tools.retro discover --since <date> --out <dir>
 ```
 
-Ask which repositories to include with one multi-select `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), the busiest first. Then run, in the background, and wait for its completion notice:
-
-```
-pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -m sy_tools.retro discover --since <date> --repo <owner/name>... --out <dir>
-```
-
-It writes `sessions.jsonl`, `prs.jsonl`, `links.json`, `flags.json`, one rendered text file per flagged span under `spans/`, comment batches under `comments/`, and `discovery.json` with every measured field filled and every interview field `unknown`. Read `flags.json` and the measured half of `discovery.json`; never read `sessions.jsonl` or `prs.jsonl` whole.
+Ask which repositories to include with one multi-select `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), the busiest first. Then run the same command with `--repo <owner/name>...` added; it reuses the session table and writes `sessions.jsonl`, `prs.jsonl`, `links.json`, `flags.json`, one rendered text file per flagged span under `spans/`, comment batches under `comments/`, and `discovery.json` with every measured field filled and every interview field `unknown`. Read `flags.json` and the measured half of `discovery.json`; never read `sessions.jsonl` or `prs.jsonl` whole.
 
 ## 2. Tag review comments
 
-For each repository, resolve its standards rules with `sy:repo-standards` in resolve mode and write them to `comments/rules-<repo>.json` as a list of `{id, text}`. A rule with no ID of its own takes `<file>#<heading>`. Dispatch `sy:comment-tag` once per batch file, at most the resolved `limits.max_depth_agents` in flight (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). Then fold the tags in:
+For each repository, resolve its standards rules with `sy:repo-standards` in resolve mode and write them to `comments/rules-<owner>__<name>.json` as a list of `{id, text}`. A rule with no ID of its own takes `<file>#<heading>`. Dispatch `sy:comment-tag` once per batch file (`comments/batch-<owner>__<name>-<n>.json`), with that repository's rules file, writing `comments/tags-<same suffix>.json`; at most the resolved `limits.max_depth_agents` in flight (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). Then fold the tags in:
 
 ```
 pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -m sy_tools.retro fold-tags --out <dir>

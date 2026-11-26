@@ -18,11 +18,9 @@ Shipyard's own rules are the parts in `docs/standards/`, one file per rule: how 
 
 ## Dev builds
 
-**Your checkout, for one session.** `claude --plugin-dir /path/to/shipyard` loads the checkout for that session as `sy@inline`. It takes precedence over an installed `sy@shipyard` (both are named `sy`; see [docs/installation.md](docs/installation.md)). Run `/reload-plugins` in the session to pick up edits. A shell alias such as `alias claude-sy='claude --plugin-dir /path/to/shipyard'` makes it your default.
+**Your checkout, for one session.** `claude --plugin-dir /path/to/shipyard` loads the checkout for that session as `sy@inline` (see [docs/installation.md](docs/installation.md#one-session-local-development--trying-it-out)). A shell alias such as `alias claude-sy='claude --plugin-dir /path/to/shipyard'` makes it your default.
 
 **A release candidate.** Pin the marketplace to a branch, tag, or commit SHA as [docs/installation.md](docs/installation.md#persistent-across-sessions) describes.
-
-**No second local marketplace.** Do not try `claude plugin marketplace add /path/to/shipyard` to test a checkout: it re-points your existing `shipyard` marketplace (see the same page). Use `--plugin-dir` instead.
 
 Test every new install or marketplace command in a throwaway config before you document it: `CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin ...` never touches your real `~/.claude`.
 

@@ -31,9 +31,9 @@ A marketplace install has no checkout to pre-warm, so the first launch of the bu
 
 To change the pin later, run `claude plugin marketplace remove shipyard` first, then add and install again. Claude Code refuses to re-add `shipyard` from a different ref (`its source doesn't match its extraKnownMarketplaces entry`), and the remove also uninstalls `sy@shipyard`; `sy` keeps no plugin options or data, so reinstalling loses nothing. To go back, run the same three commands with plain `nearmap/shipyard`.
 
-A branch or tag pin moves to that ref's latest commit on `claude plugin marketplace update shipyard`, and `claude plugin update` then installs it only if `version` moved. A SHA pin stays put.
+A branch or tag pin moves to that ref's latest commit on `claude plugin marketplace update shipyard`. A SHA pin stays put.
 
-**From a local checkout.** Use `--plugin-dir`, the one-session route above. `claude plugin marketplace add /path/to/shipyard` does not add a second marketplace: the checkout's marketplace is also named `shipyard`, so the command re-points the one you already have, and an installed `sy@shipyard` then updates from your working tree. To try a branch or tag before release, see [Dev builds](../CONTRIBUTING.md#dev-builds).
+**From a local checkout.** Use `--plugin-dir`, the one-session route above. `claude plugin marketplace add /path/to/shipyard` does not add a second marketplace: the checkout's marketplace is also named `shipyard`, so the command re-points the one you already have, and an installed `sy@shipyard` then updates from your working tree.
 
 `claude plugin install` takes `<plugin>@<marketplace>`; here the plugin is `sy` and the marketplace is `shipyard` (the `name` in `marketplace.json`). Equivalently, run `/plugin`, go to **Discover**, and choose a scope in the interactive UI.
 

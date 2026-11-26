@@ -1499,12 +1499,13 @@ async def test_pr_comment_scrubs_the_body_and_forwards_every_argument(monkeypatc
     assert FAKE_SECRET not in str(result), "the result disclosed the value it had just redacted"
 
     def refuse(*_args):
-        raise server.pr_comments.CommentError("refused")
+        raise server.pr_comments.CommentError("refused: may already be posted")
 
     monkeypatch.setattr(server.pr_comments, "post", refuse)
     async with mcp.Client(server.mcp) as client:
         result = await client.call_tool("pr_comment", {**arguments, "body": "x"})
     assert result.is_error is True, "a CommentError must come back as a tool error"
+    assert "may already be posted" in _text(result), _text(result)
 
 
 @pytest.mark.anyio

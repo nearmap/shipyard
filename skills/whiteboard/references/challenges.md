@@ -42,7 +42,7 @@ Every failure reported needs a concrete case: this input or situation leads to t
 ## Decision
 
 - What is the strongest argument against the leading option? Who would make it?
-- Pre-mortem: it is six months later and this failed. What is the most likely reason? Each answer becomes a residual risk or a probe.
+- Pre-mortem: it is six months later and this failed. What is the most likely reason? Each answer becomes an open risk or a probe.
 - What result would change our mind? Is there a probe that could produce it?
 - How hard is it to reverse once shipped?
 

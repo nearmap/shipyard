@@ -108,7 +108,7 @@ Diagrams follow the diagram note in `references/board.md` § Open layout.
 
 ## Hand-off
 
-Only when the user asks. The brief copies the board's Decisions table, the non-goals, the open questions, the important assumptions with no evidence (spike candidates) and the done criterion, and links the board. It never holds file anchors, task lists or a PR path.
+Only when the user asks. The brief copies the board's Record column and links the board. It never holds file anchors, task lists or a PR path.
 
 - A gain nobody has measured at representative scale: `/sy:spike <brief>`.
 - A multi-task objective: `/sy:plan <brief>`.

@@ -70,6 +70,11 @@ def post(pr_url: str, body: str, session: str, reply_to: int | None = None) -> d
         endpoint = f"repos/{owner}/{repo}/issues/{number}/comments"
     else:
         replied = _gh(host, f"repos/{owner}/{repo}/pulls/comments/{reply_to}", None)
+        if not str(replied.get("pull_request_url", "")).endswith(f"/pulls/{number}"):
+            raise CommentError(
+                f"review comment {reply_to} is not on pull request {number}; take reply_to from this pull request's"
+                " review comments"
+            )
         thread = replied.get("in_reply_to_id") or reply_to
         endpoint = f"repos/{owner}/{repo}/pulls/{number}/comments/{thread}/replies"
     created = _gh(host, endpoint, {"body": full})

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -19,12 +20,14 @@ def gh(tmp_path, monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr(comment.config, "resolved_root", lambda: tmp_path)
     monkeypatch.setattr(comment.config, "extra_secret_words", frozenset)
-    stored = {"mutate": None, "in_reply_to_id": None}
+    pulls = "https://api.git.example.test/repos/acme/widgets/pulls/42"
+    stored: dict[str, Any] = {"mutate": None, "in_reply_to_id": None, "pull_request_url": pulls}
 
     def run(args, *, cwd, input, **kwargs):
         if input is None:
             calls.append({"args": args, "stdin": kwargs.get("stdin"), "cwd": cwd})
-            got = {"id": 42, "html_url": PR, "in_reply_to_id": stored["in_reply_to_id"]}
+            got = {"id": 42, "html_url": PR, "in_reply_to_id": stored["in_reply_to_id"],
+                   "pull_request_url": stored["pull_request_url"]}
             return subprocess.CompletedProcess(args, 0, stdout=json.dumps(got), stderr="")
         body = json.loads(input)["body"]
         calls.append({"args": args, "body": body, "cwd": cwd})
@@ -52,6 +55,15 @@ def test_a_top_level_post_appends_the_marker_as_the_last_line(gh):
     assert call["body"] == f"Looks good.\n\n<!-- shipyard:agent session={SESSION} -->", call["body"]
     marker = comment.MARKER_RE.search(call["body"])
     assert marker is not None and marker["session"] == SESSION, "readers anchor on the last line"
+
+
+def test_a_reply_to_a_comment_on_another_pull_request_is_refused_before_any_post(gh):
+    calls, stored, _ = gh
+    stored["pull_request_url"] = "https://api.git.example.test/repos/acme/widgets/pulls/41"
+    with pytest.raises(comment.CommentError, match="not on pull request") as err:
+        comment.post(PR, "x", SESSION, reply_to=991)
+    assert not any("POST" in call["args"] for call in calls), calls
+    assert "may already be posted" not in str(err.value), err.value
 
 
 @pytest.mark.parametrize(("in_reply_to_id", "thread"), [(990, 990), (None, 991)])

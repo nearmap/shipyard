@@ -98,7 +98,14 @@ def test_a_failing_or_missing_gh_raises_loudly(gh, monkeypatch):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="HTTP 404: Not Found")
 
     monkeypatch.setattr(comment.subprocess, "run", failing)
-    with pytest.raises(comment.CommentError, match="HTTP 404"):
+    with pytest.raises(comment.CommentError, match=r"HTTP 404.*may already be posted"):
+        comment.post(PR, "x", SESSION)
+
+    def slow(args, **_kwargs):
+        raise subprocess.TimeoutExpired(args, 30)
+
+    monkeypatch.setattr(comment.subprocess, "run", slow)
+    with pytest.raises(comment.CommentError, match=r"killed.*may already be posted"):
         comment.post(PR, "x", SESSION)
 
     def missing(args, **_kwargs):
@@ -106,4 +113,15 @@ def test_a_failing_or_missing_gh_raises_loudly(gh, monkeypatch):
 
     monkeypatch.setattr(comment.subprocess, "run", missing)
     with pytest.raises(comment.CommentError, match="not installed"):
+        comment.post(PR, "x", SESSION)
+
+
+def test_a_url_that_names_an_issue_is_reported_after_the_post(gh, monkeypatch):
+    def run(args, *, input, **_kwargs):
+        out = {"id": 7, "html_url": "https://git.example.test/acme/widgets/issues/42#issuecomment-7",
+               "body": json.loads(input)["body"]}
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(out), stderr="")
+
+    monkeypatch.setattr(comment.subprocess, "run", run)
+    with pytest.raises(comment.CommentError, match=r"posted at .*names an issue"):
         comment.post(PR, "x", SESSION)

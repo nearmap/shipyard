@@ -134,11 +134,11 @@ def test_the_pr_zones_lose_only_the_bare_gh_token():
             )
 
 
-def test_bare_gh_still_violates_outside_the_guard_zones():
-    """The scoping is per-directory: core modules and non-guard tests may still not name the CLI."""
+def test_bare_gh_still_violates_outside_the_guard_and_pr_zones():
+    """The scoping is per-directory: core modules and tests outside them may still not name the CLI."""
     for probe in (MCP_ROOT / "config.py", MCP_ROOT / "server.py", MCP_ROOT / "tests" / "test_config.py"):
         assert _file_violation(probe, "run(['gh', 'pr', 'view'])\n") is not None, (
-            f"bare `gh` must still violate in {probe.name}; the exemption covers the guard zones only"
+            f"bare `gh` must still violate in {probe.name}; the exemption covers the guard and PR zones only"
         )
 
 

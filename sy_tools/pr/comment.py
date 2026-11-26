@@ -2,8 +2,7 @@
 
 The marker is `<!-- shipyard:agent session=<uuid> -->`, a hidden HTML comment appended here after a
 blank line, so it renders as nothing and a reader anchors on the body's final line with `MARKER_RE`.
-This module writes it and a caller never does: a body already carrying one is refused, so a marker
-on a posted comment was always stamped by this code from the session it was handed.
+This module writes it and a caller never does: a body already carrying one is refused.
 
 The session is an argument, never this process's environment: the server this runs in outlives a
 `/clear`, so its own environment can name a session the caller has already left. A caller passes the
@@ -32,6 +31,10 @@ TIMEOUT_SECONDS = 30
 _PR_URL = re.compile(r"^https://(?P<host>[^/]+)/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<n>\d+)/?$")
 _SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _ANY_MARKER = re.compile(r"<!--\s*shipyard:agent\b", re.I)
+_MAY_BE_POSTED = (
+    "; the comment may already be posted, so look for this session's shipyard:agent marker on the pull request "
+    "before posting again"
+)
 
 
 class CommentError(Exception):
@@ -72,6 +75,10 @@ def post(pr_url: str, body: str, session: str, reply_to: int | None = None) -> d
             f"the comment at {created.get('html_url')!r} was stored with a body that differs from the one sent; "
             "correct it with a new comment rather than trusting it"
         )
+    if f"/pull/{number}#" not in created["html_url"]:
+        raise CommentError(
+            f"the comment was posted at {created['html_url']!r}, but {pr_url!r} names an issue, not a pull request"
+        )
     return {"url": created["html_url"], "id": created["id"], "session": session}
 
 
@@ -89,9 +96,13 @@ def _gh_post(host: str, endpoint: str, payload: dict[str, str]) -> dict[str, Any
     except FileNotFoundError:
         raise CommentError("gh is not installed or not on PATH; install the code host's CLI") from None
     except subprocess.TimeoutExpired:
-        raise CommentError(f"gh api {endpoint} did not finish within {TIMEOUT_SECONDS}s and was killed") from None
+        raise CommentError(
+            f"gh api {endpoint} did not finish within {TIMEOUT_SECONDS}s and was killed{_MAY_BE_POSTED}"
+        ) from None
     if proc.returncode != 0:
-        raise CommentError(f"gh api {endpoint} failed (exit {proc.returncode}): {_scrubbed(proc.stderr.strip())}")
+        raise CommentError(
+            f"gh api {endpoint} failed (exit {proc.returncode}): {_scrubbed(proc.stderr.strip())}{_MAY_BE_POSTED}"
+        )
     try:
         created = json.loads(proc.stdout)
     except json.JSONDecodeError:

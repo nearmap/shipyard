@@ -18,21 +18,11 @@ Shipyard's own rules are the parts in `docs/standards/`, one file per rule: how 
 
 ## Dev builds
 
-**Your checkout, for one session.** `claude --plugin-dir /path/to/shipyard` loads the checkout for that session as `sy@inline`. If `sy@shipyard` is installed, the session loads the checkout and skips the installed copy, because both are named `sy` in `plugin.json`. Run `/reload-plugins` in the session to pick up edits. A shell alias such as `alias claude-sy='claude --plugin-dir /path/to/shipyard'` makes it your default.
+**Your checkout, for one session.** `claude --plugin-dir /path/to/shipyard` loads the checkout for that session as `sy@inline`. It takes precedence over an installed `sy@shipyard` (both are named `sy`; see [docs/installation.md](docs/installation.md)). Run `/reload-plugins` in the session to pick up edits. A shell alias such as `alias claude-sy='claude --plugin-dir /path/to/shipyard'` makes it your default.
 
-**A release candidate.** Pin the marketplace to a branch, a tag, or a full 40-character commit SHA, then install from it:
+**A release candidate.** Pin the marketplace to a branch, tag, or commit SHA as [docs/installation.md](docs/installation.md#persistent-across-sessions) describes.
 
-```bash
-claude plugin marketplace remove shipyard   # only if already added; this also uninstalls sy@shipyard
-claude plugin marketplace add nearmap/shipyard#<branch|tag|sha>
-claude plugin install sy@shipyard --scope user
-```
-
-`@<ref>` works the same as `#<ref>`. A SHA pin needs Claude Code 2.1.325 or later; older clients cannot clone it. A branch or tag pin moves to that ref's latest commit on `claude plugin marketplace update shipyard`, and `claude plugin update` then installs it only if `version` moved. A SHA pin stays put. To go back, run the same three commands with plain `nearmap/shipyard`.
-
-The `remove` is required: Claude Code refuses to re-add `shipyard` from a different ref (`its source doesn't match its extraKnownMarketplaces entry`). Removing the marketplace uninstalls `sy@shipyard`, but `sy` keeps no plugin options or data, so reinstalling loses nothing.
-
-**No second local marketplace.** A marketplace is keyed by the `name` in its `marketplace.json`, and two cannot both be `shipyard`. `claude plugin marketplace add /path/to/shipyard` does not add a second one. It re-points your existing `shipyard` at the checkout, and an installed `sy@shipyard` then updates from your working tree. Use `--plugin-dir` instead.
+**No second local marketplace.** Do not try `claude plugin marketplace add /path/to/shipyard` to test a checkout: it re-points your existing `shipyard` marketplace (see the same page). Use `--plugin-dir` instead.
 
 Test every new install or marketplace command in a throwaway config before you document it: `CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin ...` never touches your real `~/.claude`.
 

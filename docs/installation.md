@@ -29,7 +29,9 @@ claude plugin install sy@shipyard --scope project   # install the plugin, scoped
 
 A marketplace install has no checkout to pre-warm, so the first launch of the bundled `sy` MCP server materialises its pixi environment on the spot (~10s on a fast connection); on a slow link that first connect can exceed Claude Code's 30s MCP timeout — just reconnect — the package cache persists, so the retry picks up where it left off.
 
-To change the pin later, run `claude plugin marketplace remove shipyard` first, then add and install again. Claude Code refuses to re-add `shipyard` from a different ref, and the remove also uninstalls `sy@shipyard`.
+To change the pin later, run `claude plugin marketplace remove shipyard` first, then add and install again. Claude Code refuses to re-add `shipyard` from a different ref (`its source doesn't match its extraKnownMarketplaces entry`), and the remove also uninstalls `sy@shipyard`; `sy` keeps no plugin options or data, so reinstalling loses nothing. To go back, run the same three commands with plain `nearmap/shipyard`.
+
+A branch or tag pin moves to that ref's latest commit on `claude plugin marketplace update shipyard`, and `claude plugin update` then installs it only if `version` moved. A SHA pin stays put.
 
 **From a local checkout.** Use `--plugin-dir`, the one-session route above. `claude plugin marketplace add /path/to/shipyard` does not add a second marketplace: the checkout's marketplace is also named `shipyard`, so the command re-points the one you already have, and an installed `sy@shipyard` then updates from your working tree. To try a branch or tag before release, see [Dev builds](../CONTRIBUTING.md#dev-builds).
 

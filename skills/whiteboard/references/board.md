@@ -5,11 +5,13 @@
 ## Open layout
 
 1. Artifact `list` with `scope: types` and `type_query: "whiteboard"`. Take the Whiteboard type's `type_url`. Check that ArtifactData `batch` takes `if_version`.
-2. Create the board from that `type_url`. Record its URL in `notes.md`.
+2. Create the board from that `type_url`. Create `notes.md` per SKILL.md § The record with the board URL, the proposed aim, the mode, and the Sources table and colleague views from intake.
 3. Write the title and the one-line aim at the top left.
-4. Put the Record column to the right of the drawing area, top to bottom: Aim, a Decisions table (decision / choice / why / agreed), Open questions.
+4. Put the Record column to the right of the drawing area, top to bottom: Aim and done criterion, a Decisions table (decision / choice / why / agreed), Non-goals, Open questions, Untested assumptions (spike candidates), Open risks. Fill each row as the session produces it: the done criterion and non-goals when the user settles them, an assumption with no evidence when it is named.
 5. Diagrams go left of the Record column. A record never sits in the drawing area.
 6. Take the first snapshot: list into `<folder>/next` as § Every turn step 1 lists into `read/`. When the listing is complete, replace `last/` with `next/`. When its lines show no `version N`, say so and stop.
+
+Every diagram: stages left to right in time order; each box names its unit of work, its grain and its output shape; each arrow carries the data's name; a legend; colour by kind (output, interface, external), with the kind also written as text; no deeper than system context and containers.
 
 ## Every turn
 

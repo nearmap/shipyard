@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-01-05T10:05:50Z","gitBranch":"DEF-3/side","message":{"id":"msg_4","model":"model-small","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"text","text":"ok"}]}}

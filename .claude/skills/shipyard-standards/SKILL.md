@@ -14,18 +14,7 @@ The rules are the parts in `docs/standards/`, one file per rule. Each part's fro
 
 Read every `docs/standards/*.md`. Return `blocked`, naming the file, when a part has no `id`, has no `severity` of `HIGH`, `MED` or `LOW`, or repeats another part's `id`.
 
-## `resolve <scope>`
+## Modes
 
-Return the block in `skills/standards/references/resolve.md` § Compact return contract:
-
-- `AUTHORITY`: `shipyard-standards`.
-- `CONTRACT`: one line per rule that applies to the scope, as `<id> [<severity>] <the rule in one line> — docs/standards/<file>`. When the scope touches text SY-006 covers, add `SY-006 [LOW] design invariant the plan carries: "SY-006: gate scope on skill text" — docs/standards/SY-006-skill-text-bar.md`.
-- `SOURCES`: `docs/standards/`, `.claude/skills/shipyard-standards/`, `.shipyard/severity-overlay.yaml`.
-
-## `review <base>..<head> [paths]`
-
-Read `git diff <base>..<head>`, limited to `paths` when given. Check added lines against every part except SY-002, SY-006 and SY-011: SY-002 needs the PR body, which this pass cannot see; SY-006 is an acceptance bar, not a rule text can break; a test enforces SY-011.
-
-Return the block in `skills/standards/references/review.md` § Compact return contract. Each finding's grade equals its part's `severity` and carries `rule: shipyard-standards <id> [<severity>]`. Set `BEHAVIOURAL_LENSES` to name SY-006 when the range touches text it covers.
-
-Never raise SY-006, and never raise a finding whose only fix is rewording text that is already true.
+- `resolve <scope>`: read `.claude/skills/shipyard-standards/references/resolve.md`.
+- `review <base>..<head> [paths]`: read `.claude/skills/shipyard-standards/references/review.md`.

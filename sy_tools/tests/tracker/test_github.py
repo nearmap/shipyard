@@ -1442,9 +1442,9 @@ async def test_a_real_email_address_in_a_comment_body_is_still_left_alone(monkey
     _install(monkeypatch, (1, "", "gh: Not Found (HTTP 404)"))
 
     with pytest.raises(TrackerError) as raised:
-        await adapter.GithubAdapter().post_comment("7", "cc brett@nearmap.com for visibility")
+        await adapter.GithubAdapter().post_comment("7", "cc someone@example.com for visibility")
 
-    assert "brett@nearmap.com" in str(raised.value), (
+    assert "someone@example.com" in str(raised.value), (
         f"a real address with no configured credential to match must not be touched: {raised.value}"
     )
 

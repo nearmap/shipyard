@@ -10,16 +10,22 @@ from sy_tools.pr import comment
 
 SESSION = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
 PR = "https://git.example.test/acme/widgets/pull/42"
+FAKE_SECRET = "sy-fake-token-3d91f7-not-a-credential"
 
 
 @pytest.fixture
 def gh(tmp_path, monkeypatch):
-    """Records each `gh` invocation and answers it by echoing the sent body back as the created comment."""
+    """Records each `gh` invocation; answers a GET with a pull request or review comment, a POST by echoing its body."""
     calls: list[dict] = []
     monkeypatch.setattr(comment.config, "resolved_root", lambda: tmp_path)
-    stored = {"mutate": None}
+    monkeypatch.setattr(comment.config, "extra_secret_words", frozenset)
+    stored = {"mutate": None, "in_reply_to_id": None}
 
-    def run(args, *, input, cwd, **_kwargs):
+    def run(args, *, cwd, input, **kwargs):
+        if input is None:
+            calls.append({"args": args, "stdin": kwargs.get("stdin"), "cwd": cwd})
+            got = {"id": 42, "html_url": PR, "in_reply_to_id": stored["in_reply_to_id"]}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(got), stderr="")
         body = json.loads(input)["body"]
         calls.append({"args": args, "body": body, "cwd": cwd})
         if stored["mutate"]:
@@ -35,7 +41,9 @@ def test_a_top_level_post_appends_the_marker_as_the_last_line(gh):
     calls, _, root = gh
     result = comment.post(PR, "Looks good.\n", SESSION)
     assert result == {"url": f"{PR}#issuecomment-7", "id": 7, "session": SESSION}, result
-    (call,) = calls
+    get, call = calls
+    assert get["args"] == ["gh", "api", "--hostname", "git.example.test", "repos/acme/widgets/pulls/42"], get["args"]
+    assert get["stdin"] is subprocess.DEVNULL, "a GET must never inherit the server's JSON-RPC stdin"
     assert call["args"] == [
         "gh", "api", "--hostname", "git.example.test", "--method", "POST",
         "repos/acme/widgets/issues/42/comments", "--input", "-",
@@ -46,10 +54,14 @@ def test_a_top_level_post_appends_the_marker_as_the_last_line(gh):
     assert marker is not None and marker["session"] == SESSION, "readers anchor on the last line"
 
 
-def test_a_reply_goes_to_the_review_comment_thread(gh):
-    calls, _, _ = gh
+@pytest.mark.parametrize(("in_reply_to_id", "thread"), [(990, 990), (None, 991)])
+def test_a_reply_goes_to_the_root_of_the_review_comment_thread(gh, in_reply_to_id, thread):
+    calls, stored, _ = gh
+    stored["in_reply_to_id"] = in_reply_to_id
     comment.post(PR + "/", "Fixed.", SESSION, reply_to=991)
-    assert calls[0]["args"][6] == "repos/acme/widgets/pulls/42/comments/991/replies", calls[0]["args"]
+    get, call = calls
+    assert get["args"][4] == "repos/acme/widgets/pulls/comments/991", get["args"]
+    assert call["args"][6] == f"repos/acme/widgets/pulls/42/comments/{thread}/replies", call["args"]
 
 
 def test_the_marker_regex_ignores_a_marker_that_is_not_the_last_line():
@@ -94,14 +106,20 @@ def test_a_stored_body_that_differs_from_the_one_sent_raises(gh):
 
 
 def test_a_failing_or_missing_gh_raises_loudly(gh, monkeypatch):
-    def failing(args, **_kwargs):
+    answer_get = comment.subprocess.run
+
+    def failing(args, **kwargs):
+        if "POST" not in args:
+            return answer_get(args, **kwargs)
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="HTTP 404: Not Found")
 
     monkeypatch.setattr(comment.subprocess, "run", failing)
     with pytest.raises(comment.CommentError, match=r"HTTP 404.*may already be posted"):
         comment.post(PR, "x", SESSION)
 
-    def slow(args, **_kwargs):
+    def slow(args, **kwargs):
+        if "POST" not in args:
+            return answer_get(args, **kwargs)
         raise subprocess.TimeoutExpired(args, 30)
 
     monkeypatch.setattr(comment.subprocess, "run", slow)
@@ -116,12 +134,27 @@ def test_a_failing_or_missing_gh_raises_loudly(gh, monkeypatch):
         comment.post(PR, "x", SESSION)
 
 
-def test_a_url_that_names_an_issue_is_reported_after_the_post(gh, monkeypatch):
-    def run(args, *, input, **_kwargs):
-        out = {"id": 7, "html_url": "https://git.example.test/acme/widgets/issues/42#issuecomment-7",
-               "body": json.loads(input)["body"]}
-        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(out), stderr="")
+def test_a_url_that_names_an_issue_is_refused_before_anything_is_posted(gh, monkeypatch):
+    calls: list[list[str]] = []
 
-    monkeypatch.setattr(comment.subprocess, "run", run)
-    with pytest.raises(comment.CommentError, match=r"posted at .*names an issue"):
+    def not_a_pull(args, **_kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(comment.subprocess, "run", not_a_pull)
+    with pytest.raises(comment.CommentError, match="HTTP 404") as raised:
         comment.post(PR, "x", SESSION)
+    assert not any("POST" in args for args in calls), calls
+    assert "may already be posted" not in str(raised.value), "nothing was posted, so the error must not say so"
+
+
+def test_output_is_scrubbed_before_it_is_cut(gh, monkeypatch):
+    monkeypatch.setenv("SY_TEST_FAKE_TOKEN", FAKE_SECRET)
+
+    def garbled(args, **_kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout="x" * 190 + FAKE_SECRET, stderr="")
+
+    monkeypatch.setattr(comment.subprocess, "run", garbled)
+    with pytest.raises(comment.CommentError, match="non-JSON") as raised:
+        comment.post(PR, "x", SESSION)
+    assert FAKE_SECRET[:10] not in str(raised.value), "a secret cut at the limit leaked its prefix"

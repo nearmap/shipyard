@@ -22,7 +22,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config", "tighten", "mvp", "shutdown", "whiteboard",
+    "config", "tighten", "mvp", "shutdown", "whiteboard", "doit",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -1524,6 +1524,7 @@ def check_invariants(errors: list[str]) -> None:
     pr = read("skills/pr/SKILL.md")
     explain = read("skills/explain/SKILL.md")
     whiteboard = read("skills/whiteboard/SKILL.md")
+    doit = read("skills/doit/SKILL.md")
     whiteboard_intake = read("skills/whiteboard/references/intake.md")
     user_interaction = read("skills/shared/references/user-interaction.md")
     write_integrity = read("skills/shared/references/write-integrity.md")
@@ -1703,9 +1704,17 @@ def check_invariants(errors: list[str]) -> None:
     for name, text in (
         ("ship", ship + start + handoff), ("spec", spec), ("plan", plan), ("spike", spike),
         ("pr", pr), ("explain", explain), ("init-repo", init_repo), ("mvp", mvp), ("shutdown", shutdown),
+        ("doit", doit),
     ):
         if "AskUserQuestion" not in text:
             fail(f"{name} skill must route user decisions through AskUserQuestion per user-interaction.md", errors)
+
+    # Doit skips debate and spec-gate; the route to /sy:spec is what keeps that safe, and shipping through the
+    # ship skill unchanged is what keeps one shape for plans, PRs and escalations.
+    if "## 2. Route bigger work to /sy:spec" not in doit or "skills/ship/SKILL.md" not in doit:
+        fail("doit must route bigger work to /sy:spec and ship through the ship skill unchanged", errors)
+    if "preflight.md" not in doit:
+        fail("doit writes the tracker and must run the tracker preflight first", errors)
 
     # The board is the user's surface too: an unread drag is a decision lost, and a hand-edited snapshot hides the
     # next person's change from the diff.
@@ -2079,7 +2088,7 @@ def check_invariants(errors: list[str]) -> None:
 
     # Read side and write side check different tools on purpose: `memory_add` alone never reads memory
     # back, and `memory_list` alone never writes the lesson.
-    for name, text in (("plan", plan), ("spec", spec), ("ship start", start), ("mvp", mvp)):
+    for name, text in (("plan", plan), ("spec", spec), ("ship start", start), ("mvp", mvp), ("doit", doit)):
         if "memory_list" not in text or "memory.md" not in text:
             fail(f"{name} must read durable cross-session memory back (memory_list, per memory.md)", errors)
     if "memory_add" not in handoff or "memory.md" not in handoff:
@@ -2092,7 +2101,7 @@ def check_invariants(errors: list[str]) -> None:
             "not hand-deleting, is how a wrong lesson is retired",
             errors,
         )
-    for name, text in (("plan", plan), ("spec", spec), ("mvp", mvp)):
+    for name, text in (("plan", plan), ("spec", spec), ("mvp", mvp), ("doit", doit)):
         if "memory_refute" not in text:
             fail(f"{name} runs as the parent session and must refute a contradicted lesson directly", errors)
     for name, text in (("start-resume", start), ("implementation", impl), ("immutable-gate", gate_ref)):
@@ -2246,7 +2255,7 @@ def check_invariants(errors: list[str]) -> None:
         ("immutable-gate", gate_ref), ("handoff-accounting", handoff), ("merge-accounting", merge),
         ("tracker", tracker_skill), ("roadmap-shaping", roadmap_shaping),
         ("checkpoint-handoff", checkpoint_handoff), ("gate", gate), ("mvp", mvp), ("shutdown", shutdown),
-        ("whiteboard", whiteboard),
+        ("whiteboard", whiteboard), ("doit", doit),
     ):
         if "config-values.md" not in text:
             fail(f"{name} names a live-resolved config value and must cite config-values.md", errors)

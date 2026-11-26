@@ -138,6 +138,17 @@ def test_a_failing_or_missing_gh_raises_loudly(gh, monkeypatch):
     with pytest.raises(comment.CommentError, match=r"killed.*may already be posted"):
         comment.post(PR, "x", SESSION)
 
+    for stdout, shape in (("not json", "non-JSON"), ('{"body": "x"}', "id and html_url")):
+
+        def unusable(args, _stdout=stdout, **kwargs):
+            if "POST" not in args:
+                return answer_get(args, **kwargs)
+            return subprocess.CompletedProcess(args, 0, stdout=_stdout, stderr="")
+
+        monkeypatch.setattr(comment.subprocess, "run", unusable)
+        with pytest.raises(comment.CommentError, match=rf"{shape}.*may already be posted"):
+            comment.post(PR, "x", SESSION)
+
     def missing(args, **_kwargs):
         raise FileNotFoundError(args[0])
 

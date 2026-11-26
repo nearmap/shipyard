@@ -114,9 +114,13 @@ def _gh(host: str, endpoint: str, payload: dict[str, str] | None) -> dict[str, A
     try:
         got = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        raise CommentError(f"gh api {endpoint} returned non-JSON output: {_scrubbed(proc.stdout)[:200]}") from None
+        raise CommentError(
+            f"gh api {endpoint} returned non-JSON output: {_scrubbed(proc.stdout)[:200]}{may_be_posted}"
+        ) from None
     if not isinstance(got, dict) or "id" not in got or "html_url" not in got:
-        raise CommentError(f"gh api {endpoint} returned no object with id and html_url: {_scrubbed(str(got))[:200]}")
+        raise CommentError(
+            f"gh api {endpoint} returned no object with id and html_url: {_scrubbed(str(got))[:200]}"
+        )
     return got
 
 

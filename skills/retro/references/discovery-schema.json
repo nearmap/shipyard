@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "shipyard.discovery.v1",
+  "description": "One person's discovery record. Measured fields come from code; interview fields come from the person and stay \"unknown\" until answered.",
+  "type": "object",
+  "required": ["schema", "generated_at", "window", "repos", "sessions", "prs", "shipyard_usage", "control", "pain_points", "unknown", "approval"],
+  "properties": {
+    "schema": {"const": "shipyard.discovery.v1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "window": {
+      "type": "object",
+      "required": ["since", "until"],
+      "properties": {"since": {"type": "string"}, "until": {"type": "string"}}
+    },
+    "repos": {"type": "array", "items": {"type": "string"}},
+    "sessions": {
+      "description": "Measured. Totals over every session in the window.",
+      "type": "object",
+      "required": ["count", "linked_to_prs", "active_hours", "skills", "agents", "interventions", "tool_errors"],
+      "properties": {
+        "count": {"type": "integer"},
+        "linked_to_prs": {"type": "integer"},
+        "active_hours": {"type": "number"},
+        "skills": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "agents": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "interventions": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "tool_errors": {"type": "object", "additionalProperties": {"type": "integer"}}
+      }
+    },
+    "prs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ref", "sessions", "link_evidence", "size", "outcome", "approach", "stages"],
+        "properties": {
+          "ref": {"description": "owner/name#number", "type": "string"},
+          "sessions": {"type": "array", "items": {"type": "string"}},
+          "link_evidence": {"type": "array", "items": {"enum": ["pr_url", "session_trailer", "comment_marker", "branch", "commit"]}},
+          "size": {
+            "type": "object",
+            "properties": {"additions": {"type": "integer"}, "deletions": {"type": "integer"}, "changed_files": {"type": "integer"}}
+          },
+          "outcome": {
+            "description": "Measured from git and GitHub.",
+            "type": "object",
+            "properties": {
+              "state": {"type": "string"},
+              "review_rounds": {"type": "integer"},
+              "comments_by_kind": {"type": "object", "additionalProperties": {"type": "integer"}},
+              "rules_hit": {"type": "object", "additionalProperties": {"type": "integer"}},
+              "hours_to_merge": {"type": ["number", "null"]},
+              "ci_failed_commits": {"type": "integer"},
+              "reverted": {"type": "boolean"},
+              "followed_up": {"type": "boolean"}
+            }
+          },
+          "tokens": {"type": ["integer", "null"]},
+          "approach": {"description": "Interview: the person's own words, or \"unknown\".", "type": "string"},
+          "stages": {"description": "Interview, or from a session profile with its pointer.", "type": ["array", "string"], "items": {"type": "string"}}
+        }
+      }
+    },
+    "shipyard_usage": {
+      "type": "object",
+      "properties": {
+        "tried": {"type": "array", "items": {"type": "object", "required": ["skill", "why"], "properties": {"skill": {"type": "string"}, "why": {"type": "string"}}}},
+        "skipped": {"type": "array", "items": {"type": "object", "required": ["skill", "why"], "properties": {"skill": {"type": "string"}, "why": {"type": "string"}}}}
+      }
+    },
+    "control": {
+      "description": "Interview: where the person wants to decide rather than delegate.",
+      "type": "array",
+      "items": {"type": "object", "required": ["stage", "wants"], "properties": {"stage": {"type": "string"}, "wants": {"type": "string"}}}
+    },
+    "pain_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["what", "evidence", "source"],
+        "properties": {
+          "what": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "source": {"enum": ["interview", "session_profile", "measured"]}
+        }
+      }
+    },
+    "extra_fields": {"description": "A repository's own fields, from discover.extra_fields.", "type": "object"},
+    "unknown": {"description": "Paths of fields left unknown.", "type": "array", "items": {"type": "string"}},
+    "approval": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["draft", "approved"]},
+        "approved_at": {"type": ["string", "null"]},
+        "redactions": {"type": "integer"}
+      }
+    }
+  }
+}

@@ -83,5 +83,15 @@
     "min_model": "cheap",
     "min_effort": "low",
     "why": "breadth reconnaissance returns pointers for caller verification, not verdicts"
+  },
+  "session-read": {
+    "min_model": "cheap",
+    "min_effort": "low",
+    "why": "reads pre-rendered spans and describes them; every claim carries a pointer the retro can check"
+  },
+  "comment-tag": {
+    "min_model": "cheap",
+    "min_effort": "low",
+    "why": "maps one comment to one listed rule; the person reviews every tag before anything leaves their machine"
   }
 }

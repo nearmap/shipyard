@@ -73,6 +73,8 @@
       "gate-triage": { "model": "standard", "effort": "high" },
       "hunt": { "model": "standard", "effort": "medium" },
       "img-inspector": { "model": "cheap", "effort": "medium" },
+      "session-read": { "model": "cheap", "effort": "medium" },
+      "comment-tag": { "model": "cheap", "effort": "medium" },
       "repo-review": { "model": "frontier", "effort": "max" },
       "repo-standards": { "model": "standard", "effort": "high" },
       "seam": { "model": "standard", "effort": "high" },

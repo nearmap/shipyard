@@ -18,11 +18,11 @@ EXPECTED_AGENTS = {
     "sweep", "seam", "trace", "slice", "hunt", "gate", "gate-triage",
     "ship-start", "ship-build", "ship-gate",
     "img-inspector", "explain-author", "debate", "debater", "spec-gate",
-    "repo-standards", "repo-review",
+    "repo-standards", "repo-review", "session-read", "comment-tag",
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config", "tighten", "mvp", "shutdown", "whiteboard",
+    "config", "tighten", "mvp", "shutdown", "whiteboard", "retro",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 
@@ -95,6 +95,8 @@ AGENT_GRANTS: dict[str, frozenset[str]] = {
         "Bash", "Glob", "Grep", "LSP", "Read", "WebFetch", "WebSearch", "Write", "check_env", "scratch_dir",
     }),
     "img-inspector": frozenset({"Bash", "Glob", "Read", "check_env"}),
+    "session-read": frozenset({"Read", "Write", "check_env"}),
+    "comment-tag": frozenset({"Read", "Write", "check_env"}),
     "repo-review": frozenset({
         "Bash", "Glob", "Grep", "LSP", "Read", "Skill", "WebFetch", "WebSearch", "Write", "check_env", "get_config",
         "scratch_dir",

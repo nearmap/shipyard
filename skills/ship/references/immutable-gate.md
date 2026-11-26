@@ -64,6 +64,8 @@ REVIEW_EFFORT: <REVIEW_EFFORT>
 
 Acceptance evidence gets its own PR comment, never only the mutable description.
 
+Every PR comment this phase posts (this coverage comment, the acceptance evidence, the reviewer's report, thread replies and deferred findings) goes through the `pr_comment` tool from an `Agent`-dispatched `/sy:pr` delegate, never an inline `Skill` run, because this worker is denied that tool. The coverage and acceptance-evidence comments go in one delegate dispatch per review scope.
+
 ## Net-new agent-facing text
 
 Each addition to Shipyard's own always-resident agent-facing prose justifies itself here — reviewer-initiated and builder-answerable.

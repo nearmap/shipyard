@@ -19,6 +19,10 @@ literal `gh issue`/`gh project`/`gh gist`, while `CONTRIBUTING.md` states the sa
 same literal `check_seam` matches. Every other token still fires in both directories, so the corpora
 keep their neutral names.
 
+`sy_tools/pr/` and its tests lose the same one token for a different reason: a pull request lives on the
+code host whichever tracker a repository uses, and `gh` is that host's CLI, called there for pull
+requests only. Naming the host itself is still a violation there, as every other tracker name is.
+
 The patterns below are word-bounded, so a tracker name buried in an identifier (`ACLI_TOKEN`) reads as
 one word to `\b` and slips a scan that a bare `acli` would fail; the corpora therefore use neutral
 names (`EXAMPLE_TOKEN`) rather than relying on that.
@@ -39,6 +43,8 @@ GUARDS_ZONES = (MCP_ROOT / "guards", MCP_ROOT / "tests" / "guards")
 # PR outcomes read the code host's pull requests through its CLI, not a tracker; the CLI's bare name is its whole
 # exemption, so the host's own name and every tracker token still fire in it.
 PR_OUTCOMES = MCP_ROOT / "pr_outcomes.py"
+# The pull-request surface and its tests: they run `gh` against pull requests, which are not tracker objects.
+PR_ZONES = (MCP_ROOT / "pr", MCP_ROOT / "tests" / "pr")
 
 # Each token, and the directories where that token alone does not apply — `None` for almost all of them.
 # Per-token rather than a whole-file `_exempt()` entry on purpose: widening `_exempt()` would let every
@@ -47,7 +53,7 @@ TRACKER_TOKENS: list[tuple[re.Pattern[str], tuple[Path, ...] | None]] = [
     (re.compile(p, f), zone) for p, f, zone in [
         (r"\bjira\b", re.I, None), (r"\bacli\b", re.I, None), (r"\batlassian\b", re.I, None),
         (r"\.atlassian\.net", 0, None), (r"\bADF\b", re.I, None),
-        (r"\bgithub\b", re.I, None), (r"\bgh\b", re.I, (*GUARDS_ZONES, PR_OUTCOMES)), (r"\bgist\b", re.I, None),
+        (r"\bgithub\b", re.I, None), (r"\bgh\b", re.I, (*GUARDS_ZONES, *PR_ZONES, PR_OUTCOMES)), (r"\bgist\b", re.I, None),
         (r"\bissueType\b", 0, None), (r"\bsubtask\b", re.I, None),
     ]
 ]
@@ -119,11 +125,22 @@ def test_the_gh_zones_lose_only_the_bare_gh_token():
             )
 
 
-def test_bare_gh_still_violates_outside_the_guard_zones():
-    """The scoping is per-directory: core modules and non-guard tests may still not name the CLI."""
+def test_the_pr_zones_lose_only_the_bare_gh_token():
+    """The pull-request package may run `gh`, and may still name no tracker and not the code host itself."""
+    for zone in PR_ZONES:
+        probe = zone / "probe.py"
+        assert _file_violation(probe, "run(['gh', 'api', endpoint])\n") is None, f"{zone.name}/ may run gh"
+        for name in ("jira", "acli", "atlassian", "github", "gist", "subtask"):
+            assert _file_violation(probe, f"X = '{name}'\n") is not None, (
+                f"{name!r} must still violate inside {zone.name}/; only the bare `gh` token is scoped"
+            )
+
+
+def test_bare_gh_still_violates_outside_the_guard_and_pr_zones():
+    """The scoping is per-directory: core modules and tests outside them may still not name the CLI."""
     for probe in (MCP_ROOT / "config.py", MCP_ROOT / "server.py", MCP_ROOT / "tests" / "test_config.py"):
         assert _file_violation(probe, "run(['gh', 'pr', 'view'])\n") is not None, (
-            f"bare `gh` must still violate in {probe.name}; the exemption covers the guard zones only"
+            f"bare `gh` must still violate in {probe.name}; the exemption covers the guard and PR zones only"
         )
 
 

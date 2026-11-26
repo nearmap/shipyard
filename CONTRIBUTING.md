@@ -8,13 +8,21 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 1. Edit the skills, agents, docs, or adapter files.
 2. Validate: `pixi run validate` — checks frontmatter, the agent return contracts, the promises skills make to each other, and the script self-tests. It must pass.
 3. Run the MCP server's own test suite: `pixi run pytest`. It covers `sy_tools/` — the tool surface, both tracker adapters, config resolution, and the secret-scrub path. `validate.py` reads parts of that same tree as text — it requires files under `sy_tools/` to exist and content-checks `sy_tools/server.py` and both adapters — but executes none of it, so neither suite substitutes for the other. Lint and type-check the same tree: `pixi run ruff check sy_tools/` and `pixi run ty check sy_tools/`. CI enforces all four; run them locally rather than finding out from a failed check.
-4. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
+4. Try the change in a dev build (below).
 5. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:whiteboard`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 6. In this repo, tracker, site, board and column values go in `.shipyard/config.local.json`, never `.shipyard/config.json`: that file is tracked in a public repo and keeps only `$schema` and `skills` (`docs/standards/SY-005-public-repo.md`). This overrides the `/sy:init-repo` and preflight remediation, which write to `config.json`.
 
 ## Standards
 
 Shipyard's own rules are the parts in `docs/standards/`, one file per rule: how text is written and what it loads (applying `skills/shared/references/context-economy.md`), how skills and agents are written, comments and docstrings, where tests live, and the plugin version bump. Read them before changing any of those. Spec-gate and gate cite them through the repo-local `shipyard-standards` skill that `.shipyard/config.json` names; `/sy:tighten` applies the text rules to one drafted piece. After pulling a change to them, restart the session and run `reload_config`: skills load at session start, and the server caches config.
+
+## Dev builds
+
+**Your checkout, for one session.** `claude --plugin-dir /path/to/shipyard` loads the checkout for that session as `sy@inline` (see [docs/installation.md](docs/installation.md#one-session-local-development--trying-it-out)). A shell alias such as `alias claude-sy='claude --plugin-dir /path/to/shipyard'` makes it your default.
+
+**A release candidate.** Pin the marketplace to a branch, tag, or commit SHA as [docs/installation.md](docs/installation.md#persistent-across-sessions) describes.
+
+Test every new install or marketplace command in a throwaway config before you document it: `CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin ...` never touches your real `~/.claude`.
 
 ## Declined ideas
 
@@ -36,6 +44,8 @@ No `jira`, `acli`, `gh issue`, `gh-project`, ADF, or any other tracker-native te
 Core speaks **only** the canonical vocabulary in `skills/tracker/CONTRACT.md`: the verbs (`preflight`, `create-issue`, `create-child`, `get-issue`, `update-issue`, `find-issues`, `set-status`, `assign`, `link-parent`, `add-dependency`, `add-label`, `type-convert`, `post-comment`, `post-log`, `attach-artifact`, `attachment-download`, `attachment-update`, `link-pr`), the canonical statuses, and the canonical types.
 
 Each verb has **exactly one** documented, implemented path: the MCP tool of the same name. There is deliberately no parallel CLI recipe for a tracker operation anywhere outside `sy_tools/` — a second path is a second thing to keep correct, and the recipes this replaced had drifted into a truncating read that looked like it worked. If you need tracker-specific behaviour, it belongs in an adapter, reached through a contract verb.
+
+Pull requests are not tracker objects: they live on the code host whichever tracker a repository uses. So `sy_tools/pr/` and its tests may call `gh`, for pull requests only, and `sy_tools/tests/test_tracker_seam.py` exempts that one token there and nothing else; the code host's name and every tracker name still fail the scan in both places.
 
 ## Adding a new tracker adapter
 

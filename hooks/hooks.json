@@ -20,6 +20,15 @@
         ]
       },
       {
+        "matcher": "mcp__plugin_sy_sy__pr_comment|mcp__sy__pr_comment",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}\" python -m sy_tools.guards.pr_session_guard"
+          }
+        ]
+      },
+      {
         "hooks": [
           {
             "type": "command",

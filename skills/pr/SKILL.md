@@ -31,7 +31,9 @@ Base on real diff/log. The mutable description is the PR's human-attention secti
 - manual-only test plan; omit if none;
 - optional small table only when genuinely clearer;
 - image placeholder only when needed;
-- no AI self-credit/co-author lines.
+- no AI self-credit/co-author lines; the session trailer below is provenance, not credit.
+
+The description ends with a session trailer as its last paragraph, appended by the shell rather than typed: `printf '\nClaude-Code-Session-Id: %s\n' "$CLAUDE_CODE_SESSION_ID" >> <body file>`. A refresh keeps every existing `Claude-Code-Session-Id:` line and appends this session's only when it is missing.
 
 **Acceptance criteria/evidence never live only in the mutable description.** `/sy:ship` posts them as a dedicated PR comment so promotion/refresh cannot erase them.
 
@@ -75,13 +77,7 @@ Every relevant review thread gets an answer; push back on bad trade-offs instead
 - small thread set ⇒ read directly;
 - long auto-reviewer/multi-round tail ⇒ `sy:sweep` brief with open suggestion, target `file:line`, and addressed/unaddressed state.
 
-Caller reads decisive threads and writes replies. Stage each reply body as a file, then post it by **reading the file** — never by handing `@path` to a literal-string flag:
-
-- inline thread reply ⇒ `gh api --method POST repos/<o>/<r>/pulls/<pr>/comments/<id>/replies -F body=@<file>` (or `--input <file>`);
-- top-level PR comment ⇒ `gh pr comment <pr> --body-file <file>`;
-- edit an existing comment ⇒ `gh api --method PATCH repos/<o>/<r>/pulls/comments/<id> -F body=@<file>`.
-
-`gh api -F/--raw-field key=@file` reads the file; `-f/--field key=@file` posts the literal `@file` — a silent-corruption trap. After posting, read the stored body back (`gh api .../comments/<id> --jq .body`) and confirm it is the intended prose, not a value starting with `@`.
+Caller reads decisive threads and writes replies. Post every reply and every top-level PR comment through the `pr_comment` tool only, with `session` set to what `echo "$CLAUDE_CODE_SESSION_ID"` prints in your own Bash tool, and `reply_to` set to the review comment's id for an inline thread reply. The tool marks the comment with that session and verifies the stored body itself. There is no edit: a correction is a new reply.
 
 ## 4. Merge (verified-head only)
 
@@ -111,8 +107,8 @@ gh pr merge <pr> --rebase --match-head-commit <CI-green + reviewed SHA>
 ```
 
 - `--match-head-commit` aborts the merge if the head moved since validation, so only the reviewed/CI-green commit can land, never a race-pushed one — true for every strategy. Composing a message never relaxes that guard — drop the subject and body before you drop the head match.
-- Only `squash` composes a subject/body; stage it from the description's why plus its summary bullets, so the squashed commit reads as the changelog entry for the change rather than as build noise. `merge` and `rebase` pass neither flag.
-- `gh pr merge -F/--body-file` takes a **plain file path**, a different convention from the `-F key=@file` form used for comment bodies in §3 above; conflating the two silently posts the wrong thing.
+- Only `squash` composes a subject/body; stage it from the description's why plus its summary bullets, so the squashed commit reads as the changelog entry for the change rather than as build noise, and end it with the description's `Claude-Code-Session-Id:` lines, unchanged, as its last paragraph. `merge` and `rebase` pass neither flag.
+- `gh pr merge -F/--body-file` takes a **plain file path**, never `@file`.
 - add `--admin` when `ship.merge_admin` resolves true (`get_config {"key": "ship.merge_admin"}`), the repo's standing choice; otherwise only when the owner's go-ahead names the admin bypass itself, since a plain `merge` authorizes the merge, not the bypass. It clears a ruleset the author cannot satisfy alone (e.g. a required approval the author can't self-give) and bypasses the ruleset, not CI/review freshness.
 
 This skill never runs tests or review; `/sy:ci` and `sy:gate` own those gates. End by printing the PR URL and what state change/comment action occurred.

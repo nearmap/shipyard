@@ -263,6 +263,8 @@ REQUIRED = {
     "sy_tools/secrets.py",
     "sy_tools/guards/review_guard.py",
     "sy_tools/guards/spec_gate_cap_guard.py",
+    "sy_tools/guards/pr_session_guard.py",
+    "sy_tools/pr/comment.py",
     "skills/tracker/SKILL.md",
     "skills/tracker/CONTRACT.md",
     "skills/tracker/jira/ADAPTER.md",
@@ -1452,6 +1454,7 @@ def check_hooks(errors: list[str]) -> None:
     for module, events in (
         ("sy_tools.guards.review_guard", ("PreToolUse",)),
         ("sy_tools.guards.spec_gate_cap_guard", ("PreToolUse",)),
+        ("sy_tools.guards.pr_session_guard", ("PreToolUse",)),
         ("sy_tools.usage", ("Stop", "SubagentStop")),
         ("sy_tools.eval_events", ("PreToolUse", "SubagentStop", "Stop")),
         ("sy_tools.context_watch", ("PostToolUse", "Stop")),

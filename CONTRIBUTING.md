@@ -8,10 +8,30 @@ Contributions are small, verifiable, and keep the tracker seam clean. This guide
 1. Edit the skills, agents, docs, or adapter files.
 2. Validate: `pixi run validate` — checks frontmatter, the agent return contracts, the promises skills make to each other, and the script self-tests. It must pass.
 3. Run the MCP server's own test suite: `pixi run pytest`. It covers `sy_tools/` — the tool surface, both tracker adapters, config resolution, and the secret-scrub path. `validate.py` reads parts of that same tree as text — it requires files under `sy_tools/` to exist and content-checks `sy_tools/server.py` and both adapters — but executes none of it, so neither suite substitutes for the other. Lint and type-check the same tree: `pixi run ruff check sy_tools/` and `pixi run ty check sy_tools/`. CI enforces all four; run them locally rather than finding out from a failed check.
-4. Load the plugin locally to try it: `claude --plugin-dir /path/to/shipyard`.
+4. Try the change in a dev build (below).
 5. Commands are namespaced by the plugin name (`sy`): `/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`, `/sy:pr`, `/sy:ci`, `/sy:explain`, `/sy:whiteboard`, `/sy:help`, `/sy:init-repo`, `/sy:config`.
 
 Keep prose (READMEs, roadmaps, docs) clear and unwrapped; keep machine-facing text (agent briefs, contracts, JSON logs) terse and structured. How hard to cut either, and the two tests to cut by, is `skills/shared/references/context-economy.md`; `/sy:tighten` is the pass that applies it to one drafted piece of either kind.
+
+## Dev builds
+
+**Your checkout, for one session.** `claude --plugin-dir /path/to/shipyard` loads the checkout for that session as `sy@inline`. If `sy@shipyard` is installed, the session loads the checkout and skips the installed copy, because both are named `sy` in `plugin.json`. Run `/reload-plugins` in the session to pick up edits. A shell alias such as `alias claude-sy='claude --plugin-dir /path/to/shipyard'` makes it your default.
+
+**A release candidate.** Pin the marketplace to a branch, a tag, or a full 40-character commit SHA, then install from it:
+
+```bash
+claude plugin marketplace remove shipyard   # only if already added; this also uninstalls sy@shipyard
+claude plugin marketplace add nearmap/shipyard#<branch|tag|sha>
+claude plugin install sy@shipyard --scope user
+```
+
+`@<ref>` works the same as `#<ref>`. A SHA pin needs Claude Code 2.1.325 or later; older clients cannot clone it. A branch or tag pin moves to that ref's latest commit on `claude plugin marketplace update shipyard`, and `claude plugin update` then installs it only if `version` moved. A SHA pin stays put. To go back, run the same three commands with plain `nearmap/shipyard`.
+
+The `remove` is required: Claude Code refuses to re-add `shipyard` from a different ref (`its source doesn't match its extraKnownMarketplaces entry`). Removing the marketplace uninstalls `sy@shipyard`, but `sy` keeps no plugin options or data, so reinstalling loses nothing.
+
+**No second local marketplace.** A marketplace is keyed by the `name` in its `marketplace.json`, and two cannot both be `shipyard`. `claude plugin marketplace add /path/to/shipyard` does not add a second one. It re-points your existing `shipyard` at the checkout, and an installed `sy@shipyard` then updates from your working tree. Use `--plugin-dir` instead.
+
+Test every new install or marketplace command in a throwaway config before you document it: `CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin ...` never touches your real `~/.claude`.
 
 ## Declined ideas
 

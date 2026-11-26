@@ -1,0 +1,79 @@
+{
+  "search": {
+    "issueCount": 2,
+    "pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"},
+    "nodes": [
+      {
+        "number": 7,
+        "url": "https://example.test/acme/widget/pull/7",
+        "title": "Add widget sizing",
+        "body": "Sizes widgets.\n\nClaude-Code-Session-Id: sess-aaa\n",
+        "state": "MERGED",
+        "createdAt": "2026-10-01T00:00:00Z",
+        "mergedAt": "2026-10-01T10:00:00Z",
+        "closedAt": "2026-10-01T10:00:00Z",
+        "headRefName": "feat/sizing",
+        "baseRefName": "main",
+        "additions": 120,
+        "deletions": 30,
+        "changedFiles": 4,
+        "author": {"__typename": "User", "login": "dev-one"},
+        "mergeCommit": {"oid": "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed"},
+        "commits": {
+          "totalCount": 3,
+          "nodes": [
+            {"commit": {"oid": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "statusCheckRollup": {"state": "FAILURE", "contexts": {
+              "totalCount": 2,
+              "nodes": [
+                {"__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "unit", "conclusion": "SUCCESS"}
+              ]}}}},
+            {"commit": {"oid": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", "statusCheckRollup": {"state": "SUCCESS", "contexts": {
+              "totalCount": 1,
+              "nodes": [{"__typename": "CheckRun", "name": "lint", "conclusion": "SUCCESS"}]}}}},
+            {"commit": {"oid": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "statusCheckRollup": {"state": "ERROR", "contexts": {
+              "totalCount": 2,
+              "nodes": [
+                {"__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE"},
+                {"__typename": "StatusContext", "context": "ci/legacy", "state": "ERROR"}
+              ]}}}}
+          ]
+        },
+        "reviews": {
+          "totalCount": 5,
+          "nodes": [
+            {"id": "R1", "state": "COMMENTED", "createdAt": "2026-10-01T02:00:00Z", "body": "",
+             "author": {"__typename": "User", "login": "reviewer-a"}, "commit": {"oid": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"}},
+            {"id": "R2", "state": "COMMENTED", "createdAt": "2026-10-01T02:30:00Z", "body": "Automated summary of the change.",
+             "author": {"__typename": "Bot", "login": "helper-bot"}, "commit": {"oid": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"}},
+            {"id": "R3", "state": "COMMENTED", "createdAt": "2026-10-01T04:00:00Z", "body": "",
+             "author": {"__typename": "User", "login": "dev-one"}, "commit": {"oid": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"}},
+            {"id": "R4", "state": "PENDING", "createdAt": "2026-10-01T05:00:00Z", "body": "",
+             "author": {"__typename": "User", "login": "reviewer-b"}, "commit": {"oid": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"}},
+            {"id": "R5", "state": "APPROVED", "createdAt": "2026-10-01T09:00:00Z", "body": "",
+             "author": {"__typename": "User", "login": "reviewer-a"}, "commit": {"oid": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"}}
+          ]
+        },
+        "reviewThreads": {
+          "totalCount": 1,
+          "nodes": [
+            {"comments": {"totalCount": 1, "nodes": [
+              {"id": "T1", "createdAt": "2026-10-01T02:01:00Z", "path": "src/size.py", "body": "Off by one here.",
+               "author": {"__typename": "User", "login": "reviewer-a"}}
+            ]}}
+          ]
+        },
+        "comments": {
+          "totalCount": 2,
+          "nodes": [
+            {"id": "I1", "createdAt": "2026-10-01T03:00:00Z",
+             "body": "Gate verdict: pass.\n<!-- shipyard:agent session=sess-bbb -->",
+             "author": {"__typename": "User", "login": "dev-one"}},
+            {"id": "I2", "createdAt": "2026-10-01T03:30:00Z", "body": "Coverage 91%.",
+             "author": {"__typename": "User", "login": "coverage-runner[bot]"}}
+          ]
+        }
+      }
+    ]
+  }
+}

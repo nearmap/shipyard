@@ -10,7 +10,7 @@ A complete brief has every one of these sections:
 - deploy target, deploy command, and version check — the command that reports which SHA is live. "Localhost only" is a valid answer and needs no command;
 - deploy side effects — who or what else sees the target change;
 - shortcuts accepted;
-- shortcuts refused — these become ledger rules;
+- rules the build must keep — each asked and recorded as a positive must, never as a refused negation ("No X", "Don't Y"); these become ledger rules;
 - unknowns to settle first;
 - what "done" means;
 - a "Read this first" line opting out of `/sy:spec`, GATE, and merge standards, and stating that this branch never merges.
@@ -26,6 +26,6 @@ Name the mutations at the approval point — the brief comment or the new Task, 
 1. `set-status` the parent epic `in-progress` if it is not already;
 2. `set-status` the ticket `in-progress` and `assign` it to yourself;
 3. create the branch `<ticket>/<slug>`, or reuse an existing `<ticket>/` branch and its worktree, under the resolved `worktree.root` (`get_config {"key": "worktree.root"}`, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`);
-4. post the first `# MVP ledger` entry (`references/loop.md`): `change: rule`, the invariants in `SKILL.md` as the default contract, plus every refused shortcut from the brief as a rule verbatim.
+4. post the first `# MVP ledger` entry (`references/loop.md`): `change: rule`, the invariants in `SKILL.md` as the default contract, plus every rule from the brief verbatim.
 
 Then route to LOOP.

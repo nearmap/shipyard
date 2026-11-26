@@ -7,7 +7,7 @@ Every entry is a `post-comment` whose `human` half opens `# MVP ledger` and says
 ```text
 change: rule | deploy | hold | harvest
 rules:
-- <every live rule, verbatim, the brief's refused shortcuts included>
+- <every live rule, verbatim, the brief's rules included>
 deploys:
 - target: <name>; sha: <pushed SHA>; version_check: <result>
 hold: <target>; since: <date>; side_effect: <from the brief>   # or: hold: none

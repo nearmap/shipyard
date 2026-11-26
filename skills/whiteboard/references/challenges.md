@@ -45,3 +45,17 @@ Every failure reported needs a concrete case: this input or situation leads to t
 - Pre-mortem: it is six months later and this failed. What is the most likely reason? Each answer becomes a residual risk or a probe.
 - What result would change our mind? Is there a probe that could produce it?
 - How hard is it to reverse once shipped?
+
+## Before hand-off
+
+Each question left unanswered goes to Open questions on the board.
+
+- Who owns the end state, and have they agreed?
+- May the output change? Which changes are accepted?
+- Do the data contracts (keys, foreign keys, sort keys, dtypes, nulls) hold on a real run?
+- What are the time semantics at each boundary: which dates, and where does an as-of cut happen?
+- What is the compute envelope: unit of work, memory, runtime, retries?
+- Where does it live: which package owns it, and what are that repository's conventions?
+- What is the verification bar: which run or data proves it works?
+- Has a live probe run on every new tool the design depends on?
+- Is every concept name fixed in the glossary?

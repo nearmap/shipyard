@@ -41,7 +41,7 @@ Three disciplines shape the workflow: challenge the decision, independently insp
 | a large objective or an existing roadmap | `/sy:plan` |
 | one PR-sized task that needs an executable plan | `/sy:spec <task>` |
 | an approved plan ready to build | `/sy:ship <task>` |
-| a fuzzy problem to work out with Claude on a shared whiteboard before it is a hunch, a roadmap or a task | `/sy:whiteboard …` |
+| a design session with Claude and colleagues on a shared whiteboard, before a problem is a hunch, a roadmap or a task | `/sy:whiteboard …` |
 | a hunch that needs data before it becomes a project | `/sy:spike …` |
 | an idea you want built and demoed fast, outside the merge standards, then harvested into real tasks | `/sy:mvp <task or objective>` |
 | a finished ticket's leftover worktrees, branches, and background tasks | `/sy:shutdown [task]` |
@@ -81,7 +81,9 @@ Arrows show phase order; `/sy:ship` dispatches every worker and owns the optiona
 
 ### Before the loop: whiteboard
 
-`/sy:whiteboard <problem>` is for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. It needs a claude.ai login with Artifacts. Claude opens one shared Claude whiteboard, interviews you in chat, argues the options with theory and real data, and runs the leading decision through `sy:debate` before converging. You and your colleagues can edit and comment on the board, and Claude reads it at the start of every turn, but only your answer in chat settles a decision.
+`/sy:whiteboard <problem | ticket>` is a design session for the work before there is anything to plan: a problem you cannot yet state as a hypothesis or a task. It needs a claude.ai login with Artifacts. Claude first gathers what is already known (your words, the ticket, earlier boards, the repository's docs, owners' design branches and PRs, the code path), then opens one shared Claude whiteboard. It grills you in chat, runs an idea round, draws the flow, argues the options with theory and real data, and runs the leading option through `sy:debate` before converging.
+
+You choose how involved to be. Involved, Claude asks one question round per turn. Delegated, Claude runs the whole pass in one turn and brings back the top decisions with recommendations. You and your colleagues can edit and comment on the board, and Claude reads it at the start of every turn, but only your answer in chat settles a decision, in either mode. It reads a ticket but never writes to the tracker.
 
 ## Working with you
 

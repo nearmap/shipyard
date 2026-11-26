@@ -11,6 +11,8 @@
 5. Diagrams go left of the Record column. A record never sits in the drawing area.
 6. Take the first snapshot: list into `<folder>/next` as § Every turn step 1 lists into `read/`. When the listing is complete, replace `last/` with `next/`. When its lines show no `version N`, say so and stop.
 
+Every diagram: stages left to right in time order; each box names its unit of work, its grain and its output shape; each arrow carries the data's name; a legend; colour by kind (output, interface, external), with the kind also written as text; no deeper than system context and containers.
+
 ## Every turn
 
 1. Empty `<folder>/read/`. ArtifactData `list` of collection `elements`, `out_dir` `<folder>/read`, `query.limit` 1000; follow `next_cursor` until it is empty. When the list or the comment read below errors, is denied, or reports skipped docs, say which and end the turn; `last/` and `Comments seen to` stay as they are. Run `mkdir -p` on both `elements/` folders, then `diff -r -x '.*' <folder>/last/elements <folder>/read/elements`. A file only in `last/` is a deleted element. Then ArtifactComments `read` for the board, following its cursor to the end. For a thread whose comments it elides, `read` that `thread_id`; when text is still elided, say so and end the turn.

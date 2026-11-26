@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: hunt-planted-defect
+description: sy:hunt finds the one planted defect in a frozen two-commit diff; the fixed test for hunt cost and recall.
+tags: [hunt, fixed-test]
+runs: 3
+context:
+  scaffold_script: fixture.sh

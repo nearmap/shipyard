@@ -25,9 +25,11 @@ def record_round(
     standards_reviewed_sha: str | None,
 ) -> dict[str, Any]:
     """Fields for one GATE pass: its log entry appended and `gate_rounds_total` bumped in the same write."""
-    log = list(state.get("gate_round_log") or [])
+    log = _log(state)
     total = int(state.get("gate_rounds_total") or 0)
     illegal = [f"round entry missing {k}" for k in ROUND_KEYS if k not in entry]
+    if not isinstance(state.get("gate_round_log") or [], list):
+        illegal.append("gate_round_log was not a list and is restarted")
     if state.get("phase_active") != "GATE":
         illegal.append(f"GATE round recorded while phase_active is {state.get('phase_active')!r}")
     if total != len(log):
@@ -45,13 +47,13 @@ def record_round(
 
 def finish_round(state: dict[str, Any], human_thread_fix: bool, next_round_causes: list[str]) -> dict[str, Any]:
     """Fields closing the last logged round: whether it pushed a human-thread fix and why another pass follows."""
-    log = [dict(e) for e in state.get("gate_round_log") or []]
+    log = _log(state)
     illegal = [f"unknown next_round_cause {c!r}" for c in next_round_causes if c not in NEXT_ROUND_CAUSES]
-    if not log:
+    if not log or not isinstance(log[-1], dict):
         return _with_log(state, {}, "gate_round_finish", ["finish with no round logged", *illegal])
     if "human_thread_fix" in log[-1]:
         illegal.append(f"round {log[-1].get('round')} finished twice")
-    log[-1] |= {"human_thread_fix": human_thread_fix, "next_round_causes": next_round_causes}
+    log[-1] = {**log[-1], "human_thread_fix": human_thread_fix, "next_round_causes": next_round_causes}
     return _with_log(state, {"gate_round_log": log}, "gate_round_finish", illegal)
 
 
@@ -74,15 +76,15 @@ def derive(state: dict[str, Any], cap: int) -> dict[str, Any]:
     Only substantive rounds count against the cap: one that accepted a breaking finding or pushed a
     human-thread fix. A round not yet finished counts, so an interrupted round never frees budget.
     """
-    log = list(state.get("gate_round_log") or [])
+    log = [e for e in _log(state) if isinstance(e, dict)]
     base = int(state.get("gate_rounds_budget_base") or 0)
-    used = sum(1 for e in log if int(e.get("round") or 0) > base and _substantive(e))
+    used = sum(1 for n, e in enumerate(log, 1) if n > base and _substantive(e))
     last = log[-1] if log else {}
     earlier = _accept_rounds(log[:-1])
     breaking_recurrences = sorted(
         {
             f["root_cause_key"]
-            for f in last.get("findings") or []
+            for f in _findings(last)
             if f.get("impact", "breaking") == "breaking" and earlier[f["root_cause_key"]] >= 2
         }
     )
@@ -98,12 +100,12 @@ def derive(state: dict[str, Any], cap: int) -> dict[str, Any]:
 def _substantive(entry: dict[str, Any]) -> bool:
     if entry.get("human_thread_fix", True):
         return True
-    findings = entry.get("findings") or []
+    findings = _findings(entry, keyed=False)
     return any(f.get("disposition") == "accepted" and f.get("impact", "breaking") == "breaking" for f in findings)
 
 
 def _all_low(entry: dict[str, Any]) -> bool:
-    accepted = [f for f in entry.get("findings") or [] if f.get("disposition") in ACCEPTS]
+    accepted = [f for f in _findings(entry, keyed=False) if f.get("disposition") in ACCEPTS]
     return bool(
         accepted
         and not entry.get("terminal_pass", True)
@@ -116,8 +118,18 @@ def _accept_rounds(log: list[dict[str, Any]]) -> Counter[str]:
     """How many rounds recorded each root cause with an accept disposition."""
     counts: Counter[str] = Counter()
     for e in log:
-        counts.update({f["root_cause_key"] for f in e.get("findings") or [] if f.get("disposition") in ACCEPTS})
+        counts.update({f["root_cause_key"] for f in _findings(e) if f.get("disposition") in ACCEPTS})
     return counts
+
+
+def _log(state: dict[str, Any]) -> list[Any]:
+    log = state.get("gate_round_log") or []
+    return list(log) if isinstance(log, list) else []
+
+
+def _findings(entry: dict[str, Any], keyed: bool = True) -> list[dict[str, Any]]:
+    """An entry's findings, by default only the keyed ones a recurrence can match; older hand-written logs vary."""
+    return [f for f in entry.get("findings") or [] if isinstance(f, dict) and (f.get("root_cause_key") or not keyed)]
 
 
 def _with_log(state: dict[str, Any], fields: dict[str, Any], event: str, illegal: list[str]) -> dict[str, Any]:

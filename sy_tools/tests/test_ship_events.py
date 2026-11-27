@@ -70,3 +70,10 @@ def test_an_illegal_transition_is_logged_and_still_applied(state):
     assert yaml.safe_load(state.read_text())["gate_rounds_total"] == 1, "the round lands despite the log"
     assert len(out["illegal"]) == 3, out["illegal"]
     assert len(yaml.safe_load(state.read_text())["transition_log"]) == 3, "one entry per illegal event"
+
+
+def test_derive_survives_hand_written_logs():
+    log = ["free text", {"round": "2-3", "findings": ["note", {"disposition": "accepted"}]}]
+    out = ship_events.derive({"gate_round_log": log, "gate_rounds_total": 2}, 5)
+    assert out["budget"]["used"] == 1 and out["breaking_recurrences"] == [], out
+    assert ship_events.derive({"gate_round_log": "__APPEND__"}, 5)["budget"]["used"] == 0

@@ -1351,7 +1351,9 @@ async def _join_issues(result: dict[str, Any], parent: str) -> None:
         result["warnings"].append(f"the child issues of {parent} could not be read: {exc.__class__.__name__}")
         return
     if not page.get("is_last", True):
-        result["warnings"].append(f"{parent} has more than 100 child issues: only the first 100 are joined")
+        result["warnings"].append(
+            f"the tracker returned a cut page for {parent}: some child issues may be missing from the join"
+        )
     issues = [issue for issue in page.get("issues", []) if isinstance(issue, dict)]
     joined: set[int] = set()
     for row in result["sessions"]:

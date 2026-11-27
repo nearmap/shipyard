@@ -26,6 +26,7 @@ PRICING = Path(__file__).resolve().parents[1] / "skills" / "retro" / "references
 PLANNING_SKILLS = ("sy:plan", "sy:spec", "sy:doit", "sy:mvp", "sy:spike", "sy:whiteboard")
 KEY_TOOLS = ("Skill", "Agent", "Task", "AskUserQuestion", "ExitPlanMode")
 _PR_URL = re.compile(r"https://[^/\s]+/([^/\s]+/[^/\s]+)/pull/(\d+)")
+_COMMAND = re.compile(r"<command-name>([^<]*)</command-name>(?:.*?<command-args>([^<]*)</command-args>)?", re.S)
 _DEFAULT_BRANCHES = {"main", "master", "HEAD", ""}
 
 
@@ -464,7 +465,9 @@ def _goal_metrics(
                     for k, v in tally("friction").items()
                     if k in ("wrong_approach", "review_rework", "misunderstood_request")
                 },
-                "evidence": where("friction", "wrong_approach") + where("friction", "review_rework"),
+                "evidence": list(
+                    dict.fromkeys(where("friction", "wrong_approach") + where("friction", "review_rework"))
+                ),
             },
             "T3": {
                 **cost,
@@ -557,6 +560,10 @@ def _events(main: Path) -> list[tuple[int, str]]:
 
 def _render_block(role: str, b: dict[str, Any], names: dict[str, str]) -> str:
     t = b.get("type")
+    if t == "text" and role == "user" and (cmd := _COMMAND.search(b.get("text", ""))):
+        return f"COMMAND: /{cmd.group(1).lstrip('/')} {_flat(cmd.group(2) or '')[:200]}".rstrip()
+    if t == "text" and role == "user" and not sessions.WRAPPER.sub("", b.get("text", "")).strip():
+        return ""
     if t == "text" and b.get("text", "").strip():
         limit = 600 if role == "user" else 300
         return f"{role.upper()}: {_flat(b['text'])[:limit]}"
@@ -571,24 +578,25 @@ def _render_block(role: str, b: dict[str, Any], names: dict[str, str]) -> str:
 
 
 def _digest(lines: list[str]) -> str:
-    if sum(len(x) + 1 for x in lines) > DIGEST_CHARS:
-        lines = [x for x in lines if " TOOL " not in x[:16] or any(f"TOOL {t}:" in x for t in KEY_TOOLS)]
-    if sum(len(x) + 1 for x in lines) > DIGEST_CHARS:
-        head, tail, kept = [], [], 0
-        for x in lines:
-            if kept + len(x) > DIGEST_CHARS // 2:
-                break
-            head.append(x)
-            kept += len(x) + 1
-        kept = 0
-        for x in reversed(lines[len(head) :]):
-            if kept + len(x) > DIGEST_CHARS // 2:
-                break
-            tail.insert(0, x)
-            kept += len(x) + 1
-        gone = len(lines) - len(head) - len(tail)
-        lines = [*head, f"[{gone} lines elided from the middle of this session]", *tail]
+    """Fit a session's events in DIGEST_CHARS, dropping in order: plain tool calls, then assistant text.
+
+    Human turns, commands, answers, errors and skill or agent calls are never dropped; each cut leaves a marker.
+    """
+    kept = [x for x in lines if not _is_tool(x) or any(f" TOOL {t}:" in x for t in KEY_TOOLS)]
+    if _size(lines) > DIGEST_CHARS and len(kept) < len(lines):
+        lines = [*kept, f"[{len(lines) - len(kept)} other tool calls left out]"]
+    if _size(lines) > DIGEST_CHARS:
+        spoken = [x for x in lines if " ASSISTANT: " not in x[:20]]
+        lines = [*spoken, f"[{len(lines) - len(spoken)} assistant messages left out]"]
     return "\n".join(lines) + "\n"
+
+
+def _is_tool(line: str) -> bool:
+    return " TOOL " in line[:20]
+
+
+def _size(lines: list[str]) -> int:
+    return sum(len(x) + 1 for x in lines)
 
 
 def _session_repos(r: dict[str, Any]) -> set[str]:

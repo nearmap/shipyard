@@ -484,11 +484,10 @@ def effort_ceiling() -> tuple[str, str]:
     return observed[0], f"observed:{observed[1]}"
 
 
-def scratch_dir(identifier: str) -> Path:
-    """The ephemeral working directory for one identifier under `scratch.dir`, created if absent.
+def scratch_root() -> Path:
+    """The resolved `scratch.dir` root. It must be absolute, and this never creates it.
 
-    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once,
-    and it must be absolute. An identifier that does not stay inside the resolved root is refused.
+    The root is resolved, never re-derived, so a relocated `scratch.dir` moves every caller at once.
     """
     root = Path(str(get("scratch.dir")))
     if not root.is_absolute():
@@ -498,6 +497,15 @@ def scratch_dir(identifier: str) -> Path:
             "put the write sandbox this backs inside the very checkout it must stay outside of. Set "
             "scratch.dir to an absolute path, or leave it unset to use the shipped default."
         )
+    return root
+
+
+def scratch_dir(identifier: str) -> Path:
+    """The ephemeral working directory for one identifier under `scratch_root()`, created if absent.
+
+    An identifier that does not stay inside the resolved root is refused.
+    """
+    root = scratch_root()
     refusal = ConfigError(
         f"refusing to create a scratch directory for {identifier!r}: an identifier must be a "
         "relative name that stays inside the resolved scratch root."

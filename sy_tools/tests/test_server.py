@@ -2347,33 +2347,53 @@ class _Children:
         return self.page
 
 
-@pytest.mark.anyio
-@pytest.mark.skipif(os.name != "posix", reason="signal 0 liveness is POSIX only")
-async def test_live_sessions_scrubs_conversation_text(tmp_path, monkeypatch):
-    """A credential typed into a conversation must not leave the server inside the command or last step."""
-    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
-    monkeypatch.setenv("SY_TEST_DECLARED", "q7zx4m")
+POSIX_LIVENESS = pytest.mark.skipif(os.name != "posix", reason="signal 0 liveness is POSIX only")
+
+
+def _one_live_session(tmp_path: Path, monkeypatch, name: str, args: str, step: str, secret: str = "") -> None:
+    """A real config home with this process as its one live session, which typed `/sy:ship <args>`.
+
+    With `secret`, the value is declared as a credential, so the tool must scrub it.
+    """
+    if secret:
+        monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
+        monkeypatch.setenv("SY_TEST_DECLARED", secret)
     home = tmp_path / "home"
     (home / "sessions").mkdir(parents=True)
     (home / "sessions" / "1.json").write_text(
-        json.dumps({"pid": os.getpid(), "sessionId": "s1", "name": "deploy q7zx4m"}), encoding="utf-8"
+        json.dumps({"pid": os.getpid(), "sessionId": "s1", "name": name}), encoding="utf-8"
     )
     (home / "projects" / "-work-repo").mkdir(parents=True)
     typed = "<command-message>sy:ship</command-message>\n<command-name>/sy:ship</command-name>\n" \
-        "<command-args>PROJ-1 token q7zx4m</command-args>"
+        f"<command-args>{args}</command-args>"
     records = [
         {"type": "user", "turnOrigin": "human", "message": {"content": typed}},
-        {"type": "assistant", "message": {"content": [{"type": "text", "text": "the key is q7zx4m"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": step}]}},
     ]
     (home / "projects" / "-work-repo" / "s1.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
     )
     monkeypatch.setattr(server.session_snapshot, "claude_home", lambda: home)
     monkeypatch.setattr(server.config, "scratch_root", lambda: tmp_path / "scratch")
+
+
+async def _only_live_session(**arguments: Any) -> tuple[dict, dict]:
     async with mcp.Client(server.mcp) as client:
-        result = await client.call_tool("live_sessions", {})
+        result = await client.call_tool("live_sessions", arguments)
     assert result.is_error is False, result.content
     payload = _payload(result)
+    assert len(payload["sessions"]) == 1, payload
+    return payload, payload["sessions"][0]
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_scrubs_conversation_text(tmp_path, monkeypatch):
+    """A credential typed into a conversation must not leave the server inside the command or last step."""
+    _one_live_session(
+        tmp_path, monkeypatch, "deploy q7zx4m", "PROJ-1 token q7zx4m", "the key is q7zx4m", secret="q7zx4m"
+    )
+    payload, _ = await _only_live_session()
     assert "q7zx4m" not in json.dumps(payload), payload
     row = payload["sessions"][0]
     assert row["name"] == "deploy <REDACTED:SY_TEST_DECLARED>", row
@@ -2381,6 +2401,37 @@ async def test_live_sessions_scrubs_conversation_text(tmp_path, monkeypatch):
     assert row["last_step"] == "says: the key is <REDACTED:SY_TEST_DECLARED>", row
     assert payload["scrub"]["redactions"] == 3, payload
     assert "issues_without_session" not in payload, "no parent, so no tracker read"
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_cuts_the_command_and_last_step_and_keeps_the_ticket_whole(tmp_path, monkeypatch):
+    _one_live_session(tmp_path, monkeypatch, "long", "  " + "x" * 300, "y" * 300)
+    _, row = await _only_live_session()
+    assert row["command"] == "/sy:ship " + "x" * 111, row
+    assert row["last_step"] == "says: " + "y" * 154, row
+    assert row["ticket"] == "x" * 300, row
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_scrubs_a_secret_that_crosses_the_command_cut(tmp_path, monkeypatch):
+    """Cut first, the command ends in the secret's first 10 characters, which the scrub no longer finds."""
+    secret = "k3v9q7zx4m2w8p5t"
+    # "/sy:ship PROJ-1 " is 16 characters, so the secret starts at character 110 and ends at 126.
+    _one_live_session(tmp_path, monkeypatch, "long", "PROJ-1 " + "a" * 93 + " " + secret, "done", secret=secret)
+    _, row = await _only_live_session()
+    assert secret[:8] not in row["command"] and len(row["command"]) <= 120, row
+    assert row["command"].startswith("/sy:ship PROJ-1 " + "a" * 93 + " <REDACTED:"), row
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_scrubs_a_secret_typed_as_the_ticket(tmp_path, monkeypatch):
+    _one_live_session(tmp_path, monkeypatch, "ship", "q7zx4m rest", "done", secret="q7zx4m")
+    payload, row = await _only_live_session()
+    assert row["ticket"] == "<REDACTED:SY_TEST_DECLARED>", row
+    assert "q7zx4m" not in json.dumps(payload), payload
 
 
 @pytest.mark.anyio

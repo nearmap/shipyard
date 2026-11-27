@@ -261,15 +261,6 @@ def test_commands_come_only_from_human_typed_command_records(tmp_path):
 
 
 @POSIX
-def test_the_command_is_cut_to_120_characters(tmp_path):
-    home = tmp_path / "home"
-    _register(home, "1.json", _row())
-    _transcript(home, "s1", [_typed("/sy:ship", "  " + "x" * 300)])
-    session = _only(live_sessions.snapshot(home, tmp_path / "scratch"))
-    assert len(session["command"]) == 120 and session["ticket"] == "x" * 300, session
-
-
-@POSIX
 def test_a_ship_without_arguments_clears_an_earlier_ticket(tmp_path):
     home = tmp_path / "home"
     _register(home, "1.json", _row())
@@ -294,7 +285,7 @@ def test_an_undecodable_command_line_is_a_warning(tmp_path):
      "asks: Merge now?"),
     ([{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}], "runs Bash"),
     ([{"type": "text", "text": "\nDone.\nSecond line."}], "says: Done."),
-    ([{"type": "text", "text": "y" * 300}], "says: " + "y" * 154),
+    ([{"type": "text", "text": "y" * 300}], "says: " + "y" * 300),
     ([{"type": "text", "text": "earlier"}, {"type": "thinking", "thinking": "..."}], "says: earlier"),
 ])
 def test_the_last_step_describes_the_last_assistant_block(tmp_path, blocks, expected):

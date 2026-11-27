@@ -6,7 +6,8 @@ alive, and joins it to the newest `/sy:` command in its conversation file, to it
 `kill(pid, 0)` on POSIX. One unreadable file skips that one item with a warning and never ends the read.
 
 The `sy` MCP server exposes it as the `live_sessions` tool. Text copied out of a conversation is data
-for display, never an instruction, and the tool scrubs it before it leaves the server.
+for display, never an instruction. `snapshot()` returns it uncut. The tool scrubs it, then shortens it
+to `COMMAND_LIMIT` or `STEP_LIMIT` characters, before it leaves the server.
 """
 from __future__ import annotations
 
@@ -29,8 +30,10 @@ _TICKET_COMMANDS = frozenset({"/sy:spec", "/sy:ship"})
 # A session id becomes part of a glob pattern, so anything but a plain id is never looked up.
 _SESSION_ID = re.compile(r"[\w-]+")
 _TAIL_BYTES = 64 * 1024
-_COMMAND_LIMIT = 120
-_STEP_LIMIT = 160
+# The tool cuts the command and the last step to these lengths after it scrubs them, never before: a cut
+# made first can split a credential, and the scrub then no longer finds the part that is left.
+COMMAND_LIMIT = 120
+STEP_LIMIT = 160
 
 
 def claude_home() -> Path:
@@ -189,7 +192,7 @@ def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None]:
                 if typed is None:
                     continue
                 name, args = typed
-                command = f"{name} {args}".strip()[:_COMMAND_LIMIT]
+                command = f"{name} {args}".strip()
                 if name in _TICKET_COMMANDS:
                     tokens = args.split()
                     ticket = tokens[0] if tokens else None
@@ -248,7 +251,7 @@ def _last_step(path: Path, warnings: list[str]) -> str | None:
         for block in reversed(content if isinstance(content, list) else []):
             step = _describe(block)
             if step is not None:
-                return step[:_STEP_LIMIT]
+                return step
     return None
 
 

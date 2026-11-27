@@ -199,11 +199,12 @@ def draft_discovery(
     """discovery.json with every measured field filled and every interview field `unknown`."""
     totals: dict[str, Counter] = {k: Counter() for k in ("skills", "agents", "interventions", "tool_errors")}
     for r in rows:
-        totals["skills"].update({**(r["skills"].get("slash") or {}), **(r["skills"].get("tool") or {})})
+        totals["skills"].update(_skill_names(r))
         totals["agents"].update(r["agents"].get("spawned") or {})
         totals["interventions"].update(r.get("interventions") or {})
         totals["tool_errors"].update(r.get("tool_errors") or {})
     linked = {sid for by_sid in links.values() for sid in by_sid}
+    sy_sessions = sum(1 for r in rows if any(k.startswith("sy:") for k in _skill_names(r)))
     tokens = {r["session_id"]: _tokens(r) for r in rows}
     pr_items = []
     for p in sorted(prs, key=lambda p: p["created_at"]):
@@ -240,6 +241,7 @@ def draft_discovery(
             "count": len(rows),
             "linked_to_prs": len(linked),
             "active_hours": round(sum(r.get("active_minutes") or 0 for r in rows) / 60, 1),
+            "shipyard": {"sessions": sy_sessions, "level": shipyard_level(sy_sessions, len(rows))},
             **{k: dict(v.most_common()) for k, v in totals.items()},
         },
         "prs": pr_items,
@@ -247,9 +249,20 @@ def draft_discovery(
         "control": [],
         "pain_points": [],
         "extra_fields": {},
-        "unknown": ["prs[].approach", "prs[].stages", "shipyard_usage", "control", "pain_points"],
+        "unknown": ["prs[].approach", "prs[].stages", *(["shipyard_usage"] if sy_sessions else []), "control", "pain_points"],
         "approval": {"status": "draft", "approved_at": None, "redactions": 0},
     }
+
+
+def shipyard_level(sy_sessions: int, sessions: int) -> str:
+    """`none`, `light` (under 5 sessions or a tenth of them) or `regular`: how much of the window used Shipyard."""
+    if not sy_sessions:
+        return "none"
+    return "light" if sy_sessions < 5 or sy_sessions * 10 < sessions else "regular"
+
+
+def _skill_names(r: dict[str, Any]) -> dict[str, int]:
+    return {**(r["skills"].get("slash") or {}), **(r["skills"].get("tool") or {})}
 
 
 def _session_table(projects: Path, since: date, out: Path) -> list[dict[str, Any]]:

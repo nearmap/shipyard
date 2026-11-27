@@ -9,7 +9,7 @@ Re-render:
 - completed branches marked done;
 - current active set (≤ the resolved `plan.max_active_tasks` cap, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`) with Task keys and kickoff lines;
 - queued/future work marked not yet decomposed;
-- critical path, blockers, and parallel-safe set.
+- critical path, blockers, each stack as an ordered chain (`TASK-1 → TASK-2 → TASK-3`), and parallel-safe set.
 
 ## Decision log = adaptation delta
 
@@ -31,6 +31,6 @@ Current active leaves: TASK-125, TASK-126
 
 ## Handoff
 
-Give `/sy:spec <task>` for each active leaf and identify parallel-safe work. Stop. Re-enter with `/sy:plan <epic>` after meaningful shipping evidence.
+Give `/sy:spec <task>` for each active leaf, in chain order for each stack, and identify parallel-safe work. Stop. Re-enter with `/sy:plan <epic>` after meaningful shipping evidence.
 
 End with a concise TL;DR: Epic key/link, active Tasks and `/sy:spec` kickoffs, blockers/parallel-safe set, and re-entry line.

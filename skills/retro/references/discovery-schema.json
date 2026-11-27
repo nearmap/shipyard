@@ -24,7 +24,12 @@
         "skills": {"type": "object", "additionalProperties": {"type": "integer"}},
         "agents": {"type": "object", "additionalProperties": {"type": "integer"}},
         "interventions": {"type": "object", "additionalProperties": {"type": "integer"}},
-        "tool_errors": {"type": "object", "additionalProperties": {"type": "integer"}}
+        "tool_errors": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "shipyard": {
+          "type": "object",
+          "required": ["sessions", "level"],
+          "properties": {"sessions": {"type": "integer"}, "level": {"enum": ["none", "light", "regular"]}}
+        }
       }
     },
     "prs": {

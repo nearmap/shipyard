@@ -228,6 +228,22 @@ def test_a_foreign_pid_domain_is_not_shown(tmp_path):
     assert result["skipped"]["foreign_domain"] == 1, result
 
 
+@LINUX
+def test_an_unreadable_machine_id_applies_no_domain_filter(tmp_path, monkeypatch):
+    real = Path.read_text
+
+    def refusing(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == Path("/etc/machine-id"):
+            raise PermissionError(self)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refusing)
+    _register(tmp_path / "home", "1.json", _row("foreign", pidDomain="linux:another-machine:pid:[1]"))
+    result = live_sessions.snapshot(tmp_path / "home", tmp_path / "scratch")
+    assert _only(result)["session_id"] == "foreign", result
+    assert result["skipped"]["foreign_domain"] == 0, result
+
+
 @POSIX
 def test_macos_checks_the_pid_only_and_has_no_domain_filter(tmp_path, monkeypatch):
     monkeypatch.setattr(live_sessions, "sys", SimpleNamespace(platform="darwin"))
@@ -456,6 +472,27 @@ def test_a_ship_state_with_a_date_that_does_not_exist_is_one_warning(tmp_path):
     result = live_sessions.snapshot(home, scratch)
     assert _only(result)["ship"] == {"phase_active": "BUILD", "gate_rounds_total": None, "pr": None}, result
     assert result["warnings"] == ["ship state PROJ-1 unreadable: ValueError"], result
+
+
+@POSIX
+def test_a_ship_state_file_that_vanishes_is_one_warning(tmp_path, monkeypatch):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:ship", "PROJ-1")])
+    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nphase_active: GATE\n")
+    gone = scratch / "PROJ-1" / "ship-state.yaml"
+    real = Path.read_text
+
+    def vanishing(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == gone:
+            raise FileNotFoundError(self)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", vanishing)
+    result = live_sessions.snapshot(home, scratch)
+    session = _only(result)
+    assert session["ticket"] == "PROJ-1" and session["ship"] is None, session
+    assert result["warnings"] == ["ship state PROJ-1 unreadable: FileNotFoundError"], result
 
 
 @POSIX

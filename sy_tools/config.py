@@ -96,38 +96,6 @@ def plugin_root() -> Path:
     return Path(root) if root else Path(__file__).resolve().parent.parent
 
 
-def plugin_build() -> str:
-    """The plugin's identity: its git HEAD when `CLAUDE_PLUGIN_ROOT` is a checkout, else its version.
-
-    Reads the pointer directly rather than through `plugin_root()`: without one there is no build to
-    identify, and `plugin_root()`'s package-parent fallback would report whichever checkout this file
-    happens to sit in as the session's plugin build.
-    """
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    if not root:
-        return "unknown"
-    try:
-        # Bounded and with `stdin` closed like every other git call here, and degrading to "unknown"
-        # rather than refusing: `fingerprint()` folds this in, so raising would make a wedged git break
-        # every caller of the digest instead of only widening it.
-        proc = subprocess.run(
-            ["git", "-C", root, "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=False,
-            stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        proc = None
-    if proc is not None and proc.returncode == 0:
-        return proc.stdout.strip()
-    manifest = Path(root) / ".claude-plugin" / "plugin.json"
-    if manifest.is_file():
-        try:
-            return str(json.loads(manifest.read_text(encoding="utf-8")).get("version", "unknown"))
-        except (OSError, json.JSONDecodeError):
-            return "unknown"
-    return "unknown"
-
-
 def repo_root() -> Path:
     """The consuming repository's root: Claude Code's own pointer when set, else derived from cwd.
 
@@ -644,18 +612,26 @@ def _logical_repo(start: Path) -> Path:
 
 
 def fingerprint() -> str:
-    """Digest of every resolved value *and* the plugin build, for cache invalidation and drift detection.
+    """Digest of every resolved value and the build inputs that steer them, for cache invalidation and drift detection.
 
-    The build identifier is in the digest, not only the values, because `/sy:ship`'s mid-run drift guard
-    compares this across a run to catch any config-relevant change — and `config/floors.json`'s model and
-    effort floors and `agents/*.md`'s `effort:` frontmatter are config-relevant without being resolved
-    values, so a digest over the values alone reported no drift when either changed under a running
-    session. The build identifier moves on a plugin upgrade or a checkout's own commit; it does not move
-    on an in-place edit under one build, so drift detection is build-granular, not file-granular.
+    `/sy:ship`'s mid-run drift guard compares this across a run. `config/*.json` and the `model:` and
+    `effort:` frontmatter of `agents/*.md` are config-relevant without being resolved values, so they are
+    hashed by content. A commit that touches only skills, docs or scripts leaves the digest alone, so it
+    never stops a ship run in flight.
     """
     values, _ = resolve()
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(f"{plugin_build()}|{canonical}".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{_build_inputs()}|{canonical}".encode()).hexdigest()[:16]
+
+
+def _build_inputs() -> str:
+    """The plugin files that change resolved behaviour without being resolved values, by content."""
+    root = plugin_root()
+    parts = [f"{f.name}:{f.read_text(encoding='utf-8')}" for f in sorted((root / "config").glob("*.json"))]
+    for agent in sorted((root / "agents").glob("*.md")):
+        lines = agent.read_text(encoding="utf-8").splitlines()
+        parts += [f"{agent.stem}:{line}" for line in lines if line.startswith(("model:", "effort:"))]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def validate() -> list[str]:

@@ -859,7 +859,7 @@ async def preflight(
 
     Canonical verb `preflight`. Never echoes a secret value. Run it once up front so a credential
     problem surfaces there instead of as a half-finished workflow. A success is cached for `ttl_hours`
-    against the plugin build, the tracker, the resolved config and the values of the secret variables
+    against the config build inputs, the tracker, the resolved config and the values of the secret variables
     the adapter declares, any of which changing invalidates it by itself. `cached` says which
     happened: `false` means the tracker was just read and the rest of the result is that read's
     report, `true` that a read inside the window already succeeded and nothing touched the network.
@@ -1300,13 +1300,11 @@ def _ship_state(tool: str, path: str, task: str) -> tuple[Path, dict[str, Any]]:
 
 @mcp.tool(name="fingerprint_config")
 def fingerprint_config() -> dict[str, Any]:
-    """A stable digest of every resolved configuration value and the plugin build, disclosing neither.
+    """A stable digest of every resolved configuration value and the build inputs that steer them, disclosing neither.
 
-    Equal digests mean neither the resolved configuration nor the plugin build changed, so a caller
-    holding one can tell whether an edit landed without re-reading anything. It moves with any resolved
-    value, derived ones included, and with the plugin's build identifier — the only cover for
-    `config/floors.json` and `agents/*.md`'s `effort:` frontmatter, config-relevant inputs that are not
-    resolved values: an in-place edit to either is invisible here until the build identifier moves.
+    Equal digests mean neither the resolved configuration nor `config/*.json` nor the `model:` and `effort:`
+    frontmatter of `agents/*.md` changed. A plugin commit that touches only skills, docs or scripts leaves
+    it alone.
     """
     try:
         return {"fingerprint": config.fingerprint()}

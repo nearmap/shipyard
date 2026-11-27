@@ -17,7 +17,7 @@ Steps 1–3 are one call — the `validate_config` tool — which names every of
 
 ## The liveness check is cached, not repeated
 
-A live read on every invocation is neither quick nor free, and what it verifies changes rarely, so the `preflight` tool caches its own result rather than re-reading: the cache is keyed on a fingerprint of the plugin build, the selected tracker, the resolved config, and any secret the adapter names, with a short TTL. A hit skips the network call entirely and is reported as cached; a miss — first run, changed config, expired TTL — runs the adapter's live check once and records success itself, so the next call gets the hit.
+A live read on every invocation is neither quick nor free, and what it verifies changes rarely, so the `preflight` tool caches its own result rather than re-reading: the cache is keyed on a fingerprint of the config build inputs (`config/*.json` and agent model and effort lines), the selected tracker, the resolved config, and any secret the adapter names, with a short TTL. A hit skips the network call entirely and is reported as cached; a miss — first run, changed config, expired TTL — runs the adapter's live check once and records success itself, so the next call gets the hit.
 
 The caller's whole obligation is therefore **one `preflight` call**. There is no separate check-then-record pair to sequence, forget half of, or get the order of wrong — the tool decides whether the live read is needed and records it when it runs. Only one case needs more than that: a caller that has just changed the config knows a still-fresh entry predates the change and is stale by construction, and passes `force` to demand the live read regardless of the cache.
 

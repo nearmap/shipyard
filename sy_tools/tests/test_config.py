@@ -1189,40 +1189,30 @@ def test_reload_picks_up_an_edit_and_reports_the_change(fixture_repo):
     assert config.reload()["changed"] is False, "a reload with no edit must report no change"
 
 
-def test_the_fingerprint_moves_with_the_plugin_build_and_not_only_with_the_values(
+def test_the_fingerprint_moves_with_config_build_inputs_and_not_with_other_plugin_files(
     fixture_repo, tmp_path, monkeypatch,
 ):
-    """`/sy:ship`'s mid-run drift guard compares this digest, so it has to cover the whole plugin.
-
-    `config/floors.json`'s model and effort floors and `agents/*.md`'s `effort:` frontmatter are
-    config-relevant without being resolved values: a digest over the values alone reported no drift when
-    either changed under a running session, which is the one thing that comparison exists to catch.
-    Coverage is build-granular: a plugin upgrade or a checkout's own commit moves the build identifier;
-    an in-place edit under one build does not.
-    """
-    values = config.resolve()[0]
-    first = config.fingerprint()
-    assert first == config.fingerprint(), "the digest must be stable for one build and one config"
-
-    plugin = tmp_path / "other-plugin"
-    (plugin / ".claude-plugin").mkdir(parents=True)
-    (plugin / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
+    """The drift guard compares this digest: a floors or agent-effort edit moves it, a skill edit does not."""
+    plugin = tmp_path / "plugin"
+    for d in ("config", "agents", "skills"):
+        (plugin / d).mkdir(parents=True)
+    (plugin / "config" / "floors.json").write_text('{"gate": "frontier"}', encoding="utf-8")
+    (plugin / "agents" / "gate.md").write_text("---\nname: gate\neffort: max\n---\nbody\n", encoding="utf-8")
+    config.resolve()
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin))
     try:
-        assert config.plugin_build() == "9.9.9", "a non-checkout plugin root must identify by version"
-        # No `reload()` between the two digests: resolution stays memoized, so the values below are
-        # provably the same object the first digest was taken over, and the build is the only difference.
-        assert config.resolve()[0] == values, "no resolved value changed, only the build"
-        assert config.fingerprint() != first, "a changed build must move the digest with identical values"
+        first = config.fingerprint()
+        (plugin / "skills" / "x.md").write_text("new prose", encoding="utf-8")
+        (plugin / "agents" / "gate.md").write_text("---\nname: gate\neffort: max\n---\nnew body\n", encoding="utf-8")
+        assert config.fingerprint() == first, "a skill or agent-body edit must not move the digest"
+        (plugin / "agents" / "gate.md").write_text("---\nname: gate\neffort: high\n---\nnew body\n", encoding="utf-8")
+        second = config.fingerprint()
+        assert second != first, "an agent effort edit must move the digest"
+        (plugin / "config" / "floors.json").write_text('{"gate": "standard"}', encoding="utf-8")
+        assert config.fingerprint() != second, "a floors edit must move the digest"
     finally:
-        # Restored inside the test, not left to teardown: the fixture's own teardown re-resolves, and it
-        # runs before `monkeypatch` unwinds, so a plugin root with no shipped defaults would refuse there.
+        # The fixture teardown re-resolves before monkeypatch unwinds; a root with no defaults would refuse.
         monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
-
-
-def test_no_plugin_root_resolves_to_a_stable_placeholder(monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-    assert config.plugin_build() == "unknown", "no CLAUDE_PLUGIN_ROOT must resolve to a stable placeholder"
 
 
 def test_the_root_resolving_git_call_does_not_inherit_the_servers_stdin(fixture_repo, monkeypatch):

@@ -111,7 +111,7 @@ AGENT_GRANTS: dict[str, frozenset[str]] = {
     }),
     "ship-gate": frozenset({
         "Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write", "agent_model", "check_env",
-        "fingerprint_config", "get_config", "scratch_dir", "set-status", "ship_state_update",
+        "fingerprint_config", "get_config", "scratch_dir", "set-status", "ship_gate_round", "ship_state_update",
     }),
     "ship-start": frozenset({
         "Agent", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write", "agent_model", "assign", "check_env",

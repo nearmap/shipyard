@@ -123,7 +123,7 @@ UNEXERCISED_TOOLS = frozenset({
     "reload_config", "check_env", "get_config", "show_config", "agent_model", "scratch_dir",
     "fingerprint_config", "usage_summarize", "worker_handbacks",
     "memory_add", "memory_search", "memory_list", "memory_refute",
-    "ship_state_update", "pr_comment",
+    "ship_state_update", "ship_gate_round", "ship_phase", "pr_comment",
 })
 """Tools the server registers that this scenario deliberately does not call.
 

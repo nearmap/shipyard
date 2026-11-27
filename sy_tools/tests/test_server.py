@@ -53,6 +53,8 @@ TOOL_NAMES = {
     "reload_config",
     "scratch_dir",
     "set-status",
+    "ship_gate_round",
+    "ship_phase",
     "ship_state_update",
     "show_config",
     "type-convert",

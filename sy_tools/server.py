@@ -29,7 +29,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from anyio import to_thread
 from mcp.server import MCPServer
@@ -37,7 +37,7 @@ from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
 from pydantic import AliasChoices, BeforeValidator, Field, ValidationError
 import yaml
 
-from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, tracker, usage
+from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, ship_events, tracker, usage
 from . import preflight as preflight_cache  # aliased: the `preflight` tool below shadows the module name
 from .atomic import atomic_write
 from .pr import comment as pr_comments
@@ -1154,15 +1154,25 @@ def scratch_dir(
     return {"path": str(directory)}
 
 
+StatePath = Annotated[
+    str,
+    Field(
+        description="Absolute path of one run's `ship-state.yaml`, which must already exist. Or give `task`.",
+        validation_alias=AliasChoices("path", "state_path"),
+    ),
+]
+StateTask = Annotated[
+    str,
+    Field(
+        description="The run's task key, e.g. PROJ-123: the `ship-state.yaml` in its scratch directory.",
+        validation_alias=AliasChoices("task", "task_key", "identifier", "issue", "key"),
+    ),
+]
+
+
 @mcp.tool(name="ship_state_update")
 def ship_state_update(
-    path: Annotated[
-        str,
-        Field(
-            description="Absolute path of one run's `ship-state.yaml`, which must already exist. Or give `task`.",
-            validation_alias=AliasChoices("path", "state_path"),
-        ),
-    ] = "",
+    path: StatePath = "",
     fields: Annotated[
         dict[str, Any] | None,
         BeforeValidator(_json_object),
@@ -1171,13 +1181,7 @@ def ship_state_update(
             validation_alias=AliasChoices("fields", "updates", "patch"),
         ),
     ] = None,
-    task: Annotated[
-        str,
-        Field(
-            description="The run's task key, e.g. PROJ-123: writes `ship-state.yaml` in its scratch directory.",
-            validation_alias=AliasChoices("task", "task_key", "identifier", "issue", "key"),
-        ),
-    ] = "",
+    task: StateTask = "",
 ) -> dict[str, Any]:
     """Merge named fields into a run's `ship-state.yaml`, leaving every other field in the file untouched.
 
@@ -1185,10 +1189,92 @@ def ship_state_update(
     stay comment-free. A path with no file at it is an error and never a new file: the ship START phase seeds
     the state, and creating one at a mistyped path strands the run's real state where nothing will read it.
     """
-    if bool(path.strip()) == bool(task.strip()):
-        raise ToolError("'ship_state_update' takes the state file by 'path' or by 'task', not both and not neither")
     if not fields:
         raise ToolError("'fields' is required and must name at least one field to write")
+    state, loaded = _ship_state("ship_state_update", path, task)
+    atomic_write(state, yaml.safe_dump({**loaded, **fields}, sort_keys=False))
+    return {"path": str(state), "fields": list(fields)}
+
+
+@mcp.tool(name="ship_gate_round")
+def ship_gate_round(
+    path: StatePath = "",
+    task: StateTask = "",
+    entry: Annotated[
+        dict[str, Any] | None,
+        BeforeValidator(_json_object),
+        Field(
+            description="Record a pass: `reviewed_sha`, `verdict`, `findings` (each `root_cause_key`, "
+            "`disposition` accepted|rejected|deferred, `severity`, `impact` breaking|non-breaking), and "
+            "`terminal_pass` when it is one. The tool numbers the round."
+        ),
+    ] = None,
+    phase_checkpoint: Annotated[
+        Any, Field(description="With `entry`: dispositioned vs pending findings and the pushed SHA.")
+    ] = None,
+    standards_reviewed_sha: Annotated[
+        str, Field(description="With `entry`: the pass's REVIEWED_SHA when its STANDARDS_SCOPE was full or since.")
+    ] = "",
+    human_thread_fix: Annotated[
+        bool | None, Field(description="Finish the last round: whether its fixes included a human-thread fix.")
+    ] = None,
+    next_round_causes: Annotated[
+        list[str] | None,
+        Field(description="With `human_thread_fix`: why another pass follows; `[]` when the round converged."),
+    ] = None,
+) -> dict[str, Any]:
+    """Record one GATE pass (`entry`), or finish the last one (`human_thread_fix`), and return what the loop reads next.
+
+    Recording appends the round to `gate_round_log` and bumps `gate_rounds_total` in one atomic write.
+    Either way the return carries the budget against `ship.escalation.max_gate_rounds` (substantive rounds
+    only), each root cause's count of rounds that accepted it, the breaking recurrences in the last round,
+    and whether the next pass is terminal. A transition the contract forbids is logged in `transition_log`
+    and still applied.
+    """
+    if (entry is None) == (human_thread_fix is None):
+        raise ToolError("'ship_gate_round' takes 'entry' to record a pass or 'human_thread_fix' to finish one")
+    state, loaded = _ship_state("ship_gate_round", path, task)
+    if entry is not None:
+        fields = ship_events.record_round(loaded, entry, phase_checkpoint, standards_reviewed_sha or None)
+    else:
+        fields = ship_events.finish_round(loaded, human_thread_fix, next_round_causes or [])
+    after = {**loaded, **fields}
+    atomic_write(state, yaml.safe_dump(after, sort_keys=False))
+    cap = int(config.get("ship.escalation.max_gate_rounds"))
+    return {"path": str(state), **ship_events.derive(after, cap), "illegal": _new_illegal(loaded, after)}
+
+
+@mcp.tool(name="ship_phase")
+def ship_phase(
+    action: Annotated[
+        Literal["dispatch", "return"],
+        Field(description="`dispatch` stamps `phase_active` before a worker runs; `return` clears it."),
+    ],
+    phase: Annotated[str, Field(description="START, BUILD or GATE.")],
+    path: StatePath = "",
+    task: StateTask = "",
+) -> dict[str, Any]:
+    """Stamp or clear `phase_active` around one ship worker dispatch.
+
+    The parent calls `dispatch` immediately before the worker and `return` as the first step of
+    processing what it returned. A dispatch over an unreturned phase, or a return of a phase that is not
+    active, is logged in `transition_log` and still applied.
+    """
+    state, loaded = _ship_state("ship_phase", path, task)
+    after = {**loaded, **ship_events.phase(loaded, action, phase.strip().upper())}
+    atomic_write(state, yaml.safe_dump(after, sort_keys=False))
+    return {"path": str(state), "phase_active": after["phase_active"], "illegal": _new_illegal(loaded, after)}
+
+
+def _new_illegal(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    log = after.get("transition_log") or []
+    return [i for e in log[len(before.get("transition_log") or []) :] for i in e["illegal"]]
+
+
+def _ship_state(tool: str, path: str, task: str) -> tuple[Path, dict[str, Any]]:
+    """The state file named by `path` or `task`, and its loaded mapping; never creates one."""
+    if bool(path.strip()) == bool(task.strip()):
+        raise ToolError(f"{tool!r} takes the state file by 'path' or by 'task', not both and not neither")
     state = Path(path) if path.strip() else config.scratch_dir(task) / "ship-state.yaml"
     path = str(state)
     if not state.is_absolute():
@@ -1205,8 +1291,7 @@ def ship_state_update(
         ) from None
     if not isinstance(loaded, dict):
         raise ToolError(f"ship state at {path!r} is not a mapping, so there is nothing to merge into")
-    atomic_write(state, yaml.safe_dump({**loaded, **fields}, sort_keys=False))
-    return {"path": path, "fields": list(fields)}
+    return state, loaded
 
 
 @mcp.tool(name="fingerprint_config")

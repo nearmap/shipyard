@@ -538,7 +538,7 @@ def test_a_stray_state_file_is_not_a_task_state_and_gives_no_warning(tmp_path):
     _ship_state(scratch, "PROJ-1", "phase_active: GATE\n")
     _raw_state(scratch, "shipyard/tmpx/s/T", "phase_active: [unclosed\n")
     _raw_state(scratch, "PROJ-1/backup", "task: PROJ-1\nphase_active: BUILD\n")
-    _raw_state(scratch, "PROJ-2", "task: PROJ-1\nphase_active: BUILD\n")
+    _raw_state(scratch, "PROJ-0", "task: PROJ-1\nphase_active: BUILD\n")
     result = live_sessions.snapshot(home, scratch)
     assert _only(result)["ship"]["phase_active"] == "GATE", result
     assert result["warnings"] == [], result
@@ -550,11 +550,31 @@ def test_a_state_without_a_string_task_is_not_joined(tmp_path):
     _register(home, "1.json", _row())
     _transcript(home, "s1", [_typed("/sy:ship", "42")])
     _raw_state(scratch, "42", "ship_session_id: s1\ntask: 42\nphase_active: GATE\n")
+    result = live_sessions.snapshot(home, scratch)
+    session = _only(result)
+    assert (session["ticket"], session["ship"], result["warnings"]) == ("42", None, []), result
+
+
+@POSIX
+def test_a_state_with_an_empty_or_missing_task_is_not_joined_by_its_owner(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
     _raw_state(scratch, "7", "ship_session_id: s1\ntask: ''\nphase_active: GATE\n")
     _raw_state(scratch, "8", "ship_session_id: s1\nphase_active: GATE\n")
     result = live_sessions.snapshot(home, scratch)
     session = _only(result)
-    assert (session["ticket"], session["ship"], result["warnings"]) == ("42", None, []), result
+    assert (session["ticket"], session["ship"], result["warnings"]) == (None, None, []), result
+
+
+@POSIX
+def test_an_unreadable_state_directly_under_a_scheme_directory_warns_once(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
+    _raw_state(scratch, "https:", "phase_active: [unclosed\n")
+    result = live_sessions.snapshot(home, scratch)
+    assert result["warnings"] == ["ship state https: unreadable: ParserError"], result
 
 
 @POSIX

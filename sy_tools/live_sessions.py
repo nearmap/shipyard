@@ -310,7 +310,7 @@ def _ship_states(scratch: Path, warnings: list[str]) -> list[tuple[str, dict[str
         if scheme.is_dir():
             candidates.extend(scheme.glob("**/ship-state.yaml"))
     states = []
-    for path in sorted(candidates):
+    for path in sorted(set(candidates)):
         label = path.parent.relative_to(scratch).as_posix()
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))

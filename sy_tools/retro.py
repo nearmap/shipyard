@@ -529,7 +529,10 @@ def _split_share(rows: list[dict[str, Any]], shares: Counter, prices: dict[str, 
 def _session_table(projects: Path, since: date, out: Path) -> list[dict[str, Any]]:
     cache = out / "sessions.jsonl"
     if cache.is_file():
-        return [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines() if line]
+        rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines() if line]
+        if all("tokens" in r for r in rows):
+            return rows
+        print(f"{cache} predates the token split; rebuilding it", file=sys.stderr)
     rows = sessions.collect(projects, datetime.combine(since, datetime.min.time(), tzinfo=UTC))
     _write_jsonl(cache, rows)
     return rows

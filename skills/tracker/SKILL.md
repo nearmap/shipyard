@@ -8,7 +8,7 @@ description: >-
 argument-hint: "[tracker operation or issue key]"
 ---
 
-Own tracker mechanics behind the contract in `${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`. Workflow skills (`/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`) decide *what* the lifecycle should do in canonical terms; this skill turns that into concrete calls against the selected tracker.
+Own tracker mechanics behind the contract in `${CLAUDE_PLUGIN_ROOT}/skills/tracker/CONTRACT.md`. Workflow skills (`/sy:plan`, `/sy:spec`, `/sy:ship`, `/sy:doit`, `/sy:spike`, `/sy:mvp`, `/sy:shutdown`) decide *what* the lifecycle should do in canonical terms; this skill turns that into concrete calls against the selected tracker.
 
 $ARGUMENTS
 

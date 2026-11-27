@@ -40,6 +40,7 @@ TOOL_NAMES = {
     "get-issue",
     "get_config",
     "link-parent",
+    "live_sessions",
     "memory_add",
     "memory_list",
     "memory_refute",
@@ -2321,3 +2322,121 @@ def test_appending_a_gate_round_round_trips_through_the_yaml_dump(ship_state):
     server.ship_state_update(str(ship_state), {"gate_round_log": [*rounds, appended]})
     written = yaml.safe_load(ship_state.read_text(encoding="utf-8"))["gate_round_log"]
     assert written == [*rounds, appended], f"the appended round did not survive the round trip: {written}"
+
+
+def _canned_sessions(monkeypatch, *tickets: str | None) -> None:
+    """`live_sessions` over a fixed snapshot, one row per ticket, so a test drives only the tool's own join."""
+    rows = [
+        {"pid": 100 + n, "session_id": f"s{n}", "name": None, "command": None, "last_step": None, "ticket": ticket}
+        for n, ticket in enumerate(tickets)
+    ]
+    snapshot = {"schema": "shipyard.live_sessions.v1", "sessions": rows, "skipped": {}, "warnings": []}
+    monkeypatch.setattr(server.session_snapshot, "snapshot", lambda home, scratch: snapshot)
+    monkeypatch.setattr(server.config, "scratch_root", lambda: Path("/work/scratch"))
+
+
+class _Children:
+    """A fake adapter answering `find_issues` with one page, recording what it was asked."""
+
+    def __init__(self, issues: list[dict], is_last: bool = True) -> None:
+        self.page = {"issues": issues, "count": len(issues), "is_last": is_last, "next_page_token": None}
+        self.calls: list[dict] = []
+
+    async def find_issues(self, **kwargs: Any) -> dict:
+        self.calls.append(kwargs)
+        return self.page
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(os.name != "posix", reason="signal 0 liveness is POSIX only")
+async def test_live_sessions_scrubs_conversation_text(tmp_path, monkeypatch):
+    """A credential typed into a conversation must not leave the server inside the command or last step."""
+    monkeypatch.setattr(server.config, "adapter_map", lambda: {"secret_env": ["SY_TEST_DECLARED"]})
+    monkeypatch.setenv("SY_TEST_DECLARED", "q7zx4m")
+    home = tmp_path / "home"
+    (home / "sessions").mkdir(parents=True)
+    (home / "sessions" / "1.json").write_text(
+        json.dumps({"pid": os.getpid(), "sessionId": "s1", "name": "deploy q7zx4m"}), encoding="utf-8"
+    )
+    (home / "projects" / "-work-repo").mkdir(parents=True)
+    typed = "<command-message>sy:ship</command-message>\n<command-name>/sy:ship</command-name>\n" \
+        "<command-args>PROJ-1 token q7zx4m</command-args>"
+    records = [
+        {"type": "user", "turnOrigin": "human", "message": {"content": typed}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "the key is q7zx4m"}]}},
+    ]
+    (home / "projects" / "-work-repo" / "s1.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+    )
+    monkeypatch.setattr(server.session_snapshot, "claude_home", lambda: home)
+    monkeypatch.setattr(server.config, "scratch_root", lambda: tmp_path / "scratch")
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("live_sessions", {})
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert "q7zx4m" not in json.dumps(payload), payload
+    row = payload["sessions"][0]
+    assert row["name"] == "deploy <REDACTED:SY_TEST_DECLARED>", row
+    assert row["command"] == "/sy:ship PROJ-1 token <REDACTED:SY_TEST_DECLARED>", row
+    assert row["last_step"] == "says: the key is <REDACTED:SY_TEST_DECLARED>", row
+    assert payload["scrub"]["redactions"] == 3, payload
+    assert "issues_without_session" not in payload, "no parent, so no tracker read"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("by", ["id", "url"])
+async def test_live_sessions_joins_sessions_to_child_issues(monkeypatch, by):
+    """A ticket matches an issue's `id` or its `url`, as exact strings, whichever form the tracker uses."""
+    issues = [
+        {"id": "PROJ-2", "url": "https://example.com/PROJ-2", "title": "Joined", "status": "in-progress"},
+        {"id": "PROJ-3", "url": "https://example.com/PROJ-3", "title": "Idle", "status": "ready"},
+    ]
+    _canned_sessions(monkeypatch, issues[0][by], None)
+    children = _Children(issues)
+    monkeypatch.setattr(server.tracker, "adapter", lambda: children)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("live_sessions", {"parent": "PROJ-1"})
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert children.calls == [{"parent": "PROJ-1", "limit": 100}], children.calls
+    assert [row["issue"] for row in payload["sessions"]] == [{"title": "Joined", "status": "in-progress"}, None]
+    assert payload["issues_without_session"] == [{"id": "PROJ-3", "title": "Idle", "status": "ready"}], payload
+    assert payload["warnings"] == [], payload
+
+
+@pytest.mark.anyio
+async def test_live_sessions_warns_when_more_child_issues_remain(monkeypatch):
+    _canned_sessions(monkeypatch, "PROJ-2")
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Children([], is_last=False))
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("live_sessions", {"parent": "PROJ-1"})
+    assert len(_payload(result)["warnings"]) == 1, _payload(result)
+
+
+@pytest.mark.anyio
+async def test_live_sessions_still_lists_sessions_when_the_tracker_fails(monkeypatch):
+    class _Failing:
+        async def find_issues(self, **kwargs: Any) -> dict:
+            raise server.tracker.TrackerError("tracker unreachable")
+
+    _canned_sessions(monkeypatch, "PROJ-2")
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Failing())
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("live_sessions", {"parent": "PROJ-1"})
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert [row["ticket"] for row in payload["sessions"]] == ["PROJ-2"], payload
+    assert payload["warnings"] == ["the child issues of PROJ-1 could not be read: tracker unreachable"], payload
+    assert "issues_without_session" not in payload, payload
+
+
+@pytest.mark.anyio
+async def test_live_sessions_reports_a_bad_scratch_root_as_a_tool_error(monkeypatch):
+    def refuse() -> Path:
+        raise server.config.ConfigError("scratch.dir resolved to 'relative', which is not absolute")
+
+    monkeypatch.setattr(server.config, "scratch_root", refuse)
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("live_sessions", {})
+    assert result.is_error is True
+    assert "not absolute" in _text(result)

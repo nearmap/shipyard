@@ -101,6 +101,14 @@ class TrackerAdapter(Protocol):
         """
         ...
 
+    def same_issue(self, a: str, b: str) -> bool:
+        """Whether two issue references name the same issue, however each tracker spells one.
+
+        Synchronous: it compares strings and reads no tracker. A caller joins two lists of references
+        with it rather than comparing them as strings, because one issue can arrive as an id, a short
+        form or a URL."""
+        ...
+
     async def set_status(self, issue: str, status: str) -> dict:
         """Move `issue` into the column this repo names for canonical `status`, and report the native name."""
         ...

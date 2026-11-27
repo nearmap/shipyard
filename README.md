@@ -46,6 +46,7 @@ Three disciplines shape the workflow: challenge the decision, independently insp
 | a hunch that needs data before it becomes a project | `/sy:spike …` |
 | an idea you want built and demoed fast, outside the merge standards, then harvested into real tasks | `/sy:mvp <task or objective>` |
 | a finished ticket's leftover worktrees, branches, and background tasks | `/sy:shutdown [task]` |
+| every Claude Code session running on this machine, and what each one is doing | `/sy:status [epic]` |
 | a branch that needs its PR created or tidied | `/sy:pr` |
 | a failing or pending CI run to diagnose | `/sy:ci` |
 | a decision, bug, or system you want to genuinely understand before acting on it | `/sy:explain …` |
@@ -145,7 +146,7 @@ shipyard/
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate gate-triage spec-gate img-inspector explain-author debate debater repo-{standards,review} ship-{start,build,gate}
   skills/
-    plan/ spec/ ship/ spike/ mvp/ shutdown/ pr/ ci/ standards/ tighten/ explain/ whiteboard/ doit/ help/ config/ init-repo/
+    plan/ spec/ ship/ spike/ mvp/ shutdown/ status/ pr/ ci/ standards/ tighten/ explain/ whiteboard/ doit/ help/ config/ init-repo/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
       jira/    ADAPTER.md + references/

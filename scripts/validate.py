@@ -22,7 +22,7 @@ EXPECTED_AGENTS = {
 }
 EXPECTED_SKILLS = {
     "plan", "spec", "ship", "spike", "pr", "ci", "standards", "tracker", "explain", "init-repo", "help",
-    "config", "tighten", "mvp", "shutdown", "whiteboard", "doit",
+    "config", "tighten", "mvp", "shutdown", "whiteboard", "status", "doit",
 }
 FORBIDDEN_OLD_NAMES = {"explore-sonnet", "seam-scout", "path-tracer", "slice-builder", "bug-hunter", "rev-gate"}
 

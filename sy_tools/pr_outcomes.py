@@ -24,6 +24,8 @@ Runner = Callable[[str, dict[str, Any]], dict[str, Any]]
 """Runs one GraphQL query with its variables and returns the response's `data` object."""
 
 PAGE_SIZE = 25
+GATEWAY_TIMEOUT = re.compile(r"HTTP 50[24]\b|unexpected end of JSON input")
+"""A page too heavy for the GraphQL budget fails with a gateway error; the pager halves the page and retries."""
 BODY_LIMIT = 2000
 FOLLOW_UP_WINDOW = timedelta(days=30)
 FAILED_ROLLUP = frozenset({"FAILURE", "ERROR"})
@@ -45,9 +47,7 @@ query($q: String!, $first: Int!, $after: String) {{
         mergeCommit {{ oid }}
         commits(first: 100) {{
           totalCount
-          nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 25) {{ totalCount nodes {{
-            __typename ... on CheckRun {{ name conclusion }} ... on StatusContext {{ context state }}
-          }} }} }} }} }}
+          nodes {{ commit {{ id oid statusCheckRollup {{ state }} }} }}
         }}
         reviews(first: 100) {{ totalCount nodes {{ id state createdAt body {_ACTOR} commit {{ oid }} }} }}
         reviewThreads(first: 50) {{ totalCount nodes {{ comments(first: 20) {{ totalCount nodes {{
@@ -59,6 +59,22 @@ query($q: String!, $first: Int!, $after: String) {{
   }}
 }}
 """
+
+FAILED_CHECKS_QUERY = """
+query($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Commit {
+    id
+    checkSuites(first: 50) { totalCount nodes {
+      checkRuns(first: 50, filterBy: {conclusions: [FAILURE, TIMED_OUT, STARTUP_FAILURE]}) {
+        totalCount nodes { name conclusion }
+      }
+    } }
+    status { contexts { context state } }
+  } }
+}
+"""
+"""Failed checks of failed commits only: a busy CI posts hundreds of checks per commit, too many for the search."""
+FAILED_CHECKS_BATCH = 50
 
 REVERT_QUERY = """
 query($q: String!, $first: Int!, $after: String) {
@@ -79,6 +95,7 @@ def fetch(repo: str, since: date, author: str = "@me", runner: Runner | None = N
     run = runner or run_graphql
     base = f"repo:{repo} is:pr created:>={since.isoformat()} sort:created-asc"
     prs = _search_all(run, PR_QUERY, f"{base} author:{author}")
+    _attach_failed_checks(run, prs)
     reverts = _search_all(run, REVERT_QUERY, f"{base} revert")
     return rows_from_prs(repo, prs, reverts)
 
@@ -195,7 +212,9 @@ def run_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     """Run one query through `gh api graphql` and return its `data`; raise with stderr on any failure."""
     args = ["gh", "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
-        if value is not None:
+        if isinstance(value, list):
+            args += [a for v in value for a in ("-f", f"{key}[]={v}")]
+        elif value is not None:
             args += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
     proc = subprocess.run(args, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
@@ -235,12 +254,49 @@ def _search_all(run: Runner, query: str, q: str) -> list[dict[str, Any]]:
     """Every node of a paginated search, skipping the non-PR nodes an ISSUE search can return."""
     nodes: list[dict[str, Any]] = []
     after = None
+    first = PAGE_SIZE
     while True:
-        page = run(query, {"q": q, "first": PAGE_SIZE, "after": after})["search"]
+        first, data = _shrinking(first, lambda n, a=after: run(query, {"q": q, "first": n, "after": a}), repr(q))
+        page = data["search"]
         nodes += [n for n in page["nodes"] if n]
         if not page["pageInfo"]["hasNextPage"]:
             return nodes
         after = page["pageInfo"]["endCursor"]
+
+
+def _attach_failed_checks(run: Runner, prs: list[dict[str, Any]]) -> None:
+    """Set `statusCheckRollup.contexts` in place, to the failed checks only, on every commit whose rollup failed."""
+    failed: dict[str, list[dict[str, Any]]] = {}
+    for pr in prs:
+        for n in pr["commits"]["nodes"]:
+            if (rollup := n["commit"]["statusCheckRollup"]) and rollup["state"] in FAILED_ROLLUP:
+                failed.setdefault(n["commit"]["id"], []).append(rollup)
+    ids, i, size = list(failed), 0, FAILED_CHECKS_BATCH
+    while i < len(ids):
+        size, data = _shrinking(size, lambda n, s=i: run(FAILED_CHECKS_QUERY, {"ids": ids[s : s + n]}), "failed checks")
+        for node in data["nodes"]:
+            suites = node["checkSuites"]
+            runs = [r for s in suites["nodes"] for r in s["checkRuns"]["nodes"]]
+            statuses = [s for s in (node["status"] or {}).get("contexts", []) if s["state"] in FAILED_CHECK]
+            cut = suites["totalCount"] > len(suites["nodes"]) or any(
+                s["checkRuns"]["totalCount"] > len(s["checkRuns"]["nodes"]) for s in suites["nodes"]
+            )
+            nodes = runs + statuses
+            for rollup in failed[node["id"]]:
+                rollup["contexts"] = {"totalCount": len(nodes) + cut, "nodes": nodes}
+        i += size
+
+
+def _shrinking(size: int, call: Callable[[int], dict[str, Any]], what: str) -> tuple[int, dict[str, Any]]:
+    """`call(size)`, halving `size` and retrying on a gateway error; returns the size that worked and its result."""
+    while True:
+        try:
+            return size, call(size)
+        except RuntimeError as e:
+            if size == 1 or not GATEWAY_TIMEOUT.search(str(e)):
+                raise
+            size //= 2
+            print(f"retrying {what} at size {size}: {e}", file=sys.stderr)
 
 
 def _failed_check_names(commit: dict[str, Any]) -> list[str]:
@@ -258,7 +314,7 @@ def _truncated(pr: dict[str, Any]) -> list[str]:
     if any(t["comments"]["totalCount"] > len(t["comments"]["nodes"]) for t in pr["reviewThreads"]["nodes"]):
         out.append("reviewThreads.comments")
     if any(
-        (r := n["commit"]["statusCheckRollup"]) and r["contexts"]["totalCount"] > len(r["contexts"]["nodes"])
+        (ctx := (n["commit"]["statusCheckRollup"] or {}).get("contexts")) and ctx["totalCount"] > len(ctx["nodes"])
         for n in pr["commits"]["nodes"]
     ):
         out.append("commits.contexts")

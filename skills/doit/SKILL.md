@@ -53,5 +53,5 @@ Request changes revises the draft and returns to this step. Take it to `/sy:spec
 ## 5. Post and ship
 
 1. When the goal is new, create the Task under its Epic and read it back.
-2. Post the plan, verify that it is the highest version, and set the Task `ready`, as `/sy:spec` §7 Step 2 items 2-4 do.
+2. Post the plan, verify that it is the highest version, and set the Task `ready`, as `/sy:spec` §7 Step 2 items 2-4 do. The heading block gets one more line, `Approach: doit`, after `Supersedes:` when that line is present. It lets `/sy:retro` report doit runs apart from `/sy:spec` runs.
 3. Read `${CLAUDE_PLUGIN_ROOT}/skills/ship/SKILL.md` and follow it in full for the Task key, starting with its preflight. From here `/sy:ship` owns the run, including every question it asks and its merge rule.

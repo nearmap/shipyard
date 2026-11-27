@@ -1713,6 +1713,8 @@ def check_invariants(errors: list[str]) -> None:
     # ship skill unchanged is what keeps one shape for plans, PRs and escalations.
     if "## 2. Route bigger work to /sy:spec" not in doit or "skills/ship/SKILL.md" not in doit:
         fail("doit must route bigger work to /sy:spec and ship through the ship skill unchanged", errors)
+    if "`Approach: doit`" not in doit:
+        fail("doit must mark its plan heading with `Approach: doit` so retro can report it by approach", errors)
     if "preflight.md" not in doit:
         fail("doit writes the tracker and must run the tracker preflight first", errors)
 

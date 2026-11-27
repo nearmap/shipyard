@@ -311,7 +311,9 @@ def report(out: Path) -> dict[str, Any]:
     for p in disc.get("patterns") or []:
         md += [f"- {p['id']} [{p['goal']}] {p['pattern']}", f"  - evidence: {', '.join(p['evidence'])}"]
         md.append(f"  - why: {p['why']}")
-    md += ["", "## Control, Shipyard use, pain points"]
+    md += ["", "## Vision closeness, control, Shipyard use, pain points"]
+    if closeness := disc.get("vision_closeness"):
+        md.append(f"- vision_closeness: {closeness['rating']}; why: {closeness['why']}")
     md += [f"- control/{c['stage']}: {c['wants']}" for c in disc.get("control") or [] if isinstance(c, dict)]
     usage = disc.get("shipyard_usage") or {}
     for k in ("tried", "skipped"):
@@ -438,12 +440,14 @@ def draft_discovery(
         "analysis": None,
         "patterns": [],
         "shipyard_usage": {"tried": [], "skipped": []},
+        "vision_closeness": {"rating": "unknown", "why": "unknown"},
         "control": [],
         "pain_points": [],
         "extra_fields": {},
         "unknown": [
             "analysis",
             "patterns[].why",
+            "vision_closeness",
             *(["shipyard_usage"] if sy_sessions else []),
             "control",
             "pain_points",

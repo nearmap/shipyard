@@ -11,6 +11,7 @@
     "sessions",
     "prs",
     "shipyard_usage",
+    "vision_closeness",
     "control",
     "pain_points",
     "unknown",
@@ -328,6 +329,29 @@
               }
             }
           }
+        }
+      }
+    },
+    "vision_closeness": {
+      "description": "Interview: how close the person feels agentic coding is to the vision for their own work, and why, in their words.",
+      "type": "object",
+      "required": [
+        "rating",
+        "why"
+      ],
+      "properties": {
+        "rating": {
+          "enum": [
+            "there",
+            "close",
+            "halfway",
+            "far",
+            "not_yet_useful",
+            "unknown"
+          ]
+        },
+        "why": {
+          "type": "string"
         }
       }
     },

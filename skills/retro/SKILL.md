@@ -55,11 +55,11 @@ Record each pattern in `discovery.json` `patterns` as `{id, goal, pattern, evide
 
 ## 5. Interview: what stands in the way of each goal
 
-Show `analysis.md` in full. Then ask, one `AskUserQuestion` per turn, at most 16 in all, keeping 4 for the person's own follow-ups:
+Ask one `AskUserQuestion` per turn, at most 16 in all, keeping 4 for the person's own follow-ups:
 
-1. First, whether the analysis misreads anything. Correct `analysis.md` and the patterns before going on.
-2. Then one question per pattern, highest-cost or most-repeated first: what stands in the way of the goal it touches, or what makes it work. Name the goal in plain words, the pattern and its evidence. Ask about the work, never the person: the obstacle may sit in the tools, the repository, the platform, the team's habits or the time available. Offer as options the likely obstacles the evidence suggests, including ones outside the person's control, never as the only answers. Record the answer, in the person's words, as that pattern's `why`.
-3. Then one question on the vision as a whole: what most gets in the way of leading a team of agents this way. Record each obstacle named as a `pain_points` entry with `source: interview`.
+1. First, before showing anything of the analysis, so it does not anchor the answer: state the vision in two plain sentences, then ask how close the person feels agentic coding is to it for their own work. Options: `there`, `close`, `halfway`, `far`, `not_yet_useful`. Invite them to say why, in a note or in Other. Record `vision_closeness` as `{rating, why}`, the why in their words, or `unknown` when they give none. Each obstacle the why names also becomes a `pain_points` entry with `source: interview`.
+2. Then show `analysis.md` and ask whether it misreads anything. Correct `analysis.md` and the patterns before going on.
+3. Then one question per pattern, highest-cost or most-repeated first: what stands in the way of the goal it touches, or what makes it work. Name the goal in plain words, the pattern and its evidence. Ask about the work, never the person: the obstacle may sit in the tools, the repository, the platform, the team's habits or the time available. Offer as options the likely obstacles the evidence suggests, including ones outside the person's control, never as the only answers. Record the answer, in the person's words, as that pattern's `why`.
 4. If questions remain: where the person wants to decide rather than delegate (`control`), and which Shipyard skills they skipped, and why (`shipyard_usage`).
 
 Word every question from what the person did, in their own tools' terms. `sessions.shipyard.level` in `discovery.json` decides how much Shipyard enters it: at `regular`, ask as listed; at `light`, ask about only the skills they ran, as a first impression; at `none`, leave `shipyard_usage` empty (not `unknown`) and name no Shipyard skill, path or term in any question.
@@ -70,7 +70,7 @@ A field the person does not answer stays `unknown`. Never fill one from a guess.
 
 ## 6. Write
 
-Add each answer under its pattern in `analysis.md`, as a line starting `Why:`. In `discovery.json` (schema: `references/discovery-schema.json`; `discover.extra_fields` adds a repository's own fields), fill `patterns[].why`, `control`, `shipyard_usage`, and `pain_points`: each pattern the person calls a pain, with its evidence and `source: interview`. Report by approach and by goal; never rank the person. Then write the agent companion beside `analysis.md`:
+Add each answer under its pattern in `analysis.md`, as a line starting `Why:`. In `discovery.json` (schema: `references/discovery-schema.json`; `discover.extra_fields` adds a repository's own fields), fill `patterns[].why`, `vision_closeness`, `control`, `shipyard_usage`, and `pain_points`: each pattern the person calls a pain, with its evidence and `source: interview`. Report by approach and by goal; never rank the person. Then write the agent companion beside `analysis.md`:
 
 ```
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro report --out <dir>

@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any
 
 import yaml
@@ -45,11 +46,15 @@ def claude_home() -> Path:
 def snapshot(home: Path, scratch: Path) -> dict[str, Any]:
     """Every live session in `home`'s registry, joined to its conversation file and `/sy:ship` state.
 
-    Returns `{"schema", "sessions", "skipped", "warnings"}`. `skipped` counts the registry rows left out:
+    Returns `{"schema", "generated_at", "sessions", "skipped", "warnings"}`. `generated_at` is the UTC time
+    of the read, and each row's `state_seconds` is how long it has been in its state at that time, or
+    `None` when the registry gives no time. `skipped` counts the registry rows left out:
     `invalid` (not a session record), `foreign_domain` (another PID namespace or machine) and `dead`
     (the process is gone or its PID was reused). A session whose `sessionId` has a newer live row
     carries `stale_copy_of` set to that row's PID.
     """
+    # One clock read, so `generated_at` and every `state_seconds` describe the same moment.
+    now = time.time()
     warnings: list[str] = []
     skipped = {"invalid": 0, "foreign_domain": 0, "dead": 0}
     domain = _own_domain()
@@ -91,6 +96,7 @@ def snapshot(home: Path, scratch: Path) -> dict[str, Any]:
             "name": _text(record.get("name")),
             "state": _text(record.get("status")),
             "state_since": _iso(record.get("statusUpdatedAt")),
+            "state_seconds": _elapsed(now, record.get("statusUpdatedAt")),
             "started_at": _iso(record.get("startedAt")),
             "entrypoint": _text(record.get("entrypoint")),
             "cwd": _text(record.get("cwd")),
@@ -101,7 +107,10 @@ def snapshot(home: Path, scratch: Path) -> dict[str, Any]:
             "ship": ship,
             "last_step": last_step,
         })
-    return {"schema": SCHEMA, "sessions": sessions, "skipped": skipped, "warnings": warnings}
+    return {
+        "schema": SCHEMA, "generated_at": _iso(now * 1000), "sessions": sessions, "skipped": skipped,
+        "warnings": warnings,
+    }
 
 
 def _registry(directory: Path, skipped: dict[str, int], warnings: list[str]) -> list[dict[str, Any]]:
@@ -323,6 +332,16 @@ def _epoch(record: dict[str, Any]) -> int | float:
     # float would raise `OverflowError`.
     value = record.get("startedAt")
     return value if isinstance(value, int | float) and not isinstance(value, bool) else float("-inf")
+
+
+def _elapsed(now: float, milliseconds: object) -> int | None:
+    """Whole seconds from `milliseconds` to `now`, never below 0, or `None` when it is not a usable number."""
+    if not isinstance(milliseconds, int | float) or isinstance(milliseconds, bool):
+        return None
+    try:
+        return max(0, int(now - milliseconds / 1000))
+    except (OverflowError, ValueError):  # too large for a float, infinite, or NaN
+        return None
 
 
 def _iso(milliseconds: object) -> str | None:

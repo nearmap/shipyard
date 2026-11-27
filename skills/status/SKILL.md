@@ -13,7 +13,7 @@ Resolve the tool's exposed name from the tools actually available to you rather 
 $ARGUMENTS
 
 1. Call `live_sessions` with `parent` set to the epic in the arguments. With no arguments, pass an empty `parent`.
-2. Print one Markdown table with one row per session. Columns: PID, name, state and for how long, started, command, ticket, issue status (only when the result has issues), ship phase and gate round, PR, last step.
+2. Print one Markdown table with one row per session. Columns: PID, name, state and for how long (`state_seconds`), started, command, ticket, issue status (only when the result has issues), ship phase and gate round, PR, last step.
 3. Put current rows first, in the order waiting, busy, idle. Put stale copies last, with "stale copy of <PID>: safe to stop by PID" in the state cell.
 4. When `issues_without_session` is not empty, list those Tasks under the heading "Tasks without a live session".
 5. Print one line per warning. Print nothing else.

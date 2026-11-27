@@ -72,7 +72,8 @@ def _only(result: dict[str, Any]) -> dict[str, Any]:
 
 
 @POSIX
-def test_a_live_session_is_reported_with_its_registry_fields(tmp_path):
+def test_a_live_session_is_reported_with_its_registry_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_sessions.time, "time", lambda: 1_767_225_690.9)
     record = _row()
     if sys.platform == "linux":
         record["procStart"] = _proc_start(os.getpid())
@@ -80,11 +81,27 @@ def test_a_live_session_is_reported_with_its_registry_fields(tmp_path):
     session = _only(live_sessions.snapshot(tmp_path / "home", tmp_path / "scratch"))
     assert session == {
         "pid": os.getpid(), "session_id": "s1", "name": "fix the parser", "state": "busy",
-        "state_since": "2026-01-01T00:01:00Z", "started_at": "2026-01-01T00:00:00Z", "entrypoint": "cli",
+        "state_since": "2026-01-01T00:01:00Z", "state_seconds": 30, "started_at": "2026-01-01T00:00:00Z",
+        "entrypoint": "cli",
         "cwd": "/work/repo",
         "liveness": "pid-and-start-time" if sys.platform == "linux" else "pid-only",
         "stale_copy_of": None, "command": None, "ticket": None, "ship": None, "last_step": None,
     }
+
+
+@POSIX
+def test_the_time_in_a_state_is_measured_from_one_clock_read(tmp_path, monkeypatch):
+    """At 00:01:30.9 a state set at 00:01:00 is 30 s old; a state set later is 0 s old, and none is `None`."""
+    monkeypatch.setattr(live_sessions.time, "time", lambda: 1_767_225_690.9)
+    home = tmp_path / "home"
+    _register(home, "a.json", _row("old"))
+    _register(home, "b.json", _row("future", statusUpdatedAt=1_767_225_700_000))
+    _register(home, "c.json", _row("none", statusUpdatedAt=None))
+    _register(home, "d.json", _row("huge", statusUpdatedAt=10**400))
+    result = live_sessions.snapshot(home, tmp_path / "scratch")
+    assert result["generated_at"] == "2026-01-01T00:01:30Z", result
+    seconds = {row["session_id"]: row["state_seconds"] for row in result["sessions"]}
+    assert seconds == {"old": 30, "future": 0, "none": None, "huge": None}, result
 
 
 @POSIX

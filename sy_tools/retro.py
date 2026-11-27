@@ -7,7 +7,7 @@ writes comment batches, and drafts `discovery.json`. `fold-tags --out DIR` folds
 
 import argparse
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 import json
 from pathlib import Path
 import re
@@ -70,7 +70,13 @@ def discover(rows: list[dict[str, Any]], repos: list[str], since: date, out: Pat
     batches = write_comment_batches(prs, out / "comments")
     draft = draft_discovery(rows, prs, links, repos, since)
     (out / "discovery.json").write_text(json.dumps(draft, indent=1) + "\n", encoding="utf-8")
-    return {"sessions": len(rows), "prs": len(prs), "linked_prs": len(links), "flags": len(flags), "comment_batches": batches}
+    return {
+        "sessions": len(rows),
+        "prs": len(prs),
+        "linked_prs": len(links),
+        "flags": len(flags),
+        "comment_batches": batches,
+    }
 
 
 def link(rows: list[dict[str, Any]], prs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
@@ -137,7 +143,12 @@ def flag(
     by_id = {r["session_id"]: r for r in rows}
     ranked = [sid for sid, _ in score.most_common() if sid in by_id][:SESSION_BUDGET]
     return [
-        {"session_id": sid, "score": round(score[sid], 1), "reasons": reasons[sid], "project_dir": by_id[sid]["project_dir"]}
+        {
+            "session_id": sid,
+            "score": round(score[sid], 1),
+            "reasons": reasons[sid],
+            "project_dir": by_id[sid]["project_dir"],
+        }
         for sid in ranked
     ]
 
@@ -164,14 +175,21 @@ def write_comment_batches(prs: list[dict[str, Any]], comments_dir: Path) -> int:
         for c in p.get("comments") or []:
             if c.get("author") != p.get("author"):
                 by_repo.setdefault(p["repo"], []).append(
-                    {"id": f"{_ref(p)}/{c['id']}", "path": c.get("path"), "body": c["body"], "author_kind": c["author_kind"]}
+                    {
+                        "id": f"{_ref(p)}/{c['id']}",
+                        "path": c.get("path"),
+                        "body": c["body"],
+                        "author_kind": c["author_kind"],
+                    }
                 )
     n = 0
     for repo, items in by_repo.items():
         for i in range(0, len(items), COMMENT_BATCH):
             n += 1
             name = f"batch-{repo.replace('/', '__')}-{i // COMMENT_BATCH + 1:03d}.json"
-            (comments_dir / name).write_text(json.dumps(items[i : i + COMMENT_BATCH], indent=1) + "\n", encoding="utf-8")
+            (comments_dir / name).write_text(
+                json.dumps(items[i : i + COMMENT_BATCH], indent=1) + "\n", encoding="utf-8"
+            )
     return n
 
 
@@ -234,7 +252,7 @@ def draft_discovery(
         )
     return {
         "schema": "shipyard.discovery.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "window": {"since": since.isoformat(), "until": date.today().isoformat()},
         "repos": repos,
         "sessions": {
@@ -249,7 +267,13 @@ def draft_discovery(
         "control": [],
         "pain_points": [],
         "extra_fields": {},
-        "unknown": ["prs[].approach", "prs[].stages", *(["shipyard_usage"] if sy_sessions else []), "control", "pain_points"],
+        "unknown": [
+            "prs[].approach",
+            "prs[].stages",
+            *(["shipyard_usage"] if sy_sessions else []),
+            "control",
+            "pain_points",
+        ],
         "approval": {"status": "draft", "approved_at": None, "redactions": 0},
     }
 
@@ -269,7 +293,7 @@ def _session_table(projects: Path, since: date, out: Path) -> list[dict[str, Any
     cache = out / "sessions.jsonl"
     if cache.is_file():
         return [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines() if line]
-    rows = sessions.collect(projects, datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc))
+    rows = sessions.collect(projects, datetime.combine(since, datetime.min.time(), tzinfo=UTC))
     _write_jsonl(cache, rows)
     return rows
 

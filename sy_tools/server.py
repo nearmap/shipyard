@@ -415,7 +415,7 @@ async def pr_comment(
     session: Annotated[
         str,
         Field(
-            description="Your Claude Code session id: exactly what `echo \"$CLAUDE_CODE_SESSION_ID\"` prints in "
+            description='Your Claude Code session id: exactly what `echo "$CLAUDE_CODE_SESSION_ID"` prints in '
             "your own Bash tool. A hook denies any other value."
         ),
     ],
@@ -1233,7 +1233,9 @@ def ship_gate_round(
     and still applied.
     """
     if entry is not None and human_thread_fix is not None:
-        raise ToolError("'ship_gate_round' takes 'entry' to record a pass or 'human_thread_fix' to finish one, not both")
+        raise ToolError(
+            "'ship_gate_round' takes 'entry' to record a pass or 'human_thread_fix' to finish one, not both"
+        )
     state, loaded = _ship_state("ship_gate_round", path, task)
     if entry is not None:
         fields = ship_events.record_round(loaded, entry, phase_checkpoint, standards_reviewed_sha or None)

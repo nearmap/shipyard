@@ -64,7 +64,9 @@ def test_a_breaking_recurrence_needs_two_earlier_accepting_rounds():
 def test_an_illegal_transition_is_logged_and_still_applied(state):
     p = str(state)
     out = server.ship_phase("dispatch", "BUILD", p)
-    assert out["phase_active"] == "BUILD" and out["illegal"] == ["SHIP-P02 dispatch BUILD while GATE was never returned"]
+    assert out["phase_active"] == "BUILD" and out["illegal"] == [
+        "SHIP-P02 dispatch BUILD while GATE was never returned"
+    ]
     out = server.ship_phase("return", "gate", p)
     assert out["phase_active"] is None and out["illegal"] == ["SHIP-P03 return GATE while phase_active is 'BUILD'"]
     out = server.ship_gate_round(p, entry={"verdict": "PASS"})

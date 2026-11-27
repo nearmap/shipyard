@@ -27,6 +27,7 @@ The patterns below are word-bounded, so a tracker name buried in an identifier (
 one word to `\b` and slips a scan that a bare `acli` would fail; the corpora therefore use neutral
 names (`EXAMPLE_TOKEN`) rather than relying on that.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -50,11 +51,18 @@ PR_ZONES = (MCP_ROOT / "pr", MCP_ROOT / "tests" / "pr")
 # Per-token rather than a whole-file `_exempt()` entry on purpose: widening `_exempt()` would let every
 # tracker name into the guard directories at once and gut the neutral-stand-in discipline above.
 TRACKER_TOKENS: list[tuple[re.Pattern[str], tuple[Path, ...] | None]] = [
-    (re.compile(p, f), zone) for p, f, zone in [
-        (r"\bjira\b", re.I, None), (r"\bacli\b", re.I, None), (r"\batlassian\b", re.I, None),
-        (r"\.atlassian\.net", 0, None), (r"\bADF\b", re.I, None),
-        (r"\bgithub\b", re.I, None), (r"\bgh\b", re.I, (*GUARDS_ZONES, *PR_ZONES, PR_OUTCOMES)), (r"\bgist\b", re.I, None),
-        (r"\bissueType\b", 0, None), (r"\bsubtask\b", re.I, None),
+    (re.compile(p, f), zone)
+    for p, f, zone in [
+        (r"\bjira\b", re.I, None),
+        (r"\bacli\b", re.I, None),
+        (r"\batlassian\b", re.I, None),
+        (r"\.atlassian\.net", 0, None),
+        (r"\bADF\b", re.I, None),
+        (r"\bgithub\b", re.I, None),
+        (r"\bgh\b", re.I, (*GUARDS_ZONES, *PR_ZONES, PR_OUTCOMES)),
+        (r"\bgist\b", re.I, None),
+        (r"\bissueType\b", 0, None),
+        (r"\bsubtask\b", re.I, None),
     ]
 ]
 

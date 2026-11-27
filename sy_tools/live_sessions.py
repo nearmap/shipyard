@@ -2,8 +2,8 @@
 
 `snapshot()` reads the session registry under the Claude config home, keeps each row whose process is
 alive, and joins it to the newest `/sy:` command in its conversation file, to its last step, and to any
-`/sy:ship` state anywhere under the scratch root. A state is keyed by its structured `task` field,
-else by its path relative to the scratch root; no path is ever built from a typed ticket.
+`/sy:ship` state under the scratch root. A state is keyed by its structured `task` field and counts only at the
+directory `scratch_dir` gives that task; no path is ever built from a typed ticket.
 It writes nothing, creates nothing, and sends no signal except `kill(pid, 0)` on POSIX.
 One unreadable file skips that one item with a warning and never ends the read.
 
@@ -297,11 +297,20 @@ def _describe(block: object) -> str | None:
 
 
 def _ship_states(scratch: Path, warnings: list[str]) -> list[tuple[str, dict[str, Any]]]:
+    """The real task states under the scratch root, each keyed by its `task` field.
+
+    Only two shapes are searched: `<task>/ship-state.yaml`, and below a top-level `<scheme>:` directory,
+    where `scratch_dir` nests the task directory of a URL key. A state counts only when its `task` is a
+    non-empty string and its directory is the one `scratch_dir` gives that task; any other file is skipped
+    without a warning."""
     if not scratch.is_dir():
         return []
+    candidates = list(scratch.glob("*/ship-state.yaml"))
+    for scheme in scratch.glob("*:"):
+        if scheme.is_dir():
+            candidates.extend(scheme.glob("**/ship-state.yaml"))
     states = []
-    # A task keyed by a URL nests its scratch directory, so the search is recursive.
-    for path in sorted(scratch.rglob("ship-state.yaml")):
+    for path in sorted(candidates):
         label = path.parent.relative_to(scratch).as_posix()
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -313,7 +322,8 @@ def _ship_states(scratch: Path, warnings: list[str]) -> list[tuple[str, dict[str
             warnings.append(f"ship state {label} is not a mapping")
             continue
         task = loaded.get("task")
-        states.append((task if isinstance(task, str) and task else label, loaded))
+        if isinstance(task, str) and task and path.parent == scratch / Path(task):
+            states.append((task, loaded))
     return states
 
 

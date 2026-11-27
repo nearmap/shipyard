@@ -486,7 +486,12 @@ def test_liveness_reads_the_start_time_from_a_literal_proc_stat(monkeypatch):
 
 def _ship_state(scratch: Path, ticket: str, body: str) -> None:
     (scratch / ticket).mkdir(parents=True)
-    (scratch / ticket / "ship-state.yaml").write_text(body, encoding="utf-8")
+    (scratch / ticket / "ship-state.yaml").write_text(f"task: {ticket}\n{body}", encoding="utf-8")
+
+
+def _raw_state(scratch: Path, relative: str, body: str) -> None:
+    (scratch / relative).mkdir(parents=True)
+    (scratch / relative / "ship-state.yaml").write_text(body, encoding="utf-8")
 
 
 @POSIX
@@ -515,10 +520,10 @@ def test_a_spec_goal_in_words_names_no_ticket_and_keeps_the_owned_state(tmp_path
 @POSIX
 def test_a_state_in_a_nested_task_directory_joins_by_its_task_field(tmp_path):
     home, scratch = tmp_path / "home", tmp_path / "scratch"
-    url = "https://github.com/acme/repo/issues/7"
+    url = "https://tracker.example/acme/repo/issues/7"
     _register(home, "1.json", _row())
     _transcript(home, "s1", [_typed("/sy:ship", url)])
-    nested = scratch / "github.com" / "acme" / "repo" / "7"
+    nested = scratch / Path(url)
     nested.mkdir(parents=True)
     (nested / "ship-state.yaml").write_text(f"task: {url}\nphase_active: GATE\n", encoding="utf-8")
     session = _only(live_sessions.snapshot(home, scratch))
@@ -526,14 +531,30 @@ def test_a_state_in_a_nested_task_directory_joins_by_its_task_field(tmp_path):
 
 
 @POSIX
-def test_a_nested_state_without_a_task_field_is_keyed_by_its_relative_path(tmp_path):
+def test_a_stray_state_file_is_not_a_task_state_and_gives_no_warning(tmp_path):
     home, scratch = tmp_path / "home", tmp_path / "scratch"
     _register(home, "1.json", _row())
-    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
-    nested = scratch / "a" / "b"
-    nested.mkdir(parents=True)
-    (nested / "ship-state.yaml").write_text("ship_session_id: s1\nphase_active: BUILD\n", encoding="utf-8")
-    assert _only(live_sessions.snapshot(home, scratch))["ticket"] == "a/b"
+    _transcript(home, "s1", [_typed("/sy:ship", "PROJ-1")])
+    _ship_state(scratch, "PROJ-1", "phase_active: GATE\n")
+    _raw_state(scratch, "shipyard/tmpx/s/T", "phase_active: [unclosed\n")
+    _raw_state(scratch, "PROJ-1/backup", "task: PROJ-1\nphase_active: BUILD\n")
+    _raw_state(scratch, "PROJ-2", "task: PROJ-1\nphase_active: BUILD\n")
+    result = live_sessions.snapshot(home, scratch)
+    assert _only(result)["ship"]["phase_active"] == "GATE", result
+    assert result["warnings"] == [], result
+
+
+@POSIX
+def test_a_state_without_a_string_task_is_not_joined(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:ship", "42")])
+    _raw_state(scratch, "42", "ship_session_id: s1\ntask: 42\nphase_active: GATE\n")
+    _raw_state(scratch, "7", "ship_session_id: s1\ntask: ''\nphase_active: GATE\n")
+    _raw_state(scratch, "8", "ship_session_id: s1\nphase_active: GATE\n")
+    result = live_sessions.snapshot(home, scratch)
+    session = _only(result)
+    assert (session["ticket"], session["ship"], result["warnings"]) == ("42", None, []), result
 
 
 @POSIX
@@ -566,7 +587,7 @@ def test_ship_state_falls_back_to_the_command_ticket_and_skips_a_bad_file(tmp_pa
     _transcript(home, "s1", [_typed("/sy:ship", "PROJ-2")])
     _ship_state(scratch, "PROJ-1", "phase_active: [unclosed\n")
     _ship_state(scratch, "PROJ-2", "phase_active: BUILD\ngate_rounds_total: 0\n")
-    _ship_state(scratch, "PROJ-3", "- a list\n")
+    _raw_state(scratch, "PROJ-3", "- a list\n")
     result = live_sessions.snapshot(home, scratch)
     session = _only(result)
     assert session["ticket"] == "PROJ-2", session

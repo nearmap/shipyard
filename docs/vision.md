@@ -10,7 +10,7 @@ Agents now write much of our code, and the share grows every month. This frees e
 
 ## Goals
 
-Each goal has an ID. `/sy:retro` scores a person's sessions against them, one section per goal, and the interview asks why each pattern exists.
+Each goal has an ID. `/sy:retro` scores a person's sessions against them, one section per goal, and the interview asks what stands in the way of each goal.
 
 ### Product lens: what the team gets
 

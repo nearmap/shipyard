@@ -9,7 +9,7 @@ argument-hint: "[discover] [--since YYYY-MM-DD]"
 disable-model-invocation: true
 ---
 
-Discovery mode: evidence of how one person works, linked to what their PRs did, scored against the goals in `${CLAUDE_PLUGIN_ROOT}/docs/vision.md`. Analysis comes first and the interview asks why its patterns exist. Nothing here reads the tracker, and nothing leaves this machine until the person approves it.
+Discovery mode: evidence of how one person works, linked to what their PRs did, scored against the goals in `${CLAUDE_PLUGIN_ROOT}/docs/vision.md`. Analysis comes first; the interview then asks what stands in the way of each goal. Nothing here reads the tracker, and nothing leaves this machine until the person approves it.
 
 $ARGUMENTS
 
@@ -49,17 +49,18 @@ In steps 2 and 3, keep at most the resolved `limits.max_depth_agents` dispatches
 
 ## 4. Write the analysis
 
-Read `analysis.json` and `${CLAUDE_PLUGIN_ROOT}/docs/vision.md`, then write `analysis.md`, at most 700 words. Give each goal, P1 to P6, T1 and T3, a short section: what the numbers show against the goal, then at most 3 patterns, each a plain statement with its pointers (a PR, `<session>:L<line>`, or a count). A pattern is something that helps or hurts the goal and that the numbers alone cannot explain. Under P1, name unplanned PRs from `unplanned_prs`, never from another list. Where a goal's numbers move across `weekly`, say which way. Under T3, lead with the cost shares: cache reads, cache writes by TTL, rewrites after idle gaps, subagents, and the costliest skills and agents. Say once that the dollar figures are list-price estimates, so the shares matter more than the totals.
+Read `analysis.json` and `${CLAUDE_PLUGIN_ROOT}/docs/vision.md`, then write `analysis.md`, at most 750 words. Open with the vision in two sentences, in plain words: each engineer leads a team of agents, scoping the work, delegating it and judging the result, and every path ends in the same outputs. Give each goal, P1 to P6, T1 and T3, a short section: the goal in one plain sentence, how far the numbers are from it, then at most 3 patterns, each a plain statement with its pointers (a PR, `<session>:L<line>`, or a count). A pattern is something that stands between the person's work and the goal, or carries it toward the goal, and that the numbers alone cannot explain. Under P1, name unplanned PRs from `unplanned_prs`, never from another list. Where a goal's numbers move across `weekly`, say which way. Under T3, lead with the cost shares: cache reads, cache writes by TTL, rewrites after idle gaps, subagents, and the costliest skills and agents. Say once that the dollar figures are list-price estimates, so the shares matter more than the totals.
 
 Record each pattern in `discovery.json` `patterns` as `{id, goal, pattern, evidence, why: "unknown"}`. Write facts and patterns only, never a judgement of the person.
 
-## 5. Interview: why the patterns exist
+## 5. Interview: what stands in the way of each goal
 
 Show `analysis.md` in full. Then ask, one `AskUserQuestion` per turn, at most 16 in all, keeping 4 for the person's own follow-ups:
 
 1. First, whether the analysis misreads anything. Correct `analysis.md` and the patterns before going on.
-2. Then one question per pattern, highest-cost or most-repeated first: why it happens. Name the pattern and its evidence in the question. Offer as options the likely reasons the evidence suggests, never as the only answers. Record the answer, in the person's words, as that pattern's `why`.
-3. If questions remain: where the person wants to decide rather than delegate (`control`), and which Shipyard skills they skipped, and why (`shipyard_usage`).
+2. Then one question per pattern, highest-cost or most-repeated first: what stands in the way of the goal it touches, or what makes it work. Name the goal in plain words, the pattern and its evidence. Ask about the work, never the person: the obstacle may sit in the tools, the repository, the platform, the team's habits or the time available. Offer as options the likely obstacles the evidence suggests, including ones outside the person's control, never as the only answers. Record the answer, in the person's words, as that pattern's `why`.
+3. Then one question on the vision as a whole: what most gets in the way of leading a team of agents this way. Record each obstacle named as a `pain_points` entry with `source: interview`.
+4. If questions remain: where the person wants to decide rather than delegate (`control`), and which Shipyard skills they skipped, and why (`shipyard_usage`).
 
 Word every question from what the person did, in their own tools' terms. `sessions.shipyard.level` in `discovery.json` decides how much Shipyard enters it: at `regular`, ask as listed; at `light`, ask about only the skills they ran, as a first impression; at `none`, leave `shipyard_usage` empty (not `unknown`) and name no Shipyard skill, path or term in any question.
 

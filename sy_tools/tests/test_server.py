@@ -2358,6 +2358,31 @@ def test_an_interrupted_ship_state_write_leaves_the_previous_state_byte_identica
     )
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"state_path": "<file>", "updates": {"phase": "GATE"}},
+        {"path": "<file>", "patch": '{"phase": "GATE"}'},
+        {"task_key": "PROJ-9", "fields": {"phase": "GATE"}},
+        {"identifier": "PROJ-9", "updates": '{"phase": "GATE"}'},
+    ],
+)
+async def test_the_argument_names_agents_guess_still_write_the_state(ship_state, monkeypatch, args):
+    """Replayed transcripts show agents guessing these names; each one used to be refused and retried."""
+    monkeypatch.setattr(server.config, "scratch_dir", lambda task: ship_state.parent if task == "PROJ-9" else None)
+    args = {k: str(ship_state) if v == "<file>" else v for k, v in args.items()}
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("ship_state_update", args)
+    assert result.is_error is False, result.content
+    assert yaml.safe_load(ship_state.read_text(encoding="utf-8"))["phase"] == "GATE"
+
+
+def test_ship_state_update_takes_path_or_task_but_not_both(ship_state):
+    with pytest.raises(server.ToolError, match="not both and not neither"):
+        server.ship_state_update(str(ship_state), {"phase": "GATE"}, task="PROJ-9")
+
+
 def test_applying_the_same_fields_twice_leaves_the_file_byte_identical(ship_state):
     """A retried phase re-applies what it already wrote; the second write must change nothing on disk."""
     fields = {"phase": "GATE", "gate_round_log": [{"round": 1, "verdict": "CHANGES"}]}

@@ -34,7 +34,7 @@ from typing import Annotated, Any
 from anyio import to_thread
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
-from pydantic import Field, ValidationError
+from pydantic import AliasChoices, BeforeValidator, Field, ValidationError
 import yaml
 
 from . import SERVER_NAME, SERVER_VERSION, config, memory, secrets, tracker, usage
@@ -58,6 +58,11 @@ IssueId = Annotated[
     ),
 ]
 """The one argument nearly every verb takes, described once so all of them describe it the same way."""
+
+
+def _json_object(value: Any) -> Any:
+    """Parse a JSON string into the object it encodes; agents often send an object argument as a string."""
+    return json.loads(value) if isinstance(value, str) else value
 
 
 def _required(**fields: str | list[str]) -> None:
@@ -1153,23 +1158,39 @@ def scratch_dir(
 def ship_state_update(
     path: Annotated[
         str,
-        Field(description="Absolute path of one run's `ship-state.yaml`, which must already exist."),
-    ],
+        Field(
+            description="Absolute path of one run's `ship-state.yaml`, which must already exist. Or give `task`.",
+            validation_alias=AliasChoices("path", "state_path"),
+        ),
+    ] = "",
     fields: Annotated[
-        dict[str, Any],
-        Field(description="The fields to write, by name. Only these are written; the rest of the file is left alone."),
-    ],
+        dict[str, Any] | None,
+        BeforeValidator(_json_object),
+        Field(
+            description="The fields to write, by name. Only these are written; the rest of the file is left alone.",
+            validation_alias=AliasChoices("fields", "updates", "patch"),
+        ),
+    ] = None,
+    task: Annotated[
+        str,
+        Field(
+            description="The run's task key, e.g. PROJ-123: writes `ship-state.yaml` in its scratch directory.",
+            validation_alias=AliasChoices("task", "task_key", "identifier", "issue", "key"),
+        ),
+    ] = "",
 ) -> dict[str, Any]:
     """Merge named fields into a run's `ship-state.yaml`, leaving every other field in the file untouched.
 
-    The round trip drops YAML comments, so the file has to stay comment-free. A path with no file at it is
-    an error and never a new file: the ship START phase seeds the state, and creating one at a mistyped
-    path strands the run's real state where nothing will read it.
+    Takes the file by `path` or by `task`, not both. The round trip drops YAML comments, so the file has to
+    stay comment-free. A path with no file at it is an error and never a new file: the ship START phase seeds
+    the state, and creating one at a mistyped path strands the run's real state where nothing will read it.
     """
-    _required(path=path)
+    if bool(path.strip()) == bool(task.strip()):
+        raise ToolError("'ship_state_update' takes the state file by 'path' or by 'task', not both and not neither")
     if not fields:
         raise ToolError("'fields' is required and must name at least one field to write")
-    state = Path(path)
+    state = Path(path) if path.strip() else config.scratch_dir(task) / "ship-state.yaml"
+    path = str(state)
     if not state.is_absolute():
         raise ToolError(f"{path!r} is not absolute; a relative path resolves against an unpredictable cwd")
     if not state.is_file():

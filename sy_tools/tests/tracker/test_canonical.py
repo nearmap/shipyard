@@ -124,8 +124,8 @@ def test_every_adapter_implements_the_whole_protocol():
     from sy_tools.tracker.jira.adapter import JiraAdapter
 
     verbs = {v for v in vars(tracker.TrackerAdapter) if not v.startswith("_")}
-    # pinned exactly, not counted: a lower bound let four verbs be dropped. Sixteen methods serve eighteen
-    # canonical verbs — `create-child`, `post-log` and `link-pr` are `create_issue`/`post_comment` renamed.
+    # pinned exactly, not counted: a lower bound let four verbs be dropped. `create-child`, `post-log` and
+    # `link-pr` are `create_issue`/`post_comment` renamed, so they have no method of their own.
     # `post-log` has its own *tool*; the split it added is above this seam, so no method comes with it.
     assert verbs == {
         "create_issue", "get_issue", "update_issue", "find_issues", "set_status", "assign",

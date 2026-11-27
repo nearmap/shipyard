@@ -13,7 +13,8 @@ from sy_tools.tracker.jira.adapter import JiraAdapter
 @pytest.mark.parametrize("ticket", ["42", "#42", "https://github.com/o/r/issues/42"])
 async def test_join_matches_one_github_issue_however_it_is_spelled(monkeypatch, ticket):
     adapter = GithubAdapter()
-    issues = [{"id": "42", "url": "https://github.com/o/r/issues/42", "title": "Joined", "status": "ready"}]
+    url = "https://github.com/o/r/issues/42"
+    issues = [{"id": url, "url": url, "title": "Joined", "status": "ready"}]
 
     async def find_issues(**kwargs: Any) -> dict:
         return {"issues": issues, "is_last": True}

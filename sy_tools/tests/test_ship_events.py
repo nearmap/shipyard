@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -63,9 +64,9 @@ def test_a_breaking_recurrence_needs_two_earlier_accepting_rounds():
 def test_an_illegal_transition_is_logged_and_still_applied(state):
     p = str(state)
     out = server.ship_phase("dispatch", "BUILD", p)
-    assert out["phase_active"] == "BUILD" and out["illegal"] == ["dispatch BUILD while GATE was never returned"]
+    assert out["phase_active"] == "BUILD" and out["illegal"] == ["SHIP-P02 dispatch BUILD while GATE was never returned"]
     out = server.ship_phase("return", "gate", p)
-    assert out["phase_active"] is None and out["illegal"] == ["return GATE while phase_active is 'BUILD'"]
+    assert out["phase_active"] is None and out["illegal"] == ["SHIP-P03 return GATE while phase_active is 'BUILD'"]
     out = server.ship_gate_round(p, entry={"verdict": "PASS"})
     assert yaml.safe_load(state.read_text())["gate_rounds_total"] == 1, "the round lands despite the log"
     assert len(out["illegal"]) == 3, out["illegal"]
@@ -77,3 +78,11 @@ def test_derive_survives_hand_written_logs():
     out = ship_events.derive({"gate_round_log": log, "gate_rounds_total": 2}, 5)
     assert out["budget"]["used"] == 1 and out["breaking_recurrences"] == [], out
     assert ship_events.derive({"gate_round_log": "__APPEND__"}, 5)["budget"]["used"] == 0
+
+
+def test_every_cited_and_emitted_rule_id_is_registered():
+    root = Path(__file__).resolve().parents[2]
+    cited = {m for f in (root / "skills").rglob("*.md") for m in re.findall(r"SHIP-[A-Z]\d\d", f.read_text())}
+    emitted = set(re.findall(r"SHIP-[A-Z]\d\d", (root / "sy_tools" / "ship_events.py").read_text()))
+    assert cited and cited <= set(ship_events.RULES), cited - set(ship_events.RULES)
+    assert emitted == set(ship_events.RULES), emitted ^ set(ship_events.RULES)

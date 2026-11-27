@@ -16,6 +16,28 @@ PHASES = ("START", "BUILD", "GATE")
 ACCEPTS = frozenset({"accepted", "deferred"})
 NEXT_ROUND_CAUSES = frozenset({"gate-finding", "ci-fix", "automated-reviewer", "human-thread", "drift", "rebase"})
 ROUND_KEYS = ("reviewed_sha", "verdict", "findings")
+RULES = {
+    "SHIP-S01": "A GATE round entry carries reviewed_sha, verdict and findings.",
+    "SHIP-S02": "A GATE round is recorded only while phase_active is GATE.",
+    "SHIP-S03": "gate_rounds_total equals the number of logged rounds.",
+    "SHIP-S04": "gate_round_log is an append-only list of mappings; no write shrinks or rewrites it.",
+    "SHIP-S05": "A logged round is finished once, with next_round_causes from the fixed vocabulary.",
+    "SHIP-S06": "Every state write after the seed goes through a state tool, never a hand edit.",
+    "SHIP-S07": "A bail is recorded in the bail field, never only in phase_checkpoint.",
+    "SHIP-P01": "phase_active holds START, BUILD, GATE or null.",
+    "SHIP-P02": "A phase is dispatched only once the previous dispatch has returned.",
+    "SHIP-P03": "A return clears the phase that was dispatched.",
+    "SHIP-P04": "Only the parent writes phase_active.",
+    "SHIP-G01": "Only substantive rounds spend the GATE round budget; at none left, a non-terminal pass returns "
+    "needs-decision max_gate_rounds.",
+    "SHIP-G02": "A breaking finding whose root cause two earlier rounds accepted returns needs-decision "
+    "breaking_recurrence.",
+    "SHIP-G03": "A plan-contract finding returns needs-decision plan_contract.",
+    "SHIP-G04": "GATE bails to spec on its own only for a CLOSED blocker PR.",
+    "SHIP-G05": "A round's state lands before any fix dispatch or promote.",
+    "SHIP-G06": "An unstacked ship merges its target in only on a conflict, a required up-to-date check, or the "
+    "user's ask.",
+}
 
 
 def record_round(
@@ -27,13 +49,13 @@ def record_round(
     """Fields for one GATE pass: its log entry appended and `gate_rounds_total` bumped in the same write."""
     log = _log(state)
     total = int(state.get("gate_rounds_total") or 0)
-    illegal = [f"round entry missing {k}" for k in ROUND_KEYS if k not in entry]
+    illegal = [f"SHIP-S01 round entry missing {k}" for k in ROUND_KEYS if k not in entry]
     if not isinstance(state.get("gate_round_log") or [], list):
-        illegal.append("gate_round_log was not a list and is restarted")
+        illegal.append("SHIP-S04 gate_round_log was not a list and is restarted")
     if state.get("phase_active") != "GATE":
-        illegal.append(f"GATE round recorded while phase_active is {state.get('phase_active')!r}")
+        illegal.append(f"SHIP-S02 GATE round recorded while phase_active is {state.get('phase_active')!r}")
     if total != len(log):
-        illegal.append(f"gate_rounds_total {total} disagreed with {len(log)} logged rounds before this one")
+        illegal.append(f"SHIP-S03 gate_rounds_total {total} disagreed with {len(log)} logged rounds before this one")
     round_no = max(total, len(log)) + 1
     fields: dict[str, Any] = {
         "gate_round_log": [*log, {"round": round_no, "terminal_pass": False, **entry}],
@@ -48,11 +70,11 @@ def record_round(
 def finish_round(state: dict[str, Any], human_thread_fix: bool, next_round_causes: list[str]) -> dict[str, Any]:
     """Fields closing the last logged round: whether it pushed a human-thread fix and why another pass follows."""
     log = _log(state)
-    illegal = [f"unknown next_round_cause {c!r}" for c in next_round_causes if c not in NEXT_ROUND_CAUSES]
+    illegal = [f"SHIP-S05 unknown next_round_cause {c!r}" for c in next_round_causes if c not in NEXT_ROUND_CAUSES]
     if not log or not isinstance(log[-1], dict):
-        return _with_log(state, {}, "gate_round_finish", ["finish with no round logged", *illegal])
+        return _with_log(state, {}, "gate_round_finish", ["SHIP-S05 finish with no round logged", *illegal])
     if "human_thread_fix" in log[-1]:
-        illegal.append(f"round {log[-1].get('round')} finished twice")
+        illegal.append(f"SHIP-S05 round {log[-1].get('round')} finished twice")
     log[-1] = {**log[-1], "human_thread_fix": human_thread_fix, "next_round_causes": next_round_causes}
     return _with_log(state, {"gate_round_log": log}, "gate_round_finish", illegal)
 
@@ -60,13 +82,13 @@ def finish_round(state: dict[str, Any], human_thread_fix: bool, next_round_cause
 def phase(state: dict[str, Any], action: str, name: str) -> dict[str, Any]:
     """Fields for stamping `phase_active` before a worker dispatch, or clearing it when its return is processed."""
     current = state.get("phase_active")
-    illegal = [] if name in PHASES else [f"phase {name!r} outside {PHASES}"]
+    illegal = [] if name in PHASES else [f"SHIP-P01 phase {name!r} outside {PHASES}"]
     if action == "dispatch":
         if current is not None:
-            illegal.append(f"dispatch {name} while {current} was never returned")
+            illegal.append(f"SHIP-P02 dispatch {name} while {current} was never returned")
         return _with_log(state, {"phase_active": name}, f"dispatch {name}", illegal)
     if current != name:
-        illegal.append(f"return {name} while phase_active is {current!r}")
+        illegal.append(f"SHIP-P03 return {name} while phase_active is {current!r}")
     return _with_log(state, {"phase_active": None}, f"return {name}", illegal)
 
 

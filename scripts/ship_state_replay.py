@@ -51,6 +51,23 @@ IMPACT = {
     "phase_active_restamped_without_clear": "benign",
     "phase_checkpoint_serialised_as_string": "benign",
 }
+RULE = {
+    "list_field_shrunk": "SHIP-S04",
+    "list_field_history_rewritten": "SHIP-S04",
+    "list_field_written_as_string": "SHIP-S04",
+    "round_log_missing_rounds": "SHIP-S03",
+    "round_total_written_apart_from_log": "SHIP-S03",
+    "bail_recorded_outside_bail_field": "SHIP-S07",
+    "hand_edit:Bash": "SHIP-S06",
+    "hand_edit:Write": "SHIP-S06",
+    "hand_edit:Edit": "SHIP-S06",
+    "phase_order_backwards": "SHIP-P02",
+    "phase_active_written_by_worker": "SHIP-P04",
+    "phase_active_off_vocabulary": "SHIP-P01",
+    "round_log_entry_missing_keys": "SHIP-S01",
+    "round_log_entry_not_a_mapping": "SHIP-S04",
+    "phase_active_restamped_without_clear": "SHIP-P02",
+}
 _IMPACT_ORDER = ("state lost", "write lost", "merge bypassed", "contract broken", "replay gap", "benign")
 _ABS_STATE = re.compile(r"(/[^\s'\"]*ship-state\.yaml)")
 _CD = re.compile(r"cd\s+(\S+)")
@@ -216,6 +233,7 @@ def rank(failures: list[Failure], n_files: int, writes: list[Write]) -> dict[str
         rows.append(
             {
                 "kind": kind,
+                "rule": RULE.get(kind, ""),
                 "impact": IMPACT.get(kind, "write lost" if kind.startswith("write_refused") else "contract broken"),
                 "files": len({f.path for f in fs}),
                 "occurrences": len(fs),
@@ -239,13 +257,13 @@ def render(report: dict[str, Any]) -> str:
     lines = [
         f"state files {report['state_files']}, writes {report['writes']}, window {' to '.join(report['window'])}",
         "",
-        "| rank | impact | failure | files | occurrences | sessions | last seen | top details |",
-        "|---|---|---|---|---|---|---|---|",
+        "| rank | impact | rule | failure | files | occurrences | sessions | last seen | top details |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for i, r in enumerate(report["failures"], 1):
         details = "; ".join(d.replace("\n", " ").replace("|", "/") for d in r["top_details"])
         lines.append(
-            f"| {i} | {r['impact']} | {r['kind']} | {r['files']} | {r['occurrences']} | {r['sessions']} | {r['last_seen'][:10]} "
+            f"| {i} | {r['impact']} | {r['rule']} | {r['kind']} | {r['files']} | {r['occurrences']} | {r['sessions']} | {r['last_seen'][:10]} "
             f"| {details} |"
         )
     lines += ["", "| phase_active from | to | count |", "|---|---|---|"]

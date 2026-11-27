@@ -80,8 +80,10 @@ def snapshot(home: Path, scratch: Path) -> dict[str, Any]:
         command = command_ticket = last_step = None
         transcript = _transcript(home / "projects", session_id, warnings)
         if transcript is not None:
-            command, command_ticket = _commands(transcript, warnings)
-            last_step = _last_step(transcript, warnings)
+            command, command_ticket, readable = _commands(transcript, warnings)
+            # A file that could not be opened is one warning already, so it is not opened a second time.
+            if readable:
+                last_step = _last_step(transcript, warnings)
         ticket, ship = _ship_join(states, session_id, command_ticket)
         sessions.append({
             "pid": record["pid"],
@@ -175,8 +177,9 @@ def _transcript(projects: Path, session_id: str | None, warnings: list[str]) -> 
     return max(dated)[1] if dated else None
 
 
-def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None]:
-    """The latest `/sy:` command the user typed, and the ticket of the latest `/sy:spec` or `/sy:ship`."""
+def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, bool]:
+    """The latest `/sy:` command the user typed, the ticket of the latest `/sy:spec` or `/sy:ship`, and
+    whether the file could be read."""
     command = ticket = None
     try:
         with path.open("rb") as handle:
@@ -199,7 +202,8 @@ def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None]:
                     ticket = tokens[0] if tokens else None
     except OSError as exc:
         warnings.append(f"conversation file {path.name} unreadable: {exc.__class__.__name__}")
-    return command, ticket
+        return command, ticket, False
+    return command, ticket, True
 
 
 def _typed_command(line: str) -> tuple[str, str] | None:

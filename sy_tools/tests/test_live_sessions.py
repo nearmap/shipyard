@@ -384,7 +384,7 @@ def test_a_conversation_file_that_vanishes_is_a_warning(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "open", vanishing)
     result = live_sessions.snapshot(home, tmp_path / "scratch")
     assert _only(result)["command"] is None, result
-    assert result["warnings"] == ["conversation file s1.jsonl unreadable: FileNotFoundError"] * 2, result
+    assert result["warnings"] == ["conversation file s1.jsonl unreadable: FileNotFoundError"], result
 
 
 @POSIX

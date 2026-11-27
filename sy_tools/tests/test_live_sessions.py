@@ -368,7 +368,8 @@ def test_a_last_line_nested_too_deep_to_decode_is_passed_over(tmp_path, monkeypa
     ([{"type": "tool_use", "name": "AskUserQuestion", "input": {"questions": [{"question": "Merge now?"}]}}],
      "asks: Merge now?"),
     ([{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}], "runs Bash"),
-    ([{"type": "text", "text": "\nDone.\nSecond line."}], "says: Done."),
+    # Uncut here: the tool keeps the first line only after its scrub.
+    ([{"type": "text", "text": "\nDone.\nSecond line."}], "says: Done.\nSecond line."),
     ([{"type": "text", "text": "y" * 300}], "says: " + "y" * 300),
     ([{"type": "text", "text": "earlier"}, {"type": "thinking", "thinking": "..."}], "says: earlier"),
 ])
@@ -418,6 +419,16 @@ def test_a_conversation_file_that_vanishes_is_a_warning(tmp_path, monkeypatch):
     result = live_sessions.snapshot(home, tmp_path / "scratch")
     assert _only(result)["command"] is None, result
     assert result["warnings"] == ["conversation file s1.jsonl unreadable: FileNotFoundError"], result
+
+
+@POSIX
+def test_a_typed_ticket_carries_the_whole_arguments_of_its_command(tmp_path):
+    """The tool scrubs these whole and only then takes the ticket, so a later command must not replace them."""
+    home = tmp_path / "home"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:ship", "PROJ-1 then words"), _typed("/sy:status", "")])
+    session = _only(live_sessions.snapshot(home, tmp_path / "scratch"))
+    assert (session["ticket"], session["ticket_args"]) == ("PROJ-1", "PROJ-1 then words"), session
 
 
 @POSIX

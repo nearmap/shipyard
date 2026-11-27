@@ -2402,7 +2402,8 @@ async def test_live_sessions_scrubs_conversation_text(tmp_path, monkeypatch):
     assert row["name"] == "deploy <REDACTED:SY_TEST_DECLARED>", row
     assert row["command"] == "/sy:ship PROJ-1 token <REDACTED:SY_TEST_DECLARED>", row
     assert row["last_step"] == "says: the key is <REDACTED:SY_TEST_DECLARED>", row
-    assert payload["scrub"]["redactions"] == 3, payload
+    # The fourth is in the typed arguments, which are scrubbed whole before the ticket is taken from them.
+    assert payload["scrub"]["redactions"] == 4, payload
     assert "issues_without_session" not in payload, "no parent, so no tracker read"
 
 
@@ -2435,6 +2436,37 @@ async def test_live_sessions_scrubs_a_secret_typed_as_the_ticket(tmp_path, monke
     payload, row = await _only_live_session()
     assert row["ticket"] == "<REDACTED:SY_TEST_DECLARED>", row
     assert "q7zx4m" not in json.dumps(payload), payload
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_scrubs_a_secret_that_starts_with_the_ticket_token(tmp_path, monkeypatch):
+    """Taken first, the ticket is `q7zx4m`, which is only part of the secret, so the scrub no longer finds it."""
+    _one_live_session(
+        tmp_path, monkeypatch, "ship", "q7zx4m secret phrase", "done", secret="q7zx4m secret phrase"
+    )
+    payload, row = await _only_live_session()
+    assert row["ticket"] == "<REDACTED:SY_TEST_DECLARED>", row
+    assert "ticket_args" not in row, row
+    assert "q7zx4m" not in json.dumps(payload), payload
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_scrubs_a_secret_that_crosses_the_first_line_of_the_last_step(tmp_path, monkeypatch):
+    """Taken first, the first line ends in `abc123`, which is only part of the secret, so the scrub misses it."""
+    _one_live_session(tmp_path, monkeypatch, "ship", "PROJ-1", "value: abc123\nxyz456", secret="abc123\nxyz456")
+    payload, row = await _only_live_session()
+    assert row["last_step"] == "says: value: <REDACTED:SY_TEST_DECLARED>", row
+    assert "abc123" not in json.dumps(payload), payload
+
+
+@pytest.mark.anyio
+@POSIX_LIVENESS
+async def test_live_sessions_keeps_only_the_first_line_of_what_the_last_step_says(tmp_path, monkeypatch):
+    _one_live_session(tmp_path, monkeypatch, "ship", "PROJ-1", "first line\nsecond line")
+    _, row = await _only_live_session()
+    assert row["last_step"] == "says: first line", row
 
 
 @pytest.mark.anyio

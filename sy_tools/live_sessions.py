@@ -87,10 +87,10 @@ def snapshot(home: Path, scratch: Path) -> dict[str, Any]:
     for record, liveness in live:
         session_id = _text(record.get("sessionId"))
         current = newest.get(session_id) if session_id is not None else None
-        command = command_ticket = last_step = None
+        command = command_ticket = ticket_args = last_step = None
         transcript = _transcript(home / "projects", session_id, warnings)
         if transcript is not None:
-            command, command_ticket, readable = _commands(transcript, warnings)
+            command, command_ticket, ticket_args, readable = _commands(transcript, warnings)
             # A file that could not be opened is one warning already, so it is not opened a second time.
             if readable:
                 last_step = _last_step(transcript, warnings)
@@ -112,6 +112,10 @@ def snapshot(home: Path, scratch: Path) -> dict[str, Any]:
             "ship": ship,
             "last_step": last_step,
         })
+        # The whole typed arguments go out with a typed ticket, so the tool can scrub them before it takes the
+        # first token: a credential that spans that token and the next would otherwise be cut before its scrub.
+        if command_ticket is not None:
+            sessions[-1]["ticket_args"] = ticket_args
     return {
         "schema": SCHEMA, "generated_at": _iso(now * 1000), "sessions": sessions, "skipped": skipped,
         "warnings": warnings,
@@ -191,10 +195,11 @@ def _transcript(projects: Path, session_id: str | None, warnings: list[str]) -> 
     return max(dated)[1] if dated else None
 
 
-def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, bool]:
+def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, str | None, bool]:
     """The latest `/sy:` command the user typed, the ticket of the latest `/sy:spec` or `/sy:ship`
-    (cleared by a later `/sy:doit`), and whether the file could be read."""
-    command = ticket = None
+    (cleared by a later `/sy:doit`), the whole arguments of the command that set that ticket, and whether
+    the file could be read."""
+    command = ticket = ticket_args = None
     try:
         with path.open("rb") as handle:
             # Streamed line by line and decoded per line, so one bad line is a warning, not a failed read.
@@ -216,12 +221,13 @@ def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, 
                     # A `/sy:spec` goal in words (more than one token) names no ticket, as with `/sy:doit`.
                     goal = name == "/sy:spec" and len(tokens) > 1
                     ticket = tokens[0] if tokens and not goal else None
+                    ticket_args = args if ticket is not None else None
                 elif name in _TICKET_RESET:
-                    ticket = None
+                    ticket = ticket_args = None
     except OSError as exc:
         warnings.append(f"conversation file {path.name} unreadable: {exc.__class__.__name__}")
-        return command, ticket, False
-    return command, ticket, True
+        return command, ticket, ticket_args, False
+    return command, ticket, ticket_args, True
 
 
 def _typed_command(line: str) -> tuple[str, str] | None:
@@ -248,7 +254,7 @@ def _typed_command(line: str) -> tuple[str, str] | None:
 
 
 def _last_step(path: Path, warnings: list[str]) -> str | None:
-    """One line about the session's last assistant step, read from the file's last 64 KiB only."""
+    """The session's last assistant step, read from the file's last 64 KiB only."""
     try:
         with path.open("rb") as handle:
             size = handle.seek(0, os.SEEK_END)
@@ -282,8 +288,8 @@ def _describe(block: object) -> str | None:
     if not isinstance(block, dict):
         return None
     if block.get("type") == "text" and isinstance(block.get("text"), str):
-        lines = block["text"].strip().splitlines()
-        return f"says: {lines[0]}" if lines else None
+        text = block["text"].strip()
+        return f"says: {text}" if text else None
     if block.get("type") != "tool_use" or not isinstance(block.get("name"), str):
         return None
     if block["name"] == "AskUserQuestion":

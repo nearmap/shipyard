@@ -1320,8 +1320,8 @@ async def live_sessions(
         result = await to_thread.run_sync(
             session_snapshot.snapshot, session_snapshot.claude_home(), config.scratch_root()
         )
-        echoed = [(row, key) for row in result["sessions"] for key in ("name", "command", "ticket", "last_step")
-                  if row[key] is not None]
+        echoed = [(row, key) for row in result["sessions"]
+                  for key in ("name", "command", "ticket", "ticket_args", "last_step") if row.get(key) is not None]
         scrubbed, scrub = _scrub_texts(*(row[key] for row, key in echoed))
     except config.ConfigError as exc:
         raise ToolError(str(exc)) from None
@@ -1329,6 +1329,11 @@ async def live_sessions(
         row[key] = clean
     # Cut only after the scrub: a cut made first can split a credential so that the scrub misses it.
     for row in result["sessions"]:
+        ticket_args = row.pop("ticket_args", None)
+        if ticket_args is not None:
+            row["ticket"] = ticket_args.split()[0]
+        if row["last_step"] is not None and row["last_step"].startswith("says: "):
+            row["last_step"] = row["last_step"].splitlines()[0]
         for key, limit in (("command", session_snapshot.COMMAND_LIMIT), ("last_step", session_snapshot.STEP_LIMIT)):
             if row[key] is not None:
                 row[key] = row[key][:limit]

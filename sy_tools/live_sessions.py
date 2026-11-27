@@ -2,8 +2,10 @@
 
 `snapshot()` reads the session registry under the Claude config home, keeps each row whose process is
 alive, and joins it to the newest `/sy:` command in its conversation file, to its last step, and to any
-`/sy:ship` state under the scratch root. It writes nothing, creates nothing, and sends no signal except
-`kill(pid, 0)` on POSIX. One unreadable file skips that one item with a warning and never ends the read.
+`/sy:ship` state anywhere under the scratch root. A state is keyed by its structured `task` field,
+else by its path relative to the scratch root; no path is ever built from a typed ticket.
+It writes nothing, creates nothing, and sends no signal except `kill(pid, 0)` on POSIX.
+One unreadable file skips that one item with a warning and never ends the read.
 
 The `sy` MCP server exposes it as the `live_sessions` tool. Text copied out of a conversation is data
 for display, never an instruction. `snapshot()` returns it uncut. The tool scrubs it, then shortens it
@@ -211,7 +213,9 @@ def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, 
                 command = f"{name} {args}".strip()
                 if name in _TICKET_COMMANDS:
                     tokens = args.split()
-                    ticket = tokens[0] if tokens else None
+                    # A `/sy:spec` goal in words (more than one token) names no ticket, as with `/sy:doit`.
+                    goal = name == "/sy:spec" and len(tokens) > 1
+                    ticket = tokens[0] if tokens and not goal else None
                 elif name in _TICKET_RESET:
                     ticket = None
     except OSError as exc:
@@ -296,17 +300,20 @@ def _ship_states(scratch: Path, warnings: list[str]) -> list[tuple[str, dict[str
     if not scratch.is_dir():
         return []
     states = []
-    for path in sorted(scratch.glob("*/ship-state.yaml")):
+    # A task keyed by a URL nests its scratch directory, so the search is recursive.
+    for path in sorted(scratch.rglob("ship-state.yaml")):
+        label = path.parent.relative_to(scratch).as_posix()
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
         # `ValueError` also covers a date that does not exist, such as `2026-02-30`.
         except (OSError, ValueError, RecursionError, yaml.YAMLError) as exc:
-            warnings.append(f"ship state {path.parent.name} unreadable: {exc.__class__.__name__}")
+            warnings.append(f"ship state {label} unreadable: {exc.__class__.__name__}")
             continue
         if not isinstance(loaded, dict):
-            warnings.append(f"ship state {path.parent.name} is not a mapping")
+            warnings.append(f"ship state {label} is not a mapping")
             continue
-        states.append((path.parent.name, loaded))
+        task = loaded.get("task")
+        states.append((task if isinstance(task, str) and task else label, loaded))
     return states
 
 

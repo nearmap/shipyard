@@ -298,7 +298,7 @@ def test_commands_come_only_from_human_typed_command_records(tmp_path):
     _register(home, "1.json", _row())
     quoted = _typed("/sy:ship", "PROJ-9")["message"]["content"]
     _transcript(home, "s1", [
-        _typed("/sy:spec", "PROJ-1 tighten the plan"),
+        _typed("/sy:spec", "PROJ-1"),
         _typed("/sy:help", "foo"),
         _typed("/sy:status", ""),
         {"type": "user", "turnOrigin": "human",
@@ -499,6 +499,41 @@ def test_a_typed_ticket_outranks_a_state_the_session_owns(tmp_path):
     session = _only(live_sessions.snapshot(home, scratch))
     assert session["ticket"] == "PROJ-2", session
     assert session["ship"] == {"phase_active": "BUILD", "gate_rounds_total": 1, "pr": None}, session
+
+
+@POSIX
+def test_a_spec_goal_in_words_names_no_ticket_and_keeps_the_owned_state(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:spec", "make the status table wider")])
+    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nphase_active: GATE\n")
+    session = _only(live_sessions.snapshot(home, scratch))
+    assert session["ticket"] == "PROJ-1", session
+    assert session["ship"]["phase_active"] == "GATE", session
+
+
+@POSIX
+def test_a_state_in_a_nested_task_directory_joins_by_its_task_field(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    url = "https://github.com/acme/repo/issues/7"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:ship", url)])
+    nested = scratch / "github.com" / "acme" / "repo" / "7"
+    nested.mkdir(parents=True)
+    (nested / "ship-state.yaml").write_text(f"task: {url}\nphase_active: GATE\n", encoding="utf-8")
+    session = _only(live_sessions.snapshot(home, scratch))
+    assert (session["ticket"], session["ship"]["phase_active"]) == (url, "GATE"), session
+
+
+@POSIX
+def test_a_nested_state_without_a_task_field_is_keyed_by_its_relative_path(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
+    nested = scratch / "a" / "b"
+    nested.mkdir(parents=True)
+    (nested / "ship-state.yaml").write_text("ship_session_id: s1\nphase_active: BUILD\n", encoding="utf-8")
+    assert _only(live_sessions.snapshot(home, scratch))["ticket"] == "a/b"
 
 
 @POSIX

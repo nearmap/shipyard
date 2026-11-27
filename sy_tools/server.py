@@ -1355,11 +1355,14 @@ async def _join_issues(result: dict[str, Any], parent: str) -> None:
             f"the tracker returned a cut page for {parent}: some child issues may be missing from the join"
         )
     issues = [issue for issue in page.get("issues", []) if isinstance(issue, dict)]
+    same_issue = tracker.adapter().same_issue
     joined: set[int] = set()
     for row in result["sessions"]:
         row["issue"] = None
         for index, issue in enumerate(issues):
-            if row["ticket"] is not None and row["ticket"] in (issue.get("id"), issue.get("url")):
+            if row["ticket"] is not None and any(
+                isinstance(ref, str) and same_issue(row["ticket"], ref) for ref in (issue.get("id"), issue.get("url"))
+            ):
                 row["issue"] = {"title": issue.get("title"), "status": issue.get("status")}
                 joined.add(index)
                 break

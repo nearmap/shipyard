@@ -2342,6 +2342,9 @@ class _Children:
         self.page = {"issues": issues, "count": len(issues), "is_last": is_last, "next_page_token": None}
         self.calls: list[dict] = []
 
+    def same_issue(self, a: str, b: str) -> bool:
+        return a == b
+
     async def find_issues(self, **kwargs: Any) -> dict:
         self.calls.append(kwargs)
         return self.page
@@ -2437,7 +2440,7 @@ async def test_live_sessions_scrubs_a_secret_typed_as_the_ticket(tmp_path, monke
 @pytest.mark.anyio
 @pytest.mark.parametrize("by", ["id", "url"])
 async def test_live_sessions_joins_sessions_to_child_issues(monkeypatch, by):
-    """A ticket matches an issue's `id` or its `url`, as exact strings, whichever form the tracker uses."""
+    """A ticket matches an issue's `id` or its `url`, through the adapter's `same_issue`, whichever form the tracker uses."""
     issues = [
         {"id": "PROJ-2", "url": "https://example.com/PROJ-2", "title": "Joined", "status": "in-progress"},
         {"id": "PROJ-3", "url": "https://example.com/PROJ-3", "title": "Idle", "status": "ready"},

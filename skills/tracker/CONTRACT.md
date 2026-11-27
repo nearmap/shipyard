@@ -84,6 +84,8 @@ effect. `post-log` was a third until it was pulled out: a machine log has no hum
 pair with, so it has nothing to put in `post-comment`'s leading part, and giving it its own signature
 makes the standalone rule structural instead of something a caller has to remember.
 
+`same-issue` is not a tool verb either: a synchronous adapter method the server calls to ask whether two references name one issue, since an id, a short form and a URL can spell the same one. It reads no tracker.
+
 If the server itself is unavailable, there is no maintained fallback recipe to copy — deliberately.
 `preflight` is what tells you that up front rather than mid-workflow.
 

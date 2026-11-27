@@ -158,6 +158,10 @@ class GithubAdapter:
         """Record that `issue` is blocked by `blocked_by`, verified by re-reading the relation."""
         return await to_thread.run_sync(self._sync_add_dependency, issue, blocked_by)
 
+    def same_issue(self, a: str, b: str) -> bool:
+        """Whether `a` and `b` name one issue, comparing `7`, `#7` and a URL alike."""
+        return _same_ref(a, b)
+
     async def add_label(self, issue: str, label: str) -> dict:
         """Add `label` to `issue` and return the full label set the re-read reports."""
         return await to_thread.run_sync(self._sync_add_label, issue, label)

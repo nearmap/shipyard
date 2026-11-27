@@ -337,6 +337,10 @@ class JiraAdapter:
             )
         return {"id": issue, "blocked_by": blocked_by, "verified": True}
 
+    def same_issue(self, a: str, b: str) -> bool:
+        """Whether `a` and `b` name one issue. A Jira key is the only spelling, so equal strings."""
+        return a == b
+
     async def add_label(self, issue: str, label: str) -> dict:
         """Add `label` to `issue`, preserving the labels already there.
 

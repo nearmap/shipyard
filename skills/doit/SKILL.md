@@ -2,8 +2,8 @@
 name: doit
 description: >-
   Take one small, low-risk task from a goal to a reviewable PR in one session: a short
-  spec, a light debate, one sign-off, then /sy:ship unchanged. Work that needs deep research, a risk
-  lens or an owner decision goes to /sy:spec instead.
+  spec, a light debate, one sign-off, then /sy:ship unchanged. Work that needs deep research, more
+  than one PR, or an owner decision that cannot yet be put as candidates goes to /sy:spec instead.
 argument-hint: "[a goal, or an existing task key (<task>)]"
 disable-model-invocation: true
 effort: high
@@ -23,12 +23,11 @@ Plan against fresh `origin/main`. Do `/sy:spec` §1's premise and prior-work che
 
 Stop and route to `/sy:spec` when any of these holds:
 
-- the standards contract's `LENSES` lists any lens;
 - the surface is too large to read directly, or one decisive span stays unverified after a direct read;
-- an open decision changes scope, design or acceptance and needs the owner;
+- an open decision changes scope, design or acceptance, and it cannot be put as named candidates without more research;
 - the work does not fit one PR.
 
-Doit runs a narrowed `sy:debate` pass and skips the `sy:spec-gate` review, and these conditions are what keep that safe. Send a status update that names the condition and the evidence, then end with `/sy:spec <the same argument>`. Write nothing to the tracker on this path.
+A lens in the standards contract's `LENSES` is not a route: write each one into the plan as a verification obligation. An owner choice between named candidates is not a route either: ask it in §4's sign-off. Doit runs a narrowed `sy:debate` pass and skips the `sy:spec-gate` review, and these conditions are what keep that safe. Send a status update that names the condition and the evidence, then end with `/sy:spec <the same argument>`. Write nothing to the tracker on this path.
 
 ## 3. Draft the short plan
 

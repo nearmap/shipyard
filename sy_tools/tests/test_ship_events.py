@@ -39,6 +39,8 @@ def test_rounds_append_with_their_total_and_only_substantive_ones_spend_budget(s
     assert out["budget"] == {"used": 1, "cap": 3, "left": 2, "base": 0}, "a LOW-only round spends no budget"
     assert out["next_pass_terminal"] is True, "the pass after an all-LOW round is terminal"
     assert out["illegal"] == []
+    before = state.read_text()
+    assert server.ship_gate_round(p)["budget"] == out["budget"] and state.read_text() == before, "a read writes nothing"
 
 
 def test_an_unfinished_round_still_spends_budget_and_a_raise_moves_the_floor():

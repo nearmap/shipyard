@@ -1223,23 +1223,27 @@ def ship_gate_round(
         Field(description="With `human_thread_fix`: why another pass follows; `[]` when the round converged."),
     ] = None,
 ) -> dict[str, Any]:
-    """Record one GATE pass (`entry`), or finish the last one (`human_thread_fix`), and return what the loop reads next.
+    """Record one GATE pass (`entry`), finish the last one (`human_thread_fix`), or with neither just read, and return
+    what the loop reads next.
 
     Recording appends the round to `gate_round_log` and bumps `gate_rounds_total` in one atomic write.
-    Either way the return carries the budget against `ship.escalation.max_gate_rounds` (substantive rounds
+    Every call returns the budget against `ship.escalation.max_gate_rounds` (substantive rounds
     only), each root cause's count of rounds that accepted it, the breaking recurrences in the last round,
     and whether the next pass is terminal. A transition the contract forbids is logged in `transition_log`
     and still applied.
     """
-    if (entry is None) == (human_thread_fix is None):
-        raise ToolError("'ship_gate_round' takes 'entry' to record a pass or 'human_thread_fix' to finish one")
+    if entry is not None and human_thread_fix is not None:
+        raise ToolError("'ship_gate_round' takes 'entry' to record a pass or 'human_thread_fix' to finish one, not both")
     state, loaded = _ship_state("ship_gate_round", path, task)
     if entry is not None:
         fields = ship_events.record_round(loaded, entry, phase_checkpoint, standards_reviewed_sha or None)
-    else:
+    elif human_thread_fix is not None:
         fields = ship_events.finish_round(loaded, human_thread_fix, next_round_causes or [])
+    else:
+        fields = {}
     after = {**loaded, **fields}
-    atomic_write(state, yaml.safe_dump(after, sort_keys=False))
+    if fields:
+        atomic_write(state, yaml.safe_dump(after, sort_keys=False))
     cap = int(config.get("ship.escalation.max_gate_rounds"))
     return {"path": str(state), **ship_events.derive(after, cap), "illegal": _new_illegal(loaded, after)}
 

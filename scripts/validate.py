@@ -172,7 +172,7 @@ GATE_LOOP_PINS = {
     "round_log_seed": "gate_round_log: []",
     "root_cause_key": "root_cause_key",
     "bail_to_spec": "bail-to-spec",
-    "accept_recurrence": "already recorded with an accept disposition",
+    "accept_recurrence": "`breaking_recurrences`",
     "triage_agent": "sy:gate-triage",
     "stopping_rule": "undispositioned actionable finding",
     "cost_boundary": "Cost comes out of the loop, never the reviewer",
@@ -807,8 +807,7 @@ def check_gate_loop(errors: list[str]) -> None:
                     f"{gate_ref_rel} § Fix cycle must keep the recurrence clause whole, and "
                     f"`{GATE_LOOP_PINS[key]}` is missing from it; per-round dispatch destroyed the in-context "
                     "memory that used to catch a root cause an earlier round already accepted a fix for, so "
-                    "reading the log and bailing is the only thing left that catches it -- and bailing on a "
-                    "key the log carries only under a reject abandons the run over a finding already judged",
+                    "escalating on the verb's derived recurrences is the only thing left that catches it",
                     errors,
                 )
         if GATE_LOOP_PINS["triage_agent"] not in fix_cycle:

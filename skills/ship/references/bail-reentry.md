@@ -4,7 +4,7 @@ What `/sy:ship` records when a run bails to `/sy:spec`, what you see when it sto
 
 ## The bail record
 
-On every `bail-to-spec` — a worker's return, a `reason: max_gate_rounds` or `reason: plan_contract_choice` answer that picks re-spec, a pre-gate checkpoint reply that asks for a fresh `/sy:spec` revision, a closed blocker PR, or an escalation threshold reached — the parent builds one record:
+On every `bail-to-spec` — a worker's return, a `reason: max_gate_rounds`, `plan_contract_choice`, `plan_contract` or `breaking_recurrence` answer that picks re-spec, a pre-gate checkpoint reply that asks for a fresh `/sy:spec` revision, a closed blocker PR, or an escalation threshold reached — the parent builds one record:
 
 ```yaml
 bail:

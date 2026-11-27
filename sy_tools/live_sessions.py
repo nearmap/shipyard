@@ -116,7 +116,8 @@ def _registry(directory: Path, skipped: dict[str, int], warnings: list[str]) -> 
             continue
         try:
             record = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        # `ValueError` covers bad JSON, bad UTF-8 and an int too long to convert; deep nesting recurses.
+        except (ValueError, RecursionError):
             record = None
         pid = record.get("pid") if isinstance(record, dict) else None
         # `bool` is an `int`, and a PID of 0 or below names a process group to `kill`, not one process.
@@ -209,7 +210,7 @@ def _typed_command(line: str) -> tuple[str, str] | None:
     """
     try:
         record = json.loads(line)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(record, dict) or record.get("type") != "user" or record.get("turnOrigin") != "human":
         return None
@@ -241,7 +242,7 @@ def _last_step(path: Path, warnings: list[str]) -> str | None:
     for raw in reversed(lines):
         try:
             record = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (ValueError, RecursionError):
             continue
         if not isinstance(record, dict) or record.get("type") != "assistant":
             continue
@@ -280,7 +281,8 @@ def _ship_states(scratch: Path, warnings: list[str]) -> list[tuple[str, dict[str
     for path in sorted(scratch.glob("*/ship-state.yaml")):
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        # `ValueError` also covers a date that does not exist, such as `2026-02-30`.
+        except (OSError, ValueError, RecursionError, yaml.YAMLError) as exc:
             warnings.append(f"ship state {path.parent.name} unreadable: {exc.__class__.__name__}")
             continue
         if not isinstance(loaded, dict):
@@ -312,9 +314,11 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _epoch(record: dict[str, Any]) -> float:
+def _epoch(record: dict[str, Any]) -> int | float:
+    # The raw number, never `float(value)`: an int and a float compare natively, and an int too large for a
+    # float would raise `OverflowError`.
     value = record.get("startedAt")
-    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else float("-inf")
+    return value if isinstance(value, int | float) and not isinstance(value, bool) else float("-inf")
 
 
 def _iso(milliseconds: object) -> str | None:

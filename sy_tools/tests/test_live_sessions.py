@@ -143,6 +143,16 @@ def test_a_registry_file_that_vanishes_mid_read_is_one_warning(tmp_path, monkeyp
     assert result["warnings"] == ["registry file a.json unreadable: FileNotFoundError"], result
 
 
+@POSIX
+def test_a_registry_row_with_an_int_too_long_to_convert_is_skipped(tmp_path):
+    home = tmp_path / "home"
+    _register(home, "a.json", '{"pid": 1, "startedAt": ' + "9" * 5000 + "}")
+    _register(home, "b.json", _row("kept"))
+    result = live_sessions.snapshot(home, tmp_path / "scratch")
+    assert _only(result)["session_id"] == "kept", result
+    assert result["skipped"]["invalid"] == 1, result
+
+
 def test_a_missing_registry_is_an_empty_list_and_nothing_is_created(tmp_path):
     home, scratch = tmp_path / "home", tmp_path / "scratch"
     result = live_sessions.snapshot(home, scratch)
@@ -239,6 +249,16 @@ def test_the_older_of_two_live_rows_with_one_session_id_is_a_stale_copy(tmp_path
 
 
 @POSIX
+def test_a_start_time_too_large_for_a_float_still_orders_the_copies(tmp_path):
+    home = tmp_path / "home"
+    _register(home, "old.json", _row(pid=os.getppid(), startedAt=1_000))
+    _register(home, "new.json", _row(pid=os.getpid(), startedAt=10**400))
+    by_pid = {s["pid"]: s for s in live_sessions.snapshot(home, tmp_path / "scratch")["sessions"]}
+    assert by_pid[os.getppid()]["stale_copy_of"] == os.getpid(), by_pid
+    assert by_pid[os.getpid()]["started_at"] is None, by_pid
+
+
+@POSIX
 def test_commands_come_only_from_human_typed_command_records(tmp_path):
     """Command tags quoted in a tool result, an assistant reply or an unmarked record are not commands."""
     home = tmp_path / "home"
@@ -277,6 +297,37 @@ def test_an_undecodable_command_line_is_a_warning(tmp_path):
     result = live_sessions.snapshot(home, tmp_path / "scratch")
     assert _only(result)["ticket"] == "PROJ-1", result
     assert result["warnings"] == ["undecodable line 2 in s1.jsonl"], result
+
+
+@POSIX
+def test_a_command_line_with_an_int_too_long_to_convert_is_not_a_command(tmp_path):
+    home = tmp_path / "home"
+    _register(home, "1.json", _row())
+    huge = b'{"type": "user", "n": ' + b"9" * 5000 + b', "x": "<command-name>/sy:ship PROJ-9"}\n'
+    _transcript(home, "s1", [_typed("/sy:ship", "PROJ-1"), huge])
+    result = live_sessions.snapshot(home, tmp_path / "scratch")
+    assert _only(result)["command"] == "/sy:ship PROJ-1", result
+    assert result["warnings"] == [], result
+
+
+@POSIX
+def test_a_last_line_nested_too_deep_to_decode_is_passed_over(tmp_path, monkeypatch):
+    """The decoder's `RecursionError` is simulated: some Python versions decode a nesting this deep, and a
+    deeper one does not fit in the 64 KiB tail."""
+    home = tmp_path / "home"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "final"}), b"[" * 10_000 + b"]" * 10_000 + b"\n"])
+    real = json.loads
+
+    def shallow(text: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(text, str) and text.startswith("[["):
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(live_sessions.json, "loads", shallow)
+    result = live_sessions.snapshot(home, tmp_path / "scratch")
+    assert _only(result)["last_step"] == "says: final", result
+    assert result["warnings"] == [], result
 
 
 @POSIX
@@ -376,6 +427,18 @@ def test_ship_state_falls_back_to_the_command_ticket_and_skips_a_bad_file(tmp_pa
     assert result["warnings"] == [
         "ship state PROJ-1 unreadable: ParserError", "ship state PROJ-3 is not a mapping",
     ], result
+
+
+@POSIX
+def test_a_ship_state_with_a_date_that_does_not_exist_is_one_warning(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:ship", "PROJ-2")])
+    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nstarted: 2026-02-30\n")
+    _ship_state(scratch, "PROJ-2", "phase_active: BUILD\n")
+    result = live_sessions.snapshot(home, scratch)
+    assert _only(result)["ship"] == {"phase_active": "BUILD", "gate_rounds_total": None, "pr": None}, result
+    assert result["warnings"] == ["ship state PROJ-1 unreadable: ValueError"], result
 
 
 @POSIX

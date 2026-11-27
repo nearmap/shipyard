@@ -1345,6 +1345,11 @@ async def _join_issues(result: dict[str, Any], parent: str) -> None:
     except (tracker.TrackerError, config.ConfigError) as exc:
         result["warnings"].append(f"the child issues of {parent} could not be read: {exc}")
         return
+    except Exception as exc:
+        # Any other failure is a bug in an adapter. Its message is not known to be safe to show, so only the
+        # class name goes out, and the session list still comes back.
+        result["warnings"].append(f"the child issues of {parent} could not be read: {exc.__class__.__name__}")
+        return
     if not page.get("is_last", True):
         result["warnings"].append(f"{parent} has more than 100 child issues: only the first 100 are joined")
     issues = [issue for issue in page.get("issues", []) if isinstance(issue, dict)]

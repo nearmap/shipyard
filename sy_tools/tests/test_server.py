@@ -2482,6 +2482,22 @@ async def test_live_sessions_still_lists_sessions_when_the_tracker_fails(monkeyp
 
 
 @pytest.mark.anyio
+async def test_live_sessions_names_only_the_class_of_an_unexpected_adapter_failure(monkeypatch):
+    class _Broken:
+        async def find_issues(self, **kwargs: Any) -> dict:
+            raise RuntimeError("internal detail that is not shown")
+
+    _canned_sessions(monkeypatch, "PROJ-2")
+    monkeypatch.setattr(server.tracker, "adapter", lambda: _Broken())
+    async with mcp.Client(server.mcp) as client:
+        result = await client.call_tool("live_sessions", {"parent": "PROJ-1"})
+    assert result.is_error is False, result.content
+    payload = _payload(result)
+    assert [row["ticket"] for row in payload["sessions"]] == ["PROJ-2"], payload
+    assert payload["warnings"] == ["the child issues of PROJ-1 could not be read: RuntimeError"], payload
+
+
+@pytest.mark.anyio
 async def test_live_sessions_reports_a_bad_scratch_root_as_a_tool_error(monkeypatch):
     def refuse() -> Path:
         raise server.config.ConfigError("scratch.dir resolved to 'relative', which is not absolute")

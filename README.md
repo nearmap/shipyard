@@ -41,6 +41,7 @@ Three disciplines shape the workflow: challenge the decision, independently insp
 | a large objective or an existing roadmap | `/sy:plan` |
 | one PR-sized task that needs an executable plan | `/sy:spec <task>` |
 | an approved plan ready to build | `/sy:ship <task>` |
+| a small, low-risk task to spec and ship in one session | `/sy:doit <goal or task>` |
 | a design session with Claude and colleagues on a shared whiteboard, before a problem is a hunch, a roadmap or a task | `/sy:whiteboard …` |
 | a hunch that needs data before it becomes a project | `/sy:spike …` |
 | an idea you want built and demoed fast, outside the merge standards, then harvested into real tasks | `/sy:mvp <task or objective>` |
@@ -145,7 +146,7 @@ shipyard/
   scripts/                        # what a bash/hook path still needs: validate.py, ci_poll.sh
   agents/                         # sweep seam trace slice hunt gate gate-triage spec-gate img-inspector explain-author debate debater repo-{standards,review} ship-{start,build,gate}
   skills/
-    plan/ spec/ ship/ spike/ mvp/ shutdown/ status/ pr/ ci/ standards/ tighten/ explain/ whiteboard/ help/ config/ init-repo/
+    plan/ spec/ ship/ spike/ mvp/ shutdown/ status/ pr/ ci/ standards/ tighten/ explain/ whiteboard/ doit/ help/ config/ init-repo/
     tracker/
       SKILL.md CONTRACT.md        # the seam: selection + canonical vocabulary
       jira/    ADAPTER.md + references/

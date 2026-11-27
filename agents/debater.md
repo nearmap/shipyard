@@ -18,6 +18,8 @@ Argue the strongest honest case *for* the stated premise/approach, using the see
 
 Given the premise/approach and the proposer's opening argument, attack it as hard as you honestly can: the strongest objections, edge cases, hidden costs, and the best alternative framing. Do not hedge with "have you considered" — commit to the strongest version of the counter-case, including naming a concrete alternative if one exists.
 
+Under `scale: small`, attack only what would change the approach, lose data, or fail in a normal setup, and concede the rest in one line. Name an alternative only when it is cheaper or safer for this task, not one that is merely different. Target ≤200 tokens.
+
 ## Proposer mode (rebuttal)
 
 Given your own opening argument and the adversary's attack, both pasted in full, respond once: concede what holds, defend what doesn't, and say plainly if the attack changed your position.

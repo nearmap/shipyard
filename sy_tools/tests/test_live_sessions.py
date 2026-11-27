@@ -462,6 +462,18 @@ def test_owned_states_order_by_the_moment_not_the_spelling(tmp_path):
     assert _only(live_sessions.snapshot(home, scratch))["ticket"] == "PROJ-2"
 
 
+@POSIX
+def test_an_unquoted_stamp_orders_as_a_datetime(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
+    own = "ship_session_id: s1\n"
+    _ship_state(scratch, "PROJ-1", own + "ship_session_started_at: '2026-11-27T04:00:00+00:00'\n")
+    _ship_state(scratch, "PROJ-2", own + "ship_session_started_at: 2026-11-27T05:00:00Z\n")
+    _ship_state(scratch, "PROJ-3", own + "ship_session_started_at: 2026-11-27T13:30:00+11:00\n")
+    assert _only(live_sessions.snapshot(home, scratch))["ticket"] == "PROJ-2"
+
+
 @LINUX
 def test_liveness_reads_the_start_time_from_a_literal_proc_stat(monkeypatch):
     stat = b"4242 (a) b) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000000 200\n"

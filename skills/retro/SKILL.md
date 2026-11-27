@@ -43,7 +43,7 @@ Every dispatch resolves its model and effort with `agent_model` and passes them 
 
 Only once every repository's tags are folded in and every profile is written, ask the person, one `AskUserQuestion` per turn, at most 12 questions in all. Each question names the evidence it rests on (a PR, a session pointer, a count) and fills one field of `discovery.json`. Cover, in this order and only where the evidence leaves the field `unknown`:
 
-1. the approach behind each of the busiest PRs, in the person's own words: offer the paths seen so far (spec first, evolving stack, prototype first) as examples, never as the only answers;
+1. the approach behind each of the busiest PRs, in the person's own words: name its `approach_marker` when it has one, and offer the paths seen so far (spec first, evolving stack, prototype first) as examples, never as the only answers;
 2. the stages that approach moves through, and where the person wants control;
 3. which Shipyard skills they tried or skipped, and why;
 4. their pain points, starting from the ones the session profiles show.

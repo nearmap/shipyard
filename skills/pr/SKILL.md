@@ -33,7 +33,7 @@ Base on real diff/log. The mutable description is the PR's human-attention secti
 - image placeholder only when needed;
 - no AI self-credit/co-author lines; the session trailer below is provenance, not credit.
 
-The description ends with a session trailer as its last paragraph, appended by the shell rather than typed: `printf '\nClaude-Code-Session-Id: %s\n' "$CLAUDE_CODE_SESSION_ID" >> <body file>`. A refresh keeps every existing `Claude-Code-Session-Id:` line and appends this session's only when it is missing.
+The description ends with a session trailer as its last paragraph, appended by the shell rather than typed: `printf '\nClaude-Code-Session-Id: %s\n' "$CLAUDE_CODE_SESSION_ID" >> <body file>`. When the PR ships a plan, the plan heading's `Approach:` line goes into that paragraph first, copied verbatim. A refresh keeps every existing `Claude-Code-Session-Id:` line and appends this session's only when it is missing.
 
 **Acceptance criteria/evidence never live only in the mutable description.** `/sy:ship` posts them as a dedicated PR comment so promotion/refresh cannot erase them.
 

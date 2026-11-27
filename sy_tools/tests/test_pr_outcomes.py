@@ -69,6 +69,7 @@ def test_merged_pr_row_lifecycle_review_and_ci():
     assert row["ci_failed_commits"] == 2, "FAILURE and ERROR rollups count, SUCCESS does not"
     assert row["ci_failed_checks"] == {"lint": 2, "ci/legacy": 1}
     assert row["session_ids"] == ["sess-aaa", "sess-bbb"], "body trailer first, then the comment marker"
+    assert row["approach_marker"] == "doit", "the plan's Approach line rides in the trailer paragraph"
     assert row["truncated"] == []
 
 

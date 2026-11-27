@@ -32,6 +32,7 @@ FAILED_ROLLUP = frozenset({"FAILURE", "ERROR"})
 FAILED_CHECK = frozenset({"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE"})
 
 SESSION_TRAILER = re.compile(r"^Claude-Code-Session-Id:\s*(\S+)", re.M)
+APPROACH_MARKER = re.compile(r"^Approach:\s*(spec|doit|mvp)\b", re.M)
 AGENT_MARKER = re.compile(r"<!--\s*shipyard:agent session=([^\s>]+?)\s*-->")
 
 _ACTOR = "author { __typename login }"
@@ -135,6 +136,7 @@ def parse_pr(repo: str, pr: dict[str, Any]) -> dict[str, Any]:
         "commit_shas": [c["oid"] for c in commits],
         "merge_commit_sha": (pr["mergeCommit"] or {}).get("oid"),
         "session_ids": list(dict.fromkeys(session_ids)),
+        "approach_marker": next(iter(APPROACH_MARKER.findall(pr["body"] or "")), None),
         "state": pr["state"],
         "created_at": pr["createdAt"],
         "merged_at": pr["mergedAt"],

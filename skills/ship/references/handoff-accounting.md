@@ -10,7 +10,7 @@ Distinct from BUILD's leaked-token content-QA grep (`${CLAUDE_PLUGIN_ROOT}/skill
 
 ## 1. Human retrospective comment
 
-Post `# Ship retrospective`. Its `human` part is clear prose:
+Post `# Ship retrospective`, its heading followed by the plan's `Approach:` line (`${CLAUDE_PLUGIN_ROOT}/skills/tracker/SKILL.md` § Durable comment types). Its `human` part is clear prose:
 
 - shipped vs plan;
 - divergences and mid-ship decisions — accepted deviations, any parent-resolved `needs-decision`, any memory refutation this run already applied, and any pre-gate-checkpoint outcome (proceeded as-is, or the changes it sent back to BUILD) — and why;

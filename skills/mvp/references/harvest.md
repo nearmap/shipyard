@@ -38,7 +38,7 @@ One `AskUserQuestion` naming every mutation: create N Tasks in `backlog` under t
 
 Post the `harvest` ledger entry first (`references/loop.md` § The ledger entry): it is what a harvest interrupted from here resumes from. Create the Tasks (`create-issue` with `parent`), record the blockers, and post each `# MVP reference` comment via `post-comment`:
 
-- `human`: port by hand from the reference — never cherry-pick or check out reference files; no MVP names (the ticket key, the MVP branch, `mvp`/`demo`/`spike`, demo prefixes) in shipped code; and this Task's scope in plain words.
+- `human`: an `Approach: mvp` line under the heading, then: port by hand from the reference — never cherry-pick or check out reference files; no MVP names (the ticket key, the MVP branch, `mvp`/`demo`/`spike`, demo prefixes) in shipped code; and this Task's scope in plain words.
 - `agent_detail`: the MVP branch and reference SHA, the owned paths, the owned shortcuts with their commit SHAs, or the literal `none`, and the `do not port` rows touching this Task.
 
 Post the `# MVP coverage manifest` on the MVP ticket, its `agent_detail` carrying every row. Read each write back with `get-issue`; a Task, blocker, or comment missing from the read is a failed write, never assumed posted. Both comment types are append-only: a later correction is a new comment naming what it supersedes, per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/write-integrity.md`.

@@ -1719,6 +1719,15 @@ def check_invariants(errors: list[str]) -> None:
         fail("doit must mark its plan heading with `Approach: doit` so retro can report it by approach", errors)
     if "preflight.md" not in doit:
         fail("doit writes the tracker and must run the tracker preflight first", errors)
+    # Retro reports by approach, so every handover heading names the path the work took.
+    for name, text, needle in (
+        ("spec", spec, "Approach: spec"),
+        ("tracker", tracker_skill, "Every handover heading block carries an `Approach:`"),
+        ("pr", pr, "`Approach:` line goes into that paragraph"), ("handoff-accounting", handoff, "`Approach:` line"),
+        ("mvp harvest", read("skills/mvp/references/harvest.md"), "`Approach: mvp`"),
+    ):
+        if needle not in text:
+            fail(f"{name} must carry the `Approach:` handover line (tracker SKILL.md § Durable comment types)", errors)
 
     # The board is the user's surface too: an unread drag is a decision lost, and a hand-edited snapshot hides the
     # next person's change from the diff.

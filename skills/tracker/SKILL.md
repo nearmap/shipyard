@@ -77,6 +77,8 @@ Core speaks only the contract: canonical verbs (`preflight`, `create-issue`, `cr
 - `# MVP reference` — on each harvested task: port by hand from the MVP branch at its reference SHA.
 - Epic decision logs ending in a `Plan checkpoint` footer.
 
+Every handover heading block carries an `Approach:` line naming the path the work took: `spec`, `doit` or `mvp`. The plan sets it (`# Execution Plan vN`); `# MVP reference` carries `mvp`; `# Ship retrospective` and the PR description copy the plan's value. `/sy:retro` reports by it. A plan without the line reads as `unknown`, never as a guess.
+
 ## Loop mapping
 
 - `/sy:plan` ↔ epic roadmap + direct executable children created in `backlog`, max the resolved `plan.max_active_tasks` cap active (resolve per `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`).

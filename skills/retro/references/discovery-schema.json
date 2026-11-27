@@ -55,6 +55,7 @@
             }
           },
           "tokens": {"type": ["integer", "null"]},
+          "approach_marker": {"description": "Measured: the PR description's `Approach:` line, copied from the plan heading; null when absent.", "enum": ["spec", "doit", "mvp", null]},
           "approach": {"description": "Interview: the person's own words, or \"unknown\".", "type": "string"},
           "stages": {"description": "Interview, or from a session profile with its pointer.", "type": ["array", "string"], "items": {"type": "string"}}
         }

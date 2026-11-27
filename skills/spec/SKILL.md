@@ -178,6 +178,7 @@ Both labeled parts are revealed here, in full, rather than at Step 1. This step 
 ```text
 # Execution Plan v<N>
 Supersedes: v<N-1>   # omit for v1
+Approach: spec       # mvp when the Task carries a `# MVP reference` comment
 ```
 
 3. verify by rereading that this is the highest plan version on the issue and that no other comment claims it.

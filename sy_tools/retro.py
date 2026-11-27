@@ -226,6 +226,7 @@ def draft_discovery(
                     "followed_up": bool(p.get("followed_up_by")),
                 },
                 "tokens": sum(tokens.get(s) or 0 for s in sids) or None,
+                "approach_marker": p.get("approach_marker"),
                 "approach": "unknown",
                 "stages": "unknown",
             }

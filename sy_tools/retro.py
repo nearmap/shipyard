@@ -8,7 +8,7 @@ back in. `analyze --out DIR` folds the `sy:session-read` facets in and writes `a
 
 import argparse
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 import json
 from pathlib import Path
 import re
@@ -21,12 +21,13 @@ from . import pr_outcomes, sessions
 
 COMMENT_BATCH = 50
 DIGEST_CHARS = 40_000
-FACET_BATCH_CHARS = 120_000
+FACET_BATCH_CHARS = 400_000
 PRICING = Path(__file__).resolve().parents[1] / "skills" / "retro" / "references" / "pricing.json"
 PLANNING_SKILLS = ("sy:plan", "sy:spec", "sy:doit", "sy:mvp", "sy:spike", "sy:whiteboard")
 KEY_TOOLS = ("Skill", "Agent", "Task", "AskUserQuestion", "ExitPlanMode")
 _PR_URL = re.compile(r"https://[^/\s]+/([^/\s]+/[^/\s]+)/pull/(\d+)")
 _COMMAND = re.compile(r"<command-name>([^<]*)</command-name>(?:.*?<command-args>([^<]*)</command-args>)?", re.S)
+_EVENT = re.compile(r"L\d+ \S+ ([A-Z]+)(?: ([^:\s]+))?:")
 _DEFAULT_BRANCHES = {"main", "master", "HEAD", ""}
 
 
@@ -38,9 +39,12 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--out", type=Path, required=True)
     d.add_argument("--repo", nargs="*", default=[])
     d.add_argument("--projects", type=Path, default=Path.home() / ".claude" / "projects")
-    for name in ("fold-tags", "analyze"):
+    for name in ("fold-tags", "analyze", "report"):
         sub.add_parser(name).add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.cmd == "report":
+        print(json.dumps(report(args.out)))
+        return 0
     if args.cmd == "fold-tags":
         print(json.dumps(fold_tags(args.out)))
         return 0
@@ -272,6 +276,107 @@ def analyze(out: Path) -> dict[str, Any]:
     return {"sessions_with_facets": len(facets), "sessions_in_scope": len(rows), "goals": sorted(analysis["goals"])}
 
 
+def report(out: Path) -> dict[str, Any]:
+    """Write `analysis-agents.md`: the full evidence behind `analysis.md`, for agents that act on the retro.
+
+    Every goal metric, every pattern with its evidence and answer, the weekly trend, the costliest sessions, every
+    session short of its goal, every merged PR, and every friction detail grouped by class. Dollar values are
+    list-price estimates.
+    """
+    disc = json.loads((out / "discovery.json").read_text(encoding="utf-8"))
+    analysis = disc["analysis"]
+    assert analysis, "discovery.json has no analysis: run analyze first"
+    facets = {f["session_id"]: f for f in _read_jsonl(out / "facets.jsonl")}
+    rows = {r["session_id"]: r for r in _read_jsonl(out / "sessions.jsonl") if r["session_id"] in facets}
+    prices = _prices()
+    cost = {s: session_costs([r], prices)["usd_estimate"] for s, r in rows.items()}
+    titles = {f"{p['repo']}#{p['number']}": p.get("title") or "" for p in _read_jsonl(out / "prs.jsonl")}
+    window = disc["window"]
+    md = [
+        f"# Retro discovery, agent companion: {window['since']} to {window['until']}",
+        "",
+        "For agents. `analysis.md` is the summary for people. Dollar values are list-price estimates: compare shares."
+        " A pointer `<session>:L<n>` is a session id prefix and a transcript line.",
+        "",
+        "## Scope",
+        f"- sessions: {len(facets)}; PRs: {len(disc['prs'])}; repos: {', '.join(disc['repos'])}",
+        f"- shipyard: {json.dumps(disc['sessions']['shipyard'])}",
+        "",
+        "## Metrics per goal",
+    ]
+    for goal, metrics in analysis["goals"].items():
+        md.append(f"### {goal}")
+        md += [f"- {k}: {json.dumps(v, separators=(',', ':'))}" for k, v in metrics.items()]
+    md += ["", "## Patterns and why"]
+    for p in disc.get("patterns") or []:
+        md += [f"- {p['id']} [{p['goal']}] {p['pattern']}", f"  - evidence: {', '.join(p['evidence'])}"]
+        md.append(f"  - why: {p['why']}")
+    md += ["", "## Control, Shipyard use, pain points"]
+    md += [f"- control/{c['stage']}: {c['wants']}" for c in disc.get("control") or [] if isinstance(c, dict)]
+    usage = disc.get("shipyard_usage") or {}
+    for k in ("tried", "skipped"):
+        md += [f"- {k}/{u['skill']}: {u['why']}" for u in (usage.get(k) or []) if isinstance(u, dict)]
+    md += [
+        f"- pain: {p['what']} [{', '.join(p['evidence'])}]"
+        for p in disc.get("pain_points") or []
+        if isinstance(p, dict)
+    ]
+    classes = list(analysis["friction"])
+    md += ["", "## Weekly trend (week of last activity; friction is instances per session)"]
+    md += ["| week | sessions | achieved | usd | " + " | ".join(classes) + " |", "|---" * (4 + len(classes)) + "|"]
+    for w in analysis.get("weekly") or []:
+        fr = [str(w["friction_per_session"].get(c, 0)) for c in classes]
+        md.append(
+            f"| {w['week']} | {w['sessions']} | {w['achieved_share']} | {w['usd_estimate']:.0f} | {' | '.join(fr)} |"
+        )
+    md += ["", "## Costliest 25 sessions", "| session | usd | work_type | approach | outcome | friction | summary |"]
+    md.append("|---|---|---|---|---|---|---|")
+    for s in sorted(cost, key=lambda s: -cost[s])[:25]:
+        f = facets[s]
+        fr = ",".join(f"{k}:{n}" for k, n in Counter(f.get("friction") or {}).most_common(2))
+        md.append(
+            f"| {s[:8]} | {cost[s]:.0f} | {f.get('work_type')} | {f.get('approach')} | {f.get('outcome')} | {fr} "
+            f"| {_cell(f.get('summary'))} |"
+        )
+    md += ["", "## Sessions short of their goal"]
+    md += [
+        f"- {s[:8]} {f['outcome']} {f.get('work_type')}: {f.get('summary')}"
+        for s, f in sorted(facets.items(), key=lambda kv: kv[1].get("outcome") or "")
+        if f.get("outcome") in ("not_achieved", "partially_achieved")
+    ]
+    plan_sessions = {s for s, r in rows.items() if any(k in PLANNING_SKILLS for k in _skill_names(r))}
+    md += ["", "## Merged PRs, most review rounds first"]
+    md += ["| pr | lines | rounds | comments | hours | ci_fail | plan | reverted/followed | sessions | rules | title |"]
+    md.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    merged = [p for p in disc["prs"] if p["outcome"]["state"] == "MERGED"]
+    for p in sorted(merged, key=lambda p: -(p["outcome"].get("review_rounds") or 0)):
+        o = p["outcome"]
+        plan = "Y" if p.get("approach_marker") or plan_sessions & set(p["sessions"]) else "N"
+        flags = ("R" if o.get("reverted") else "") + ("F" if o.get("followed_up") else "")
+        rules = ",".join(f"{k}:{n}" for k, n in (o.get("rules_hit") or {}).items() if k != "no rule")
+        comments = sum((o.get("comments_by_kind") or {}).values())
+        md.append(
+            f"| {p['ref']} | {_lines(p)} | {o.get('review_rounds')} | {comments} "
+            f"| {o.get('hours_to_merge')} | {o.get('ci_failed_commits')} | {plan} | {flags} "
+            f"| {' '.join(s[:8] for s in p['sessions'])} | {_cell(rules)} | {_cell(titles.get(p['ref']))} |"
+        )
+    md += ["", "## Friction catalogue, by each session's top class, costliest first"]
+    by_class: dict[str, list[str]] = {}
+    for s, f in facets.items():
+        if f.get("friction_detail"):
+            top = Counter(f.get("friction") or {}).most_common(1)
+            by_class.setdefault(top[0][0] if top else "none", []).append(s)
+    for c, sids in sorted(by_class.items(), key=lambda kv: -len(kv[1])):
+        md.append(f"### {c} ({len(sids)})")
+        md += [
+            f"- {s[:8]} ${cost.get(s, 0):.0f}: {facets[s]['friction_detail']}"
+            for s in sorted(sids, key=lambda s: -cost.get(s, 0))
+        ]
+    text = "\n".join(md) + "\n"
+    (out / "analysis-agents.md").write_text(text, encoding="utf-8")
+    return {"path": str(out / "analysis-agents.md"), "words": len(text.split())}
+
+
 def draft_discovery(
     rows: list[dict[str, Any]], prs: list[dict[str, Any]], links: dict[str, Any], repos: list[str], since: date
 ) -> dict[str, Any]:
@@ -402,12 +507,14 @@ def _goal_metrics(
     turns = tally("human_turns")
     cost = session_costs(rows, _prices())
     plan_runs = Counter({k: n for r in rows for k, n in _skill_names(r).items() if k in PLANNING_SKILLS})
-    planned = [
+    planned = {
         p["ref"]
         for p in merged
         if p.get("approach_marker")
         or any(k in PLANNING_SKILLS for s in p["sessions"] if s in by_sid for k in _skill_names(by_sid[s]))
-    ]
+    }
+    lines = {p["ref"]: _lines(p) for p in merged}
+    unplanned = sorted((r for r in lines if r not in planned), key=lambda r: -lines[r])
     rework = [
         p["ref"]
         for p in disc["prs"]
@@ -425,7 +532,11 @@ def _goal_metrics(
                 "planning_layers": tally("planning_layer"),
                 "planning_skill_runs": dict(plan_runs.most_common()),
                 "merged_prs_with_a_plan": f"{len(planned)}/{len(merged)}",
-                "evidence": planned[:5],
+                "median_changed_lines": {
+                    "planned": _median([lines[r] for r in planned]),
+                    "unplanned": _median([lines[r] for r in unplanned]),
+                },
+                "unplanned_prs": [{"ref": r, "changed_lines": lines[r]} for r in unplanned],
             },
             "P2": {
                 "shipyard_level": disc["sessions"]["shipyard"]["level"],
@@ -479,8 +590,51 @@ def _goal_metrics(
             },
         },
         "friction": {k: {"count": v, "evidence": where("friction", k, 3)} for k, v in tally("friction").items()},
+        "weekly": _weekly(rows, facets),
         "friction_details": [f["friction_detail"] for f in facets.values() if f.get("friction_detail")][:20],
     }
+
+
+def _weekly(rows: list[dict[str, Any]], facets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per week of each session's last activity: sessions, achieved share, cost, and friction per session."""
+    weeks: dict[date, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r["session_id"] in facets and r.get("ended_at"):
+            d = date.fromisoformat(r["ended_at"][:10])
+            weeks.setdefault(d - timedelta(days=d.weekday()), []).append(r)
+    prices = _prices()
+    out = []
+    for wk, rs in sorted(weeks.items()):
+        fs = [facets[r["session_id"]] for r in rs]
+        rated = [f["outcome"] for f in fs if f.get("outcome") != "unclear"]
+        friction: Counter = Counter()
+        for f in fs:
+            friction.update({k: n for k, n in (f.get("friction") or {}).items() if isinstance(n, int)})
+        out.append(
+            {
+                "week": wk.isoformat(),
+                "sessions": len(rs),
+                "achieved_share": round(sum(o in ("fully_achieved", "mostly_achieved") for o in rated) / len(rated), 2)
+                if rated
+                else None,
+                "usd_estimate": session_costs(rs, prices)["usd_estimate"],
+                "friction_per_session": {k: round(n / len(rs), 2) for k, n in friction.most_common()},
+            }
+        )
+    return out
+
+
+def _cell(text: str | None) -> str:
+    return (text or "").replace("|", "/").replace("\n", " ")
+
+
+def _lines(p: dict[str, Any]) -> int:
+    size = p.get("size") or {}
+    return (size.get("additions") or 0) + (size.get("deletions") or 0)
+
+
+def _median(vals: list[int]) -> float | None:
+    return median(vals) if vals else None
 
 
 def _prices() -> dict[str, Any]:
@@ -585,17 +739,23 @@ def _digest(lines: list[str]) -> str:
 
     Human turns, commands, answers, errors and skill or agent calls are never dropped; each cut leaves a marker.
     """
-    kept = [x for x in lines if not _is_tool(x) or any(f" TOOL {t}:" in x for t in KEY_TOOLS)]
+    kept = [x for x in lines if _kind(x) != "TOOL" or _tool(x) in KEY_TOOLS]
     if _size(lines) > DIGEST_CHARS and len(kept) < len(lines):
         lines = [*kept, f"[{len(lines) - len(kept)} other tool calls left out]"]
     if _size(lines) > DIGEST_CHARS:
-        spoken = [x for x in lines if " ASSISTANT: " not in x[:20]]
+        spoken = [x for x in lines if _kind(x) != "ASSISTANT"]
         lines = [*spoken, f"[{len(lines) - len(spoken)} assistant messages left out]"]
     return "\n".join(lines) + "\n"
 
 
-def _is_tool(line: str) -> bool:
-    return " TOOL " in line[:20]
+def _kind(line: str) -> str:
+    m = _EVENT.match(line)
+    return m.group(1) if m else ""
+
+
+def _tool(line: str) -> str:
+    m = _EVENT.match(line)
+    return (m.group(2) or "") if m else ""
 
 
 def _size(lines: list[str]) -> int:
@@ -634,6 +794,10 @@ def _text(content: Any) -> str:
 
 def _flat(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x]
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

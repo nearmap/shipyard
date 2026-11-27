@@ -26,6 +26,7 @@ def _row(sid: str, turns: int) -> dict:
         "tokens": {"main": {"claude-opus-5-5[1m]": COUNTS}, "subagents": {}, "by_skill": {}, "by_agent_type": {}},
         "cache": {"peak_context": 100, "gt_5m": {"gaps": 1, "write_tokens": {"claude-opus-5-5": 1_000_000}}},
         "compactions": 0,
+        "ended_at": "2026-11-04T10:00:00Z",
     }
 
 
@@ -51,9 +52,17 @@ def test_analyze_folds_facets_into_goal_sections(tmp_path: Path):
         "approach_marker": None,
         "approach": "unknown",
         "tokens": None,
+        "size": {"additions": 30, "deletions": 10},
         "outcome": {"state": "MERGED", "review_rounds": 3, "comments_by_kind": {"person": 2}, "rules_hit": {}},
     }
-    disc = {"prs": [pr], "sessions": {"shipyard": {"level": "light"}}, "unknown": ["analysis"]}
+    disc = {
+        "prs": [pr],
+        "sessions": {"shipyard": {"level": "light"}},
+        "unknown": ["analysis"],
+        "window": {"since": "2026-11-01", "until": "2026-11-30"},
+        "repos": ["o/r"],
+        "patterns": [{"id": "P1-1", "goal": "P1", "pattern": "p", "evidence": ["a:L1"], "why": "because"}],
+    }
     (tmp_path / "discovery.json").write_text(json.dumps(disc))
     (tmp_path / "facets").mkdir()
     (tmp_path / "facets" / "batch-001.json").write_text("[]")
@@ -80,3 +89,17 @@ def test_analyze_folds_facets_into_goal_sections(tmp_path: Path):
     assert goals["T3"]["idle_rewrite_usd"]["gt_5m"] == pytest.approx(2 * 4.0 * 1.5)
     assert out["prs"][0]["approach"] == "planned" and out["unknown"] == []
     assert len((tmp_path / "facets.jsonl").read_text().splitlines()) == 2
+    assert goals["P1"]["unplanned_prs"] == [] and goals["P1"]["median_changed_lines"]["planned"] == 40
+    assert out["analysis"]["weekly"][0]["week"] == "2026-11-02", "bucketed by the Monday of the last activity"
+    assert out["analysis"]["weekly"][0]["friction_per_session"] == {"review_rework": 0.5}
+    (tmp_path / "prs.jsonl").write_text(json.dumps({"repo": "o/r", "number": 1, "title": "t"}) + "\n")
+    retro.report(tmp_path)
+    agents = (tmp_path / "analysis-agents.md").read_text()
+    assert "- why: because" in agents and "| o/r#1 | 40 | 3 |" in agents, agents
+
+
+def test_digest_drops_plain_tools_past_line_ten_thousand():
+    lines = [f"L{10_000 + n} 10:00:00 TOOL Bash: {'x' * 500}" for n in range(100)]
+    lines += ["L20000 10:00:00 USER: keep me", "L20001 10:00:00 TOOL Agent: keep me too"]
+    digest = retro._digest(lines)
+    assert "TOOL Bash" not in digest and "USER: keep me" in digest and "TOOL Agent" in digest, digest

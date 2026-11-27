@@ -27,7 +27,7 @@ Describe what happened, never how good the person is. Write one record per sessi
 
 Never infer intent, mood or skill level. Quote at most 15 words from the person, and write `[redacted]` in place of anything that looks like a credential, a customer name or private data. Never copy code or file contents.
 
-If the batch is too long to read whole, return `SPLIT_REQUIRED` with its sessions grouped into batches that fit. Never skim or sample silently.
+A digest too large for one `Read` is read whole in line ranges, in order. If the batch is too long to read whole, return `SPLIT_REQUIRED` with its sessions grouped into batches that fit. Never skim or sample silently.
 
 ## Return contract
 

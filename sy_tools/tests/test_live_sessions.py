@@ -428,6 +428,50 @@ def test_a_session_id_that_is_not_a_plain_id_is_never_globbed(tmp_path):
     assert _only(live_sessions.snapshot(home, tmp_path / "scratch"))["ticket"] is None
 
 
+@POSIX
+def test_a_typed_doit_clears_the_typed_ticket_so_the_owned_state_names_it(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:spec", "PROJ-1"), _typed("/sy:doit", "add a thing")])
+    _ship_state(scratch, "PROJ-1", "ship_session_id: other\nphase_active: BUILD\n")
+    _ship_state(scratch, "PROJ-9", "ship_session_id: s1\nphase_active: GATE\npr: 4\n")
+    session = _only(live_sessions.snapshot(home, scratch))
+    assert session["ticket"] == "PROJ-9" and session["ship"]["phase_active"] == "GATE", session
+
+
+@POSIX
+def test_a_ship_typed_after_doit_names_the_ticket_again(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:doit", "x"), _typed("/sy:ship", "PROJ-3")])
+    _ship_state(scratch, "PROJ-3", "phase_active: BUILD\n")
+    assert _only(live_sessions.snapshot(home, scratch))["ticket"] == "PROJ-3"
+
+
+@POSIX
+def test_owned_states_order_by_the_moment_not_the_spelling(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
+    own = "ship_session_id: s1\n"
+    # 01:00Z as an offset spelling sorts after 02:00Z as text, but is earlier in time.
+    _ship_state(scratch, "PROJ-1", own + "ship_session_started_at: '2026-11-27T12:00:00+11:00'\n")
+    _ship_state(scratch, "PROJ-2", own + "ship_session_started_at: '2026-11-27T02:00:00Z'\n")
+    _ship_state(scratch, "PROJ-3", own + "ship_session_started_at: 2026-11-26\n")
+    _ship_state(scratch, "PROJ-4", own + "ship_session_started_at: soon\n")
+    assert _only(live_sessions.snapshot(home, scratch))["ticket"] == "PROJ-2"
+
+
+@LINUX
+def test_liveness_reads_the_start_time_from_a_literal_proc_stat(monkeypatch):
+    stat = b"4242 (a) b) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000000 200\n"
+    real = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: stat if str(self) == "/proc/4242/stat" else real(self))
+    monkeypatch.setattr(live_sessions.os, "kill", lambda pid, sig: None)
+    assert live_sessions._liveness(4242, 987654) == "pid-and-start-time"
+    assert live_sessions._liveness(4242, 987655) is None
+
+
 def _ship_state(scratch: Path, ticket: str, body: str) -> None:
     (scratch / ticket).mkdir(parents=True)
     (scratch / ticket / "ship-state.yaml").write_text(body, encoding="utf-8")
@@ -460,8 +504,9 @@ def test_with_no_typed_ticket_the_newest_owned_state_wins(tmp_path):
     home, scratch = tmp_path / "home", tmp_path / "scratch"
     _register(home, "1.json", _row())
     _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
-    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nship_session_started_at: '2026-11-27T01:00:00Z'\nphase_active: GATE\n")
-    _ship_state(scratch, "PROJ-2", "ship_session_id: s1\nship_session_started_at: '2026-11-27T02:00:00Z'\nphase_active: BUILD\n")
+    own = "ship_session_id: s1\n"
+    _ship_state(scratch, "PROJ-1", own + "ship_session_started_at: '2026-11-27T01:00:00Z'\nphase_active: GATE\n")
+    _ship_state(scratch, "PROJ-2", own + "ship_session_started_at: '2026-11-27T02:00:00Z'\nphase_active: BUILD\n")
     session = _only(live_sessions.snapshot(home, scratch))
     assert session["ticket"] == "PROJ-2", session
     assert session["ship"]["phase_active"] == "BUILD", session

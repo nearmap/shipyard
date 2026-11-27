@@ -28,6 +28,9 @@ _COMMAND_MARKER = b"<command-name>/sy:"
 _COMMAND_NAME = re.compile(r"<command-name>(/sy:[\w-]+)</command-name>")
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _TICKET_COMMANDS = frozenset({"/sy:spec", "/sy:ship"})
+# `/sy:doit` runs `/sy:ship` inline, so no `/sy:ship` record follows it. It clears the typed ticket and its
+# arguments are never read (SY-001), which leaves the states the session owns to name the ticket.
+_TICKET_RESET = frozenset({"/sy:doit"})
 # A session id becomes part of a glob pattern, so anything but a plain id is never looked up.
 _SESSION_ID = re.compile(r"[\w-]+")
 _TAIL_BYTES = 64 * 1024
@@ -187,8 +190,8 @@ def _transcript(projects: Path, session_id: str | None, warnings: list[str]) -> 
 
 
 def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, bool]:
-    """The latest `/sy:` command the user typed, the ticket of the latest `/sy:spec` or `/sy:ship`, and
-    whether the file could be read."""
+    """The latest `/sy:` command the user typed, the ticket of the latest `/sy:spec` or `/sy:ship`
+    (cleared by a later `/sy:doit`), and whether the file could be read."""
     command = ticket = None
     try:
         with path.open("rb") as handle:
@@ -209,6 +212,8 @@ def _commands(path: Path, warnings: list[str]) -> tuple[str | None, str | None, 
                 if name in _TICKET_COMMANDS:
                     tokens = args.split()
                     ticket = tokens[0] if tokens else None
+                elif name in _TICKET_RESET:
+                    ticket = None
     except OSError as exc:
         warnings.append(f"conversation file {path.name} unreadable: {exc.__class__.__name__}")
         return command, ticket, False
@@ -318,13 +323,33 @@ def _ship_join(
             return command_ticket, None
     else:
         owned = [entry for entry in states if session_id is not None and entry[1].get("ship_session_id") == session_id]
-        # `_plain` makes the stamp a string, so an ISO timestamp orders by its text; a missing one sorts last.
-        owned.sort(key=lambda entry: str(_plain(entry[1].get("ship_session_started_at")) or ""), reverse=True)
+        owned.sort(key=lambda entry: _started(entry[1].get("ship_session_started_at")), reverse=True)
         if not owned:
             return None, None
         match = owned[0]
     ticket, state = match
     return ticket, {key: _plain(state.get(key)) for key in ("phase_active", "gate_rounds_total", "pr")}
+
+
+_NEVER = dt.datetime.min.replace(tzinfo=dt.UTC)
+
+
+def _started(value: object) -> dt.datetime:
+    """A ship start stamp as an aware time, so mixed spellings order by the moment.
+
+    A naive time or a date is UTC; an unusable value sorts last."""
+    try:
+        if isinstance(value, dt.datetime):
+            parsed = value
+        elif isinstance(value, dt.date):
+            parsed = dt.datetime(value.year, value.month, value.day)
+        elif isinstance(value, str):
+            parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        else:
+            return _NEVER
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.UTC)
+    except (ValueError, OverflowError):
+        return _NEVER
 
 
 def _plain(value: object) -> object:

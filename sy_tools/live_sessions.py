@@ -308,13 +308,21 @@ def _ship_states(scratch: Path, warnings: list[str]) -> list[tuple[str, dict[str
 def _ship_join(
     states: list[tuple[str, dict[str, Any]]], session_id: str | None, command_ticket: str | None
 ) -> tuple[str | None, dict[str, Any] | None]:
-    """The ticket and ship progress for one session. Compares strings only and builds no path."""
-    owned = [entry for entry in states if session_id is not None and entry[1].get("ship_session_id") == session_id]
-    named = [entry for entry in states if command_ticket is not None and entry[0] == command_ticket]
-    preferred = [entry for entry in owned if entry in named]
-    match = (preferred or owned or named or [None])[0]
-    if match is None:
-        return command_ticket, None
+    """The ticket and ship progress for one session. Compares strings only and builds no path.
+
+    A ticket the newest command names decides the join: its own state, or no progress when it has none.
+    Only a session with no typed ticket falls back to the states it owns, newest start first."""
+    if command_ticket is not None:
+        match = next((entry for entry in states if entry[0] == command_ticket), None)
+        if match is None:
+            return command_ticket, None
+    else:
+        owned = [entry for entry in states if session_id is not None and entry[1].get("ship_session_id") == session_id]
+        # `_plain` makes the stamp a string, so an ISO timestamp orders by its text; a missing one sorts last.
+        owned.sort(key=lambda entry: str(_plain(entry[1].get("ship_session_started_at")) or ""), reverse=True)
+        if not owned:
+            return None, None
+        match = owned[0]
     ticket, state = match
     return ticket, {key: _plain(state.get(key)) for key in ("phase_active", "gate_rounds_total", "pr")}
 

@@ -434,15 +434,37 @@ def _ship_state(scratch: Path, ticket: str, body: str) -> None:
 
 
 @POSIX
-def test_ship_state_joins_on_the_owning_session_before_the_command_ticket(tmp_path):
+def test_a_typed_ticket_outranks_a_state_the_session_owns(tmp_path):
     home, scratch = tmp_path / "home", tmp_path / "scratch"
     _register(home, "1.json", _row())
     _transcript(home, "s1", [_typed("/sy:spec", "PROJ-2")])
-    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nphase_active: GATE\ngate_rounds_total: 2\npr: 7\n")
-    _ship_state(scratch, "PROJ-2", "ship_session_id: other\nphase_active: BUILD\n")
+    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nphase_active: GATE\n")
+    _ship_state(scratch, "PROJ-2", "ship_session_id: other\nphase_active: BUILD\ngate_rounds_total: 1\n")
     session = _only(live_sessions.snapshot(home, scratch))
-    assert session["ticket"] == "PROJ-1", session
-    assert session["ship"] == {"phase_active": "GATE", "gate_rounds_total": 2, "pr": 7}, session
+    assert session["ticket"] == "PROJ-2", session
+    assert session["ship"] == {"phase_active": "BUILD", "gate_rounds_total": 1, "pr": None}, session
+
+
+@POSIX
+def test_a_typed_ticket_with_no_state_has_no_ship_progress(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_typed("/sy:spec", "PROJ-9")])
+    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nphase_active: GATE\n")
+    session = _only(live_sessions.snapshot(home, scratch))
+    assert (session["ticket"], session["ship"]) == ("PROJ-9", None), session
+
+
+@POSIX
+def test_with_no_typed_ticket_the_newest_owned_state_wins(tmp_path):
+    home, scratch = tmp_path / "home", tmp_path / "scratch"
+    _register(home, "1.json", _row())
+    _transcript(home, "s1", [_says({"type": "text", "text": "hello"})])
+    _ship_state(scratch, "PROJ-1", "ship_session_id: s1\nship_session_started_at: '2026-11-27T01:00:00Z'\nphase_active: GATE\n")
+    _ship_state(scratch, "PROJ-2", "ship_session_id: s1\nship_session_started_at: '2026-11-27T02:00:00Z'\nphase_active: BUILD\n")
+    session = _only(live_sessions.snapshot(home, scratch))
+    assert session["ticket"] == "PROJ-2", session
+    assert session["ship"]["phase_active"] == "BUILD", session
 
 
 @POSIX

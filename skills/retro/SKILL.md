@@ -13,24 +13,24 @@ Discovery mode: evidence of how one person works, linked to what their PRs did. 
 
 $ARGUMENTS
 
-Only `discover` exists so far; any other mode stops with that sentence. The window defaults to the last 30 days.
+Only `discover` exists so far; any other mode stops with that sentence. The window defaults to the last 30 days. A run resumes from its output directory: continue at the first step whose output is missing, and never redo a finished one.
 
 ## 1. Collect, in code
 
 Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. Build the session table, in the background, and wait for its completion notice; it prints the candidate repositories:
 
 ```
-pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -m sy_tools.retro discover --since <date> --out <dir>
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro discover --since <date> --out <dir>
 ```
 
-Ask which repositories to include with one multi-select `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), the busiest first. Then run the same command with `--repo <owner/name>...` added; it reuses the session table and writes `sessions.jsonl`, `prs.jsonl`, `links.json`, `flags.json`, one rendered text file per flagged span under `spans/`, comment batches under `comments/`, and `discovery.json` with every measured field filled and every interview field `unknown`. Read `flags.json` and the measured half of `discovery.json`; never read `sessions.jsonl` or `prs.jsonl` whole.
+Ask which repositories to include with one multi-select `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), the busiest first. Then confirm each chosen repository's standards resolve from this session: they may need that repository's own MCP servers. For any that cannot, ask whether to drop it or to finish its step 2 in a session started in that repository. Then run the same command with `--repo <owner/name>...` added; it reuses the session table and writes `sessions.jsonl`, `prs.jsonl`, `links.json`, `flags.json`, one rendered text file per flagged span under `spans/`, comment batches under `comments/`, and `discovery.json` with every measured field filled and every interview field `unknown`. Read `flags.json` and the measured half of `discovery.json`; never read `sessions.jsonl` or `prs.jsonl` whole.
 
 ## 2. Tag review comments
 
 For each repository, resolve its standards rules with `sy:repo-standards` in resolve mode and write them to `comments/rules-<owner>__<name>.json` as a list of `{id, text}`. A rule with no ID of its own takes `<file>#<heading>`. Dispatch `sy:comment-tag` once per batch file (`comments/batch-<owner>__<name>-<n>.json`), with that repository's rules file, writing `comments/tags-<same suffix>.json`; at most the resolved `limits.max_depth_agents` in flight (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`). Then fold the tags in:
 
 ```
-pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -m sy_tools.retro fold-tags --out <dir>
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro fold-tags --out <dir>
 ```
 
 ## 3. Read the flagged sessions
@@ -41,14 +41,14 @@ Every dispatch resolves its model and effort with `agent_model` and passes them 
 
 ## 4. Interview
 
-Only now ask the person, one `AskUserQuestion` per turn, at most 12 questions in all. Each question names the evidence it rests on (a PR, a session pointer, a count) and fills one field of `discovery.json`. Cover, in this order and only where the evidence leaves the field `unknown`:
+Only once every repository's tags are folded in and every profile is written, ask the person, one `AskUserQuestion` per turn, at most 12 questions in all. Each question names the evidence it rests on (a PR, a session pointer, a count) and fills one field of `discovery.json`. Cover, in this order and only where the evidence leaves the field `unknown`:
 
 1. the approach behind each of the busiest PRs, in the person's own words: offer the paths seen so far (spec first, evolving stack, prototype first) as examples, never as the only answers;
 2. the stages that approach moves through, and where the person wants control;
 3. which Shipyard skills they tried or skipped, and why;
 4. their pain points, starting from the ones the session profiles show.
 
-A field the person does not answer stays `unknown`. Never fill one from a guess.
+A field the person does not answer stays `unknown`. Never fill one from a guess. While a question is open, ask nothing else and never repeat it.
 
 ## 5. Write
 

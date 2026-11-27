@@ -13,3 +13,4 @@ not json at all
 {"type":"user","timestamp":"2026-01-05T10:09:00Z","gitBranch":"ABC-12/widgets","origin":{"kind":"peer"},"message":{"role":"user","content":"Another session sent a message"}}
 {"type":"user","timestamp":"2026-01-05T10:10:00Z","gitBranch":"ABC-12/widgets","message":{"role":"user","content":"<local-command-stdout>ok</local-command-stdout>"}}
 {"type":"user","timestamp":"2026-01-05T11:00:00Z","gitBranch":"HEAD","message":{"role":"user","content":[{"type":"text","text":"ship it"}]}}
+{"type":"assistant","timestamp":"2026-01-05T11:01:00Z","gitBranch":"HEAD","message":{"id":"msg_5","model":"model-big","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":900,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":900}},"content":[{"type":"text","text":"shipped"}]}}

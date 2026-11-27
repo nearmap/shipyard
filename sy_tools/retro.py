@@ -1,8 +1,9 @@
-"""`/sy:retro` discovery: join the session table to PR outcomes, flag sessions worth reading, and draft discovery.json.
+"""`/sy:retro` discovery: join the session table to PR outcomes, cost every session, and score the evidence.
 
 `python -m sy_tools.retro discover --since D --out DIR` builds the session table and lists candidate repositories;
-adding `--repo owner/name ...` fetches their PR outcomes, links them to sessions, ranks flags, renders flagged spans,
-writes comment batches, and drafts `discovery.json`. `fold-tags --out DIR` folds `sy:comment-tag` results back in.
+adding `--repo owner/name ...` fetches their PR outcomes, links them to sessions, renders one digest per session,
+writes facet and comment batches, and drafts `discovery.json`. `fold-tags --out DIR` folds `sy:comment-tag` results
+back in. `analyze --out DIR` folds the `sy:session-read` facets in and writes `analysis.json`, one section per goal.
 """
 
 import argparse
@@ -11,16 +12,19 @@ from datetime import UTC, date, datetime
 import json
 from pathlib import Path
 import re
+from statistics import median
 import subprocess
 import sys
 from typing import Any
 
 from . import pr_outcomes, sessions
 
-SESSION_BUDGET = 12
 COMMENT_BATCH = 50
-SPAN_CONTEXT = 12
-SPAN_MAX_LINES = 400
+DIGEST_CHARS = 40_000
+FACET_BATCH_CHARS = 120_000
+PRICING = Path(__file__).resolve().parents[1] / "skills" / "retro" / "references" / "pricing.json"
+PLANNING_SKILLS = ("sy:plan", "sy:spec", "sy:doit", "sy:mvp", "sy:spike", "sy:whiteboard")
+KEY_TOOLS = ("Skill", "Agent", "Task", "AskUserQuestion", "ExitPlanMode")
 _PR_URL = re.compile(r"https://[^/\s]+/([^/\s]+/[^/\s]+)/pull/(\d+)")
 _DEFAULT_BRANCHES = {"main", "master", "HEAD", ""}
 
@@ -33,11 +37,14 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--out", type=Path, required=True)
     d.add_argument("--repo", nargs="*", default=[])
     d.add_argument("--projects", type=Path, default=Path.home() / ".claude" / "projects")
-    f = sub.add_parser("fold-tags")
-    f.add_argument("--out", type=Path, required=True)
+    for name in ("fold-tags", "analyze"):
+        sub.add_parser(name).add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.cmd == "fold-tags":
         print(json.dumps(fold_tags(args.out)))
+        return 0
+    if args.cmd == "analyze":
+        print(json.dumps(analyze(args.out)))
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
     rows = _session_table(args.projects, args.since, args.out)
@@ -63,10 +70,7 @@ def discover(rows: list[dict[str, Any]], repos: list[str], since: date, out: Pat
     _write_jsonl(out / "prs.jsonl", prs)
     links = link(rows, prs)
     (out / "links.json").write_text(json.dumps(links, indent=1) + "\n", encoding="utf-8")
-    flags = flag(rows, prs, links)
-    for fl in flags:
-        fl["span_files"] = render_spans(projects, fl, out / "spans")
-    (out / "flags.json").write_text(json.dumps(flags, indent=1) + "\n", encoding="utf-8")
+    facet_batches = write_digests(projects, rows, out)
     batches = write_comment_batches(prs, out / "comments")
     draft = draft_discovery(rows, prs, links, repos, since)
     (out / "discovery.json").write_text(json.dumps(draft, indent=1) + "\n", encoding="utf-8")
@@ -74,7 +78,7 @@ def discover(rows: list[dict[str, Any]], repos: list[str], since: date, out: Pat
         "sessions": len(rows),
         "prs": len(prs),
         "linked_prs": len(links),
-        "flags": len(flags),
+        "facet_batches": facet_batches,
         "comment_batches": batches,
     }
 
@@ -113,58 +117,40 @@ def link(rows: list[dict[str, Any]], prs: list[dict[str, Any]]) -> dict[str, dic
     return out
 
 
-def flag(
-    rows: list[dict[str, Any]], prs: list[dict[str, Any]], links: dict[str, dict[str, list[str]]]
-) -> list[dict[str, Any]]:
-    """Sessions worth reading, ranked, capped at SESSION_BUDGET; each names why it was flagged."""
-    reasons: dict[str, list[str]] = {}
-    score: Counter = Counter()
+def write_digests(projects: Path, rows: list[dict[str, Any]], out: Path) -> int:
+    """One text digest per session under `digests/`, and `facets/batch-NNN.json` lists for `sy:session-read`.
+
+    A digest keeps every human turn, answer, error and skill or agent call. Over DIGEST_CHARS it drops the other
+    tool calls, then elides the middle behind a marker that says how many lines went.
+    """
+    (out / "digests").mkdir(parents=True, exist_ok=True)
+    (out / "facets").mkdir(parents=True, exist_ok=True)
+    batches: list[list[dict[str, Any]]] = [[]]
+    size = 0
     for r in rows:
-        iv = r["interventions"]
-        s = 3 * iv.get("interrupts", 0) + 2 * iv.get("permission_denials", 0) + iv.get("ask_answers", 0)
-        s += 2 * r.get("compactions", 0) + sum(r.get("tool_errors", {}).values()) / 4
-        if s:
-            score[r["session_id"]] += s
-            reasons.setdefault(r["session_id"], []).append(
-                f"interventions: {iv.get('interrupts', 0)} interrupts, {iv.get('permission_denials', 0)} denials, "
-                f"{iv.get('ask_answers', 0)} answers; {sum(r.get('tool_errors', {}).values())} tool errors"
-            )
-    for p in prs:
-        why = []
-        if (p.get("review_rounds") or 0) >= 3:
-            why.append(f"{p['review_rounds']} review rounds")
-        if p.get("reverted_by"):
-            why.append("reverted")
-        if (p.get("ci_failed_commits") or 0) >= 2:
-            why.append(f"{p['ci_failed_commits']} commits failed CI")
-        for sid in links.get(_ref(p), {}) if why else ():
-            score[sid] += 5
-            reasons.setdefault(sid, []).append(f"{_ref(p)}: {', '.join(why)}")
-    by_id = {r["session_id"]: r for r in rows}
-    ranked = [sid for sid, _ in score.most_common() if sid in by_id][:SESSION_BUDGET]
-    return [
-        {
-            "session_id": sid,
-            "score": round(score[sid], 1),
-            "reasons": reasons[sid],
-            "project_dir": by_id[sid]["project_dir"],
-        }
-        for sid in ranked
-    ]
-
-
-def render_spans(projects: Path, fl: dict[str, Any], spans_dir: Path) -> list[str]:
-    """Cut one flagged session into compact text spans around its intervention events; return the file paths."""
-    main = projects / fl["project_dir"] / f"{fl['session_id']}.jsonl"
-    events, hits = _events(main)
-    if not hits:
-        hits = [events[0][0], events[-1][0]] if events else []
-    keep = sorted({i for h in hits for i in range(h - SPAN_CONTEXT, h + SPAN_CONTEXT + 1)})
-    lines = [text for n, text in events if n in keep][:SPAN_MAX_LINES]
-    spans_dir.mkdir(parents=True, exist_ok=True)
-    path = spans_dir / f"{fl['session_id']}.txt"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return [str(path)]
+        events = _events(projects / r["project_dir"] / f"{r['session_id']}.jsonl")
+        text = _digest([line for _, line in events])
+        path = out / "digests" / f"{r['session_id']}.txt"
+        path.write_text(text, encoding="utf-8")
+        if size and size + len(text) > FACET_BATCH_CHARS:
+            batches.append([])
+            size = 0
+        size += len(text)
+        batches[-1].append(
+            {
+                "session_id": r["session_id"],
+                "digest": str(path),
+                "measured": {
+                    "active_minutes": r.get("active_minutes"),
+                    "skills": sorted(_skill_names(r)),
+                    "interventions": r.get("interventions"),
+                },
+            }
+        )
+    batches = [b for b in batches if b]
+    for n, batch in enumerate(batches, 1):
+        (out / "facets" / f"batch-{n:03d}.json").write_text(json.dumps(batch, indent=1) + "\n", encoding="utf-8")
+    return len(batches)
 
 
 def write_comment_batches(prs: list[dict[str, Any]], comments_dir: Path) -> int:
@@ -211,6 +197,80 @@ def fold_tags(out: Path) -> dict[str, int]:
     return {"tagged": tagged, "prs_with_tags": len(hits)}
 
 
+def session_costs(rows: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, Any]:
+    """Estimated list-price cost over every session, split by token class, side, skill, agent type and idle rewrites.
+
+    Cache reads, 5-minute writes and 1-hour writes are priced apart: the write premium and the rewrite after an idle
+    gap are what make a long session expensive. `unpriced_models` names any model the price table lacks.
+    """
+    total: Counter = Counter()
+    sides: Counter = Counter()
+    by_skill: Counter = Counter()
+    by_agent: Counter = Counter()
+    tokens: Counter = Counter()
+    idle: Counter = Counter()
+    unpriced: set[str] = set()
+    for r in rows:
+        t = r.get("tokens") or {}
+        for side in ("main", "subagents"):
+            for model, counts in (t.get(side) or {}).items():
+                c = _cost(model, counts, prices, unpriced)
+                total.update(c)
+                sides[side] += sum(c.values())
+                tokens.update({k: v for k, v in counts.items() if k.endswith("_tokens")})
+        for key, out in (("by_skill", by_skill), ("by_agent_type", by_agent)):
+            for name, models in (t.get(key) or {}).items():
+                out[name] += sum(sum(_cost(m, c, prices, unpriced).values()) for m, c in models.items())
+        for gap in ("gt_5m", "gt_1h"):
+            for model, n in ((r.get("cache") or {}).get(gap, {}).get("write_tokens") or {}).items():
+                idle[gap] += n * _price(model, prices, unpriced).get("input", 0) * 1.5 / 1e6
+    whole = sum(total.values()) or 1.0
+    return {
+        "usd_estimate": round(sum(total.values()), 2),
+        "by_class_usd": {k: round(v, 2) for k, v in total.most_common()},
+        "by_class_share": {k: round(v / whole, 3) for k, v in total.most_common()},
+        "tokens": dict(tokens.most_common()),
+        "subagent_share": round(sides["subagents"] / whole, 3),
+        "idle_rewrite_usd": {k: round(v, 2) for k, v in idle.items()},
+        "by_skill_usd": {k: round(v, 2) for k, v in by_skill.most_common(15)},
+        "by_agent_type_usd": {k: round(v, 2) for k, v in by_agent.most_common(15)},
+        "unpriced_models": sorted(unpriced),
+        "basis": "list price; a subscription bills differently, so compare shares, not the dollar figure",
+    }
+
+
+def analyze(out: Path) -> dict[str, Any]:
+    """Fold `facets/facets-*.json` into `analysis.json` and discovery.json: one section of metrics per goal.
+
+    Every metric carries the sessions or PRs it rests on, so the interview can ask why a pattern exists.
+    """
+    disc_path = out / "discovery.json"
+    disc = json.loads(disc_path.read_text(encoding="utf-8"))
+    batches = sorted((out / "facets").glob("batch-*.json"))
+    facets: dict[str, dict[str, Any]] = {}
+    for b in batches:
+        done = b.with_name(b.name.replace("batch-", "facets-"))
+        assert done.is_file(), f"{done} missing: run sy:session-read over every facet batch first"
+        facets.update({f["session_id"]: f for f in json.loads(done.read_text(encoding="utf-8"))})
+    in_scope = {s for p in disc["prs"] for s in p["sessions"]} | set(facets)
+    table = out / "sessions.jsonl"
+    assert table.is_file(), f"{table} missing: run discover first"
+    rows = [json.loads(x) for x in table.read_text(encoding="utf-8").splitlines() if x]
+    rows = [r for r in rows if r["session_id"] in in_scope]
+    _write_jsonl(out / "facets.jsonl", list(facets.values()))
+    analysis = _goal_metrics(rows, facets, disc)
+    (out / "analysis.json").write_text(json.dumps(analysis, indent=1) + "\n", encoding="utf-8")
+    for p in disc["prs"]:
+        approaches = Counter(facets[s].get("approach") for s in p["sessions"] if s in facets)
+        if approaches:
+            p["approach"] = approaches.most_common(1)[0][0]
+            p["approach_source"] = "session_facets"
+    disc["analysis"] = analysis
+    disc["unknown"] = [u for u in disc["unknown"] if u != "analysis"]
+    disc_path.write_text(json.dumps(disc, indent=1) + "\n", encoding="utf-8")
+    return {"sessions_with_facets": len(facets), "sessions_in_scope": len(rows), "goals": sorted(analysis["goals"])}
+
+
 def draft_discovery(
     rows: list[dict[str, Any]], prs: list[dict[str, Any]], links: dict[str, Any], repos: list[str], since: date
 ) -> dict[str, Any]:
@@ -223,7 +283,9 @@ def draft_discovery(
         totals["tool_errors"].update(r.get("tool_errors") or {})
     linked = {sid for by_sid in links.values() for sid in by_sid}
     sy_sessions = sum(1 for r in rows if any(k.startswith("sy:") for k in _skill_names(r)))
-    tokens = {r["session_id"]: _tokens(r) for r in rows}
+    prices = _prices()
+    shares = Counter(sid for by_sid in links.values() for sid in by_sid)
+    by_sid = {r["session_id"]: r for r in rows}
     pr_items = []
     for p in sorted(prs, key=lambda p: p["created_at"]):
         ref, sids = _ref(p), links.get(_ref(p), {})
@@ -244,14 +306,13 @@ def draft_discovery(
                     "reverted": bool(p.get("reverted_by")),
                     "followed_up": bool(p.get("followed_up_by")),
                 },
-                "tokens": sum(tokens.get(s) or 0 for s in sids) or None,
+                "tokens": _split_share([by_sid[s] for s in sids if s in by_sid], shares, prices),
                 "approach_marker": p.get("approach_marker"),
                 "approach": "unknown",
-                "stages": "unknown",
             }
         )
     return {
-        "schema": "shipyard.discovery.v1",
+        "schema": "shipyard.discovery.v2",
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "window": {"since": since.isoformat(), "until": date.today().isoformat()},
         "repos": repos,
@@ -261,15 +322,22 @@ def draft_discovery(
             "active_hours": round(sum(r.get("active_minutes") or 0 for r in rows) / 60, 1),
             "shipyard": {"sessions": sy_sessions, "level": shipyard_level(sy_sessions, len(rows))},
             **{k: dict(v.most_common()) for k, v in totals.items()},
+            "skills_nested": dict(sum((Counter(r["skills"].get("tool_nested") or {}) for r in rows), Counter())),
+            "tool_error_classes": dict(
+                sum((Counter(r.get("tool_error_classes") or {}) for r in rows), Counter()).most_common()
+            ),
+            "cost": session_costs(rows, prices),
         },
         "prs": pr_items,
+        "analysis": None,
+        "patterns": [],
         "shipyard_usage": {"tried": [], "skipped": []},
         "control": [],
         "pain_points": [],
         "extra_fields": {},
         "unknown": [
-            "prs[].approach",
-            "prs[].stages",
+            "analysis",
+            "patterns[].why",
             *(["shipyard_usage"] if sy_sessions else []),
             "control",
             "pain_points",
@@ -289,6 +357,172 @@ def _skill_names(r: dict[str, Any]) -> dict[str, int]:
     return {**(r["skills"].get("slash") or {}), **(r["skills"].get("tool") or {})}
 
 
+def _goal_metrics(
+    rows: list[dict[str, Any]], facets: dict[str, dict[str, Any]], disc: dict[str, Any]
+) -> dict[str, Any]:
+    by_sid = {r["session_id"]: r for r in rows}
+    merged = [p for p in disc["prs"] if p["outcome"]["state"] == "MERGED"]
+    sy = {s for s, r in by_sid.items() if any(k.startswith("sy:") for k in _skill_names(r))}
+
+    def tally(key: str, sids: Any = None) -> dict[str, int]:
+        c: Counter = Counter()
+        for s in sids if sids is not None else facets:
+            v = (facets.get(s) or {}).get(key)
+            if isinstance(v, dict):
+                c.update({k: n for k, n in v.items() if isinstance(n, int)})
+            elif isinstance(v, list):
+                c.update(v)
+            elif v:
+                c[v] += 1
+        return dict(c.most_common())
+
+    def where(key: str, value: str, n: int = 5) -> list[str]:
+        hits = [s for s, f in facets.items() if value in (f.get(key) or {}) or f.get(key) == value]
+        return hits[:n]
+
+    def achieved(sids: set[str]) -> float | None:
+        rated = [facets[s]["outcome"] for s in sids if s in facets and facets[s].get("outcome") != "unclear"]
+        return round(sum(o in ("fully_achieved", "mostly_achieved") for o in rated) / len(rated), 2) if rated else None
+
+    def per_pr(fn: Any) -> float | None:
+        vals = [fn(p) for p in merged]
+        vals = [v for v in vals if v is not None]
+        return round(median(vals), 2) if vals else None
+
+    shares = Counter(s for p in disc["prs"] for s in p["sessions"])
+
+    def human_turns(p: dict[str, Any]) -> float:
+        return sum(by_sid[s]["interventions"]["user_turns"] / shares[s] for s in p["sessions"] if s in by_sid)
+
+    interventions: dict[str, Counter] = {}
+    for r in rows:
+        for skill, c in (r.get("by_skill") or {}).items():
+            interventions.setdefault(skill, Counter()).update(c)
+    turns = tally("human_turns")
+    cost = session_costs(rows, _prices())
+    plan_runs = Counter({k: n for r in rows for k, n in _skill_names(r).items() if k in PLANNING_SKILLS})
+    planned = [
+        p["ref"]
+        for p in merged
+        if p.get("approach_marker")
+        or any(k in PLANNING_SKILLS for s in p["sessions"] if s in by_sid for k in _skill_names(by_sid[s]))
+    ]
+    rework = [
+        p["ref"]
+        for p in disc["prs"]
+        if (p["outcome"].get("review_rounds") or 0) >= 3
+        or p["outcome"].get("reverted")
+        or p["outcome"].get("followed_up")
+    ]
+    tagged = Counter(k for p in disc["prs"] for k, n in p["outcome"].get("rules_hit", {}).items() for _ in range(n))
+    comments = [sum(p["outcome"].get("comments_by_kind", {}).values()) for p in merged]
+    return {
+        "sessions": len(rows),
+        "sessions_with_facets": len(facets),
+        "goals": {
+            "P1": {
+                "planning_layers": tally("planning_layer"),
+                "planning_skill_runs": dict(plan_runs.most_common()),
+                "merged_prs_with_a_plan": f"{len(planned)}/{len(merged)}",
+                "evidence": planned[:5],
+            },
+            "P2": {
+                "shipyard_level": disc["sessions"]["shipyard"]["level"],
+                "outcome_achieved_share": {"shipyard": achieved(sy), "other": achieved(set(by_sid) - sy)},
+                "evidence": sorted(sy)[:5],
+            },
+            "P3": {
+                "approaches": tally("approach"),
+                "outputs": tally("outputs"),
+                "work_types": tally("work_type"),
+            },
+            "P4": {
+                "human_turns_by_class": turns,
+                "factual_share": round(turns.get("factual", 0) / (sum(turns.values()) or 1), 2),
+                "asks": sum(r["interventions"].get("ask_user_question", 0) for r in rows),
+                "interventions_by_skill": {
+                    k: dict(v) for k, v in sorted(interventions.items(), key=lambda kv: -sum(kv[1].values()))[:8]
+                },
+                "evidence": where("human_turns", "factual"),
+            },
+            "P5": {
+                "merged_prs": len(merged),
+                "median_sessions_per_pr": per_pr(lambda p: len(p["sessions"]) or None),
+                "median_human_turns_per_pr": per_pr(human_turns),
+                "median_hours_to_merge": per_pr(lambda p: p["outcome"].get("hours_to_merge")),
+                "median_ci_failed_commits": per_pr(lambda p: p["outcome"].get("ci_failed_commits")),
+            },
+            "P6": {
+                "median_review_comments_per_merged_pr": round(median(comments), 1) if comments else None,
+                "median_review_rounds": per_pr(lambda p: p["outcome"].get("review_rounds")),
+                "comments_by_rule": dict(tagged.most_common(8)),
+            },
+            "T1": {
+                "prs_reworked_after_review": rework,
+                "friction_rework": {
+                    k: v
+                    for k, v in tally("friction").items()
+                    if k in ("wrong_approach", "review_rework", "misunderstood_request")
+                },
+                "evidence": where("friction", "wrong_approach") + where("friction", "review_rework"),
+            },
+            "T3": {
+                **cost,
+                "median_cost_per_merged_pr_usd": per_pr(lambda p: (p.get("tokens") or {}).get("usd_estimate")),
+                "median_peak_context": round(
+                    median([r["cache"]["peak_context"] for r in rows if r.get("cache")] or [0])
+                ),
+                "compactions": sum(r.get("compactions", 0) for r in rows),
+            },
+        },
+        "friction": {k: {"count": v, "evidence": where("friction", k, 3)} for k, v in tally("friction").items()},
+        "friction_details": [f["friction_detail"] for f in facets.values() if f.get("friction_detail")][:20],
+    }
+
+
+def _prices() -> dict[str, Any]:
+    return json.loads(PRICING.read_text(encoding="utf-8"))
+
+
+def _price(model: str, prices: dict[str, Any], unpriced: set[str]) -> dict[str, float]:
+    match = max((k for k in prices["models"] if model.startswith(k)), key=len, default=None)
+    if match is None:
+        unpriced.add(model)
+        return {}
+    return prices["models"][match]
+
+
+def _cost(model: str, counts: dict[str, int], prices: dict[str, Any], unpriced: set[str]) -> dict[str, float]:
+    p = _price(model, prices, unpriced)
+    if not p:
+        return {}
+    m = prices["cache_write_multipliers"]
+    w5, w1 = counts.get("cache_write_5m_input_tokens", 0), counts.get("cache_write_1h_input_tokens", 0)
+    unsplit = max(counts.get("cache_creation_input_tokens", 0) - w5 - w1, 0)
+    return {
+        "input": counts.get("input_tokens", 0) * p["input"] / 1e6,
+        "output": (counts.get("output_tokens", 0) + counts.get("output_tokens_estimated", 0)) * p["output"] / 1e6,
+        "cache_read": counts.get("cache_read_input_tokens", 0) * p["cache_read"] / 1e6,
+        "cache_write_5m": (w5 + unsplit) * p["input"] * m["5m"] / 1e6,
+        "cache_write_1h": w1 * p["input"] * m["1h"] / 1e6,
+    }
+
+
+def _split_share(rows: list[dict[str, Any]], shares: Counter, prices: dict[str, Any]) -> dict[str, Any] | None:
+    """A PR's share of its sessions' tokens and cost: a session linked to n PRs gives each 1/n."""
+    if not rows:
+        return None
+    tokens: Counter = Counter()
+    usd = 0.0
+    for r in rows:
+        n = shares[r["session_id"]] or 1
+        for side in ("main", "subagents"):
+            for model, counts in ((r.get("tokens") or {}).get(side) or {}).items():
+                tokens.update({k: v / n for k, v in counts.items() if k.endswith("_tokens")})
+                usd += sum(_cost(model, counts, prices, set()).values()) / n
+    return {**{k: round(v) for k, v in tokens.items()}, "usd_estimate": round(usd, 2)}
+
+
 def _session_table(projects: Path, since: date, out: Path) -> list[dict[str, Any]]:
     cache = out / "sessions.jsonl"
     if cache.is_file():
@@ -298,9 +532,9 @@ def _session_table(projects: Path, since: date, out: Path) -> list[dict[str, Any
     return rows
 
 
-def _events(main: Path) -> tuple[list[tuple[int, str]], list[int]]:
+def _events(main: Path) -> list[tuple[int, str]]:
     events: list[tuple[int, str]] = []
-    hits: list[int] = []
+    names: dict[str, str] = {}
     for n, line in enumerate(main.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
         try:
             rec = json.loads(line)
@@ -310,37 +544,51 @@ def _events(main: Path) -> tuple[list[tuple[int, str]], list[int]]:
             continue
         content = (rec.get("message") or {}).get("content")
         blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content or []
-        for b in blocks:
-            text = _render_block(rec["type"], b)
-            if not text:
+        for b in blocks if isinstance(blocks, list) else []:
+            if not isinstance(b, dict):
                 continue
-            events.append((n, f"L{n} {rec['timestamp'][11:19]} {text}"))
-            if _is_hit(rec["type"], b):
-                hits.append(n)
-    return events, hits
+            if b.get("type") == "tool_use":
+                names[b.get("id", "")] = str(b.get("name"))
+            text = _render_block(rec["type"], b, names)
+            if text:
+                events.append((n, f"L{n} {rec['timestamp'][11:19]} {text}"))
+    return events
 
 
-def _render_block(role: str, b: dict[str, Any]) -> str:
+def _render_block(role: str, b: dict[str, Any], names: dict[str, str]) -> str:
     t = b.get("type")
     if t == "text" and b.get("text", "").strip():
         limit = 600 if role == "user" else 300
         return f"{role.upper()}: {_flat(b['text'])[:limit]}"
     if t == "tool_use":
-        return f"TOOL {b.get('name')}: {_flat(json.dumps(b.get('input'), default=str))[:200]}"
+        limit = 600 if b.get("name") == "AskUserQuestion" else 200
+        return f"TOOL {b.get('name')}: {_flat(json.dumps(b.get('input'), default=str))[:limit]}"
     if t == "tool_result" and b.get("is_error"):
         return f"ERROR: {_flat(_text(b.get('content')))[:200]}"
-    if t == "tool_result" and "AskUserQuestion" in str(b.get("content"))[:200]:
-        return f"ANSWER: {_flat(_text(b.get('content')))[:300]}"
+    if t == "tool_result" and names.get(b.get("tool_use_id", "")) == "AskUserQuestion":
+        return f"ANSWER: {_flat(_text(b.get('content')))[:400]}"
     return ""
 
 
-def _is_hit(role: str, b: dict[str, Any]) -> bool:
-    text = b.get("text", "") if b.get("type") == "text" else _text(b.get("content"))
-    return (
-        (role == "user" and b.get("type") == "text" and "[Request interrupted" in text)
-        or (b.get("type") == "tool_result" and "doesn't want to proceed" in text)
-        or (b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion")
-    )
+def _digest(lines: list[str]) -> str:
+    if sum(len(x) + 1 for x in lines) > DIGEST_CHARS:
+        lines = [x for x in lines if " TOOL " not in x[:16] or any(f"TOOL {t}:" in x for t in KEY_TOOLS)]
+    if sum(len(x) + 1 for x in lines) > DIGEST_CHARS:
+        head, tail, kept = [], [], 0
+        for x in lines:
+            if kept + len(x) > DIGEST_CHARS // 2:
+                break
+            head.append(x)
+            kept += len(x) + 1
+        kept = 0
+        for x in reversed(lines[len(head) :]):
+            if kept + len(x) > DIGEST_CHARS // 2:
+                break
+            tail.insert(0, x)
+            kept += len(x) + 1
+        gone = len(lines) - len(head) - len(tail)
+        lines = [*head, f"[{gone} lines elided from the middle of this session]", *tail]
+    return "\n".join(lines) + "\n"
 
 
 def _session_repos(r: dict[str, Any]) -> set[str]:
@@ -361,11 +609,6 @@ def _remote_slug(cwd: str | None) -> str | None:
     res = subprocess.run(["git", "-C", cwd, "remote", "get-url", "origin"], capture_output=True, text=True)
     m = re.search(r"[:/]([^/\s:]+/[^/\s]+?)(?:\.git)?$", res.stdout.strip())
     return m.group(1) if m else None
-
-
-def _tokens(r: dict[str, Any]) -> int | None:
-    totals = (r.get("usage") or {}).get("totals") or {}
-    return sum(v for k, v in totals.items() if k.endswith("_tokens") and isinstance(v, int)) or None
 
 
 def _ref(p: dict[str, Any]) -> str:

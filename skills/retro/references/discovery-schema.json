@@ -1,34 +1,134 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "shipyard.discovery.v1",
-  "description": "One person's discovery record. Measured fields come from code; interview fields come from the person and stay \"unknown\" until answered.",
+  "title": "shipyard.discovery.v2",
+  "description": "One person's discovery record. Measured fields and the analysis come from code and session facets; patterns' `why`, control and shipyard usage come from the interview and stay \"unknown\" until answered.",
   "type": "object",
-  "required": ["schema", "generated_at", "window", "repos", "sessions", "prs", "shipyard_usage", "control", "pain_points", "unknown", "approval"],
+  "required": [
+    "schema",
+    "generated_at",
+    "window",
+    "repos",
+    "sessions",
+    "prs",
+    "shipyard_usage",
+    "control",
+    "pain_points",
+    "unknown",
+    "approval",
+    "analysis",
+    "patterns"
+  ],
   "properties": {
-    "schema": {"const": "shipyard.discovery.v1"},
-    "generated_at": {"type": "string", "format": "date-time"},
+    "schema": {
+      "const": "shipyard.discovery.v2"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
     "window": {
       "type": "object",
-      "required": ["since", "until"],
-      "properties": {"since": {"type": "string"}, "until": {"type": "string"}}
+      "required": [
+        "since",
+        "until"
+      ],
+      "properties": {
+        "since": {
+          "type": "string"
+        },
+        "until": {
+          "type": "string"
+        }
+      }
     },
-    "repos": {"type": "array", "items": {"type": "string"}},
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "sessions": {
       "description": "Measured. Totals over every session in the window.",
       "type": "object",
-      "required": ["count", "linked_to_prs", "active_hours", "skills", "agents", "interventions", "tool_errors"],
+      "required": [
+        "count",
+        "linked_to_prs",
+        "active_hours",
+        "skills",
+        "agents",
+        "interventions",
+        "tool_errors"
+      ],
       "properties": {
-        "count": {"type": "integer"},
-        "linked_to_prs": {"type": "integer"},
-        "active_hours": {"type": "number"},
-        "skills": {"type": "object", "additionalProperties": {"type": "integer"}},
-        "agents": {"type": "object", "additionalProperties": {"type": "integer"}},
-        "interventions": {"type": "object", "additionalProperties": {"type": "integer"}},
-        "tool_errors": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "count": {
+          "type": "integer"
+        },
+        "linked_to_prs": {
+          "type": "integer"
+        },
+        "active_hours": {
+          "type": "number"
+        },
+        "skills": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Skills the main session ran: slash commands and Skill tool calls."
+        },
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "interventions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "tool_errors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
         "shipyard": {
           "type": "object",
-          "required": ["sessions", "level"],
-          "properties": {"sessions": {"type": "integer"}, "level": {"enum": ["none", "light", "regular"]}}
+          "required": [
+            "sessions",
+            "level"
+          ],
+          "properties": {
+            "sessions": {
+              "type": "integer"
+            },
+            "level": {
+              "enum": [
+                "none",
+                "light",
+                "regular"
+              ]
+            }
+          }
+        },
+        "skills_nested": {
+          "description": "Skills a subagent loaded, counted apart from the main session.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "tool_error_classes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "cost": {
+          "description": "List-price estimate over every session: by token class (cache reads and 5m/1h writes apart), subagent share, rewrites after idle gaps, by skill and agent type. Compare shares, not dollars.",
+          "type": "object"
         }
       }
     },
@@ -36,69 +136,281 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["ref", "sessions", "link_evidence", "size", "outcome", "approach", "stages"],
+        "required": [
+          "ref",
+          "sessions",
+          "link_evidence",
+          "size",
+          "outcome",
+          "approach"
+        ],
         "properties": {
-          "ref": {"description": "owner/name#number", "type": "string"},
-          "sessions": {"type": "array", "items": {"type": "string"}},
-          "link_evidence": {"type": "array", "items": {"enum": ["pr_url", "session_trailer", "comment_marker", "branch", "commit"]}},
+          "ref": {
+            "description": "owner/name#number",
+            "type": "string"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "link_evidence": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "pr_url",
+                "session_trailer",
+                "comment_marker",
+                "branch",
+                "commit"
+              ]
+            }
+          },
           "size": {
             "type": "object",
-            "properties": {"additions": {"type": "integer"}, "deletions": {"type": "integer"}, "changed_files": {"type": "integer"}}
+            "properties": {
+              "additions": {
+                "type": "integer"
+              },
+              "deletions": {
+                "type": "integer"
+              },
+              "changed_files": {
+                "type": "integer"
+              }
+            }
           },
           "outcome": {
             "description": "Measured from git and GitHub.",
             "type": "object",
             "properties": {
-              "state": {"type": "string"},
-              "review_rounds": {"type": "integer"},
-              "comments_by_kind": {"type": "object", "additionalProperties": {"type": "integer"}},
-              "rules_hit": {"type": "object", "additionalProperties": {"type": "integer"}},
-              "hours_to_merge": {"type": ["number", "null"]},
-              "ci_failed_commits": {"type": "integer"},
-              "reverted": {"type": "boolean"},
-              "followed_up": {"type": "boolean"}
+              "state": {
+                "type": "string"
+              },
+              "review_rounds": {
+                "type": "integer"
+              },
+              "comments_by_kind": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
+              "rules_hit": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
+              "hours_to_merge": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "ci_failed_commits": {
+                "type": "integer"
+              },
+              "reverted": {
+                "type": "boolean"
+              },
+              "followed_up": {
+                "type": "boolean"
+              }
             }
           },
-          "tokens": {"type": ["integer", "null"]},
-          "approach_marker": {"description": "Measured: the PR description's `Approach:` line, copied from the plan heading; null when absent.", "enum": ["spec", "doit", "mvp", null]},
-          "approach": {"description": "Interview: the person's own words, or \"unknown\".", "type": "string"},
-          "stages": {"description": "Interview, or from a session profile with its pointer.", "type": ["array", "string"], "items": {"type": "string"}}
+          "tokens": {
+            "description": "This PR's share of its sessions' tokens and cost: a session linked to n PRs gives each 1/n.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "approach_marker": {
+            "description": "Measured: the PR description's `Approach:` line, copied from the plan heading; null when absent.",
+            "enum": [
+              "spec",
+              "doit",
+              "mvp",
+              null
+            ]
+          },
+          "approach": {
+            "description": "The most common facet approach of its sessions, or \"unknown\".",
+            "type": "string"
+          },
+          "approach_source": {
+            "enum": [
+              "session_facets",
+              "interview"
+            ]
+          }
+        }
+      }
+    },
+    "analysis": {
+      "description": "From `retro analyze`: one section of metrics per goal in docs/vision.md, each with the sessions or PRs it rests on; null until facets are folded in.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "patterns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "goal",
+          "pattern",
+          "evidence",
+          "why"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "why": {
+            "description": "Interview: the person's own words, or \"unknown\".",
+            "type": "string"
+          }
         }
       }
     },
     "shipyard_usage": {
       "type": "object",
       "properties": {
-        "tried": {"type": "array", "items": {"type": "object", "required": ["skill", "why"], "properties": {"skill": {"type": "string"}, "why": {"type": "string"}}}},
-        "skipped": {"type": "array", "items": {"type": "object", "required": ["skill", "why"], "properties": {"skill": {"type": "string"}, "why": {"type": "string"}}}}
+        "tried": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "skill",
+              "why"
+            ],
+            "properties": {
+              "skill": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "skill",
+              "why"
+            ],
+            "properties": {
+              "skill": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            }
+          }
+        }
       }
     },
     "control": {
       "description": "Interview: where the person wants to decide rather than delegate.",
       "type": "array",
-      "items": {"type": "object", "required": ["stage", "wants"], "properties": {"stage": {"type": "string"}, "wants": {"type": "string"}}}
+      "items": {
+        "type": "object",
+        "required": [
+          "stage",
+          "wants"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "wants": {
+            "type": "string"
+          }
+        }
+      }
     },
     "pain_points": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["what", "evidence", "source"],
+        "required": [
+          "what",
+          "evidence",
+          "source"
+        ],
         "properties": {
-          "what": {"type": "string"},
-          "evidence": {"type": "array", "items": {"type": "string"}},
-          "source": {"enum": ["interview", "session_profile", "measured"]}
+          "what": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "enum": [
+              "interview",
+              "session_facets",
+              "measured"
+            ]
+          }
         }
       }
     },
-    "extra_fields": {"description": "A repository's own fields, from discover.extra_fields.", "type": "object"},
-    "unknown": {"description": "Paths of fields left unknown.", "type": "array", "items": {"type": "string"}},
+    "extra_fields": {
+      "description": "A repository's own fields, from discover.extra_fields.",
+      "type": "object"
+    },
+    "unknown": {
+      "description": "Paths of fields left unknown.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "approval": {
       "type": "object",
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "properties": {
-        "status": {"enum": ["draft", "approved"]},
-        "approved_at": {"type": ["string", "null"]},
-        "redactions": {"type": "integer"}
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ]
+        },
+        "approved_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redactions": {
+          "type": "integer"
+        }
       }
     }
   }

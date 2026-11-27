@@ -12,6 +12,7 @@ JSON suitable for a standalone tracker comment. The one command is the hook:
   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m sy_tools.usage hook
       Read Claude Code hook JSON from stdin and record agent-id/type/transcript mapping.
 """
+
 from __future__ import annotations
 
 # A hook runs this on bare `python`, so the import graph stays stdlib-only and reaches nothing the MCP
@@ -34,6 +35,8 @@ TOKEN_KEYS = (
     "output_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
+    "cache_write_5m_input_tokens",
+    "cache_write_1h_input_tokens",
     "output_tokens_estimated",
     "output_unfinalized_requests",
 )
@@ -47,6 +50,8 @@ class Usage:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    cache_write_5m_input_tokens: int = 0
+    cache_write_1h_input_tokens: int = 0
     output_tokens_estimated: int = 0
     output_unfinalized_requests: int = 0
 
@@ -60,6 +65,10 @@ class Usage:
         self.cache_creation_input_tokens += _nonnegative_int(
             usage.get("cache_creation_input_tokens", usage.get("cache_creation_tokens", 0))
         )
+        # The TTL split prices a write: 1.25x input for 5 minutes, 2x for an hour. Older records lack it.
+        ttl = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+        self.cache_write_5m_input_tokens += _nonnegative_int(ttl.get("ephemeral_5m_input_tokens", 0))
+        self.cache_write_1h_input_tokens += _nonnegative_int(ttl.get("ephemeral_1h_input_tokens", 0))
 
     def add(self, other: Usage) -> None:
         for key in TOKEN_KEYS:
@@ -244,9 +253,7 @@ def _discover_transcripts(main: Path, warnings: list[str]) -> list[Path]:
     # files whose records claim this session.
     sibling_subagents = main.parent / "subagents"
     if sibling_subagents.is_dir():
-        paths.extend(
-            p for p in _walk_jsonl(sibling_subagents, warnings) if _claims_session(p, main.stem, warnings)
-        )
+        paths.extend(p for p in _walk_jsonl(sibling_subagents, warnings) if _claims_session(p, main.stem, warnings))
     return sorted(set(paths), key=lambda p: (p != main, str(p)))
 
 
@@ -388,12 +395,8 @@ def _extract_file_usage(
             continue
         if not isinstance(record, dict):
             continue
-        inferred_agent_type = inferred_agent_type or _first_string(
-            record, "agent_type", "agentType"
-        )
-        inferred_agent_id = inferred_agent_id or _first_string(
-            record, "agent_id", "agentId"
-        )
+        inferred_agent_type = inferred_agent_type or _first_string(record, "agent_type", "agentType")
+        inferred_agent_id = inferred_agent_id or _first_string(record, "agent_id", "agentId")
         message = record.get("message")
         if not isinstance(message, dict):
             continue
@@ -460,6 +463,7 @@ def summarize(
     phase: str,
     task: str | None,
     agent_ledger: bool = True,
+    by_transcript: bool = False,
 ) -> dict[str, Any]:
     """The `shipyard.claude_usage.v1` roll-up for one session: totals plus a row per agent and model.
 
@@ -469,6 +473,7 @@ def summarize(
     carries the `efforts` its requests ran at. A transcript that cannot be read, or a line that will not
     parse, becomes a `warnings` entry, never a failure. `agent_ledger=False` skips the hook ledger that names
     subagent rows, which costs seconds per call; totals and per-model sums do not depend on it.
+    `by_transcript=True` adds `by_transcript`: transcript path -> model -> token counts.
     """
     session_id = _session_id_from_path(main)
     warnings: list[str] = []
@@ -494,9 +499,11 @@ def summarize(
     grouped: dict[tuple[str, str], Usage] = defaultdict(Usage)
     invocations: dict[tuple[str, str], set[Path]] = defaultdict(set)
     efforts: dict[tuple[str, str], set[str]] = defaultdict(set)
+    per_path: dict[Path, dict[str, Usage]] = defaultdict(lambda: defaultdict(Usage))
     for request in requests.values():
         key = (agent_of[request.path], request.model)
         item = request.counted()
+        per_path[request.path][request.model].add(item)
         total.add(item)
         grouped[key].add(item)
         invocations[key].add(request.path)
@@ -529,6 +536,10 @@ def summarize(
         "totals": total.as_dict(),
         "by_agent": by_agent,
     }
+    if by_transcript:
+        result["by_transcript"] = {
+            str(path): {model: usage.as_dict() for model, usage in models.items()} for path, models in per_path.items()
+        }
     if task:
         result["task"] = task
     # Always present: an absent key once made an unreadable tree look like a healthy zero.

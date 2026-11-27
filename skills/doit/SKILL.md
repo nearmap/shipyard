@@ -2,7 +2,7 @@
 name: doit
 description: >-
   Take one small, low-risk task from a goal to a reviewable PR in one session: a short
-  spec, one sign-off, then /sy:ship unchanged. Work that needs deep research, a risk
+  spec, a light debate, one sign-off, then /sy:ship unchanged. Work that needs deep research, a risk
   lens or an owner decision goes to /sy:spec instead.
 argument-hint: "[a goal, or an existing task key (<task>)]"
 disable-model-invocation: true
@@ -28,13 +28,13 @@ Stop and route to `/sy:spec` when any of these holds:
 - an open decision changes scope, design or acceptance and needs the owner;
 - the work does not fit one PR.
 
-Doit skips `/sy:spec`'s `sy:debate` pass and `sy:spec-gate` review, and these conditions are what keep that safe. Send a status update that names the condition and the evidence, then end with `/sy:spec <the same argument>`. Write nothing to the tracker on this path.
+Doit runs a narrowed `sy:debate` pass and skips the `sy:spec-gate` review, and these conditions are what keep that safe. Send a status update that names the condition and the evidence, then end with `/sy:spec <the same argument>`. Write nothing to the tracker on this path.
 
 ## 3. Draft the short plan
 
-Draft both halves `/sy:spec` §7 defines, with every field it requires: `/sy:ship` and its workers read those fields by name. §7's requirement that debate and spec-gate run first, and its `reviewer orientation` question, do not apply here: this section replaces them. Write each one as short as the task allows, under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
+Draft both halves `/sy:spec` §7 defines, with every field it requires: `/sy:ship` and its workers read those fields by name. §7's requirement that spec-gate runs first, and its `reviewer orientation` question, do not apply here: this section replaces them. Write each one as short as the task allows, under `${CLAUDE_PLUGIN_ROOT}/skills/shared/references/context-economy.md`.
 
-- The sign-off half says the strongest alternative is the author's own, because no debate ran.
+- Before the sign-off, run the `sy:debate` pass over the core decision unconditionally, with `scale: small` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/debate.md`). The strongest rejected alternative comes from it, as in `/sy:spec` §7. A `CONTESTED` item that needs research beyond a direct read routes as §2 does.
 - A Bug keeps `/sy:spec` §3's standing regression obligation.
 - `pre-gate checkpoint` is `none` unless the user asks for one.
 - When `skills.reviewer` resolves non-null (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/config-values.md`), write `reviewer orientation` yourself and show it in the sign-off summary. Do not ask a separate question.
@@ -46,7 +46,7 @@ Run `/sy:tighten` over the sign-off half before it is shown, with the `/sy:ship`
 
 ## 4. One sign-off
 
-Send the sign-off summary as direct text first: what this builds, why this way, the risks, and what it leaves out. Then close the turn with one `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`): approve and ship / request changes / take it to `/sy:spec` / other. Name what approval authorizes: create the Task under its Epic when the goal is new, post the plan as one new `# Execution Plan v<N>` comment, set the Task `ready`, then run `/sy:ship`, which branches, pushes, opens a draft PR and moves the Task through its statuses. Do not infer approval from a reply that does not answer the question.
+Send the sign-off summary as direct text first: what this builds, why this way, the risks, and what it leaves out. Then close the turn with one `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`): approve and ship / request changes / take it to `/sy:spec` / other. A debate `values-call` replaces approve and ship with one approve option per candidate. Name what approval authorizes: create the Task under its Epic when the goal is new, post the plan as one new `# Execution Plan v<N>` comment, set the Task `ready`, then run `/sy:ship`, which branches, pushes, opens a draft PR and moves the Task through its statuses. Do not infer approval from a reply that does not answer the question.
 
 Request changes revises the draft and returns to this step. Take it to `/sy:spec` stops as §2 does.
 

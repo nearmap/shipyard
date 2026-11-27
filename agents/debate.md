@@ -18,6 +18,8 @@ Run exactly one exchange. Each dispatch is self-contained and pastes in whatever
 2. `sy:debater`, adversary mode: premise + seed evidence + opening argument → attack.
 3. `sy:debater`, proposer-rebuttal mode: premise + seed evidence + opening argument + attack → rebuttal.
 
+When the caller passes `scale: small`, paste that line into all three dispatches. The task is one small PR the caller already judged low risk, so `CONTESTED` keeps only objections that would change the approach, lose data, or fail in a normal setup, and an empty `CONTESTED` is a normal result. Target ≤250 tokens.
+
 Stop there. Do not loop toward consensus or run a second exchange — a debate that keeps going until the two sides agree has quietly resolved the fork itself, which is the caller's or the user's job, not yours.
 
 ## Return contract — target ≤500 tokens

@@ -1709,7 +1709,7 @@ def check_invariants(errors: list[str]) -> None:
         if "AskUserQuestion" not in text:
             fail(f"{name} skill must route user decisions through AskUserQuestion per user-interaction.md", errors)
 
-    # Doit skips debate and spec-gate; the route to /sy:spec is what keeps that safe, and shipping through the
+    # Doit skips spec-gate; the route to /sy:spec is what keeps that safe, and shipping through the
     # ship skill unchanged is what keeps one shape for plans, PRs and escalations.
     if "## 2. Route bigger work to /sy:spec" not in doit or "skills/ship/SKILL.md" not in doit:
         fail("doit must route bigger work to /sy:spec and ship through the ship skill unchanged", errors)
@@ -1808,7 +1808,7 @@ def check_invariants(errors: list[str]) -> None:
             fail(f"{name} must state the spot-check bound with the shared trigger clause verbatim", errors)
     for name, text in (
         ("debate reference", debate_ref), ("roadmap-shaping", roadmap_shaping), ("spec", spec), ("spike", spike),
-        ("mvp", mvp), ("whiteboard", whiteboard),
+        ("mvp", mvp), ("whiteboard", whiteboard), ("doit", doit),
     ):
         if "unconditionally" not in text.lower():
             fail(f"{name} must run the sy:debate pass unconditionally, not gated on a pre-identified fork", errors)

@@ -159,7 +159,14 @@ class GithubAdapter:
         return await to_thread.run_sync(self._sync_add_dependency, issue, blocked_by)
 
     def same_issue(self, a: str, b: str) -> bool:
-        """Whether `a` and `b` name one issue, comparing `7`, `#7` and a URL alike."""
+        """Whether `a` and `b` name one issue, comparing `7`, `#7` and a URL alike.
+
+        Two URLs must also name the same repository, so one from another repository never matches.
+        """
+        first, second = (_URL_REF.fullmatch(str(x).rstrip("/")) if x else None for x in (a, b))
+        if first and second:
+            where = [f"{m.group(1)}/{m.group(2)}".casefold() for m in (first, second)]
+            return where[0] == where[1] and first.group(3) == second.group(3)
         return _same_ref(a, b)
 
     async def add_label(self, issue: str, label: str) -> dict:
@@ -1154,6 +1161,9 @@ def _relation(payload: object) -> tuple[list[str], bool]:
     if total is None:
         return found, False
     return found, bool(dropped) or not isinstance(total, int) or isinstance(total, bool) or total > len(found)
+
+
+_URL_REF = re.compile(r"https?://([^/]+)/([^/]+/[^/]+)/(?:issues|pull)/(\d+)", re.IGNORECASE)
 
 
 def _same_ref(ref: str | None, other: str | None) -> bool:

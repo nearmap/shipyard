@@ -36,20 +36,32 @@ if command -v claude >/dev/null 2>&1; then
 fi
 
 echo "Validating Shipyard plugin..."
-python "$PLUGIN_ROOT/scripts/validate.py"
+# Word-count warnings are for plugin maintainers; show the output only when validation fails.
+VALIDATE_OUT="$(python "$PLUGIN_ROOT/scripts/validate.py" 2>&1)" || { echo "$VALIDATE_OUT" >&2; exit 1; }
 
-if ! _resolver '
+# Exit 2: only tracker settings are missing. /sy:retro and /sy:help never read the tracker, so they still work.
+TRACKER_READY=1
+set +e
+_resolver '
 import sys
 from sy_tools.config import validate
 errors = validate()
+tracker_only = all(e.endswith(" is required and unset.") or "required by the" in e for e in errors)
 sys.stderr.write("".join(f"  {e}\n" for e in errors))
-sys.exit(1 if errors else 0)
-'; then
-  echo "ERROR: Shipyard configuration is invalid; fix the errors above before loading the plugin." >&2
-  exit 1
-fi
+sys.exit(0 if not errors else 2 if tracker_only else 1)
+'
+status=$?
+set -e
+case "$status" in
+  0) ;;
+  2) TRACKER_READY=0
+     echo "NOTE: the tracker is not configured (above). /sy:retro and /sy:help work now; configure the tracker before /sy:plan, /sy:spec, /sy:ship or /sy:doit (docs/installation.md)." >&2 ;;
+  *) echo "ERROR: Shipyard configuration is invalid; fix the errors above before loading the plugin." >&2; exit 1 ;;
+esac
 TRACKER="$(_resolver 'import sys; from sy_tools.config import get; print(get(sys.argv[1]))' tracker)"
+[[ "$TRACKER_READY" == 1 ]] || TRACKER="none"
 case "$TRACKER" in
+  none) ;;
   jira)
     command -v acli >/dev/null 2>&1 || echo "NOTE: tracker is 'jira' but 'acli' (Atlassian CLI) is not on PATH." >&2
     ;;

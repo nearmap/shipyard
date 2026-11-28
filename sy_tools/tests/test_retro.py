@@ -132,3 +132,29 @@ def test_package_zips_the_approved_files_under_the_persons_name(tmp_path: Path):
     path = retro.package(tmp_path, "Ada Lovelace")
     assert path.name == "retro-ada-lovelace-2026-11-28.zip"
     assert sorted(zipfile.ZipFile(path).namelist()) == sorted(f"ada-lovelace-{f}" for f in retro.SHARED_FILES)
+
+
+def test_collate_joins_packaged_retros_one_column_per_person(tmp_path: Path):
+    for name, rating in (("Ada", "close"), ("Bo", "far")):
+        run = tmp_path / name
+        run.mkdir()
+        disc = {
+            "generated_at": "2026-11-28T00:00:00+00:00",
+            "approval": {"status": "approved"},
+            "window": {"since": "2026-11-01", "until": "2026-11-28"},
+            "sessions": {"count": 2, "skills": {"rq": 3}, "shipyard": {"level": "none"}},
+            "vision_closeness": {"rating": rating, "why": f"{name} says so"},
+            "analysis": {"goals": {"P4": {"human_turns_by_class": {"steering": 3, "factual": 1}}}},
+            "patterns": [{"id": "P4-1", "goal": "P4", "pattern": "acts early", "evidence": ["x:L1"], "why": "w"}],
+        }
+        (run / "discovery.json").write_text(json.dumps(disc))
+        (run / "facets.jsonl").write_text(json.dumps({"friction": {"tool_or_env": 2}}) + "\n")
+        for f in ("analysis.md", "analysis-agents.md"):
+            (run / f).write_text("x")
+        retro.package(run, name)
+        (run / "discovery.json").unlink()
+    summary = retro.collate(tmp_path, tmp_path / "out")
+    assert summary["names"] == ["ada", "bo"], summary
+    md = (tmp_path / "out" / "collation.md").read_text()
+    assert "| steering | 0.75 | 0.75 |" in md and "- bo (far): Bo says so" in md and "Why: w" in md, md
+    assert "| tool_or_env | 2.0 | 2.0 |" in md, md

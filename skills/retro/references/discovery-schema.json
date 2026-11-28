@@ -436,6 +436,36 @@
           "type": "integer"
         }
       }
+    },
+    "suggestions": {
+      "type": "array",
+      "description": "Two things to try, built on the person's own usage.",
+      "items": {
+        "type": "object",
+        "required": [
+          "try",
+          "why",
+          "evidence",
+          "catch"
+        ],
+        "properties": {
+          "try": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "catch": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

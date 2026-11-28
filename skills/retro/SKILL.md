@@ -5,7 +5,7 @@ description: >-
   session table from your local transcripts, costs every session by token class, links sessions to
   PRs, classifies every session, scores the evidence against Shipyard's goals, then interviews you
   about why each pattern exists. Nothing leaves your machine until you approve it.
-argument-hint: "[discover] [--since YYYY-MM-DD] [--reuse latest|<dir>]"
+argument-hint: "[discover [--since YYYY-MM-DD] [--reuse latest|<dir>] | collate <folder>]"
 disable-model-invocation: true
 ---
 
@@ -13,11 +13,11 @@ Discovery mode: evidence of how one person works, linked to what their PRs did, 
 
 $ARGUMENTS
 
-Only `discover` exists so far; any other mode stops with that sentence. The window defaults to the last 30 days. A run resumes from its output directory: continue at the first step whose output is missing, and never redo a finished one. `--reuse <dir>`, or `--reuse latest` for the newest dated folder under the output root, reruns an approved run from its own folder: keep its session table, digests, facets and analysis, ask only the step 5 questions whose fields are still `unknown` (an empty `shipyard_usage` at level `none` counts as unknown), then do steps 6 and 7 again, the name and zip included.
+Two modes exist: `discover` (steps 1 to 7) and `collate` (§ Collate); any other mode stops with that sentence. The window defaults to the last 30 days. A run resumes from its output directory: continue at the first step whose output is missing, and never redo a finished one. `--reuse <dir>`, or `--reuse latest` for the newest dated folder under the output root, reruns an approved run from its own folder: keep its session table, digests, facets and analysis, ask only the step 5 questions whose fields are still `unknown` (an empty `shipyard_usage` at level `none` counts as unknown), then do steps 6 and 7 again, the name and zip included.
 
 ## 1. Collect, in code
 
-Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. When Shipyard's tools refuse because this session did not start in a git checkout, use `~/.claude/shipyard/scratch/retro-discovery` instead, and in steps 2 and 3 dispatch with the agent's own default model and effort. Build the session table, in the background, and wait for its completion notice. It reads every Claude Code transcript folder it finds (`CLAUDE_CONFIG_DIR`, `~/.claude`, and `.claude*` folders in the home folder or one level below), and prints those folders, the candidate repositories, and how many sessions touched no repository:
+Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. When Shipyard's tools refuse because this session did not start in a git checkout, use `$HOME/.claude/shipyard/scratch/retro-discovery`, the folder that tool resolves to, and in steps 2 and 3 dispatch with the agent's own default model and effort. Build the session table, in the background, and wait for its completion notice. It reads every Claude Code transcript folder it finds (`CLAUDE_CONFIG_DIR`, and every `.claude*` folder in the home folder or one level below), and prints those folders, the candidate repositories, and how many sessions touched no repository:
 
 ```
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro discover --since <date> --out <dir>
@@ -70,7 +70,9 @@ A field the person does not answer stays `unknown`. Never fill one from a guess.
 
 ## 6. Write
 
-Add each answer under its pattern in `analysis.md`, as a line starting `Why:`. In `discovery.json` (schema: `references/discovery-schema.json`; `discover.extra_fields` adds a repository's own fields), fill `patterns[].why`, `vision_closeness`, `control`, `shipyard_usage`, and `pain_points`: each pattern the person calls a pain, with its evidence and `source: interview`. Report by approach and by goal; never rank the person. Then write the agent companion beside `analysis.md`:
+Add each answer under its pattern in `analysis.md`, as a line starting `Why:`. In `discovery.json` (schema: `references/discovery-schema.json`; `discover.extra_fields` adds a repository's own fields), fill `patterns[].why`, `vision_closeness`, `control`, `shipyard_usage`, and `pain_points`: each pattern the person calls a pain, with its evidence and `source: interview`. Report by approach and by goal; never rank the person.
+
+Then suggest two things to try, each built on what the person already does: a skill of their own, or a pattern, that a Shipyard skill could carry; or, at level `regular`, a change to how they use Shipyard that targets their costliest pattern. Before suggesting a skill, read its `SKILL.md` and `${CLAUDE_PLUGIN_ROOT}/docs/configuration.md` for what it needs and what it writes: a start in a git checkout, tracker writes and the tracker project (a person can set their own in `<repo>/.shipyard/config.local.json`), worktrees, and points where it never asks. Name the one catch that matters for this person, from their `control` and pain points. Add a `## Try next` section to `analysis.md` and record `suggestions` in `discovery.json` as `[{try, why, evidence, catch}]`. Then write the agent companion beside `analysis.md`:
 
 ```
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro report --out <dir>
@@ -89,3 +91,24 @@ PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/
 ```
 
 Close with the zip's path. Sharing it is the person's own step.
+
+## Collate
+
+`collate <folder>` joins the team's approved retros: each `retro-<name>-<date>.zip`, or a folder holding `[<name>-]discovery.json`, anywhere under the folder. Write into `<folder>/collation`:
+
+```
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro collate --src <folder> --out <folder>/collation
+```
+
+It writes `collation.json` and `collation.md`: one column per person for the headline, human turns, friction, cost shares by token class, outputs and work types, then every pattern by goal with each person's why, and every pain point, control wish, Shipyard use and suggestion. Never open a person's zip or digest yourself.
+
+Read `collation.md` and `${CLAUDE_PLUGIN_ROOT}/docs/vision.md`, then write `<folder>/collation/themes.md`, at most 900 words:
+
+1. Who: one line per person, with their window, kind of work and Shipyard level.
+2. Per goal: each theme that two or more people share, with the count and names, their whys in their own words, and the pointers. T2 is the bar: only a shared theme may become a proposed Shipyard change.
+3. Proposed changes: each with the theme it answers, the people behind it, and the goal it moves.
+4. Watch: themes from one person only; no change yet.
+5. Retro fixes: what the runs show about the retro itself, such as fields left `unknown`, a large `other` class, or a person whose work the measures miss.
+
+Facts and the people's words only; never rank people. Rerun after each new retro arrives: the newest run per person wins.
+

@@ -5,6 +5,7 @@ adding `--repo owner/name ...` fetches their PR outcomes, links them to sessions
 writes facet and comment batches, and drafts `discovery.json`. `fold-tags --out DIR` folds `sy:comment-tag` results
 back in. `analyze --out DIR` folds the `sy:session-read` facets in and writes `analysis.json`, one section per goal.
 `report --out DIR` writes `analysis-agents.md`; `package --out DIR --name NAME` zips the approved files to share.
+`collate --src DIR --out DIR` joins every approved retro under DIR (zips or folders) into `collation.json` and `.md`.
 """
 
 import argparse
@@ -46,7 +47,13 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("fold-tags", "analyze", "report", "package"):
         sub.add_parser(name).add_argument("--out", type=Path, required=True)
     sub.choices["package"].add_argument("--name", required=True)
+    c = sub.add_parser("collate")
+    c.add_argument("--src", type=Path, required=True)
+    c.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.cmd == "collate":
+        print(json.dumps(collate(args.src, args.out)))
+        return 0
     if args.cmd == "package":
         print(package(args.out, args.name))
         return 0
@@ -101,6 +108,25 @@ def package(out: Path, name: str) -> Path:
         for f in SHARED_FILES:
             z.write(out / f, f"{slug}-{f}")
     return path
+
+
+def collate(src: Path, out: Path) -> dict[str, Any]:
+    """Join every approved retro under `src` into `collation.json` and `collation.md`, one column per person.
+
+    A retro is a `retro-<name>-<date>.zip` from `package`, or a folder holding `[<name>-]discovery.json`. The newest
+    run per person wins. Only shares and medians cross people; dollar totals stay in each person's own files.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for name, disc, facets in _retros(src):
+        assert disc["approval"]["status"] == "approved", f"{name}'s retro is not approved"
+        if name not in found or disc["generated_at"] > found[name]["generated_at"]:
+            found[name] = {**_person(disc, facets), "name": name, "generated_at": disc["generated_at"]}
+    assert found, f"no retro under {src}"
+    people = [found[k] for k in sorted(found)]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "collation.json").write_text(json.dumps({"people": people}, indent=1) + "\n", encoding="utf-8")
+    (out / "collation.md").write_text(_collation_md(people), encoding="utf-8")
+    return {"people": len(people), "names": [p["name"] for p in people]}
 
 
 def candidate_repos(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -672,6 +698,134 @@ def _weekly(rows: list[dict[str, Any]], facets: dict[str, dict[str, Any]]) -> li
             }
         )
     return out
+
+
+def _retros(src: Path) -> list[tuple[str, dict[str, Any], list[dict[str, Any]]]]:
+    found = []
+    for z in sorted(src.rglob("*.zip")):
+        with zipfile.ZipFile(z) as zf:
+            members = {Path(n).name: n for n in zf.namelist()}
+            for base, member in members.items():
+                if base.endswith("discovery.json"):
+                    prefix = base[: -len("discovery.json")]
+                    facets = members.get(prefix + "facets.jsonl")
+                    rows = zf.read(facets).decode().splitlines() if facets else []
+                    found.append((prefix.strip("-") or z.stem, json.loads(zf.read(member)), _json_lines(rows)))
+    for d in sorted(src.rglob("*discovery.json")):
+        prefix = d.name[: -len("discovery.json")]
+        facets = d.with_name(prefix + "facets.jsonl")
+        rows = facets.read_text(encoding="utf-8").splitlines() if facets.is_file() else []
+        found.append((prefix.strip("-") or d.parent.name, json.loads(d.read_text(encoding="utf-8")), _json_lines(rows)))
+    return found
+
+
+def _person(disc: dict[str, Any], facets: list[dict[str, Any]]) -> dict[str, Any]:
+    goals = (disc.get("analysis") or {}).get("goals") or {}
+    p4, t3, p3 = goals.get("P4") or {}, goals.get("T3") or {}, goals.get("P3") or {}
+    turns = p4.get("human_turns_by_class") or {}
+    friction: Counter = Counter()
+    for f in facets:
+        friction.update(f.get("friction") or {})
+    n = len(facets) or 1
+    skills = disc["sessions"].get("skills") or {}
+    return {
+        "window": disc["window"],
+        "sessions": disc["sessions"]["count"],
+        "merged_prs": (goals.get("P5") or {}).get("merged_prs"),
+        "shipyard_level": disc["sessions"]["shipyard"]["level"],
+        "vision_closeness": disc.get("vision_closeness"),
+        "achieved_share": (goals.get("P2") or {}).get("outcome_achieved_share"),
+        "human_turn_share": _shares(turns),
+        "friction_per_session": {k: round(v / n, 2) for k, v in friction.most_common()},
+        "outputs": p3.get("outputs"),
+        "work_types": p3.get("work_types"),
+        "approaches": p3.get("approaches"),
+        "cost_share": t3.get("by_class_share"),
+        "subagent_share": t3.get("subagent_share"),
+        "median_peak_context": t3.get("median_peak_context"),
+        "compactions_per_session": round((t3.get("compactions") or 0) / n, 2),
+        "own_skills": dict(Counter({k: v for k, v in skills.items() if not k.startswith("sy:")}).most_common(8)),
+        "shipyard_skills": {k: v for k, v in skills.items() if k.startswith("sy:")},
+        "patterns": disc.get("patterns") or [],
+        "pain_points": disc.get("pain_points") or [],
+        "control": disc.get("control") or [],
+        "shipyard_usage": disc.get("shipyard_usage") or {},
+        "suggestions": disc.get("suggestions") or [],
+        "unknown": disc.get("unknown") or [],
+    }
+
+
+def _collation_md(people: list[dict[str, Any]]) -> str:
+    names = [p["name"] for p in people]
+    head = "| | " + " | ".join(names) + " |\n|---|" + "---|" * len(names)
+    lines = [f"# Retro collation: {len(people)} people", ""]
+    lines += [
+        f"- {p['name']}: {p['window']['since']} to {p['window']['until']}, {p['sessions']} sessions" for p in people
+    ]
+
+    def row(label: str, fn: Any) -> str:
+        return f"| {label} | " + " | ".join(_cell(_flat_value(fn(p))) for p in people) + " |"
+
+    def matrix(title: str, key: str) -> None:
+        keys = sorted({k for p in people for k in (p.get(key) or {})})
+        lines.extend(["", f"## {title}", "", head])
+        lines.extend(row(k, lambda p, k=k: (p.get(key) or {}).get(k, "")) for k in keys)
+
+    lines += ["", "## Headline", "", head]
+    for label, fn in (
+        ("vision", lambda p: (p["vision_closeness"] or {}).get("rating")),
+        ("shipyard level", lambda p: p["shipyard_level"]),
+        ("merged PRs", lambda p: p["merged_prs"]),
+        ("achieved", lambda p: p["achieved_share"]),
+        ("subagent share", lambda p: p["subagent_share"]),
+        ("median peak context", lambda p: p["median_peak_context"]),
+        ("compactions per session", lambda p: p["compactions_per_session"]),
+        ("own skills", lambda p: p["own_skills"]),
+        ("shipyard skills", lambda p: p["shipyard_skills"]),
+        ("still unknown", lambda p: ", ".join(p["unknown"])),
+    ):
+        lines.append(row(label, fn))
+    matrix("Human turns, share by class", "human_turn_share")
+    matrix("Friction per session", "friction_per_session")
+    matrix("Cost share by token class", "cost_share")
+    matrix("Outputs", "outputs")
+    matrix("Work types", "work_types")
+    matrix("Approaches", "approaches")
+    lines += ["", "## Vision closeness, in their words", ""]
+    lines += [
+        f"- {p['name']} ({(p['vision_closeness'] or {}).get('rating')}): {(p['vision_closeness'] or {}).get('why')}"
+        for p in people
+    ]
+    goals = sorted({x["goal"] for p in people for x in p["patterns"]})
+    for g in goals:
+        lines += ["", f"## {g} patterns", ""]
+        for p in people:
+            for x in (x for x in p["patterns"] if x["goal"] == g):
+                evidence = ", ".join(x.get("evidence") or [])
+                lines.append(f"- {p['name']} {x['id']}: {x['pattern']} Why: {x.get('why')} [{evidence}]")
+    lines += ["", "## Pain points, control, Shipyard use, suggestions", ""]
+    for p in people:
+        lines += [f"- {p['name']} pain: {x['what']}" for x in p["pain_points"]]
+        lines += [f"- {p['name']} control/{x['stage']}: {x['wants']}" for x in p["control"]]
+        for k in ("tried", "skipped"):
+            lines += [f"- {p['name']} {k}/{x['skill']}: {x['why']}" for x in p["shipyard_usage"].get(k) or []]
+        lines += [f"- {p['name']} try: {x.get('try')}. Why: {x.get('why')}" for x in p["suggestions"]]
+    return "\n".join(lines) + "\n"
+
+
+def _flat_value(v: Any) -> str:
+    if isinstance(v, dict):
+        return ", ".join(f"{k} {x}" for k, x in v.items())
+    return "" if v is None else str(v)
+
+
+def _shares(counts: dict[str, int]) -> dict[str, float]:
+    whole = sum(counts.values()) or 1
+    return {k: round(v / whole, 2) for k, v in sorted(counts.items(), key=lambda kv: -kv[1])}
+
+
+def _json_lines(lines: list[str]) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in lines if x.strip()]
 
 
 def _cell(text: str | None) -> str:

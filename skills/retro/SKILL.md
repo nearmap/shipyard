@@ -5,7 +5,7 @@ description: >-
   session table from your local transcripts, costs every session by token class, links sessions to
   PRs, classifies every session, scores the evidence against Shipyard's goals, then interviews you
   about why each pattern exists. Nothing leaves your machine until you approve it.
-argument-hint: "[discover] [--since YYYY-MM-DD]"
+argument-hint: "[discover] [--since YYYY-MM-DD] [--reuse latest|<dir>]"
 disable-model-invocation: true
 ---
 
@@ -13,7 +13,7 @@ Discovery mode: evidence of how one person works, linked to what their PRs did, 
 
 $ARGUMENTS
 
-Only `discover` exists so far; any other mode stops with that sentence. The window defaults to the last 30 days. A run resumes from its output directory: continue at the first step whose output is missing, and never redo a finished one.
+Only `discover` exists so far; any other mode stops with that sentence. The window defaults to the last 30 days. A run resumes from its output directory: continue at the first step whose output is missing, and never redo a finished one. `--reuse <dir>`, or `--reuse latest` for the newest dated folder under the output root, reruns an approved run from its own folder: keep its session table, digests, facets and analysis, ask only the step 5 questions whose fields are still `unknown` (an empty `shipyard_usage` at level `none` counts as unknown), then do steps 6 and 7 again, the name and zip included.
 
 ## 1. Collect, in code
 

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -103,3 +104,31 @@ def test_digest_drops_plain_tools_past_line_ten_thousand():
     lines += ["L20000 10:00:00 USER: keep me", "L20001 10:00:00 TOOL Agent: keep me too"]
     digest = retro._digest(lines)
     assert "TOOL Bash" not in digest and "USER: keep me" in digest and "TOOL Agent" in digest, digest
+
+
+def test_projects_roots_finds_config_dirs_outside_home_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    for d in (".claude", "Work/.claude-config", "Work/.claude-ent", "elsewhere/cfg"):
+        (tmp_path / d / "projects").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "elsewhere/cfg"))
+    roots = {p.relative_to(tmp_path).as_posix() for p in retro.projects_roots()}
+    assert roots == {
+        ".claude/projects",
+        "Work/.claude-config/projects",
+        "Work/.claude-ent/projects",
+        "elsewhere/cfg/projects",
+    }, roots
+
+
+def test_package_zips_the_approved_files_under_the_persons_name(tmp_path: Path):
+    for f in retro.SHARED_FILES:
+        (tmp_path / f).write_text("x")
+    disc = {"approval": {"status": "draft"}, "window": {"until": "2026-11-28"}}
+    (tmp_path / "discovery.json").write_text(json.dumps(disc))
+    with pytest.raises(AssertionError, match="approve"):
+        retro.package(tmp_path, "Ada Lovelace")
+    disc["approval"]["status"] = "approved"
+    (tmp_path / "discovery.json").write_text(json.dumps(disc))
+    path = retro.package(tmp_path, "Ada Lovelace")
+    assert path.name == "retro-ada-lovelace-2026-11-28.zip"
+    assert sorted(zipfile.ZipFile(path).namelist()) == sorted(f"ada-lovelace-{f}" for f in retro.SHARED_FILES)

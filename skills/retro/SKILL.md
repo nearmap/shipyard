@@ -17,13 +17,13 @@ Only `discover` exists so far; any other mode stops with that sentence. The wind
 
 ## 1. Collect, in code
 
-Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. Build the session table, in the background, and wait for its completion notice; it prints the candidate repositories:
+Resolve the output directory as `scratch_dir {"identifier": "retro-discovery"}` plus a UTC date folder. When Shipyard's tools refuse because this session did not start in a git checkout, use `~/.claude/shipyard/scratch/retro-discovery` instead, and in steps 2 and 3 dispatch with the agent's own default model and effort. Build the session table, in the background, and wait for its completion notice. It reads every Claude Code transcript folder it finds (`CLAUDE_CONFIG_DIR`, `~/.claude`, and `.claude*` folders in the home folder or one level below), and prints those folders, the candidate repositories, and how many sessions touched no repository:
 
 ```
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro discover --since <date> --out <dir>
 ```
 
-Ask which repositories to include with one multi-select `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), the busiest first. Then confirm each chosen repository's standards resolve from this session: they may need that repository's own MCP servers. For any that cannot, ask whether to drop it or to finish its step 2 in a session started in that repository. Then run the same command with `--repo <owner/name>...` added. It reuses the session table and writes `prs.jsonl`, `links.json`, one digest per session under `digests/`, facet batches under `facets/`, comment batches under `comments/`, and `discovery.json` with every measured field filled, costs included. Never read `sessions.jsonl`, `prs.jsonl` or a digest yourself.
+Name the transcript folders it read and ask, in the same turn as the repositories, whether any folder is missing; add a missing one with `--projects <dir>...`, which replaces the folders it found. Ask which repositories to include with one multi-select `AskUserQuestion` (`${CLAUDE_PLUGIN_ROOT}/skills/shared/references/user-interaction.md`), the busiest first. Sessions tied to no repository are always kept; a person who picks no repository passes `--repo` with no names. Then confirm each chosen repository's standards resolve from this session: they may need that repository's own MCP servers. For any that cannot, ask whether to drop it or to finish its step 2 in a session started in that repository. Then run the same command with `--repo <owner/name>...` added. It reuses the session table and writes `prs.jsonl`, `links.json`, one digest per session under `digests/`, facet batches under `facets/`, comment batches under `comments/`, and `discovery.json` with every measured field filled, costs included. Never read `sessions.jsonl`, `prs.jsonl` or a digest yourself.
 
 ## 2. Tag review comments
 
@@ -57,12 +57,12 @@ Record each pattern in `discovery.json` `patterns` as `{id, goal, pattern, evide
 
 Ask one `AskUserQuestion` per turn, at most 16 in all, keeping 4 for the person's own follow-ups:
 
-1. First, before showing anything of the analysis, so it does not anchor the answer: state the vision in two plain sentences, then ask how close the person feels agentic coding is to it for their own work. Options: `there`, `close`, `halfway`, `far`, `not_yet_useful`. Invite them to say why, in a note or in Other. Record `vision_closeness` as `{rating, why}`, the why in their words, or `unknown` when they give none. Each obstacle the why names also becomes a `pain_points` entry with `source: interview`.
+1. First, before showing anything of the analysis, so it does not anchor the answer: state the vision in two plain sentences, then ask how close the person feels agentic coding is to it for their own work. Options: `there`, `close`, `halfway`, `far`, `not_yet_useful`. Invite them to say why, in a note or in Other. Record `vision_closeness` as `{rating, why}`, the why in their words. If they give no reason, ask once more, offering the likely reasons as options; record `unknown` only if they decline again. Each obstacle the why names also becomes a `pain_points` entry with `source: interview`.
 2. Then show `analysis.md` and ask whether it misreads anything. Correct `analysis.md` and the patterns before going on.
 3. Then one question per pattern, highest-cost or most-repeated first: what stands in the way of the goal it touches, or what makes it work. Name the goal in plain words, the pattern and its evidence. Ask about the work, never the person: the obstacle may sit in the tools, the repository, the platform, the team's habits or the time available. Offer as options the likely obstacles the evidence suggests, including ones outside the person's control, never as the only answers. Record the answer, in the person's words, as that pattern's `why`.
 4. If questions remain: where the person wants to decide rather than delegate (`control`), and which Shipyard skills they skipped, and why (`shipyard_usage`).
 
-Word every question from what the person did, in their own tools' terms. `sessions.shipyard.level` in `discovery.json` decides how much Shipyard enters it: at `regular`, ask as listed; at `light`, ask about only the skills they ran, as a first impression; at `none`, leave `shipyard_usage` empty (not `unknown`) and name no Shipyard skill, path or term in any question.
+Word every question from what the person did, in their own tools' terms. `sessions.shipyard.level` in `discovery.json` decides how much Shipyard enters it: at `regular`, ask as listed; at `light`, ask about only the skills they ran, as a first impression; at `none`, name no Shipyard skill, path or term in any question except one: ask what kept them off Shipyard, describing it in one plain sentence (skills that plan work, write a spec and ship it as a PR). Offer likely reasons: did not know of it, my own skills already do this, it does not fit my work, it failed to set up. Record the answer as `shipyard_usage.skipped` `[{skill: "shipyard", why}]`.
 
 When the person asks a question of the evidence, such as whether something is improving, answer it from `analysis.json`, `facets.jsonl` and `sessions.jsonl` in code, never from memory, and add the answer to the pattern it belongs to.
 
@@ -80,4 +80,12 @@ PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/
 
 ## 7. Approve
 
-Show `analysis.md` in full. Say that `analysis-agents.md` holds the full evidence for agents, and that `facets.jsonl` holds one line per session: its classes and a one-sentence summary. Then ask with one `AskUserQuestion`: approve as written; edit or redact entries (name them in Other); or delete the run. Apply any edit to every file it touches, then ask again. On approval set `approval.status` to `approved` with the time. The person's review is the privacy control: the credential scrubber only catches values set in the current environment. Close with the paths of the four files to share: `discovery.json`, `analysis.md`, `analysis-agents.md` and `facets.jsonl`. Sharing them is the person's own step.
+Show `analysis.md` in full. Say that `analysis-agents.md` holds the full evidence for agents, and that `facets.jsonl` holds one line per session: its classes and a one-sentence summary. Then ask with one `AskUserQuestion`: approve as written; edit or redact entries (name them in Other); or delete the run. Apply any edit to every file it touches, then ask again. On approval set `approval.status` to `approved` with the time. The person's review is the privacy control: the credential scrubber only catches values set in the current environment.
+
+Then ask the person's name with one `AskUserQuestion`: offer `git config user.name` when it is set, and `anonymous`; Other takes any name. Zip the four files to share (`discovery.json`, `analysis.md`, `analysis-agents.md`, `facets.jsonl`), each prefixed with the name:
+
+```
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} pixi run --manifest-path ${CLAUDE_PLUGIN_ROOT}/pyproject.toml python -P -m sy_tools.retro package --out <dir> --name "<name>"
+```
+
+Close with the zip's path. Sharing it is the person's own step.

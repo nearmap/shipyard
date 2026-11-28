@@ -4,18 +4,21 @@
 adding `--repo owner/name ...` fetches their PR outcomes, links them to sessions, renders one digest per session,
 writes facet and comment batches, and drafts `discovery.json`. `fold-tags --out DIR` folds `sy:comment-tag` results
 back in. `analyze --out DIR` folds the `sy:session-read` facets in and writes `analysis.json`, one section per goal.
+`report --out DIR` writes `analysis-agents.md`; `package --out DIR --name NAME` zips the approved files to share.
 """
 
 import argparse
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 import json
+import os
 from pathlib import Path
 import re
 from statistics import median
 import subprocess
 import sys
 from typing import Any
+import zipfile
 
 from . import pr_outcomes, sessions
 
@@ -29,6 +32,7 @@ _PR_URL = re.compile(r"https://[^/\s]+/([^/\s]+/[^/\s]+)/pull/(\d+)")
 _COMMAND = re.compile(r"<command-name>([^<]*)</command-name>(?:.*?<command-args>([^<]*)</command-args>)?", re.S)
 _EVENT = re.compile(r"L\d+ \S+ ([A-Z]+)(?: ([^:\s]+))?:")
 _DEFAULT_BRANCHES = {"main", "master", "HEAD", ""}
+SHARED_FILES = ("discovery.json", "analysis.md", "analysis-agents.md", "facets.jsonl")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,11 +41,15 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("discover")
     d.add_argument("--since", type=date.fromisoformat, required=True)
     d.add_argument("--out", type=Path, required=True)
-    d.add_argument("--repo", nargs="*", default=[])
-    d.add_argument("--projects", type=Path, default=Path.home() / ".claude" / "projects")
-    for name in ("fold-tags", "analyze", "report"):
+    d.add_argument("--repo", nargs="*")
+    d.add_argument("--projects", type=Path, nargs="+")
+    for name in ("fold-tags", "analyze", "report", "package"):
         sub.add_parser(name).add_argument("--out", type=Path, required=True)
+    sub.choices["package"].add_argument("--name", required=True)
     args = parser.parse_args(argv)
+    if args.cmd == "package":
+        print(package(args.out, args.name))
+        return 0
     if args.cmd == "report":
         print(json.dumps(report(args.out)))
         return 0
@@ -52,12 +60,47 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(analyze(args.out)))
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
-    rows = _session_table(args.projects, args.since, args.out)
-    if not args.repo:
-        print(json.dumps({"sessions": len(rows), "repos": candidate_repos(rows)}, indent=1))
+    roots = args.projects or projects_roots()
+    rows = _session_table(roots, args.since, args.out)
+    if args.repo is None:
+        no_repo = sum(1 for r in rows if not _session_repos(r))
+        listing = {"sessions": len(rows), "no_repo_sessions": no_repo, "projects": [str(p) for p in roots]}
+        print(json.dumps({**listing, "repos": candidate_repos(rows)}, indent=1))
         return 0
-    print(json.dumps(discover(rows, args.repo, args.since, args.out, args.projects)))
+    print(json.dumps(discover(rows, args.repo, args.since, args.out)))
     return 0
+
+
+def projects_roots() -> list[Path]:
+    """Every Claude Code transcript folder on this machine: `$CLAUDE_CONFIG_DIR`, `~/.claude`, and `.claude*` folders
+    in the home folder or one level below it."""
+    home = Path.home()
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    found = [
+        *([Path(env).expanduser()] if env else []),
+        home / ".claude",
+        *home.glob(".claude*"),
+        *home.glob("*/.claude*"),
+    ]
+    roots: dict[Path, Path] = {}
+    for d in found:
+        if (d / "projects").is_dir():
+            roots.setdefault((d / "projects").resolve(), d / "projects")
+    assert roots, f"no Claude Code transcripts under {home}; pass --projects"
+    return list(roots.values())
+
+
+def package(out: Path, name: str) -> Path:
+    """Zip the four approved files to share, each prefixed with the person's name, into `retro-<name>-<date>.zip`."""
+    disc = json.loads((out / "discovery.json").read_text(encoding="utf-8"))
+    assert disc["approval"]["status"] == "approved", "approve the run before packaging it"
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    assert slug, f"name {name!r} has no letters or digits"
+    path = out / f"retro-{slug}-{disc['window']['until']}.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in SHARED_FILES:
+            z.write(out / f, f"{slug}-{f}")
+    return path
 
 
 def candidate_repos(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -68,14 +111,17 @@ def candidate_repos(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"repo": k, "sessions": n} for k, n in count.most_common()]
 
 
-def discover(rows: list[dict[str, Any]], repos: list[str], since: date, out: Path, projects: Path) -> dict[str, Any]:
-    """Fetch PR outcomes, link, flag, render spans and comment batches, and draft discovery.json."""
-    rows = [r for r in rows if _session_repos(r) & set(repos)]
+def discover(rows: list[dict[str, Any]], repos: list[str], since: date, out: Path) -> dict[str, Any]:
+    """Fetch PR outcomes, link, flag, render spans and comment batches, and draft discovery.json.
+
+    Keeps the sessions in the chosen repositories and every session tied to no repository.
+    """
+    rows = [r for r in rows if not (rr := _session_repos(r)) or rr & set(repos)]
     prs = [p for repo in repos for p in pr_outcomes.fetch(repo, since)]
     _write_jsonl(out / "prs.jsonl", prs)
     links = link(rows, prs)
     (out / "links.json").write_text(json.dumps(links, indent=1) + "\n", encoding="utf-8")
-    facet_batches = write_digests(projects, rows, out)
+    facet_batches = write_digests(rows, out)
     batches = write_comment_batches(prs, out / "comments")
     draft = draft_discovery(rows, prs, links, repos, since)
     (out / "discovery.json").write_text(json.dumps(draft, indent=1) + "\n", encoding="utf-8")
@@ -122,7 +168,7 @@ def link(rows: list[dict[str, Any]], prs: list[dict[str, Any]]) -> dict[str, dic
     return out
 
 
-def write_digests(projects: Path, rows: list[dict[str, Any]], out: Path) -> int:
+def write_digests(rows: list[dict[str, Any]], out: Path) -> int:
     """One text digest per session under `digests/`, and `facets/batch-NNN.json` lists for `sy:session-read`.
 
     A digest keeps every human turn, answer, error and skill or agent call. Over DIGEST_CHARS it drops the other
@@ -133,7 +179,7 @@ def write_digests(projects: Path, rows: list[dict[str, Any]], out: Path) -> int:
     batches: list[list[dict[str, Any]]] = [[]]
     size = 0
     for r in rows:
-        events = _events(projects / r["project_dir"] / f"{r['session_id']}.jsonl")
+        events = _events(Path(r["projects_root"]) / r["project_dir"] / f"{r['session_id']}.jsonl")
         text = _digest([line for _, line in events])
         path = out / "digests" / f"{r['session_id']}.txt"
         path.write_text(text, encoding="utf-8")
@@ -448,7 +494,7 @@ def draft_discovery(
             "analysis",
             "patterns[].why",
             "vision_closeness",
-            *(["shipyard_usage"] if sy_sessions else []),
+            "shipyard_usage",
             "control",
             "pain_points",
         ],
@@ -684,14 +730,19 @@ def _split_share(rows: list[dict[str, Any]], shares: Counter, prices: dict[str, 
     return {**{k: round(v) for k, v in tokens.items()}, "usd_estimate": round(usd, 2)}
 
 
-def _session_table(projects: Path, since: date, out: Path) -> list[dict[str, Any]]:
+def _session_table(roots: list[Path], since: date, out: Path) -> list[dict[str, Any]]:
     cache = out / "sessions.jsonl"
     if cache.is_file():
         rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines() if line]
-        if all("tokens" in r for r in rows):
+        if all("tokens" in r and "projects_root" in r for r in rows):
             return rows
-        print(f"{cache} predates the token split; rebuilding it", file=sys.stderr)
-    rows = sessions.collect(projects, datetime.combine(since, datetime.min.time(), tzinfo=UTC))
+        print(f"{cache} predates the token split or several transcript folders; rebuilding it", file=sys.stderr)
+    start = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
+    by_id: dict[str, dict[str, Any]] = {}
+    for root in roots:
+        for r in sessions.collect(root, start):
+            by_id.setdefault(r["session_id"], {**r, "projects_root": str(root)})
+    rows = sorted(by_id.values(), key=lambda r: r["started_at"])
     _write_jsonl(cache, rows)
     return rows
 
